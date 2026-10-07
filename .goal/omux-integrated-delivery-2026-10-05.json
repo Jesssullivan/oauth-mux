@@ -16,27 +16,15 @@
   "previous_paused_at": "2026-10-06T00:03:44Z",
   "paused_at": "2026-10-06T03:55:23Z",
   "paused_by": "User explicitly set tool goal paused; subsequent check-in requests status only",
-  "execution_state": "none_all_new_owned_gate_aggregates_terminal_empty;source_implementation_continues",
+  "execution_state": "no_owned_payload; C6 native failed cold resume; Yoga registry refused before rehash; metadata-only source delivery pending",
   "current_status_checkin": {
-    "observed_at": "2026-10-07T01:46:42Z",
-    "acceptance_gates_passed": 5,
-    "acceptance_gates_open": 6,
-    "new_gate_closed": false,
-    "source_pr": 527,
-    "source_merge": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
-    "source_delivery": "signed reviewed exact tree merged; all four isolated local delivery gates passed",
-    "native_receipt": "docs/tracker-updates/integrated-delivery-native44d7-2026-10-07.json",
-    "native_resume": "unproved; explicitTokio2 profile failed detach RPC",
-    "native_observer": "158b launch-fork EAGAIN before CLI; resource cause unmeasured",
-    "yoga_receipt": "docs/tracker-updates/integrated-delivery-yoga-d47f-chain-2026-10-07.json",
-    "yoga": "QUAL/INSPECT pass; destination registry metadata refusal; no copy/toolbar",
-    "home_manager": "9337 timeout no admitted pair; private filesystem residue retained",
-    "new_payload_running": true,
-    "continuation_checkpoint": ".goal/omux-native-browser-2026-10-06.json",
-    "continuation_due": "2026-10-07T01:13:12Z",
-    "next": "Terminal exact single-call installed diagnostic receipt; preserve private raw and separately scope workload counters and failure-stage witness",
-    "source_followon_pr": 528,
-    "source_followon_head": "04120ea64f8d160fff561fec22b86e8f1df75b92"
+    "recorded_at": "2026-10-07T04:52:34Z",
+    "source_commit": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "parent_scoped_passes": 5,
+    "parent_open_gates": 6,
+    "provider_free": true,
+    "latest_native": "e761fae3-bbf4-4c68-af4c-23075c43bab7",
+    "latest_yoga": "234a0467-0a25-4b17-8598-d8ad1844ba1b"
   },
   "historical_status_checkin_2135": {
     "observed_at": "2026-10-06T21:35:22Z",
@@ -166,7 +154,7 @@
   "latest_checkin": "2026-10-07T01:52:58Z_native_diagnostic_failed_at_status_query_after_detach_ack;fresh_readonly_Yoga_qualify_started;5_passed_6_open",
   "current_owned_execution": {
     "state": "none",
-    "last_epoch": "ac14f5fa-d87c-446a-823d-12ef6b022153",
+    "last_epoch": "234a0467-0a25-4b17-8598-d8ad1844ba1b",
     "descendants_empty": true
   },
   "claim": "experimental_unshipped_live_continuity_unavailable",
@@ -718,9 +706,9 @@
     "commit": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
     "receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json"
   },
-  "next_source_implementation": "Fresh bounded native checkpoint on signedclean startup-marker fixture; all preservation predicates unchanged",
+  "next_source_implementation": "Freeze terminal facts into source-only PR531 delivery; next separate source: inherited HM deadline and explicit Yoga same-daemon binding. Native exit, destination import/capacity, actual browser/operator proof and six parent gates remain open.",
   "latest_portable_exec_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
-  "new_source_pending_verification": "Marker fixture tested in overall failed native action; full preservation unpassed; source-only future diagnostic proposals remain unapplied",
+  "new_source_pending_verification": true,
   "latest_portable_exec_source_delivery": {
     "pr": 529,
     "url": "https://github.com/Jesssullivan/oauth-mux/pull/529",
@@ -747,8 +735,8 @@
     "protection_unchanged": true,
     "scope": "Reviewed source-only packaging/model delivery; failed native9f286 result disclosed; no gate closes"
   },
-  "latest_installed_native_receipt": "/home/jess/.local/state/omux-execution-20261005/ac14f5fa-d87c-446a-823d-12ef6b022153/receipt.json",
-  "latest_installed_native_result": "FAILED cold-native-resume/resume-owner-endpoint/resume-endpoint-deadline; docs/source passed, no config-comparison result",
+  "latest_installed_native_receipt": "e761fae3-bbf4-4c68-af4c-23075c43bab7",
+  "latest_installed_native_result": "FAILED cold-native-resume/resume-owner-endpoint/resume-terminal-exited",
   "latest_native_startup_fixture": {
     "source": {
       "head": "2bd9942f34450ec1cf245674aaafecf32425abbb",
@@ -762,6 +750,233 @@
     },
     "receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
     "proof": "FAILED_owner_endpoint_before_config_predicate",
-    "pr": 530
-  }
+    "pr": 530,
+    "final_source_delivery": {
+      "pr": 530,
+      "head": "524febc15ad66b106dbaf3c9a45e86569df67b0b",
+      "tree": "5a0a97a60f3ba4219beca7eab9a32dcbf747c56d",
+      "merged": true,
+      "merge_commit": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+      "merge_parent": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+      "merge_verified": true,
+      "main_exact_readback": true,
+      "source_branch_retained": true,
+      "scope": "Source-only fixture/doc delivery; nativeac14 failed and config comparison untested; no gate closes"
+    },
+    "docs_source_epoch": "f84a5b2e-6638-4c52-9a2a-b76f9b9bd5c6",
+    "final_source": {
+      "head": "524febc15ad66b106dbaf3c9a45e86569df67b0b",
+      "tree": "5a0a97a60f3ba4219beca7eab9a32dcbf747c56d",
+      "parent": "2bd9942f34450ec1cf245674aaafecf32425abbb",
+      "sig": "G"
+    },
+    "merged": true,
+    "merge_commit": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+    "merge_tree": "5a0a97a60f3ba4219beca7eab9a32dcbf747c56d",
+    "merge_verified": true,
+    "scope": "source_only_native_ac14_FAILED"
+  },
+  "latest_bounded_diagnostics_receipt": "docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json",
+  "latest_bounded_diagnostics_model_result": {
+    "epoch": "72c5db5e-f94c-47d5-907f-bac7b304107a",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "receipt_sha256": "bab569e8ddb05ec8106021bd51a7d52eee9dbac0df5de12ae2b4e1d78462cf62",
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "evidence": {
+      "bytes": 222313,
+      "files": 17,
+      "manifest": "test-evidence.json",
+      "sha256": "7eec9be61cbba1d9acb1fec103eee232c24a859b8d8ac44f3f206a5e59ecba40",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:native_seed_attachment_diagnostic_test",
+      "//delivery:native_thread_census_test",
+      "//tools:execution_guard_test",
+      "//tools:guard_cache_test",
+      "//tools:guard_dependency_profile_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "pids": {
+      "sampled_peak": 251,
+      "eventIncrease": false,
+      "atLimit": false,
+      "terminal": "unavailable",
+      "attribution": "none"
+    },
+    "cache_controller_policy": {
+      "legacy_globbing_threads": 2,
+      "fsvc_threads": 2
+    },
+    "scope": "seven targeted source/model checks; no native or Yoga acceptance"
+  },
+  "latest_bounded_diagnostics_source_delivery": {
+    "commit": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "tree": "be2fa93fb538f62db028dd4d3baa86e7d895a07d",
+    "parent": "e54257e8887e4d9921b87e311242f01a5f56e9c7",
+    "signature": "G",
+    "signature_verification_exit": 0,
+    "clean": true,
+    "branch": "codex/omux-bounded-proof-diagnostics-20261007",
+    "pr": 531,
+    "pr_url": "https://github.com/Jesssullivan/oauth-mux/pull/531",
+    "state": "open_draft",
+    "scope": "reviewed bounded diagnostics and fixed standard controller settings; native proof pending"
+  },
+  "latest_bounded_diagnostics_native_result": {
+    "epoch": "e761fae3-bbf4-4c68-af4c-23075c43bab7",
+    "source_commit": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "source_dirty": "false",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "retained_input_verified_after": true,
+    "receipt_sha256": "db0f8c2670223fe8cc35bde7b5ed40ce741701d6991ffbc924f731be0c9e49b7",
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "evidence": {
+      "bytes": 219075,
+      "files": 9,
+      "manifest": "test-evidence.json",
+      "sha256": "f3cf9cb731b7dca55c2a788ab8bb4359d1df01c6b866fc6bbe14464158ae967e",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "failed_target": "//delivery:installed_legacy_native_tui_test",
+    "failure_phase": "cold-native-resume",
+    "diagnostic": "resume-owner-endpoint/resume-terminal-exited",
+    "failure_time_role_snapshots": {
+      "self": {
+        "state": "observed",
+        "threads": 3
+      },
+      "daemon": {
+        "state": "observed",
+        "threads": 24
+      },
+      "keyring": {
+        "state": "observed",
+        "threads": 5
+      },
+      "native_bootstrap": {
+        "state": "retired",
+        "threads": null
+      },
+      "native_resume": {
+        "state": "retired",
+        "threads": null
+      }
+    },
+    "pids": {
+      "sampled_peak": 509,
+      "eventIncrease": true,
+      "atLimit": false,
+      "terminal": "unavailable",
+      "attribution": "none"
+    },
+    "scope": "failed provider-free empty-history resume; initial seed/attachment/detach reached, resume endpoint and subsequent acceptance unproved",
+    "replay_or_provider_calls": false
+  },
+  "latest_yoga_readonly_qualification": {
+    "epoch": "0deaf9e1-b646-4050-b425-eb7c080da3fc",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "receipt_sha256": "92358f5d5acc4605b2cf00b018e81ce5cbc8cc74d45ea27fbd2e7ca281c065ec",
+    "qualification_sha256": "ff84bb9205565656e2ba6abe1dbaacf943153b0f4e48129695797910d875c753",
+    "scope": "authenticated remote executable qualification only; registration/content/import/browser remain unproved"
+  },
+  "latest_yoga_readonly_inspection": {
+    "epoch": "d2b8b025-9ae0-4bc6-8882-6309b8372b25",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "receipt_sha256": "5c24160927cfd57015723aa370a1d10ef130f82bc2f71751d56c98c77783a7f2",
+    "passed": true,
+    "daemonClientTrusted": true,
+    "availableBytes": null,
+    "scope": "read-only inspection only; no capacity/registration/content/browser proof"
+  },
+  "latest_yoga_readonly_verification": {
+    "epoch": "234a0467-0a25-4b17-8598-d8ad1844ba1b",
+    "controller_exit": 2,
+    "workload_exit": 2,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "receipt_sha256": "672bd69963cecc33a41f93920fb2a07b6c23b03b742fdb1af2a1b56c65026bd0",
+    "passed": false,
+    "gate": "destination-registration-content",
+    "operationFailure": {
+      "predicate": "row-object",
+      "registryShape": {
+        "extraCount": 0,
+        "extraCountCapped": false,
+        "missingCount": 0,
+        "nullCount": 469,
+        "objectCount": 3,
+        "registryKind": "object",
+        "requestedCount": 472,
+        "uninspectedCount": 0,
+        "unsupportedCount": 0
+      },
+      "rowKind": "null",
+      "schemaVersion": 1,
+      "stage": "destination-registry"
+    },
+    "destinationContentRehashed": false,
+    "destinationRegistrationVerified": false,
+    "copyPerformed": false,
+    "remoteOwnedContainmentVerified": false,
+    "remoteCleanup": "unknown",
+    "scope": "failed registry metadata before content loop; null counts establish no physical absence/corruption/import/browser"
+  },
+  "latest_yoga_result": "FAILED registry row-object/null: object3 null469; content not rehashed",
+  "latest_yoga_receipt": "234a0467-0a25-4b17-8598-d8ad1844ba1b"
 }

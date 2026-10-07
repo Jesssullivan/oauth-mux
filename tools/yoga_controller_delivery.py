@@ -153,15 +153,57 @@ def selected(inventory, receipt):
             'terminal-controller-evidence-required')
     return rows
 
+REGISTRY_COUNT_BOUND = 472
+
+def registry_kind(value):
+    """Closed raw JSON-shape enum; never include values or Python type names."""
+    if value is None:
+        return 'null'
+    kinds = {dict: 'object', list: 'array', bool: 'boolean',
+             int: 'number', float: 'number', str: 'string'}
+    return kinds.get(type(value), 'unsupported')
+
+def registry_shape(actual, rows):
+    """Bounded requested-row shape only; no existence/content interpretation."""
+    require(type(rows) is list and 0 < len(rows) <= REGISTRY_COUNT_BOUND,
+            'destination-registry-diagnostic-bound')
+    summary = {'registryKind': registry_kind(actual), 'requestedCount': len(rows),
+               'objectCount': 0, 'nullCount': 0, 'missingCount': 0,
+               'unsupportedCount': 0, 'uninspectedCount': 0,
+               'extraCount': 0, 'extraCountCapped': False}
+    if type(actual) is not dict:
+        summary['uninspectedCount'] = len(rows)
+        return summary
+    matched = set()
+    for row in rows:
+        name = row['path']
+        if name not in actual:
+            summary['missingCount'] += 1
+        else:
+            matched.add(name)
+            kind = registry_kind(actual[name])
+            field = {'object': 'objectCount', 'null': 'nullCount'}.get(kind, 'unsupportedCount')
+            summary[field] += 1
+    extra = len(actual) - len(matched)
+    summary['extraCount'] = min(extra, REGISTRY_COUNT_BOUND)
+    summary['extraCountCapped'] = extra > REGISTRY_COUNT_BOUND
+    return summary
+
 def registry(actual, rows):
-    require(type(actual) is dict and set(actual) == {row['path'] for row in rows},
-            'destination-registration-set')
+    shape = registry_shape(actual, rows)
+    if not (type(actual) is dict and set(actual) == {row['path'] for row in rows}):
+        raise GateError('destination-registration-set', hints={
+            'schemaVersion': 1, 'stage': 'destination-registry',
+            'predicate': 'registration-set', 'registryShape': shape})
     for row in rows:
         item = actual[row['path']]
         def predicate(value, name):
             if not value:
-                raise GateError('destination-registration-content', hints={
-                    'schemaVersion': 1, 'stage': 'destination-registry', 'predicate': name})
+                hints = {'schemaVersion': 1, 'stage': 'destination-registry',
+                         'predicate': name, 'registryShape': shape}
+                if name == 'row-object':
+                    hints['rowKind'] = registry_kind(item)
+                raise GateError('destination-registration-content', hints=hints)
         predicate(type(item) is dict, 'row-object')
         predicate(type(item.get('narSize')) is int, 'nar-size-type')
         predicate(item['narSize'] == row['narSize'], 'nar-size-value')

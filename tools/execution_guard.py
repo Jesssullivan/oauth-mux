@@ -43,6 +43,16 @@ CLEANUP_SECONDS = 15
 CLEANUP_READ_SECONDS = 2
 
 
+def controller_thread_profile():
+    """Bazel 9.0.1 standard graph policy, distinct from aggregate TasksMax.
+
+    legacy_globbing_threads controls ForkJoin parallelism, not its maximum
+    thread count. fsvc_threads controls the fixed filesystem-value pool.
+    Separate SDK and site constructors do not adopt this policy.
+    """
+    return {'legacy_globbing_threads': 2, 'fsvc_threads': 2}
+
+
 def controller_diagnostic(error, operation, phase, timeout):
     """Finite categories only: transport data and exception text stay private."""
     return {'operation': operation if operation in ('launch', 'unit-readback', 'unit-stop') else 'unknown',
@@ -926,10 +936,13 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
     if profile == 'installed-browser':
         selected_profile(profile, arguments, pack_input=codex_pack_directory is not None)
         test_args += ['--test_env=OMUX_BROWSER_HOST_CONFIGURATION=host-configurations-unavailable']
+    threads = controller_thread_profile()
     return [bazel, '--batch', '--nosystem_rc', '--nohome_rc',
             '--host_jvm_args=-Xmx1536m', '--host_jvm_args=-XX:ActiveProcessorCount=2',
             '--noworkspace_rc', '--output_base=' + str(output_base or run / 'output-base')] + arguments[:1] + [
-            '--jobs=2', '--spawn_strategy=sandboxed', '--remote_executor=',
+            '--jobs=2', '--legacy_globbing_threads=' + str(threads['legacy_globbing_threads']),
+            '--experimental_fsvc_threads=' + str(threads['fsvc_threads']),
+            '--spawn_strategy=sandboxed', '--remote_executor=',
             '--remote_cache=', '--disk_cache=', '--sandbox_default_allow_network=false',
             '--enable_bzlmod', '--noenable_workspace', '--incompatible_strict_action_env',
             '--@rules_zig//zig/settings:use_standalone_translate_c', '--lockfile_mode=error'] + cache_args + evaluation_args + site_args + pack_args + retained_args + test_args + provenance + arguments[1:]
@@ -1454,6 +1467,8 @@ def _main(argv, admission_resources):
                                                'cache_test_results': False, 'remote_executor': '',
                                                'remote_cache': '', 'sandbox_allow_network': False,
                                                'system_home_workspace_rc': False}}
+                if not sdk and not site:
+                    cache_profile['execution'].update(controller_thread_profile())
                 if owner_input is not None:
                     cache_profile['codex_owner_runtime_input'] = owner_input.facts()
                 if sdk:

@@ -152,8 +152,9 @@ class DiscardLog:
 class JsonProcess:
     """Bounded real stdio JSON client; interleaved notifications stay private."""
 
-    def __init__(self, command: list[str], environment: dict, cwd: Path):
-        self.process = subprocess.Popen(command, env=environment, cwd=cwd,
+    def __init__(self, command: list[str], environment: dict, cwd: Path, *, popen_factory=None):
+        launch = subprocess.Popen if popen_factory is None else popen_factory
+        self.process = launch(command, env=environment, cwd=cwd,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, umask=0o077)
         self.diagnostics = DiscardLog(self.process.stderr)

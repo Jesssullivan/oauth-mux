@@ -32,6 +32,7 @@ import native_cli_stderr
 import native_fd2_observer
 import native_history_diagnostic
 import native_run_cli_failure
+import native_thread_census as native_threads
 
 support = tui.support
 require = support.require
@@ -131,6 +132,13 @@ METADATA_DIAGNOSTICS = {
     "native session metadata is absent or ambiguous": "rollout-session-cardinality",
     "native JSON contains duplicate keys": "rollout-duplicate-key",
 }
+SEED_ATTACHMENT_DIAGNOSTICS = (
+    "seed-history-discovery-rpc", "seed-history-discovery-validation",
+    "seed-history-attachment-comparison", "seed-history-attachment-absent",
+    "seed-history-attachment-identity", "seed-history-attachment-reference",
+    "seed-history-attachment-other",
+)
+
 DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
                "metadata-database-busy", "metadata-database-query", "metadata-database-error",
                "rollout-file-absent", "rollout-json", "metadata-other-predicate",
@@ -141,6 +149,7 @@ DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
                *native_history_diagnostic.CATEGORIES,
                "seed-history-metadata", "seed-history-sql-match",
                "seed-history-liveness", "seed-history-process", "seed-history-attachment",
+               *SEED_ATTACHMENT_DIAGNOSTICS,
                *RESUME_DIAGNOSTICS,
                *support.FAILURES)
 MARKER = b"OMUX_INSTALLED_LEGACY_NATIVE_TUI_OK\n"
@@ -471,11 +480,43 @@ def diagnostic_history_witness(home, thread, *, phase_prefix):
     return observed
 
 
-def seed_history_attachment(cli, endpoint):
+def seed_history_attachment_difference(observed, expected):
+    # Private projection only after the original complete equality was false.
+    # Values, IDs, endpoints and exception text never become diagnostic output.
+    if observed is None:
+        return "seed-history-attachment-absent"
+    if observed["thread_id"] != expected["thread_id"] or any(
+            observed["owner"][field] != expected["owner"][field]
+            for field in ("owner_id", "process_nonce", "owner_endpoint")):
+        return "seed-history-attachment-identity"
+    if observed["reference"] != expected["reference"]:
+        return "seed-history-attachment-reference"
+    return "seed-history-attachment-other"
+
+
+def seed_history_attachment(cli, endpoint, expected):
     # Called only through the original process-identity short circuit.
     global DIAGNOSTIC
-    DIAGNOSTIC = "seed-history-attachment"
-    return discovered_attachment(cli, endpoint)
+
+    def discovery_cli(*arguments, **options):
+        global DIAGNOSTIC
+        DIAGNOSTIC = "seed-history-discovery-rpc"
+        found = cli(*arguments, **options)
+        DIAGNOSTIC = "seed-history-discovery-validation"
+        return found
+
+    observed = discovered_attachment(discovery_cli, endpoint)
+    DIAGNOSTIC = "seed-history-attachment-comparison"
+    # Keep the original complete dictionary equality, exactly once.
+    matches = observed == expected
+    if matches is False:
+        DIAGNOSTIC = "seed-history-attachment-other"
+        try:
+            DIAGNOSTIC = seed_history_attachment_difference(observed, expected)
+        except Exception:
+            pass  # Ordinary diagnostic faults cannot admit a false comparison.
+        # Control exceptions propagate through the original fixture cleanup.
+    return matches
 
 
 def wait_metadata(home, thread, terminal, *, expected_name=tui.FIXTURE_NAME):
@@ -629,7 +670,7 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
     require(registrations[0] != registrations[1], "legacy cold resume reused registration operation")
 
 
-def inside(bundle, candidate, receipt, keyring, root):
+def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None):
     global PHASE, DIAGNOSTIC
     require(os.environ.get("OMUX_ISOLATED_VAULT_PROOF") == "private-bus-private-xdg",
             "disposable genuine vault context required")
@@ -679,6 +720,10 @@ def inside(bundle, candidate, receipt, keyring, root):
     require(len(os.fsencode(socket_path)) <= 107, "installed control path too long")
     keyring_process = daemon = bootstrap_native = terminal = None
     drains = []
+    try:
+        census = native_threads.Census(census_deadline_ns)
+    except Exception:
+        census = None  # Ordinary diagnostic errors never replace fixture setup.
 
     def cli(method, params=None, *, expected_completion=None):
         for drain in drains:
@@ -692,16 +737,18 @@ def inside(bundle, candidate, receipt, keyring, root):
 
     try:
         PHASE = "keyring-startup"
-        keyring_process = subprocess.Popen([str(keyring), "--foreground", "--unlock", "--components=secrets"],
+        keyring_process = native_threads.owned_popen(census, "keyring", [str(keyring), "--foreground", "--unlock", "--components=secrets"],
                                            env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                            stderr=subprocess.STDOUT, umask=0o077)
+        native_threads.checkpoint(census)
         drains.append(support.DiscardLog(keyring_process.stdout))
         keyring_process.stdin.write(b"\n")
         keyring_process.stdin.close()
         time.sleep(0.5)
         PHASE = "daemon-startup"
-        daemon = subprocess.Popen([str(prefix / "bin/omuxd"), "--state-dir", str(state)], env=environment,
+        daemon = native_threads.owned_popen(census, "daemon", [str(prefix / "bin/omuxd"), "--state-dir", str(state)], env=environment,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, umask=0o077)
+        native_threads.checkpoint(census)
         drains.append(support.DiscardLog(daemon.stdout))
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
@@ -720,7 +767,9 @@ def inside(bundle, candidate, receipt, keyring, root):
         support.check_empty_domain(cli("state.snapshot"))
         PHASE = "bootstrap-native"
         binary = candidate_prefix / "bin/codex"
-        bootstrap_native = support.JsonProcess([str(binary), "app-server", "--listen", "stdio://", "--strict-config"], environment, work)
+        bootstrap_native = support.JsonProcess([str(binary), "app-server", "--listen", "stdio://", "--strict-config"], environment, work,
+                                               popen_factory=native_threads.factory(census, "native-bootstrap"))
+        native_threads.checkpoint(census)
         native_call(bootstrap_native, "initialize", {"clientInfo": {"name": "omux-legacy-tui-proof", "title": None, "version": "1"},
                               "capabilities": {"experimentalApi": False, "requestAttestation": False}})
         bootstrap_native.send("initialized", {})
@@ -777,7 +826,7 @@ def inside(bundle, candidate, receipt, keyring, root):
         DIAGNOSTIC = "seed-history-liveness"
         bootstrap_native.alive()
         DIAGNOSTIC = "seed-history-process"
-        require(bootstrap_native.process.pid == first_pid and seed_history_attachment(cli, endpoint) == first,
+        require(bootstrap_native.process.pid == first_pid and seed_history_attachment(cli, endpoint, first),
                 "legacy seed initialization changed process or attachment")
         DIAGNOSTIC = "unclassified"
         PHASE = "selected-detach"
@@ -797,13 +846,16 @@ def inside(bundle, candidate, receipt, keyring, root):
         support.check_empty_domain(cli("state.snapshot"))
         PHASE = "native-seed-clean-exit"
         bootstrap_native.close(require_success=True)
+        native_threads.retire(census, "native-bootstrap")
         bootstrap_native = None
         support.inspect_native_history(codex_home, full, seed_history[0])
         require(tui.metadata(codex_home, thread) == before and not endpoint.exists(),
                 "legacy seed EOF changed persistent metadata or retained writer endpoint")
         PHASE = "cold-native-resume"
         DIAGNOSTIC = "resume-terminal-spawn"
-        terminal = tui.TerminalProcess(binary, environment, work, resume=thread)
+        terminal = tui.TerminalProcess(binary, environment, work, resume=thread,
+                                       popen_factory=native_threads.factory(census, "native-resume"))
+        native_threads.checkpoint(census)
         DIAGNOSTIC = "resume-new-process-predicate"
         require(terminal.process.pid != first_pid, "legacy cold resume reused original process")
         endpoint, resumed_thread, second = wait_attached(cli, codex_home, terminal, resume_diagnostics=True)
@@ -827,6 +879,7 @@ def inside(bundle, candidate, receipt, keyring, root):
         terminal.alive()
         require(tui.metadata(codex_home, thread) == resumed, "legacy resumed detach changed retained history")
         terminal.close(require_success=True)
+        native_threads.retire(census, "native-resume")
         terminal = None
         require(tui.metadata(codex_home, thread) == resumed, "legacy resumed clean exit changed retained history")
         require(support.private_file(config, 1024 * 1024) == configured
@@ -834,6 +887,7 @@ def inside(bundle, candidate, receipt, keyring, root):
                 "legacy resumed selected detach removed installed configuration")
         support.check_empty_domain(cli("state.snapshot"))
         support.stop(daemon, require_success=True)
+        native_threads.retire(census, "daemon")
         daemon = None
         PHASE = "durable-inspection"
         inspect_durable(state, [first, second], [first_operation, second_operation],
@@ -843,34 +897,52 @@ def inside(bundle, candidate, receipt, keyring, root):
         require(uninstalled["preserved"] == [] and len(uninstalled["removed"]) == len(record["files"]),
                 "legacy owned distribution uninstall failed")
         print((OBSERVER_MARKER if FD2_OBSERVER else MARKER).decode("ascii"), end="")
+    except BaseException:
+        # This hook runs once before the original cleanup. Diagnostic failures,
+        # cancellation or exit never replace the primary exception or predicates.
+        try:
+            native_threads.emit_failure(census, lambda value: sys.stderr.write(value.decode("ascii")))
+        except BaseException:
+            pass
+        raise
     finally:
-        actions = []
-        if terminal is not None:
-            actions.append(terminal.close)
-        if bootstrap_native is not None:
-            actions.append(bootstrap_native.close)
-        if daemon is not None:
-            actions.append(lambda: support.stop(daemon))
-        if keyring_process is not None:
-            actions.append(lambda: support.stop(keyring_process))
-        actions.extend(drain.join for drain in drains)
-        failed = False
-        for action in actions:
-            try:
-                action()
-            except Exception:
-                failed = True
-        require(not failed, "legacy owned private terminal process cleanup failed")
+        try:
+            actions = []
+            if terminal is not None:
+                actions.append(terminal.close)
+            if bootstrap_native is not None:
+                actions.append(bootstrap_native.close)
+            if daemon is not None:
+                actions.append(lambda: support.stop(daemon))
+            if keyring_process is not None:
+                actions.append(lambda: support.stop(keyring_process))
+            actions.extend(drain.join for drain in drains)
+            failed = False
+            for action in actions:
+                try:
+                    action()
+                except Exception:
+                    failed = True
+            require(not failed, "legacy owned private terminal process cleanup failed")
+        finally:
+            native_threads.close(census, primary=sys.exc_info()[0] is not None)
 
 
 def main():
     global FD2_OBSERVER
+    census_deadline_ns = None
+    if len(sys.argv) > 2 and sys.argv[1] == "--census-deadline-ns":
+        value = sys.argv[2]
+        if re.fullmatch(r"[1-9][0-9]{0,18}", value) and int(value) <= 2**63 - 1:
+            census_deadline_ns = int(value)
+        del sys.argv[1:3]
     # Explicit diagnostic target only. Ordinary target supplies no observer.
     if len(sys.argv) > 2 and sys.argv[1] == "--fd2-observer":
         FD2_OBSERVER = Path(sys.argv[2]).resolve(strict=True)
         del sys.argv[1:3]
     if len(sys.argv) == 7 and sys.argv[1] == "--inside":
-        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]))
+        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]),
+               census_deadline_ns=census_deadline_ns)
         return 0
     require(len(sys.argv) == 7, "declared Omux/runtime009 archives, receipt and vault tools required")
     bundle, candidate, receipt, session, bus, keyring = (Path(value).resolve(strict=True) for value in sys.argv[1:])
@@ -890,8 +962,12 @@ def main():
                                  '</policy></busconfig>')
         bootstrap = ("import os,runpy,sys;p=sys.argv.pop(1);sys.path.insert(0,os.path.dirname(p));"
                      "sys.argv[0]=p;runpy.run_path(p,run_name='__main__')")
+        # Same original 90s outer gate. This earlier absolute deadline only
+        # bounds diagnostics; support still applies its unchanged 90s timeout.
+        census_deadline_ns = time.monotonic_ns() + 90_000_000_000
         process = subprocess.Popen([str(session), "--dbus-daemon=" + str(bus), "--config-file=" + str(configuration),
                                     "--", sys.executable, "-I", "-B", "-c", bootstrap, str(Path(__file__).absolute()),
+                                    "--census-deadline-ns", str(census_deadline_ns),
                                     *(["--fd2-observer", str(FD2_OBSERVER)] if FD2_OBSERVER else []),
                                     "--inside", str(bundle), str(candidate), str(receipt), str(keyring), str(root)],
                                    env=environment, start_new_session=True, stdout=subprocess.PIPE,
@@ -902,6 +978,16 @@ def main():
             require(output == expected_marker, "legacy ordinary TUI proof marker missing")
             print(expected_marker.decode("ascii"), end="")
         else:
+            seen_thread_roles = set()
+            for line in diagnostics.splitlines():
+                try:
+                    projected = native_threads.parse_record(line + b"\n")
+                except ValueError:
+                    continue
+                role = projected.split(b"/")[2]
+                if role not in seen_thread_roles and len(seen_thread_roles) < len(native_threads.ROLES):
+                    seen_thread_roles.add(role)
+                    print(projected.decode("ascii"), end="", file=sys.stderr)
             if FD2_OBSERVER:
                 fixed_detach = b"installed legacy native detach cli observation "
                 for line in diagnostics.splitlines():

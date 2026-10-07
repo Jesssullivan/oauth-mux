@@ -137,3 +137,24 @@ identity/usable-authority/one-writer renewal readiness. Live evaluation needs
 explicit isolated labels and finite model/tool/resource limits. PZM/GF remains
 held. Darwin, signing, store delivery and publication retain independent gates.
 Linear records exact results; partial demonstrations do not close broad tickets.
+## Current bounded diagnostic lead — October7
+
+PR530 also merged reviewed source. Its native action failed at owner-endpoint
+admission before the retained-configuration comparison; the source delivery
+closes neither native acceptance nor the startup-marker verification.
+The [bounded diagnostic receipt](../tracker-updates/bounded-proof-diagnostics-2026-10-07.json)
+tracks the next source, exact local targets, reviews and result boundaries.
+
+For TIN-5338/TIN-5421, inspect only fixture-created process roles through held
+procfs/pidfd witnesses and emit failure-only closed thread-count records. Run
+models and isolated owned-child predicates before one fresh retained009 native
+checkpoint. Preserve all history/configuration/identity/replay assertions and
+the original private-session deadline. Counts cannot attribute prior pressure
+or admit a native owner.
+
+For TIN-5442/TIN-2720, classify raw requested registry shapes before deriving a
+destination-owned delivery plan. Keep exact registration/reference equality and
+physical NAR rehash mandatory. A null or missing registry value never proves
+physical absence, corruption, or import authority. No repeated native action,
+store import, fleet activation or browser automation follows automatically.
+The original parent remains five scoped passes and six open gates.
