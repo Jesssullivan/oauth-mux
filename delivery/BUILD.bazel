@@ -28,6 +28,7 @@ cc_binary(
 cc_binary(
     name = "resident_vault_control_client",
     srcs = ["resident_vault_control.c"],
+    deps = ["@omux_nix//:glib"],
     tags = ["manual"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
@@ -56,6 +57,34 @@ python_test(
     data = [":resident_vault_control_client", ":resident_vault_metadata_observer", ":resident_vault_broker_header_model"],
     args = ["$(location :resident_vault_control_client)", "$(location :resident_vault_metadata_observer)",
             "$(location :resident_vault_broker_header_model)"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+# Factor-free standard Secret Service actions use only the existing session bus.
+python_binary(
+    name = "resident_standard_vault_metadata",
+    main = "resident_standard_vault.py",
+    srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_metadata_observer", ":resident_vault_control_client"],
+    args = ["observe", "$(location :resident_vault_metadata_observer)", "$(location :resident_vault_control_client)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_binary(
+    name = "resident_standard_vault_unlock",
+    main = "resident_standard_vault.py",
+    srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_metadata_observer", ":resident_vault_control_client"],
+    args = ["unlock", "$(location :resident_vault_metadata_observer)", "$(location :resident_vault_control_client)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "resident_standard_vault_models",
+    main = "test_resident_standard_vault.py",
+    srcs = ["resident_standard_vault.py", "resident_vault.py",
+            "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_control_client"],
+    args = ["$(location :resident_vault_control_client)"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 python_binary(

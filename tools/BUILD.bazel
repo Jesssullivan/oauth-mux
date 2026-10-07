@@ -1608,3 +1608,10 @@ python_test(
     srcs = [":resident_owned_update_sources", "guard_resident_enrollment_profile.py"],
     target_compatible_with = ["@platforms//os:linux"],
 )
+
+python_test(
+    name = "guard_resident_standard_vault_test",
+    main = "guard_resident_standard_vault_test.py",
+    srcs = ["guard_resident_vault_profile.py", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)

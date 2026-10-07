@@ -13,6 +13,9 @@ import guard_resident_enrollment_profile as resident
 
 LABEL = "//delivery:resident_vault_metadata"
 UNLOCK_LABEL = "//delivery:resident_vault_unlock"
+STANDARD_LABEL = "//delivery:resident_standard_vault_metadata"
+STANDARD_UNLOCK_LABEL = "//delivery:resident_standard_vault_unlock"
+LABELS = (LABEL,UNLOCK_LABEL,STANDARD_LABEL,STANDARD_UNLOCK_LABEL)
 DESTINATION = resident.DESTINATION
 VARIABLE = "OMUX_RESIDENT_VAULT_MANIFEST"
 DEADLINE_VARIABLE = resident.DEADLINE_VARIABLE
@@ -22,7 +25,7 @@ def require(value):
     if not value:
         raise ValueError("resident-vault-admission-refused")
 def finite(arguments,manager,manifest,reuse,unrelated=()):
-    require(arguments in (["run",LABEL],["run",UNLOCK_LABEL]) and manager=="system"
+    require(arguments in tuple(["run",label] for label in LABELS) and manager=="system"
         and manifest is not None and not reuse and not any(unrelated))
     return {"PrivateNetwork":"yes","ProtectSystem":"strict","PrivateTmp":"yes"}
 def rejection(error):
@@ -40,6 +43,65 @@ def process(pid):
     require(re.fullmatch(r"/(?:nix/store|usr|run/wrappers/bin)/[A-Za-z0-9/+._-]{1,4000}",exe))
     require(resident.start_ticks(pid)==ticks)
     return {"uid":os.getuid(),"pid":pid,"start_ticks":ticks,"exe":exe}
+def standard_process(pid):
+    # Fixed v2 consumers use the authenticated local peer/service role.
+    ticks=resident.start_ticks(pid)
+    require(type(ticks) is int and ticks>0 and resident.start_ticks(pid)==ticks)
+    return {"uid":os.getuid(),"pid":pid,"start_ticks":ticks}
+def standard_observation(value):
+    require(type(value) is dict and set(value)=={"schema","broker","manager","secret_service","provider",
+        "default_collection","default_exists","locked","items_read","secrets_read","provider_invocation"}
+        and value["schema"]=="omux-existing-vault-metadata-v2"
+        and all(value[key] is False for key in ("items_read","secrets_read","provider_invocation")))
+    for name in ("broker","manager","secret_service"):
+        row=value[name]
+        if row is None:
+            require(name=="secret_service" and value["provider"]=="absent")
+            continue
+        require(type(row) is dict and set(row)==({"uid","pid","start_ticks"} if name=="broker"
+            else {"uid","pid","start_ticks","owner"}))
+        require(type(row["uid"]) is int and row["uid"]==os.getuid()
+            and type(row["pid"]) is int and row["pid"]>1
+            and type(row["start_ticks"]) is int and row["start_ticks"]>0)
+        if name!="broker":
+            require(type(row["owner"]) is str and re.fullmatch(r":[0-9]+[.][0-9]+",row["owner"]))
+    require(value["provider"] in ("absent","standard-secret-service")
+        and (value["provider"]=="absent")==(value["secret_service"] is None))
+    if value["provider"]=="standard-secret-service":
+        path=value["default_collection"]
+        require(type(path) is str and len(path)<=4095
+            and re.fullmatch(r"/(?:[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*)?",path))
+        require(type(value["default_exists"]) is bool and value["default_exists"]==(path!="/")
+            and (type(value["locked"]) is bool if value["default_exists"] else value["locked"] is None))
+    else:
+        require(value["default_collection"] is value["default_exists"] is value["locked"] is None)
+    return value
+def standard_unlockable(value):
+    standard_observation(value)
+    require(value["provider"]=="standard-secret-service" and value["default_exists"] is True
+        and value["locked"] is True)
+def standard_schema(value):
+    require(type(value) is dict and set(value)=={"schema_version","purpose","permissions","mapping","expected"}
+        and type(value["schema_version"]) is int and value["schema_version"]==2
+        and value["purpose"] in ("observe-standard-vault","unlock-standard-vault"))
+    permissions=value["permissions"]
+    require(type(permissions) is dict and set(permissions)=={"metadata","unlock"}
+        and permissions["metadata"] is True and type(permissions["unlock"]) is bool and value["mapping"] is None)
+    if value["purpose"]=="observe-standard-vault":
+        require(permissions["unlock"] is False and value["expected"] is None)
+    else:
+        require(permissions["unlock"] is True)
+        standard_unlockable(value["expected"])
+    return value
+def expected_processes(expected):
+    standard=expected["schema"]=="omux-existing-vault-metadata-v2"
+    if standard:standard_observation(expected)
+    else:validate_observation(expected)
+    for name in ("broker","manager","secret_service"):
+        row=expected[name]
+        if row is not None:
+            actual=standard_process(row["pid"]) if standard else process(row["pid"])
+            require(actual=={key:item for key,item in row.items() if key!="owner"})
 def validate_observation(value):
     require(type(value) is dict and set(value)=={"schema","broker","manager","secret_service","provider",
         "default_exists","default_is_login","locked","items_read","secrets_read","provider_invocation"}
@@ -74,6 +136,8 @@ def unlockable(value):
     require(value["provider"]=="gnome-keyring-48.0" and value["default_exists"] is True
         and value["default_is_login"] is True and value["locked"] is True)
 def schema(value):
+    if type(value) is dict and value.get("schema_version")==2:
+        return standard_schema(value)
     require(type(value) is dict and set(value)=={"schema_version","purpose","permissions","mapping","expected"}
         and type(value["schema_version"]) is int and value["schema_version"]==1
         and value["purpose"] in ("observe-default-vault","unlock-existing-login-vault"))
@@ -134,13 +198,18 @@ class Admission:
             self.file_identity=identity(info);self.raw=os.pread(self.file,16385,0)
             require(len(self.raw)==info.st_size)
             self.selected=schema(json.loads(self.raw,object_pairs_hook=resident.unique))
-            require(label==({"observe-default-vault":LABEL,"unlock-existing-login-vault":UNLOCK_LABEL}[self.selected["purpose"]]))
+            require(label==({"observe-default-vault":LABEL,"unlock-existing-login-vault":UNLOCK_LABEL,
+                "observe-standard-vault":STANDARD_LABEL,"unlock-standard-vault":STANDARD_UNLOCK_LABEL}[self.selected["purpose"]]))
             self.root_identity=resident.stable(os.fstat(self.directory))
             runtime=Path("/run/user")/str(os.getuid())
             runtime_fd=resident.open_directory(runtime,private=True);self.held.append(runtime_fd)
             self.parents.append((runtime,runtime_fd,resident.stable(os.fstat(runtime_fd))))
             self.sources={self.root/"bus":runtime/"bus"}
             self.socket_identities={runtime/"bus":socket_witness(runtime/"bus",self.deadline_ns)}
+            if self.selected["purpose"]=="unlock-standard-vault":
+                expected=self.selected["expected"];bus=self.socket_identities[runtime/"bus"]
+                require(bus[1]==expected["broker"]["pid"] and bus[2]==expected["broker"]["start_ticks"])
+                expected_processes(expected)
             if self.selected["purpose"]=="unlock-existing-login-vault":
                 expected=self.selected["expected"]
                 bus=self.socket_identities[runtime/"bus"]
@@ -205,6 +274,8 @@ class Admission:
             require(socket_witness(path,self.deadline_ns)==witness)
         for placeholder,path,witness in self.created:
             require(resident.regular_mountpoint_witness(path,placeholder.fileno())==witness)
+        if self.selected["purpose"]=="unlock-standard-vault":
+            expected_processes(self.selected["expected"])
         if self.leaf is not None:
             require(identity(os.fstat(self.leaf))==self.factor_identity==identity(self.factor_path.stat(follow_symlinks=False)))
             for name in ("broker","manager","secret_service"):

@@ -1052,7 +1052,8 @@ def login_writable_binding(admission, run, profile):
 def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None,repository_cache=None,nixpkgs_source=None):
     import guard_resident_enrollment_profile as repository
     repository.repository_inputs(repository_cache,nixpkgs_source)
-    if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
+    if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock'],
+                ['run','//delivery:resident_standard_vault_metadata'],['run','//delivery:resident_standard_vault_unlock']):
         import guard_resident_vault_profile as resident
     else:
         import guard_resident_enrollment_profile as resident
@@ -1067,7 +1068,8 @@ def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=No
             '--repository_disable_download', '--repo_contents_cache=']
     command[command.index('--spawn_strategy=sandboxed')] = '--spawn_strategy=linux-sandbox'
     command[-1:-1] = ['--run_env='+key+'='+value for key,value in admission.environment().items()]
-    if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
+    if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock'],
+                ['run','//delivery:resident_standard_vault_metadata'],['run','//delivery:resident_standard_vault_unlock']):
         command[-1:-1] = ['--run_env=OMUX_EXECUTION_GUARD='+str(run)]
     return command
 
@@ -1382,7 +1384,8 @@ def _main(argv, admission_resources):
             args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256)):
         raise ValueError('native-ui-input-exclusive-to-prepare-profile')
     if args.profile == 'resident-enrollment':
-        if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
+        if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock'],
+                ['run','//delivery:resident_standard_vault_metadata'],['run','//delivery:resident_standard_vault_unlock']):
             import guard_resident_vault_profile as login
             if args.resident_enrollment_manifest is not None:
                 raise ValueError('vault-input-exclusive-to-vault-label')
