@@ -9,6 +9,39 @@ def _hash(value):
 def _path(value):
     return value.startswith("/") and "//" not in value and ".." not in value.split("/") and not any([c in value for c in ["\\","\n","\r","\t",":"," "]])
 
+def _receipt_uuid(value):
+    pieces = value.split("-")
+    return len(pieces) == 5 and [len(p) for p in pieces] == [8, 4, 4, 4, 12] and all([
+        c in "0123456789abcdef" for p in pieces for c in p.elems()
+    ])
+
+def receipt_producer(role, path):
+    """Return the exact public producer label, or None; no filesystem access."""
+    if role not in ["source", "export"] or type(path) != "string" or not _path(path):
+        return None
+    fast = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/"
+    roots = [_HOME] if role == "source" else [_HOME, fast]
+    selected = [root for root in roots if path.startswith(root)]
+    if len(selected) != 1:
+        return None
+    root = selected[0]
+    parts = path[len(root):].split("/")
+    if not parts or not parts[0]:
+        return None
+    uuid = _receipt_uuid(parts[0])
+    if role == "export" and root == fast and uuid and parts[1:] == ["sdk-private", "sdk-export", "receipt.json"]:
+        return "//tools:codex_retained_sdk_export_run"
+    source_cache = role == "source" and parts[0].startswith("cache-v2-") and _hash(parts[0][len("cache-v2-"):])
+    if not (uuid or source_cache):
+        return None
+    suffix = ["codex_live_source_producer", "test.outputs", "codex-live-source", "source-receipt.json"] if role == "source" else [
+        "codex_retained_sdk_export_producer", "test.outputs", "sdk-private", "sdk-export", "receipt.json",
+    ]
+    expected = ["output-base", "execroot", "_main", "bazel-out", "k8-fastbuild", "testlogs", "tools"] + suffix
+    if parts[1:] != expected:
+        return None
+    return "//tools:" + suffix[0]
+
 def _selected_impl(ctx):
     path = ctx.attr.selection
     if not _path(path) or not path.endswith("/package-selection.json") or not _hash(ctx.attr.sha256):
@@ -41,8 +74,7 @@ def _selected_impl(ctx):
         if sorted(pin.keys()) != ["bytes","path","sha256"] or not _path(source) or not _hash(pin["sha256"]) or type(pin["bytes"]) != "int" or pin["bytes"] < 0 or pin["bytes"] > 1073741824:
             fail("fresh package selected file pin differs")
         if role in ["source","export"]:
-            suffix = "/tools/codex_live_source_producer/test.outputs/codex-live-source/source-receipt.json" if role == "source" else "/tools/codex_retained_sdk_export_producer/test.outputs/sdk-private/sdk-export/receipt.json"
-            if not source.startswith(_HOME) or "/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs" not in source or not source.endswith(suffix):
+            if receipt_producer(role, source) == None:
                 fail("fresh package source/export leaves exact declared producer outputs")
         elif role in ["compile","qualification_run","schema_run"]:
             if not source.startswith(_NATIVE) or not source.endswith("/receipt.json") or len(source[len(_NATIVE):].split("/")) != 2:

@@ -9,6 +9,24 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def test_repository_copy_avoids_per_file_durability_barriers_and_rehashes_all_bytes(self):
+        entries = [('public-data.txt',b'public source bytes\n',0o644),
+                   ('public-script.py',b'print("public fixture")\n',0o755)]
+        for name,data,mode in entries:
+            (self.root/name).write_bytes(data); os.chmod(self.root/name,mode)
+        destination = self.boundary/'repositories'/'fixture_public'
+        destination.mkdir(parents=True)
+        with patch.object(sdk.os,'fsync',side_effect=AssertionError('unexpected per-file durability barrier')):
+            rows = sdk.inventory(self.root,self.budget(),output=destination)
+        os.chmod(destination,0o555)
+        self.assertEqual(sdk.inventory(destination,self.budget(),sealed=True),rows)
+        for name,data,mode in entries:
+            self.assertEqual((destination/name).read_bytes(),data)
+            self.assertEqual((destination/name).stat().st_mode & 0o777,0o555 if mode & 0o111 else 0o444)
+        os.chmod(destination/'public-data.txt',0o644); (destination/'public-data.txt').write_bytes(b'changed bytes')
+        os.chmod(destination/'public-data.txt',0o444)
+        self.assertNotEqual(sdk.inventory(destination,self.budget(),sealed=True),rows)
+
     def test_actual_utf8_path_bytes_inventory_without_name_transformation(self):
         self.assertEqual(sdk.sys.flags.utf8_mode,1)
         sdk.require_utf8_filesystem()

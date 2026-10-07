@@ -48,7 +48,84 @@ class LiveContractTest(unittest.TestCase):
         self.previous = history([])
 
     def complete(self, events):
-        return self.scenario.completed_text(history(events), self.previous, "OMUX_A_DONE")
+        return self.scenario.completed_text(history(events), self.previous, "OMUX_A_DONE", "fixture prompt")
+
+    def native_context(self, role, kinds):
+        return {"type": "response_item", "payload": {
+            "type": "message", "role": role,
+            "content": [{"type": "input_text", "text": "synthetic context " + str(index)}
+                        for index, _ in enumerate(kinds)],
+            "internal_chat_message_metadata_passthrough": {"content_item_kinds": kinds},
+        }}
+
+    def test_first_real_turn_retains_qualified_native_context_without_counting_extra_human_input(self):
+        context = [
+            self.native_context("developer", ["permissions.instructions", "environments.instructions"]),
+            self.native_context("user", ["agents_md.instructions", "environments.environment_context"]),
+        ]
+        events = context + completed_events()
+        before = copy.deepcopy(events)
+        self.assertTrue(self.complete(events))
+        self.assertEqual(events, before)
+
+    def test_exact_nonce_prompt_is_required_independent_of_optional_native_input_order(self):
+        first = fixture.submitted_text_prompt("OMUX_A_DONE", "1" * 32)
+        second = fixture.submitted_text_prompt("OMUX_A_DONE", "2" * 32)
+        self.assertNotEqual(first, second)
+        events = completed_events()
+        events[0]["payload"]["content"][0]["text"] = first
+        self.assertTrue(self.scenario.completed_text(history(events), self.previous, "OMUX_A_DONE", first))
+        events[0]["metadata"] = {"user_input_order": 0}
+        self.assertTrue(self.scenario.completed_text(history(events), self.previous, "OMUX_A_DONE", first))
+        with self.assertRaises(ValueError):
+            self.scenario.completed_text(history(events), self.previous, "OMUX_A_DONE", second)
+        for nonce in ("short", "z" * 32):
+            with self.assertRaises(ValueError):
+                fixture.submitted_text_prompt("OMUX_A_DONE", nonce)
+
+    def test_context_annotations_are_role_bound_and_complete(self):
+        accepted = self.native_context("developer", ["permissions.instructions"])
+        mutations = []
+        missing = copy.deepcopy(accepted)
+        del missing["payload"]["internal_chat_message_metadata_passthrough"]
+        mutations.append(missing)
+        for kinds in ([], ["unknown"], ["permissions.instructions", "environments.instructions"],
+                      ["agents_md.instructions"], ["arbitrary_extension.instructions"]):
+            changed = copy.deepcopy(accepted)
+            changed["payload"]["internal_chat_message_metadata_passthrough"]["content_item_kinds"] = kinds
+            mutations.append(changed)
+        for mutation in mutations:
+            with self.subTest(context=mutation), self.assertRaises(ValueError):
+                self.complete([mutation] + completed_events())
+
+    def test_native_context_cannot_mask_extra_user_prompt_or_tool_metadata(self):
+        accepted = self.native_context("user", ["environments.environment_context"])
+        mutations = []
+        for field, value in (("client_authored", True), ("user_input_order", 0),
+                             ("inherited_user_message", True), ("sender_user_messages", {}),
+                             ("delivered_assistant_message", "already executed")):
+            changed = copy.deepcopy(accepted)
+            changed["metadata"] = {field: value}
+            mutations.append(changed)
+        for field, value in (("cell_id", "synthetic-cell"), ("executed_tool_calls", []),
+                             ("tool_calls_complete", False)):
+            changed = copy.deepcopy(accepted)
+            changed["payload"]["internal_chat_message_metadata_passthrough"][field] = value
+            mutations.append(changed)
+        for mutation in mutations:
+            with self.subTest(context=mutation), self.assertRaises(ValueError):
+                self.complete([mutation] + completed_events())
+        extra = copy.deepcopy(completed_events()[0])
+        extra["payload"]["content"][0]["text"] = "unexpected human input"
+        with self.assertRaises(ValueError):
+            self.complete([extra] + completed_events())
+
+    def test_context_shaped_exact_prompt_cannot_impersonate_human_submission(self):
+        events = completed_events()
+        events[0]["payload"]["internal_chat_message_metadata_passthrough"] = {
+            "content_item_kinds": ["environments.environment_context"]}
+        with self.assertRaises(ValueError):
+            self.complete(events)
 
     def terminal_constructor(self, *, cli_overrides=None, resume=None):
         launch = mock.Mock(return_value=mock.Mock(pid=123))

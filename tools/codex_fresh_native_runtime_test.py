@@ -102,12 +102,63 @@ class FreshRuntimeModels(unittest.TestCase):
             with self.assertRaises(ValueError):
                 fresh.validate_protocol_inventory(selected)
 
+    def test_export_producer_binding_and_empty_epoch(self):
+        home = '/home/jess/.local/state/omux-execution-20261005'
+        fast = '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005'
+        epoch = '5c6a5577-0000-4000-8000-000000000000'
+        direct = fast+'/'+epoch+'/sdk-private/sdk-export/receipt.json'
+        historical = home+'/'+epoch+'/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_retained_sdk_export_producer/test.outputs/sdk-private/sdk-export/receipt.json'
+        with patch.object(fresh,'canonical_path',side_effect=Path):
+            for path,producer in ((direct,'//tools:codex_retained_sdk_export_run'),
+                    (historical,'//tools:codex_retained_sdk_export_producer')):
+                selected = {'files':{'export':{'path':path}}}
+                fresh.validate_export_producer(selected,{'producer':producer})
+                for wrong in (None,'//tools:codex_retained_sdk_export_run' if 'producer' in producer else '//tools:codex_retained_sdk_export_producer','//tools:other'):
+                    with self.subTest(path=path,wrong=wrong), self.assertRaises(ValueError):
+                        fresh.validate_export_producer(selected,{'producer':wrong})
+            for role,path in (('export',fast),('export',home),('source',fast),
+                    ('source',direct),('export',home+'/'+epoch+'/sdk-private/sdk-export/receipt.json')):
+                with self.subTest(role=role,path=path), self.assertRaises(ValueError):
+                    fresh.validate_public_receipt_path(role,path)
+
     def test_foreign_role_paths_are_refused_before_any_file_read(self):
         selection = {'kind':fresh.SELECTION_KIND,
             'files':{role:{'path':'/private/credentials.json'} for role in fresh.ROLES},
             'protocol_schema_files':{}}
         with self.assertRaises(ValueError):
             fresh.validate_selection_paths(selection)
+
+    def test_exact_source_cache_and_public_export_namespaces(self):
+        home = '/home/jess/.local/state/omux-execution-20261005/'
+        fast = '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/'
+        epoch = '5c6a5577-0000-4000-8000-000000000000'
+        cache = 'cache-v2-'+'a'*64
+        prefix = '/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/'
+        source_tail = prefix+'codex_live_source_producer/test.outputs/codex-live-source/source-receipt.json'
+        export_tail = prefix+'codex_retained_sdk_export_producer/test.outputs/sdk-private/sdk-export/receipt.json'
+        run_tail = '/sdk-private/sdk-export/receipt.json'
+        accepted = (('source',home+epoch+source_tail,'//tools:codex_live_source_producer'),
+                    ('source',home+cache+source_tail,'//tools:codex_live_source_producer'),
+                    ('export',home+epoch+export_tail,'//tools:codex_retained_sdk_export_producer'),
+                    ('export',fast+epoch+export_tail,'//tools:codex_retained_sdk_export_producer'),
+                    ('export',fast+epoch+run_tail,'//tools:codex_retained_sdk_export_run'))
+        refused = [('source',fast+epoch+source_tail),('source',fast+cache+source_tail),
+                   ('source',home+epoch+export_tail),('source',home+epoch+run_tail),
+                   ('export',home+epoch+run_tail),('export',home+cache+export_tail),
+                   ('export',fast+cache+export_tail),('export',fast+cache+run_tail),
+                   ('export',fast+epoch+source_tail),('export',fast+epoch+'/extra'+run_tail),
+                   ('source',home+epoch+'/extra'+source_tail),('source','/foreign/'+epoch+source_tail)]
+        for bad in ('short',epoch.upper(),epoch+'0','cache-v2-'+'a'*63,'cache-v2-'+'g'*64,'cache-'+'a'*64):
+            refused.extend((('source',home+bad+source_tail),('export',fast+bad+run_tail)))
+        with patch.object(fresh,'canonical_path',side_effect=Path):
+            for role,path,producer in accepted:
+                with self.subTest(role=role,path=path):
+                    self.assertEqual(fresh.validate_public_receipt_path(role,path),producer)
+                    for changed in (path+'/extra',path.replace('receipt.json','receipt.json.bak')):
+                        with self.assertRaises(ValueError): fresh.validate_public_receipt_path(role,changed)
+            for role,path in refused:
+                with self.subTest(role=role,path=path),self.assertRaises(ValueError):
+                    fresh.validate_public_receipt_path(role,path)
 
 
 if __name__ == '__main__':

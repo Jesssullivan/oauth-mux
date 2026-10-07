@@ -261,7 +261,9 @@ def inventory(path, budget, output=None, sealed=False):
                     out = os.open(output/rel,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
                     with os.fdopen(out,'wb') as stream:
                         sha,size,_ = read_file(fd,name,budget,stream,private_import=lease)
-                        stream.flush(); os.fsync(stream.fileno())
+                        # This sealed input claims checked bytes, not crash persistence.
+                        # Flush/close errors propagate; complete readback verifies every byte.
+                        stream.flush()
                     os.chmod(output/rel,mode)
                 else:
                     sha,size,_ = read_file(fd,name,budget,private_import=lease)

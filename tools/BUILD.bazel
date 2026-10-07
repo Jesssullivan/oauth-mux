@@ -7,6 +7,7 @@ load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA
 load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
 load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_manifest")
 load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
+load(":codex_fresh_native_receipt_scope_test.bzl", "codex_fresh_native_receipt_scope_test")
 
 _CODEX_SDK_SOURCES = [
     "codex_native_candidate_cache.py",
@@ -32,6 +33,8 @@ _YOGA_GUARD_SOURCES = [
 ]
 
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch", "*.json", "*.zig", "*.h"], allow_empty = True), visibility = ["//visibility:public"])
+
+codex_fresh_native_receipt_scope_test(name = "codex_fresh_native_receipt_scope_test")
 
 # Finite copy of the existing declared retained proof input; no execution claim.
 python_test(

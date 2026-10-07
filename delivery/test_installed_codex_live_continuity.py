@@ -52,6 +52,69 @@ def checked_native_rpc(endpoint, method, params):
             and isinstance(value["result"], dict), "live native envelope differs")
     return value["result"]
 TIMEOUT = 120
+NATIVE_CONTEXT_KINDS = {
+    "user": frozenset(("agents_md.instructions", "environments.environment_context")),
+    "developer": frozenset((
+        "generic.developer_instructions", "managed_config.developer_instructions",
+        "permissions.instructions", "environments.instructions", "model.base_instructions",
+        "model_switch.instructions", "multi_agent.role_instructions", "multi_agent.mode_instructions",
+        "multi_agent.usage_hint", "collaboration_mode.instructions", "persistent_mode.instructions",
+        "apps.instructions", "plugins.instructions", "plugins.usage_instructions",
+        "plugins.recommendations", "tools.deferred_namespaces",
+        "token_budget.context_window_guidance", "token_budget.context_window",
+        "rollout_budget.remaining_tokens", "current_time.reminder", "current_time.unavailable",
+    )),
+}
+
+def submitted_text_prompt(marker, nonce):
+    require(marker in ("OMUX_A_DONE", "OMUX_B_DONE") and isinstance(nonce, str)
+            and re.fullmatch(r"[0-9a-f]{32}", nonce), "live submitted prompt identity differs")
+    return "Reply with exactly " + marker + ". Do not use tools. Proof nonce: " + nonce + "."
+
+def classify_native_message(envelope, body, expected_prompt):
+    """Read pinned native annotations; never modify or discard rollout records."""
+    content = body.get("content")
+    require(isinstance(content, list) and content
+            and all(isinstance(part, dict) and part.get("type") in ("input_text", "output_text")
+                    and isinstance(part.get("text"), str) for part in content),
+            "live proof observed non-text native message")
+    metadata = envelope.get("metadata")
+    require(metadata is None or isinstance(metadata, dict), "native history metadata differs")
+    metadata = metadata or {}
+    passthrough = body.get("internal_chat_message_metadata_passthrough")
+    require(passthrough is None or isinstance(passthrough, dict), "native message annotation differs")
+    passthrough = passthrough or {}
+    require(all(passthrough.get(field) is None for field in
+                ("cell_id", "executed_tool_calls", "tool_calls_complete"))
+            and metadata.get("client_authored", False) is False
+            and metadata.get("inherited_user_message", False) is False
+            and metadata.get("sender_user_messages") is None
+            and metadata.get("delivered_assistant_message") is None,
+            "live proof observed tool, inherited or client-authored message metadata")
+    role = body.get("role")
+    text = "".join(part["text"] for part in content)
+    kinds = passthrough.get("content_item_kinds")
+    if role == "assistant":
+        require(all(part["type"] == "output_text" for part in content),
+                "live assistant message representation differs")
+        return "assistant", text
+    require(role in NATIVE_CONTEXT_KINDS and all(part["type"] == "input_text" for part in content),
+            "live native message role differs")
+    if role == "user" and text == expected_prompt:
+        # Legacy mode has no accepted-input order; exact fresh nonce remains required.
+        order = metadata.get("user_input_order")
+        require(order is None or (type(order) is int and 0 <= order < 2**64),
+                "native submitted input order differs")
+        require(kinds is None or (isinstance(kinds, list) and len(kinds) == len(content)
+                and all(isinstance(kind, str) and kind.startswith("user.") for kind in kinds)),
+                "native contextual input cannot impersonate the submitted prompt")
+        return "submitted_user", text
+    require(metadata.get("user_input_order") is None and isinstance(kinds, list)
+            and len(kinds) == len(content)
+            and all(isinstance(kind, str) and kind in NATIVE_CONTEXT_KINDS[role] for kind in kinds),
+            "live unqualified native context or unexpected submitted input")
+    return "native_context", text
+
 FRESH_KIND = "omux-fresh-native-runtime-v1"
 MAX_PUBLIC_RUNTIME_METADATA = 16 * 1024 * 1024
 RECEIPT_KEYS = {"schema_version", "scope", "transition_reason", "application", "application_version", "model", "provider_usage_records",
@@ -350,7 +413,7 @@ class LiveScenario:
                 "live native history changed accepted prefix or store identity")
         return rows[0], (info.st_dev, info.st_ino), hashlib.sha256(payload).digest(), payload
 
-    def completed_text(self, current, previous, marker):
+    def completed_text(self, current, previous, marker, expected_prompt):
         require(current[3].startswith(previous[3]), "live accepted history prefix changed")
         user, assistant, completed, usage = [], [], [], []
         for line in current[3][len(previous[3]):].splitlines():
@@ -368,18 +431,12 @@ class LiveScenario:
                     require(body.get("summary", []) == [] and body.get("content") in (None, []),
                             "live text policy observed readable reasoning")
                 if kind == "message":
-                    content = body.get("content")
-                    require(isinstance(content, list)
-                            and all(isinstance(part, dict) and part.get("type") in ("input_text", "output_text")
-                                    and isinstance(part.get("text"), str) for part in content),
-                            "live proof observed non-text native message")
-                    text = "".join(part["text"] for part in content)
-                    if body.get("role") == "user":
+                    classification, text = classify_native_message(item, body, expected_prompt)
+                    if classification == "submitted_user":
                         user.append(text)
-                    elif body.get("role") == "assistant":
+                    elif classification == "assistant":
                         assistant.append(text)
-                    else:
-                        raise ValueError("live proof observed unexpected appended message role")
+                    # Qualified native context stays in history and does not count as human input.
             if item.get("type") == "event_msg":
                 kind = body.get("type", "")
                 require(isinstance(kind, str) and not any(part in kind for part in
@@ -414,7 +471,8 @@ class LiveScenario:
                 require(next(item for item in snapshot["accounts"]
                              if item["id"] == attempts[0]["account_handle"])["lifecycle"] == "draining",
                         "operator drain did not change eligibility")
-            terminal.send("Reply with exactly " + marker + ". Do not use tools.\r")
+            expected_prompt = submitted_text_prompt(marker, os.urandom(16).hex())
+            terminal.send(expected_prompt + "\r")
             deadline = time.monotonic() + TIMEOUT
             while time.monotonic() < deadline:
                 terminal.alive()
@@ -436,7 +494,7 @@ class LiveScenario:
                                 and audit["binding"]["account_handle"] == first["account_handle"],
                                 "live request lacked accepted completed boundary")
                         history = self.history(home, thread, baseline)
-                        if self.completed_text(history, histories[-1], marker):
+                        if self.completed_text(history, histories[-1], marker, expected_prompt):
                             if index:
                                 immutable = lambda row: {**row, "first": {key: value for key, value in row["first"].items() if key != "route_generation"}}
                                 require(immutable(ordered[0]) == immutable(attempts[0]["record"])

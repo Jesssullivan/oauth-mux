@@ -152,6 +152,35 @@ def output_file(root, name, value, mode):
         os.close(parent)
 
 
+def validate_public_receipt_path(role, value):
+    home = Path('/home/jess/.local/state/omux-execution-20261005')
+    fast = Path('/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005')
+    require(role in ('source','export'), 'fresh public receipt role')
+    path = canonical_path(value)
+    allowed = (home,) if role == 'source' else (home,fast)
+    roots = [root for root in allowed if path.is_relative_to(root)]
+    require(len(roots) == 1, 'fresh public receipt exact root')
+    relative = path.relative_to(roots[0])
+    require(bool(relative.parts), 'fresh public receipt missing epoch')
+    epoch_ok = bool(re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',relative.parts[0]))
+    if role == 'export' and roots[0] == fast and relative.parts[1:] == ('sdk-private','sdk-export','receipt.json'):
+        require(epoch_ok, 'fresh public export run epoch')
+        return '//tools:codex_retained_sdk_export_run'
+    suffix = (('codex_live_source_producer','codex-live-source','source-receipt.json')
+        if role == 'source' else ('codex_retained_sdk_export_producer','sdk-private/sdk-export','receipt.json'))
+    expected = ('output-base','execroot','_main','bazel-out','k8-fastbuild','testlogs','tools',suffix[0],
+        'test.outputs',*suffix[1].split('/'),suffix[2])
+    source_cache = role == 'source' and bool(re.fullmatch(r'cache-v2-[0-9a-f]{64}',relative.parts[0]))
+    require(len(relative.parts) == len(expected)+1 and (epoch_ok or source_cache)
+        and relative.parts[1:] == expected, 'fresh public receipt exact producer suffix')
+    return '//tools:'+suffix[0]
+
+
+def validate_export_producer(selection, exported):
+    expected = validate_public_receipt_path('export', selection['files']['export']['path'])
+    require(exported.get('producer') == expected, 'fresh export exact producer binding')
+
+
 def validate_selection_paths(selection):
     """Refuse reads outside the exact public producer/guard output namespaces."""
     home = '/home/jess/.local/state/omux-execution-20261005/'
@@ -160,11 +189,7 @@ def validate_selection_paths(selection):
     for role, pin in selection['files'].items():
         path = str(canonical_path(pin['path']))
         if role in ('source','export'):
-            suffix = ('/tools/codex_live_source_producer/test.outputs/codex-live-source/source-receipt.json'
-                if role=='source' else '/tools/codex_retained_sdk_export_producer/test.outputs/sdk-private/sdk-export/receipt.json')
-            require(path.startswith(home) and
-                '/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs' in path and
-                path.endswith(suffix), 'fresh runtime source/export public output scope')
+            validate_public_receipt_path(role, path)
         elif role in ('compile','qualification_run','schema_run','qualification','qualification_xml'):
             relative = canonical_path(path).relative_to(STATE)
             leaf = ('native-qualification.json' if role=='qualification' else
@@ -250,6 +275,7 @@ def validate_chain(selection, values, protocol_values):
         require(digest(value) == pin['sha256'] and len(value) == pin['bytes']
             and isinstance(parse(value),dict), 'fresh runtime protocol byte pins differ')
     source, exported = parse(values['source']), parse(values['export'])
+    validate_export_producer(selection, exported)
     pins = selection['patch_sha256']
     require(len(pins) == 3 and all(HASH.fullmatch(p) for p in pins),
         'fresh runtime three native patches required')
