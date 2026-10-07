@@ -1,0 +1,858 @@
+*** Begin Patch
+*** Add File: src/integrations/measured_runtime_selection.zig
++//! Local installed-byte selection only. R-HOOK-CONVERGENCE-20261004 / R-N13.
++//! This does not verify original package/source provenance, execute an adapter,
++//! attribute a process, grant credential access or establish native support.
++const std = @import("std");
++const builtin = @import("builtin");
++const c = std.c;
++const setup = @import("setup.zig");
++const metadata = @import("../platform/file_metadata.zig");
++const instance = @import("../instance.zig");
++const paths = @import("../paths.zig");
++
++pub const maximum_manifest_bytes = 256 * 1024;
++pub const maximum_files = 4096;
++pub const maximum_payload_bytes = 512 * 1024 * 1024;
++pub const maximum_committed_bytes = 16 * 1024;
++const receipt_path = "codex-installed-runtime.json";
++const role_paths = [_][]const u8{
++    "bin/codex", "lib/codex/libexec/codex.bin", "lib/codex/lib/ld-linux-x86-64.so.2",
++};
++pub const File = struct { sha256: [32]u8, bytes: u64, status: metadata.Metadata };
++pub const Record = struct {
++    schema_version: u8 = 1,
++    qualification: enum { measured_installed_bytes_only } = .measured_installed_bytes_only,
++    native_support: bool = false,
++    channel: setup.RuntimeChannel,
++    installation: setup.RuntimeInstallation,
++    root: metadata.Metadata,
++    manifest: File,
++    roles: [3]File,
++    file_count: u32,
++    payload_bytes: u64,
++};
++pub const Committed = struct {
++    record: Record,
++    record_sha256: [32]u8,
++    /// The actor snapshot revision that first selected these bytes.
++    committed_revision: u64,
++
++    pub fn validate(self: Committed, allocator: std.mem.Allocator, registry: ?setup.RegistryWitness, epoch: u64, revision: u64) !void {
++        const encoded = try std.json.Stringify.valueAlloc(allocator, self, .{});
++        defer allocator.free(encoded);
++        if (encoded.len > maximum_committed_bytes) return error.InvalidMeasuredRuntimeSelection;
++        const witness = registry orelse return error.InvalidMeasuredRuntimeSelection;
++        const owned = self.record.installation;
++        if (self.record.schema_version != 1 or self.record.native_support or
++            self.committed_revision == 0 or self.committed_revision > revision or
++            witness.phase != .installed or owned.adapter_epoch != epoch or
++            !std.meta.eql(owned.transaction, witness.transaction) or
++            !std.meta.eql(owned.capability_digest, witness.capability_digest) or
++            owned.directory_device != self.record.root.dev or owned.directory_inode != self.record.root.ino or
++            owned.uid != self.record.root.uid or owned.gid != self.record.root.gid or
++            self.record.file_count < 4 or self.record.file_count > maximum_files or
++            self.record.payload_bytes == 0 or self.record.payload_bytes > maximum_payload_bytes)
++            return error.InvalidMeasuredRuntimeSelection;
++        try directory(self.record.root, owned.uid, owned.gid, true);
++        try validateFile(self.record.manifest, owned.uid, owned.gid, 0o600, maximum_manifest_bytes);
++        for (self.record.roles, role_paths) |role, path| try validateFile(role, owned.uid, owned.gid, 0o755, try limit(path));
++        if (!std.crypto.timing_safe.eql([32]u8, self.record_sha256, try digest(allocator, self.record))) return error.InvalidMeasuredRuntimeSelection;
++    }
++
++    /// Only an actor-owned completed removal may clear its exact selection.
++    pub fn ownedBy(self: Committed, original: setup.RegistryWitness, epoch: u64) bool {
++        const owned = self.record.installation;
++        return original.phase == .installed and owned.adapter_epoch == epoch and
++            std.meta.eql(owned.transaction, original.transaction) and
++            std.meta.eql(owned.capability_digest, original.capability_digest);
++    }
++};
++pub const Context = struct {
++    options: setup.Options,
++    selection: instance.Selection,
++    revision: u64,
++    deadline: std.Io.Clock.Timestamp,
++    /// Immutable daemon-launch selector, explicitly not package provenance.
++    installation_path: []const u8,
++};
++const HeldFile = struct { path: []u8, descriptor: c.fd_t, status: metadata.Metadata };
++const Retained = struct {
++    allocator: std.mem.Allocator,
++    directory: c.fd_t,
++    record: Record,
++    revision: u64,
++    snapshot_digest: [32]u8,
++    files: []HeldFile,
++};
++
++/// Owns its duplicated root FD. No expected digest or client-authored record
++/// can construct this carrier; observe measures real OS-held inputs.
++pub const MeasuredInstalledRuntime = opaque {
++    pub fn deinit(self: *MeasuredInstalledRuntime) void {
++        const held: *Retained = @ptrCast(@alignCast(self));
++        for (held.files) |held_file| {
++            _ = c.close(held_file.descriptor);
++            held.allocator.free(held_file.path);
++        }
++        held.allocator.free(held.files);
++        _ = c.close(held.directory);
++        held.allocator.destroy(held);
++    }
++
++    /// Called only by the serialized actor after its bounded worker completes.
++    /// Rechecking is bounded and cancellation-aware; no perpetual authority.
++    pub fn prepareCommit(self: *const MeasuredInstalledRuntime, io: std.Io, allocator: std.mem.Allocator, context: Context) !Committed {
++        const held: *const Retained = @ptrCast(@alignCast(self));
++        const custody = context.options.native_custody orelse return error.NativeCustodyPending;
++        if (context.revision != held.revision or !std.meta.eql(custody.snapshot_digest, held.snapshot_digest)) return error.RuntimeSelectionDrift;
++        const selected = try witness(io, allocator, context);
++        const owned = held.record.installation;
++        if (owned.adapter_epoch != custody.adapter_epoch or
++            held.record.channel != (if (context.selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release) or
++            !std.meta.eql(selected.transaction, owned.transaction) or !std.meta.eql(selected.capability_digest, owned.capability_digest)) return error.RuntimeSelectionDrift;
++        try publishedRoot(allocator, context, held.directory, held.record.root);
++        // Hashing ran on the bounded worker. At the actor commit boundary,
++        // every OS-held descriptor and the published namespace are checked.
++        // A same-user byte write changes ctime even if mtime is restored.
++        for (held.files) |held_file| {
++            try check(io, context);
++            const current = try open(held.directory, held.record.root, held_file.path);
++            defer _ = c.close(current);
++            if (!std.meta.eql(held_file.status, try metadata.statFd(held_file.descriptor)) or
++                !std.meta.eql(held_file.status, try metadata.statFd(current))) return error.RuntimeSelectionDrift;
++        }
++        try publishedRoot(allocator, context, held.directory, held.record.root);
++        if (!std.meta.eql(selected, try witness(io, allocator, context))) return error.RuntimeSelectionDrift;
++        return .{ .record = held.record, .record_sha256 = try digest(allocator, held.record), .committed_revision = try std.math.add(u64, context.revision, 1) };
++    }
++};
++
++pub fn digest(allocator: std.mem.Allocator, record: Record) ![32]u8 {
++    const encoded = try std.json.Stringify.valueAlloc(allocator, record, .{});
++    defer allocator.free(encoded);
++    var value: [32]u8 = undefined;
++    std.crypto.hash.sha2.Sha256.hash(encoded, &value, .{});
++    return value;
++}
++
++/// The root comes from a user-authorized, Omux-owned installation operation,
++/// never RPC/SCM_RIGHTS/PATH, argv, process maps or a peer self-description.
++/// This observation cannot enter runtime_selection_producer.acquire or the
++/// historical full-provenance setup.VerifiedRuntimeSelection contract.
++pub fn observe(io: std.Io, allocator: std.mem.Allocator, context: Context, installation_directory: c.fd_t) !*MeasuredInstalledRuntime {
++    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.UnsupportedRuntimeSelection;
++    const duplicate = c.openat(installation_directory, ".", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
++    if (duplicate < 0) return error.RuntimeInstallationUnavailable;
++    errdefer _ = c.close(duplicate);
++    var files: std.ArrayList(HeldFile) = .empty;
++    errdefer {
++        for (files.items) |held_file| {
++            _ = c.close(held_file.descriptor);
++            allocator.free(held_file.path);
++        }
++        files.deinit(allocator);
++    }
++    const record = try measure(io, allocator, context, duplicate, &files);
++    const held = try allocator.create(Retained);
++    errdefer allocator.destroy(held);
++    held.* = .{ .allocator = allocator, .directory = duplicate, .record = record, .revision = context.revision, .snapshot_digest = context.options.native_custody.?.snapshot_digest, .files = try files.toOwnedSlice(allocator) };
++    return @ptrCast(held);
++}
++
++fn check(io: std.Io, context: Context) !void {
++    try io.checkCancel();
++    if (context.deadline.clock != .awake) return error.InvalidDeadline;
++    if (context.deadline.durationFromNow(io).raw.toMilliseconds() <= 0) return error.Timeout;
++}
++fn witness(io: std.Io, allocator: std.mem.Allocator, context: Context) !setup.RegistryWitness {
++    try check(io, context);
++    if (context.options.adapter != .codex) return error.UnsupportedAdapter;
++    const custody = context.options.native_custody orelse return error.NativeCustodyPending;
++    try custody.validate();
++    if (custody.state != .retain_ready or custody.registry_transaction == null or custody.registry_capability_digest == null) return error.NativeCustodyPending;
++    var options = context.options;
++    options.deadline = context.deadline;
++    const selected = (try setup.registryWitness(io, allocator, options)) orelse return error.NativeCustodyPending;
++    var capability: [32]u8 = undefined;
++    std.crypto.hash.sha2.Sha256.hash(&options.capability, &capability, .{});
++    if (selected.phase != .installed or !std.meta.eql(selected.transaction, custody.registry_transaction.?) or
++        !std.meta.eql(selected.capability_digest, custody.registry_capability_digest.?) or
++        !std.meta.eql(selected.capability_digest, custody.capability_digest) or !std.meta.eql(capability, custody.capability_digest)) return error.RuntimeSelectionDrift;
++    return selected;
++}
++fn directory(status: metadata.Metadata, uid: u32, gid: u32, root: bool) !void {
++    if (uid != c.getuid() or status.uid != uid or status.gid != gid or
++        status.mode & c.S.IFMT != c.S.IFDIR or status.mode & 0o7022 != 0 or
++        (root and status.mode & 0o7777 != 0o700)) return error.RuntimeInstallationOwnershipMismatch;
++}
++fn validateFile(file: File, uid: u32, gid: u32, mode: u32, maximum: u64) !void {
++    // Both installed files and their held descriptors stay privately owned.
++    const status = file.status;
++    if (file.bytes == 0 or file.bytes > maximum or std.mem.allEqual(u8, &file.sha256, 0) or
++        status.mode & c.S.IFMT != c.S.IFREG or status.mode & 0o7777 != mode or status.nlink != 1 or
++        status.uid != uid or status.gid != gid or status.size <= 0 or @as(u64, @intCast(status.size)) != file.bytes)
++        return error.RuntimeInstallationOwnershipMismatch;
++}
++fn limit(path: []const u8) !u64 {
++    // Paths are declared local payload members, never receipt-nominated roots.
++    if (std.mem.eql(u8, path, receipt_path)) return maximum_manifest_bytes;
++    if (std.mem.eql(u8, path, role_paths[0])) return 16 * 1024;
++    if (std.mem.eql(u8, path, role_paths[1])) return maximum_payload_bytes;
++    if (std.mem.eql(u8, path, "lib/codex/share/ca-bundle.crt")) return 16 * 1024 * 1024;
++    if (std.mem.startsWith(u8, path, "lib/codex/lib/") and path.len > "lib/codex/lib/".len) {
++        const name = path["lib/codex/lib/".len..];
++        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidRuntimeManifest;
++        for (name) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '.' and byte != '_' and byte != '-' and byte != '+') return error.InvalidRuntimeManifest;
++        return 128 * 1024 * 1024;
++    }
++    return error.InvalidRuntimeManifest;
++}
++fn open(directory_fd: c.fd_t, root: metadata.Metadata, path: []const u8) !c.fd_t {
++    _ = try limit(path);
++    var parent = c.openat(directory_fd, ".", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
++    if (parent < 0) return error.RuntimeInstallationUnavailable;
++    defer _ = c.close(parent);
++    var parts = std.mem.splitScalar(u8, path, '/');
++    while (parts.next()) |part| {
++        try directory(try metadata.statFd(parent), root.uid, root.gid, false);
++        var name: [256:0]u8 = @splat(0);
++        if (part.len == 0 or part.len >= name.len) return error.InvalidRuntimeManifest;
++        @memcpy(name[0..part.len], part);
++        const next = c.openat(parent, &name, if (parts.peek() == null) .{ .NOFOLLOW = true, .CLOEXEC = true, .NONBLOCK = true } else .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
++        if (next < 0) return error.RuntimeInstallationUnavailable;
++        if (parts.peek() == null) return next;
++        _ = c.close(parent);
++        parent = next;
++    }
++    return error.InvalidRuntimeManifest;
++}
++fn file(io: std.Io, context: Context, directory_fd: c.fd_t, root: metadata.Metadata, path: []const u8, mode: u32) !File {
++    try check(io, context);
++    const fd = try open(directory_fd, root, path);
++    defer _ = c.close(fd);
++    const before = try metadata.statFd(fd);
++    if (before.size <= 0) return error.RuntimeInstallationOwnershipMismatch;
++    var result: File = .{ .sha256 = @splat(1), .bytes = @intCast(before.size), .status = before };
++    try validateFile(result, root.uid, root.gid, mode, try limit(path));
++    var hash = std.crypto.hash.sha2.Sha256.init(.{});
++    var buffer: [64 * 1024]u8 = undefined;
++    var offset: u64 = 0;
++    while (offset < result.bytes) {
++        try check(io, context);
++        const count = c.pread(fd, &buffer, @intCast(@min(buffer.len, result.bytes - offset)), @intCast(offset));
++        if (count < 0) {
++            if (c.errno(count) == .INTR) continue;
++            return error.RuntimeInstallationUnavailable;
++        }
++        if (count == 0) return error.RuntimeSelectionDrift;
++        const length: usize = @intCast(count);
++        hash.update(buffer[0..length]);
++        offset += length;
++    }
++    var extra: [1]u8 = undefined;
++    if (c.pread(fd, &extra, 1, @intCast(offset)) != 0) return error.RuntimeSelectionDrift;
++    hash.final(&result.sha256);
++    const reopened = try open(directory_fd, root, path);
++    defer _ = c.close(reopened);
++    if (!std.meta.eql(before, try metadata.statFd(fd)) or !std.meta.eql(before, try metadata.statFd(reopened))) return error.RuntimeSelectionDrift;
++    return result;
++}
++fn get(value: std.json.Value, key: []const u8) !std.json.Value {
++    if (value != .object) return error.InvalidRuntimeManifest;
++    return value.object.get(key) orelse error.InvalidRuntimeManifest;
++}
++fn equalString(value: std.json.Value, key: []const u8, expected: []const u8) !void {
++    const actual = try get(value, key);
++    if (actual != .string or !std.mem.eql(u8, actual.string, expected)) return error.InvalidRuntimeManifest;
++}
++fn integer(value: std.json.Value, key: []const u8, expected: i128) !void {
++    const actual = try get(value, key);
++    if (actual != .integer or @as(i128, actual.integer) != expected) return error.RuntimeSelectionDrift;
++}
++fn member(value: std.json.Value, measured: File) !void {
++    if (value != .object or value.object.count() != 8) return error.InvalidRuntimeManifest;
++    try equalString(value, "sha256", &std.fmt.bytesToHex(measured.sha256, .lower));
++    try integer(value, "bytes", measured.bytes);
++    try integer(value, "mode", measured.status.mode & 0o7777);
++    try integer(value, "device", measured.status.dev);
++    try integer(value, "inode", measured.status.ino);
++    try integer(value, "mtime_ns", measured.status.mtime_ns);
++    try integer(value, "ctime_ns", measured.status.ctime_ns);
++    const state = try get(value, "state");
++    if (state != .array or state.array.items.len != 9) return error.InvalidRuntimeManifest;
++    const status = measured.status;
++    const fields = [_]i128{ status.dev, status.ino, status.uid, status.gid, status.mode & 0o7777, status.nlink, status.size, status.mtime_ns, status.ctime_ns };
++    for (state.array.items, fields) |actual, expected| if (actual != .integer or @as(i128, actual.integer) != expected) return error.RuntimeSelectionDrift;
++}
++fn publishedRoot(allocator: std.mem.Allocator, context: Context, descriptor: c.fd_t, expected: metadata.Metadata) !void {
++    const published = try paths.openPrivateRoot(allocator, context.installation_path, false);
++    defer _ = c.close(published);
++    if (!std.meta.eql(expected, try metadata.statFd(descriptor)) or
++        !std.meta.eql(expected, try metadata.statFd(published))) return error.RuntimeSelectionDrift;
++}
++fn retain(allocator: std.mem.Allocator, held_files: *std.ArrayList(HeldFile), directory_fd: c.fd_t, root: metadata.Metadata, path: []const u8, expected: metadata.Metadata) !void {
++    const fd = try open(directory_fd, root, path);
++    errdefer _ = c.close(fd);
++    if (!std.meta.eql(expected, try metadata.statFd(fd))) return error.RuntimeSelectionDrift;
++    const owned_path = try allocator.dupe(u8, path);
++    errdefer allocator.free(owned_path);
++    try held_files.append(allocator, .{ .path = owned_path, .descriptor = fd, .status = expected });
++}
++fn measure(io: std.Io, allocator: std.mem.Allocator, context: Context, directory_fd: c.fd_t, held_files: *std.ArrayList(HeldFile)) !Record {
++    const selected = try witness(io, allocator, context);
++    const root = try metadata.statFd(directory_fd);
++    try directory(root, c.getuid(), root.gid, true);
++    try publishedRoot(allocator, context, directory_fd, root);
++    const manifest = try file(io, context, directory_fd, root, receipt_path, 0o600);
++    try retain(allocator, held_files, directory_fd, root, receipt_path, manifest.status);
++    const fd = try open(directory_fd, root, receipt_path);
++    defer _ = c.close(fd);
++    if (!std.meta.eql(manifest.status, try metadata.statFd(fd))) return error.RuntimeSelectionDrift;
++    const bytes = try allocator.alloc(u8, @intCast(manifest.bytes));
++    defer allocator.free(bytes);
++    var offset: usize = 0;
++    while (offset < bytes.len) {
++        try check(io, context);
++        const count = c.pread(fd, bytes[offset..].ptr, bytes.len - offset, @intCast(offset));
++        if (count < 0) {
++            if (c.errno(count) == .INTR) continue;
++            return error.RuntimeInstallationUnavailable;
++        }
++        if (count == 0) return error.RuntimeSelectionDrift;
++        offset += @intCast(count);
++    }
++    var encoded_digest: [32]u8 = undefined;
++    std.crypto.hash.sha2.Sha256.hash(bytes, &encoded_digest, .{});
++    if (!std.meta.eql(encoded_digest, manifest.sha256) or !std.meta.eql(manifest.status, try metadata.statFd(fd))) return error.RuntimeSelectionDrift;
++    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .duplicate_field_behavior = .@"error", .max_value_len = maximum_manifest_bytes });
++    defer parsed.deinit();
++    const value = parsed.value;
++    try integer(value, "schema_version", 1);
++    try equalString(value, "kind", "omux-codex-installed-direct-exec");
++    try equalString(value, "launch_profile", "linux-installed-direct-exec-v1");
++    try equalString(value, "target", "x86_64-linux");
++    try equalString(value, "actor_selection", "uncommitted");
++    try equalString(value, "executable_attribution", "unproved");
++    const support = try get(value, "native_support");
++    if (support != .bool or support.bool) return error.InvalidRuntimeManifest;
++    const installation = try get(value, "installation");
++    try integer(installation, "directory_device", root.dev);
++    try integer(installation, "directory_inode", root.ino);
++    try integer(installation, "uid", root.uid);
++    try integer(installation, "gid", root.gid);
++    try integer(installation, "mode", 0o700);
++    const files = try get(value, "files");
++    if (files != .object or files.object.count() < 4 or files.object.count() > maximum_files) return error.InvalidRuntimeManifest;
++    var roles: [3]File = undefined;
++    var found: [3]bool = @splat(false);
++    var total: u64 = 0;
++    var iterator = files.object.iterator();
++    while (iterator.next()) |entry| {
++        const path = entry.key_ptr.*;
++        if (std.mem.eql(u8, path, receipt_path)) return error.InvalidRuntimeManifest;
++        const mode: u32 = if (std.mem.eql(u8, path, "lib/codex/share/ca-bundle.crt")) 0o644 else 0o755;
++        const expected_bytes = try get(entry.value_ptr.*, "bytes");
++        if (expected_bytes != .integer or expected_bytes.integer <= 0 or
++            @as(u64, @intCast(expected_bytes.integer)) > maximum_payload_bytes - total) return error.RuntimeInputLimit;
++        const measured = try file(io, context, directory_fd, root, path, mode);
++        try member(entry.value_ptr.*, measured);
++        try retain(allocator, held_files, directory_fd, root, path, measured.status);
++        if (measured.bytes > maximum_payload_bytes - total) return error.RuntimeInputLimit;
++        total += measured.bytes;
++        for (role_paths, 0..) |role, index| if (std.mem.eql(u8, path, role)) {
++            roles[index] = measured;
++            found[index] = true;
++        };
++    }
++    if (!std.mem.allEqual(bool, &found, true) or !files.object.contains("lib/codex/share/ca-bundle.crt")) return error.InvalidRuntimeManifest;
++    // A second complete pass rejects a member replaced while a later member
++    // was measured. Manifest bytes pin the complete declared membership.
++    iterator = files.object.iterator();
++    while (iterator.next()) |entry| {
++        const path = entry.key_ptr.*;
++        try member(entry.value_ptr.*, try file(io, context, directory_fd, root, path, if (std.mem.eql(u8, path, "lib/codex/share/ca-bundle.crt")) 0o644 else 0o755));
++    }
++    if (!std.meta.eql(manifest, try file(io, context, directory_fd, root, receipt_path, 0o600)) or
++        !std.meta.eql(root, try metadata.statFd(directory_fd)) or !std.meta.eql(selected, try witness(io, allocator, context))) return error.RuntimeSelectionDrift;
++    try check(io, context);
++    const custody = context.options.native_custody.?;
++    try publishedRoot(allocator, context, directory_fd, root);
++    return .{
++        .channel = if (context.selection == .dev) .development else .release,
++        .installation = .{ .transaction = selected.transaction, .adapter_epoch = custody.adapter_epoch, .capability_digest = selected.capability_digest, .directory_device = root.dev, .directory_inode = root.ino, .uid = root.uid, .gid = root.gid },
++        .root = root, .manifest = manifest, .roles = roles,
++        .file_count = @intCast(files.object.count()), .payload_bytes = total,
++    };
++}
+*** Update File: src/engine.zig
+@@
+ const setup = @import("integrations/setup.zig");
++const measured_runtime = @import("integrations/measured_runtime_selection.zig");
+@@
+ const MutationPlan = struct { bytes: usize, slots: snapshot_admission.Counts = .{} };
++// One bounded read-only job on the existing native I/O supervisor. It owns
++// mutable collection buffers, participates in shutdown, and executes no app.
++const RuntimeMeasureTask = struct {
++    allocator: std.mem.Allocator,
++    io: std.Io,
++    arena: std.heap.ArenaAllocator,
++    context: measured_runtime.Context,
++    directory: std.c.fd_t,
++    job: native_work.Job,
++    observed: ?*measured_runtime.MeasuredInstalledRuntime = null,
++    failure: ?anyerror = null,
++    fn run(opaque_context: *anyopaque, canceled: bool) void {
++        const self: *RuntimeMeasureTask = @ptrCast(@alignCast(opaque_context));
++        if (canceled) {
++            self.failure = error.ServiceStopping;
++            return;
++        }
++        self.observed = measured_runtime.observe(self.io, self.allocator, self.context, self.directory) catch |err| failed: {
++            self.failure = err;
++            break :failed null;
++        };
++    }
++    fn deinit(self: *RuntimeMeasureTask) void {
++        if (self.observed) |observed| observed.deinit();
++        _ = std.c.close(self.directory);
++        self.arena.deinit();
++        self.allocator.destroy(self);
++    }
++};
+@@
+     native_owner_authority: native_owner.Snapshot = .{},
+     native_registry: ?setup.RegistryWitness = null,
++    // Optional historical metadata. Absence never selects or activates bytes.
++    measured_codex_runtime: ?measured_runtime.Committed = null,
+ };
+@@
+     active_peer: ?*const peer.Context = null,
+     native_registry: ?setup.RegistryWitness = null,
++    measured_codex_runtime: ?measured_runtime.Committed = null,
++    codex_runtime_root: ?[]u8 = null,
++    runtime_measurement: ?*RuntimeMeasureTask = null,
++    runtime_measurement_requested: bool = false,
++    runtime_measurement_failure: ?anyerror = null,
+     native_workers: ?*native_work.Supervisor = null,
+@@
+         errdefer self.release();
++        // A launch-time path is only a local observation selector. It is never
++        // a package digest authority or a process/credential capability.
++        if (!builtin.is_test) if (std.c.getenv("OMUX_CODEX_INSTALL_ROOT")) |value| {
++            const root = std.mem.span(value);
++            if (root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
++            const root_fd = try paths.openPrivateRoot(allocator, root, false);
++            _ = std.c.close(root_fd);
++            self.codex_runtime_root = try allocator.dupe(u8, root);
++        };
+@@
+     fn release(self: *Engine) void {
+         self.state.deinit();
++        if (self.codex_runtime_root) |root| self.allocator.free(root);
+@@
+         while (true) {
+             self.completeSetupRefresh();
++            if (self.runtime_measurement_requested and self.runtime_measurement == null and !self.stopping and !self.poisoned) {
++                self.runtime_measurement_requested = false;
++                self.startRuntimeMeasurement() catch |err| {
++                    self.runtime_measurement_failure = err;
++                };
++            }
+             self.mutex.lockUncancelable(self.io);
+@@
+-            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
++            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.runtime_measurement != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
+@@
+-            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0) {
++            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.runtime_measurement == null) {
+@@
+         const job = self.native_workers.?.takeCompleted() orelse return;
++        if (self.runtime_measurement) |measurement| if (job == &measurement.job) {
++            self.completeRuntimeMeasurement(measurement);
++            return;
++        };
+         const task: *NativeTask = @ptrCast(@alignCast(job.context));
+@@
+         if (!sameRegistryWitness(retained, witness)) return error.NativeCustodyGenerationMismatch;
++        if (self.measured_codex_runtime) |selected| {
++            if (!selected.ownedBy(retained, self.adapter_epochs[0])) return error.RuntimeSelectionDrift;
++        }
+         // Endpoint/thread arguments are filled from original sealed attribution,
+@@
+         if (!sameRegistryWitness(original_registry, actual_registry)) return error.NativeCustodyGenerationMismatch;
++        if (self.measured_codex_runtime) |selected| {
++            if (!selected.ownedBy(original_registry, self.adapter_epochs[0])) return error.RuntimeSelectionDrift;
++        }
+         const record = self.mutations.snapshot().records[task.mutation_slot.?];
+@@
+         const outcome = try setup.remove(self.io, self.allocator, options);
+         defer outcome.deinit(self.allocator);
+         self.native_registry = try setup.registryWitness(self.io, self.allocator, options);
++        // Only the preflighted actor-owned removal clears this metadata.
++        self.measured_codex_runtime = null;
++        self.runtime_measurement_requested = false;
+         try self.native_owners.completeApplicationRemoval("codex", self.adapter_epochs[0], task.removal_operation.?);
+@@
+         self.native_owners.recoverAfterRestart();
+         self.native_registry = parsed.value.native_registry;
++        self.measured_codex_runtime = parsed.value.measured_codex_runtime;
++        if (self.measured_codex_runtime) |selected| {
++            if (selected.record.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
++        }
++        // Restoration keeps authenticated historical facts, never fresh readiness.
++        self.runtime_measurement_requested = self.measured_codex_runtime != null and self.codex_runtime_root != null;
+         for (parsed.value.outcome_intents) |intent| {
+@@
+         self.installation_refresh.?.verification = .{ .slot = slot, .fingerprint = fingerprint, .credit = credit, .started = started };
++        if (self.codex_runtime_root != null and self.integrationInstalled("codex")) self.runtime_measurement_requested = true;
+         return control.success(allocator, request.id, .{ .schema_version = 1, .operation_id = id, .generation = self.installation_refresh_generation, .status = "pending" });
+@@
+             .native_owner_authority = self.native_owners.snapshot(),
+             .native_registry = self.native_registry,
++            .measured_codex_runtime = self.measured_codex_runtime,
+@@
+         try validatePersistedAdmission(self.allocator, saved.json, saved.revision);
+         const parsed = try std.json.parseFromSlice(Persisted, self.allocator, saved.json, .{});
+         defer parsed.deinit();
++        if (parsed.value.measured_codex_runtime) |selected| {
++            if (selected.record.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
++        }
+         const restored_measurements: ?*reliability.LifecycleRecorder = if (parsed.value.lifecycle_measurements) |measurements| blk: {
+@@
+         self.native_owners = native;
+         self.native_registry = parsed.value.native_registry;
++        self.measured_codex_runtime = parsed.value.measured_codex_runtime;
+         for (self.installed.items) |item| self.allocator.free(item);
+@@
+-        if (eql(method, "integrations.status")) return control.success(allocator, id, .{ .adapters = catalog.adapters, .installed = self.installed.items });
++        if (eql(method, "integrations.status")) return control.success(allocator, id, .{ .adapters = catalog.adapters, .installed = self.installed.items, .runtime_selection = .{
++            .qualification = "measured_installed_bytes_only",
++            .native_support = false,
++            .state = if (self.runtime_measurement != null or self.runtime_measurement_requested) "pending" else if (self.runtime_measurement_failure != null) "refused" else if (self.measured_codex_runtime != null) "committed_historical_facts" else "unselected",
++            .reason = if (self.runtime_measurement_failure) |err| @errorName(err) else null,
++        } });
+@@
+             const options = try self.setupOptions(self.allocator, adapter, .null);
+             defer self.allocator.free(options.broker_socket);
+             if (adapter == .codex) {
++                if (self.measured_codex_runtime) |selected| {
++                    const original = self.native_registry orelse return error.RuntimeSelectionDrift;
++                    const actual_registry = (try setup.registryWitness(self.io, self.allocator, options)) orelse return error.RuntimeSelectionDrift;
++                    if (!sameRegistryWitness(original, actual_registry) or !selected.ownedBy(original, self.adapter_epochs[0])) return error.RuntimeSelectionDrift;
++                }
+                 if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) continue;
+@@
+         const options = try self.setupOptions(allocator, adapter, params);
+         defer allocator.free(options.broker_socket);
++        if (adapter == .codex) if (self.measured_codex_runtime) |selected| {
++            const original = self.native_registry orelse return error.RuntimeSelectionDrift;
++            const actual_registry = (try setup.registryWitness(self.io, allocator, options)) orelse return error.RuntimeSelectionDrift;
++            if (!sameRegistryWitness(original, actual_registry) or !selected.ownedBy(original, self.adapter_epochs[0])) return error.RuntimeSelectionDrift;
++        };
+         const outcome = try setup.install(self.io, allocator, options);
+@@
+         try self.persist(&.{});
++        if (adapter == .codex and self.codex_runtime_root != null) self.runtime_measurement_requested = true;
+         return control.success(allocator, id, setup.installResult(adapter, outcome));
+     }
++
++    fn startRuntimeMeasurement(self: *Engine) !void {
++        const root = self.codex_runtime_root orelse return;
++        if (self.runtime_measurement != null) return error.ServiceBusy;
++        if (!self.integrationInstalled("codex")) return error.AdapterNotInstalled;
++        const task = try self.allocator.create(RuntimeMeasureTask);
++        errdefer self.allocator.destroy(task);
++        var arena = std.heap.ArenaAllocator.init(self.allocator);
++        errdefer arena.deinit();
++        const a = arena.allocator();
++        var options = try self.setupOptions(a, .codex, .null);
++        // Capture borrowed environment context into the worker's own arena.
++        options.home = try a.dupe(u8, options.home);
++        options.codex_home = if (options.codex_home) |value| try a.dupe(u8, value) else null;
++        options.config_path = if (options.config_path) |value| try a.dupe(u8, value) else null;
++        options.xdg_config_home = if (options.xdg_config_home) |value| try a.dupe(u8, value) else null;
++        const fd = try paths.openPrivateRoot(a, root, false);
++        errdefer _ = std.c.close(fd);
++        const deadline: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(5000) });
++        options.deadline = deadline;
++        task.* = .{ .allocator = self.allocator, .io = self.io, .arena = arena, .directory = fd, .job = undefined, .context = .{ .options = options, .selection = self.instance_selection, .revision = self.revision, .deadline = deadline, .installation_path = root } };
++        task.job = .{ .lane = .continuation, .context = task, .run = RuntimeMeasureTask.run };
++        try self.native_workers.?.enqueue(&task.job);
++        self.runtime_measurement_failure = null;
++        self.runtime_measurement = task;
++    }
++
++    fn completeRuntimeMeasurement(self: *Engine, task: *RuntimeMeasureTask) void {
++        std.debug.assert(self.runtime_measurement == task);
++        defer task.deinit();
++        self.runtime_measurement = null;
++        if (self.stopping or self.poisoned) return;
++        if (task.failure) |err| {
++            self.runtime_measurement_failure = err;
++            return;
++        }
++        const deadline: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
++        self.commitMeasuredCodexRuntime(task.observed orelse return, deadline) catch |err| {
++            self.runtime_measurement_failure = err;
++        };
++    }
++
++    /// Private actor completion boundary. No control method supplies a record,
++    /// digest or descriptor; the configured setup worker owns every input.
++    fn commitMeasuredCodexRuntime(self: *Engine, observed: *const measured_runtime.MeasuredInstalledRuntime, deadline: std.Io.Clock.Timestamp) !void {
++        if (self.poisoned or self.staging_mutation) return error.NativeCustodyPending;
++        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null or self.nativeRequestsPending(null)) return error.NativeCustodyPending;
++        const options = try self.setupOptions(self.allocator, .codex, .null);
++        defer self.allocator.free(options.broker_socket);
++        const candidate = try observed.prepareCommit(self.io, self.allocator, .{ .options = options, .selection = self.instance_selection, .revision = self.revision, .deadline = deadline, .installation_path = self.codex_runtime_root orelse return error.InvalidInstallationSelection });
++        try candidate.validate(self.allocator, self.native_registry, self.adapter_epochs[0], candidate.committed_revision);
++        if (self.measured_codex_runtime) |previous| {
++            // Byte-identical retry is idempotent; changing a selection needs a
++            // separate reviewed installation replacement operation.
++            if (!std.meta.eql(previous.record, candidate.record)) return error.RuntimeSelectionDrift;
++            return;
++        }
++        const previous = self.measured_codex_runtime;
++        self.measured_codex_runtime = candidate;
++        self.persist(&.{}) catch |err| {
++            self.measured_codex_runtime = previous;
++            // Store.commit already fences ambiguous writes; no usable authority
++            // escapes a failed commit. Capacity refusal remains reversible.
++            return err;
++        };
++        if (self.revision != candidate.committed_revision) {
++            self.fence();
++            return error.RuntimeSelectionDrift;
++        }
++    }
+@@
+     const saved = parsed.value;
+     if (saved.schema_version != 1 and saved.schema_version != 2) return error.UnsupportedSchema;
++    if (saved.measured_codex_runtime) |selected| {
++        if (saved.schema_version != 2) return error.InvalidMeasuredRuntimeSelection;
++        try selected.validate(allocator, saved.native_registry, saved.adapter_epochs[0], current_revision);
++    }
+*** Update File: src/runtime_selection_producer_tests.zig
+@@
+     _ = @import("integrations/runtime_selection_producer_tests.zig");
++    _ = @import("integrations/measured_runtime_selection_tests.zig");
+*** Add File: src/integrations/measured_runtime_selection_tests.zig
++//! Synthetic local-byte predicates. No application launch or provider access.
++const std = @import("std");
++const builtin = @import("builtin");
++const producer = @import("measured_runtime_selection.zig");
++const setup = @import("setup.zig");
++const paths = @import("../paths.zig");
++const metadata = @import("../platform/file_metadata.zig");
++const io = std.testing.io;
++const allocator = std.testing.allocator;
++const members = [_][]const u8{ "bin/codex", "lib/codex/libexec/codex.bin", "lib/codex/lib/ld-linux-x86-64.so.2", "lib/codex/share/ca-bundle.crt" };
++const Entry = struct { sha256: [64]u8, bytes: u64, mode: u32, device: u64, inode: u64, mtime_ns: i128, ctime_ns: i128, state: [9]i128 };
++fn entry(fd: std.c.fd_t, name: []const u8) !Entry {
++    const full = try allocator.dupeSentinel(u8, name, 0);
++    defer allocator.free(full);
++    const file = std.c.openat(fd, full.ptr, .{ .CLOEXEC = true, .NOFOLLOW = true });
++    if (file < 0) return error.FixtureOpenFailed;
++    defer _ = std.c.close(file);
++    const status = try metadata.statFd(file);
++    var hash: [32]u8 = undefined;
++    std.crypto.hash.sha2.Sha256.hash(name, &hash, .{});
++    return .{ .sha256 = std.fmt.bytesToHex(hash, .lower), .bytes = @intCast(status.size), .mode = status.mode & 0o7777, .device = status.dev, .inode = status.ino, .mtime_ns = status.mtime_ns, .ctime_ns = status.ctime_ns, .state = .{ status.dev, status.ino, status.uid, status.gid, status.mode & 0o7777, status.nlink, status.size, status.mtime_ns, status.ctime_ns } };
++}
++const Fixture = struct {
++    arena: std.heap.ArenaAllocator,
++    root: [:0]u8,
++    installed: []const u8,
++    directory: std.c.fd_t,
++    context: producer.Context,
++    fn init() !Fixture {
++        if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
++        var arena = std.heap.ArenaAllocator.init(allocator);
++        errdefer arena.deinit();
++        const a = arena.allocator();
++        var nonce: [16]u8 = undefined;
++        try io.randomSecure(&nonce);
++        const root = try std.fmt.allocPrintSentinel(a, "/tmp/omux-measured-native-{s}", .{std.fmt.bytesToHex(nonce, .lower)}, 0);
++        if (std.c.mkdir(root.ptr, 0o700) != 0) return error.FixtureSetupFailed;
++        errdefer std.Io.Dir.cwd().deleteTree(io, root) catch {};
++        const home = try std.fmt.allocPrint(a, "{s}/home", .{root});
++        const home_fd = try paths.openPrivateRoot(a, home, true);
++        _ = std.c.close(home_fd);
++        var options: setup.Options = .{ .adapter = .codex, .home = home, .state_dir = try std.fmt.allocPrint(a, "{s}/state", .{root}), .config_path = try std.fmt.allocPrint(a, "{s}/config.toml", .{home}), .capability = @splat('a'), .key = @splat(42), .broker_socket = try std.fmt.allocPrint(a, "{s}/adapter.sock", .{root}), .omux_version = "synthetic-measured-byte-test" };
++        const seeded = try setup.LegacyCustodyForTest.seedInstalled(io, allocator, options);
++        defer seeded.deinit(allocator);
++        const witness = (try setup.registryWitness(io, allocator, options)).?;
++        options.native_custody = .{ .adapter_epoch = 3, .state = .retain_ready, .snapshot_digest = @splat(8), .capability_digest = witness.capability_digest, .registry_transaction = witness.transaction, .registry_capability_digest = witness.capability_digest };
++        const installed = try std.fmt.allocPrint(a, "{s}/installed", .{root});
++        const directory = try paths.openPrivateRoot(a, installed, true);
++        errdefer _ = std.c.close(directory);
++        for (members, 0..) |name, index| {
++            const full = try std.fmt.allocPrint(a, "{s}/{s}", .{ installed, name });
++            const parent = try paths.openPrivateRoot(a, std.fs.path.dirname(full).?, true);
++            _ = std.c.close(parent);
++            try write(full, name, if (index == 3) 0o644 else 0o755);
++        }
++        const status = try metadata.statFd(directory);
++        // Deliberately arbitrary non-ELF bytes. The measured contract grants no
++        // ELF/direct-exec/provenance assertion from this receipt's labels.
++        const receipt = try std.json.Stringify.valueAlloc(a, .{
++            .schema_version = 1, .kind = "omux-codex-installed-direct-exec", .launch_profile = "linux-installed-direct-exec-v1", .target = "x86_64-linux", .native_support = false,
++            .actor_selection = "uncommitted", .executable_attribution = "unproved",
++            .installation = .{ .directory_device = status.dev, .directory_inode = status.ino, .uid = status.uid, .gid = status.gid, .mode = 0o700 },
++            .files = .{ .@"bin/codex" = try entry(directory, members[0]), .@"lib/codex/libexec/codex.bin" = try entry(directory, members[1]), .@"lib/codex/lib/ld-linux-x86-64.so.2" = try entry(directory, members[2]), .@"lib/codex/share/ca-bundle.crt" = try entry(directory, members[3]) },
++        }, .{});
++        try write(try std.fmt.allocPrint(a, "{s}/codex-installed-runtime.json", .{installed}), receipt, 0o600);
++        return .{ .arena = arena, .root = root, .installed = installed, .directory = directory, .context = .{ .options = options, .selection = .dev, .revision = 10, .deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(5000) }), .installation_path = installed } };
++    }
++    fn deinit(self: *Fixture) void {
++        if (self.directory >= 0) _ = std.c.close(self.directory);
++        std.Io.Dir.cwd().deleteTree(io, self.root) catch {};
++        self.arena.deinit();
++    }
++    fn observe(self: *Fixture) !*producer.MeasuredInstalledRuntime {
++        return producer.observe(io, allocator, self.context, self.directory);
++    }
++};
++fn write(path: []const u8, bytes: []const u8, mode: std.c.mode_t) !void {
++    const name = try allocator.dupeSentinel(u8, path, 0);
++    defer allocator.free(name);
++    const fd = std.c.open(name.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true, .NOFOLLOW = true }, mode);
++    if (fd < 0) return error.FixtureOpenFailed;
++    defer _ = std.c.close(fd);
++    if (std.c.fchmod(fd, mode) != 0) return error.FixtureModeFailed;
++    var offset: usize = 0;
++    while (offset < bytes.len) {
++        const count = std.c.write(fd, bytes[offset..].ptr, bytes.len - offset);
++        if (count <= 0) return error.FixtureWriteFailed;
++        offset += @intCast(count);
++    }
++}
++test "local measurement owns root descriptor and never establishes artifact or ELF authority" {
++    var fixture = try Fixture.init();
++    defer fixture.deinit();
++    const observed = try fixture.observe();
++    defer observed.deinit();
++    _ = std.c.close(fixture.directory);
++    fixture.directory = -1;
++    const committed = try observed.prepareCommit(io, allocator, fixture.context);
++    const witness = (try setup.registryWitness(io, allocator, fixture.context.options)).?;
++    try committed.validate(allocator, witness, 3, 11);
++    try std.testing.expectEqual(@as(u64, 11), committed.committed_revision);
++    try std.testing.expectEqual(setup.RuntimeChannel.development, committed.record.channel);
++    try std.testing.expect(!committed.record.native_support);
++    try std.testing.expect(!std.meta.eql(committed.record.roles[1].sha256, committed.record.roles[2].sha256));
++}
++test "actor record digest revision epoch channel and exact removal ownership are independent fences" {
++    var fixture = try Fixture.init();
++    defer fixture.deinit();
++    const observed = try fixture.observe();
++    defer observed.deinit();
++    const committed = try observed.prepareCommit(io, allocator, fixture.context);
++    const witness = (try setup.registryWitness(io, allocator, fixture.context.options)).?;
++    try std.testing.expectError(error.InvalidMeasuredRuntimeSelection, committed.validate(allocator, witness, 3, 10));
++    try std.testing.expectError(error.InvalidMeasuredRuntimeSelection, committed.validate(allocator, witness, 4, 11));
++    try std.testing.expect(committed.ownedBy(witness, 3));
++    try std.testing.expect(!committed.ownedBy(witness, 4));
++    var wrong = witness;
++    wrong.transaction[0] = if (wrong.transaction[0] == 'a') 'b' else 'a';
++    try std.testing.expect(!committed.ownedBy(wrong, 3));
++    try std.testing.expectError(error.InvalidMeasuredRuntimeSelection, committed.validate(allocator, wrong, 3, 11));
++    wrong = witness;
++    wrong.phase = .removed;
++    try std.testing.expectError(error.InvalidMeasuredRuntimeSelection, committed.validate(allocator, wrong, 3, 11));
++    var forged = committed;
++    forged.record.native_support = true;
++    forged.record_sha256 = try producer.digest(allocator, forged.record);
++    try std.testing.expectError(error.InvalidMeasuredRuntimeSelection, forged.validate(allocator, witness, 3, 11));
++    var drifted = fixture.context;
++    drifted.revision += 1;
++    try std.testing.expectError(error.RuntimeSelectionDrift, observed.prepareCommit(io, allocator, drifted));
++    drifted = fixture.context;
++    drifted.selection = .default;
++    try std.testing.expectError(error.RuntimeSelectionDrift, observed.prepareCommit(io, allocator, drifted));
++}
++test "post-worker CA byte write refuses actor commit without deleting prior custody" {
++    var fixture = try Fixture.init();
++    defer fixture.deinit();
++    const observed = try fixture.observe();
++    defer observed.deinit();
++    const original = (try setup.registryWitness(io, allocator, fixture.context.options)).?;
++    const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{fixture.installed, members[3]});
++    defer allocator.free(path);
++    try write(path, "changed fixture CA bytes", 0o644);
++    try std.testing.expectError(error.RuntimeSelectionDrift, observed.prepareCommit(io, allocator, fixture.context));
++    try std.testing.expect(std.meta.eql(original, (try setup.registryWitness(io, allocator, fixture.context.options)).?));
++}
++test "published installation replacement refuses actor commit despite held old root" {
++    var fixture = try Fixture.init();
++    defer fixture.deinit();
++    const observed = try fixture.observe();
++    defer observed.deinit();
++    const old = try allocator.dupeSentinel(u8, fixture.installed, 0);
++    defer allocator.free(old);
++    const detached = try std.fmt.allocPrintSentinel(allocator, "{s}/detached", .{fixture.root}, 0);
++    defer allocator.free(detached);
++    if (std.c.rename(old.ptr, detached.ptr) != 0 or std.c.mkdir(old.ptr, 0o700) != 0) return error.FixtureSetupFailed;
++    try std.testing.expectError(error.RuntimeSelectionDrift, observed.prepareCommit(io, allocator, fixture.context));
++}
++test "removal custody and expired deadline cannot produce local selection" {
++    var fixture = try Fixture.init();
++    defer fixture.deinit();
++    fixture.context.options.native_custody.?.state = .removal_pending;
++    fixture.context.options.native_custody.?.removal_operation = @splat(1);
++    try std.testing.expectError(error.NativeCustodyPending, fixture.observe());
++    fixture.context.options.native_custody.?.state = .retain_ready;
++    fixture.context.options.native_custody.?.removal_operation = null;
++    fixture.context.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
++    try std.testing.expectError(error.Timeout, fixture.observe());
++}
+*** Add File: docs/agent-notes/2026-10-06-measured-native-selection-review.md
++Actor | Codex registry/Omux-owned private installation | select installed local
++bytes and preserve custody across setup/removal/restoration |
++R-HOOK-CONVERGENCE-20261004, R-N12/R-N13, repository AGENTS.md |
++original artifact acquire unavailable, no actor selection field |
++separate bounded measured selection and revisioned encrypted snapshot record.
++
++This is supporting candidate implementation. The installed receipt is at
++`codex-installed-runtime.json`; its profile labels and input receipt references
++are observed data. The selection does not verify original archives, source
++producer receipts, ELF lookup edges, launch form, executable incarnation,
++native history, same-process handoff or provider permission.
++
++The daemon's immutable launch selector `OMUX_CODEX_INSTALL_ROOT` names an
++existing user-owned 0700 root. It is not a digest/provenance authority.
++Neither RPC nor a peer can supply selection digests, records or descriptors.
++Configured Codex installation and setup refresh schedule one bounded job on the
++existing native I/O supervisor. The worker owns the root, receipt and member
++descriptors while it hashes the complete declared membership twice. Receipt
++size, membership, total payload, file sizes and operation time have hard bounds.
++The actor rewalks the configured root and every member, checks held descriptor
++metadata, and commits a digest it computes itself in the encrypted snapshot.
++The record binds channel, original registry transaction, capability, adapter
++epoch and first committed revision. A replacement root or changed member,
++snapshot revision, channel, epoch or registry refuses the selection.
++
++Setup/recovery refuses registry drift before native configuration effects.
++Removal checks exact selection ownership before detachment and again before
++configuration removal, then clears only that actor-owned selection.
++Authenticated startup and rollback restore historical selection facts; absence
++does not migrate a record or imply readiness. Outstanding worker jobs participate
++in shutdown and cannot revive a removed epoch. Selection errors are redacted
++metadata in integration status and do not clear native owner/session history.
++No credential path consumes this measurement, `native_support` stays false,
++and `runtime_selection_producer.acquire` remains fail closed.
++
++The added synthetic tests cover arbitrary non-ELF observations, owned FD
++lifetime, actor revision/channel/epoch fences, false support claims, removal
++ownership, changed CA bytes, published root replacement, pending removal and
++expired deadlines. Build, formatting, tests and installation execution were not
++run by the artifact author. After independent source review, the root executor
++must apply and validate through the locked Nix/Bazel graph, including actor
++install/setup/removal/restart/rollback and capacity/fault suites.
++
++Full native artifact authority still needs an independently selected immutable
++deployment input/action/output digest seed from the trusted Omux package/catalog.
++Observed installed receipts cannot supply that seed. This slice does not close
++the retained native proof or Yoga gates, and does not change runtime009.
+*** End Patch

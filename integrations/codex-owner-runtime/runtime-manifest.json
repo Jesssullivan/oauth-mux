@@ -1,0 +1,4174 @@
+{
+  "candidate": {
+    "base_sha256": "a794a67af4b6aecd9e91aeb4281354b90d10e10134e7cf6a6028b33f26a2f9d9",
+    "binary_overlay_sha256": "9d47862cd9e7e1a911d8512dad0ad0f124c928e139b778cd1e89ecfce17c5703",
+    "compile_invocation_id": "185ffba7-9b08-450f-ab29-1d405810892a",
+    "complete_source_inventory_sha256": "3400115fae8ef204f2ce085880b40887bcb14e2080236ba87a34be9b14fe7d3b",
+    "current_compile_invocation_id": "c9757a04-8de8-4a61-9029-6c312e153ac6",
+    "current_configuration": "owner-linux-opt",
+    "current_source_receipt_sha256": "e3c6d45bc93119ddf1da8bee6e02de3c7c3a3bbe52bb6d2664eb4b7b3d7b5273",
+    "current_source_verification_invocation_id": "fe794e5f-a4ae-4edb-8496-7df5b14c8c77",
+    "patch_sha256": "2e5542c5f6a44e3a8dd38b4a4093d1735ff19771721b05fc51f55b475b1a8d46",
+    "source_verification_invocation_id": "5a9d8326-5327-4052-8a6e-946dcc4d18ac",
+    "upstream_commit": "00c972ed5d6ff6499317fd41b7f23605b8e6850d",
+    "validation_sha256": "1e0f27681a57f4c7d2102d69d01f73586d743341b9baea306e863069c74fc86a"
+  },
+  "executable": {
+    "backend_max_bytes": 536870912,
+    "original_bytes": 405575744,
+    "original_sha256": "4635bbee6d7f19ddcdbaa3247fe197c11c7169f191255baaaa41579f54ca2695",
+    "packaged_bytes": 318579008,
+    "packaged_sha256": "0b82d7f1535ab98ca2854dad0ac908912c9df56f29bb70c664e18e9956dc4a3f",
+    "stripped_bytes": 318558680,
+    "stripped_sha256": "37e8eaafa9e83e90bc4e804bad37ccdb4660252a1a4804946b776d1e1fe132a3"
+  },
+  "files": {
+    "bin/codex": {
+      "bytes": 421,
+      "mode": 493,
+      "sha256": "4ba3c25cd8821ffc6fac24445750460126c0a0130281dd40fc783ff6c622a4f3"
+    },
+    "lib/codex/lib/ld-linux-x86-64.so.2": {
+      "bytes": 263056,
+      "mode": 493,
+      "sha256": "1640ec4d1cfcc3c19430b368cbbb057c5652eac340ecba12cf9dfbe2c3769d07"
+    },
+    "lib/codex/lib/libc.so.6": {
+      "bytes": 2472888,
+      "mode": 493,
+      "sha256": "b4ae5be136ce59078de8e83112c2d36e1c7b86894f37dfe7d387b2827eb1120c"
+    },
+    "lib/codex/lib/libdl.so.2": {
+      "bytes": 17400,
+      "mode": 493,
+      "sha256": "cb6e1b1b5762b30f608096da734d74c1366ecbe1ed830b6a3389a87dc9d35093"
+    },
+    "lib/codex/lib/libm.so.6": {
+      "bytes": 1127520,
+      "mode": 493,
+      "sha256": "b0cd1f6a166e255d28375d7dcd91636971a1fa79d33fc67e88e4b7957961bb51"
+    },
+    "lib/codex/lib/libpthread.so.0": {
+      "bytes": 21656,
+      "mode": 493,
+      "sha256": "bc2abac356f226c4ef4bed4e5b92e25821482a91a0554056cb0e05d1ae3261b0"
+    },
+    "lib/codex/lib/librt.so.1": {
+      "bytes": 17568,
+      "mode": 493,
+      "sha256": "bba80a7e69ba2d2afb60dd38ce251babad50bc2ae048fa8e6d4638df3f857671"
+    },
+    "lib/codex/lib/libutil.so.1": {
+      "bytes": 17472,
+      "mode": 493,
+      "sha256": "1e10f2f88caf7a5f15543a267c2577f8813325231c2b6a1178d32cfbc7ce1e7c"
+    },
+    "lib/codex/libexec/codex.bin": {
+      "bytes": 318579008,
+      "mode": 493,
+      "sha256": "0b82d7f1535ab98ca2854dad0ac908912c9df56f29bb70c664e18e9956dc4a3f"
+    },
+    "lib/codex/share/ca-bundle.crt": {
+      "bytes": 521594,
+      "mode": 420,
+      "sha256": "10608e4255ef550895125880d93c736051e54a7b5dfc746d1ec5bdb81816926f"
+    }
+  },
+  "loader_relocation": {
+    "declared_loader_bytes": 263056,
+    "declared_loader_sha256": "1640ec4d1cfcc3c19430b368cbbb057c5652eac340ecba12cf9dfbe2c3769d07",
+    "original_interpreter": "/lib64/ld-linux-x86-64.so.2"
+  },
+  "native_support": false,
+  "runtime": {
+    "backendInterpreter": "/omux/launch-via-bin-wrapper",
+    "backend_max_bytes": 536870912,
+    "caBundle": "lib/codex/share/ca-bundle.crt",
+    "dependencies": [
+      "lib/codex/lib/ld-linux-x86-64.so.2",
+      "lib/codex/lib/libc.so.6",
+      "lib/codex/lib/libdl.so.2",
+      "lib/codex/lib/libm.so.6",
+      "lib/codex/lib/libpthread.so.0",
+      "lib/codex/lib/librt.so.1",
+      "lib/codex/lib/libutil.so.1"
+    ],
+    "loader": "lib/codex/lib/ld-linux-x86-64.so.2"
+  },
+  "runtime_input_inventory": [
+    {
+      "basename": "libblkid.so",
+      "bytes": 462416,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libblkid.so.1.1.0",
+      "sha256": "de6be66a686b3057f1321e782c279b1517c206bb8c9291c96b82133db7fce328"
+    },
+    {
+      "basename": "libblkid.so.1",
+      "bytes": 462416,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libblkid.so.1.1.0",
+      "sha256": "de6be66a686b3057f1321e782c279b1517c206bb8c9291c96b82133db7fce328"
+    },
+    {
+      "basename": "libblkid.so.1.1.0",
+      "bytes": 462416,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libblkid.so.1.1.0",
+      "sha256": "de6be66a686b3057f1321e782c279b1517c206bb8c9291c96b82133db7fce328"
+    },
+    {
+      "basename": "libfdisk.so",
+      "bytes": 615296,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libfdisk.so.1.1.0",
+      "sha256": "383448db96b33c455fc1a2744a9120d1781784f0fc0e00d82874452d3231fb3e"
+    },
+    {
+      "basename": "libfdisk.so.1",
+      "bytes": 615296,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libfdisk.so.1.1.0",
+      "sha256": "383448db96b33c455fc1a2744a9120d1781784f0fc0e00d82874452d3231fb3e"
+    },
+    {
+      "basename": "libfdisk.so.1.1.0",
+      "bytes": 615296,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libfdisk.so.1.1.0",
+      "sha256": "383448db96b33c455fc1a2744a9120d1781784f0fc0e00d82874452d3231fb3e"
+    },
+    {
+      "basename": "libmount.so",
+      "bytes": 588328,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libmount.so.1.1.0",
+      "sha256": "f195a1e60c09d61df73b4df8f51856a3aeafb30c873f0c82ba76452e0b81df95"
+    },
+    {
+      "basename": "libmount.so.1",
+      "bytes": 588328,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libmount.so.1.1.0",
+      "sha256": "f195a1e60c09d61df73b4df8f51856a3aeafb30c873f0c82ba76452e0b81df95"
+    },
+    {
+      "basename": "libmount.so.1.1.0",
+      "bytes": 588328,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libmount.so.1.1.0",
+      "sha256": "f195a1e60c09d61df73b4df8f51856a3aeafb30c873f0c82ba76452e0b81df95"
+    },
+    {
+      "basename": "libsmartcols.so",
+      "bytes": 384296,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libsmartcols.so.1.1.0",
+      "sha256": "71d16d2812414d9fd4b2195ecc90db5f12cc2da295e2186fa7a85f405b3bd3a4"
+    },
+    {
+      "basename": "libsmartcols.so.1",
+      "bytes": 384296,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libsmartcols.so.1.1.0",
+      "sha256": "71d16d2812414d9fd4b2195ecc90db5f12cc2da295e2186fa7a85f405b3bd3a4"
+    },
+    {
+      "basename": "libsmartcols.so.1.1.0",
+      "bytes": 384296,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libsmartcols.so.1.1.0",
+      "sha256": "71d16d2812414d9fd4b2195ecc90db5f12cc2da295e2186fa7a85f405b3bd3a4"
+    },
+    {
+      "basename": "libuuid.so",
+      "bytes": 40672,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libuuid.so.1.3.0",
+      "sha256": "ff5eb409540e25b5d5fda469eff0b76f74482927bc0ee8a725a35edf3cb6a8a5"
+    },
+    {
+      "basename": "libuuid.so.1",
+      "bytes": 40672,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libuuid.so.1.3.0",
+      "sha256": "ff5eb409540e25b5d5fda469eff0b76f74482927bc0ee8a725a35edf3cb6a8a5"
+    },
+    {
+      "basename": "libuuid.so.1.3.0",
+      "bytes": 40672,
+      "declared_source": "/nix/store/291rd5nk7hkhcpzbh7pxqiz75xikdll3-util-linux-minimal-2.42-lib/lib/libuuid.so.1.3.0",
+      "sha256": "ff5eb409540e25b5d5fda469eff0b76f74482927bc0ee8a725a35edf3cb6a8a5"
+    },
+    {
+      "basename": "libnghttp2.so",
+      "bytes": 229184,
+      "declared_source": "/nix/store/diikm4hp4qk6pll3q4d9sfiabv6w071r-nghttp2-1.70.0-lib/lib/libnghttp2.so.14.29.5",
+      "sha256": "266fe0c32de0c0d684feac64319831eb86ca6abe5939021272d80e978b670168"
+    },
+    {
+      "basename": "libnghttp2.so.14",
+      "bytes": 229184,
+      "declared_source": "/nix/store/diikm4hp4qk6pll3q4d9sfiabv6w071r-nghttp2-1.70.0-lib/lib/libnghttp2.so.14.29.5",
+      "sha256": "266fe0c32de0c0d684feac64319831eb86ca6abe5939021272d80e978b670168"
+    },
+    {
+      "basename": "libnghttp2.so.14.29.5",
+      "bytes": 229184,
+      "declared_source": "/nix/store/diikm4hp4qk6pll3q4d9sfiabv6w071r-nghttp2-1.70.0-lib/lib/libnghttp2.so.14.29.5",
+      "sha256": "266fe0c32de0c0d684feac64319831eb86ca6abe5939021272d80e978b670168"
+    },
+    {
+      "basename": "libcurl.so",
+      "bytes": 903384,
+      "declared_source": "/nix/store/dl9sli7g3ifz538v89d7zs1z6j7q17dw-curl-8.22.0/lib/libcurl.so.4.8.0",
+      "sha256": "db12d06d89bfa17d814ff031112f6a0cc7bc8b84d23c709f87fd9204407876bf"
+    },
+    {
+      "basename": "libcurl.so.4",
+      "bytes": 903384,
+      "declared_source": "/nix/store/dl9sli7g3ifz538v89d7zs1z6j7q17dw-curl-8.22.0/lib/libcurl.so.4.8.0",
+      "sha256": "db12d06d89bfa17d814ff031112f6a0cc7bc8b84d23c709f87fd9204407876bf"
+    },
+    {
+      "basename": "libcurl.so.4.8.0",
+      "bytes": 903384,
+      "declared_source": "/nix/store/dl9sli7g3ifz538v89d7zs1z6j7q17dw-curl-8.22.0/lib/libcurl.so.4.8.0",
+      "sha256": "db12d06d89bfa17d814ff031112f6a0cc7bc8b84d23c709f87fd9204407876bf"
+    },
+    {
+      "basename": "sotruss-lib.so",
+      "bytes": 16808,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/audit/sotruss-lib.so",
+      "sha256": "267696e4d942c5a289e7c84bcbddd068232268572ce0885584d9eb328d72d3f5"
+    },
+    {
+      "basename": "ANSI_X3.110.so",
+      "bytes": 28608,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ANSI_X3.110.so",
+      "sha256": "62468c9c7fd874ec7caf15c94d7867516f1aba6a124e52a7c733355b3e755c77"
+    },
+    {
+      "basename": "ARMSCII-8.so",
+      "bytes": 20136,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ARMSCII-8.so",
+      "sha256": "fbb0d01a60e5bc2ff1cb56821085ebdffcf56fb957ad47f18c7e29a3ac79748a"
+    },
+    {
+      "basename": "ASMO_449.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ASMO_449.so",
+      "sha256": "8a79bf126bccc4c810839817c57d8bf69648850501cad7b7ded180860608b370"
+    },
+    {
+      "basename": "BIG5.so",
+      "bytes": 98584,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/BIG5.so",
+      "sha256": "f5bcbb6a9a7ead34fea4960fd3f1725813792fa9091ca8c9bd515bb2a139e737"
+    },
+    {
+      "basename": "BIG5HKSCS.so",
+      "bytes": 241432,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/BIG5HKSCS.so",
+      "sha256": "49434426a7e41d96713caafdbd1c4b77ead738adef0cf3e51ea83663a3e49037"
+    },
+    {
+      "basename": "BRF.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/BRF.so",
+      "sha256": "2e89a075c853aa983260f50d05cd52cf60ca78d13fc3468357649dbf0e635cdf"
+    },
+    {
+      "basename": "CP10007.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP10007.so",
+      "sha256": "36485e3de14f24512985349d8af93b986915af67a7798e1cc903f09d13b1aaa8"
+    },
+    {
+      "basename": "CP1125.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1125.so",
+      "sha256": "c5ef2fc754ee7c42e107a242af6047927152530bae3fb717e31959b792298da2"
+    },
+    {
+      "basename": "CP1250.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1250.so",
+      "sha256": "c2928a9b11b0ec303761ab380f26361971b54ed78e5721afc8b2618df8dbb192"
+    },
+    {
+      "basename": "CP1251.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1251.so",
+      "sha256": "49b6a3b67165cd7adc64b2b81c70ef52bda246a3729daf2cccd7173ad8fb5b7d"
+    },
+    {
+      "basename": "CP1252.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1252.so",
+      "sha256": "d318ce6b96715058038d4347ca7a417a9f44c41720ba194fa3d2625d69f5efda"
+    },
+    {
+      "basename": "CP1253.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1253.so",
+      "sha256": "fdc7d17f49a01d89241ed17defb3f0b396dcf79f24eb1c2f8d65092154f8e64f"
+    },
+    {
+      "basename": "CP1254.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1254.so",
+      "sha256": "4bd8be2baba49b3737d8f8799598b5c3a6133e713eeb4d333f35eb3e4a58537c"
+    },
+    {
+      "basename": "CP1255.so",
+      "bytes": 20272,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1255.so",
+      "sha256": "ab7249cb652c7bf4897d1e7571d7a5a37f850240a5d5cccd8a336f1f709578db"
+    },
+    {
+      "basename": "CP1256.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1256.so",
+      "sha256": "fb804b340cb88eb6093c16290111ab71df598ce672d8152dd7ea1c387e170122"
+    },
+    {
+      "basename": "CP1257.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1257.so",
+      "sha256": "2780bccb2c4233f6d07ef43bc73ef611df94b62416fbf1e5009752ec4ce5a10b"
+    },
+    {
+      "basename": "CP1258.so",
+      "bytes": 20240,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1258.so",
+      "sha256": "c330b56d4c4fe0b15740bbc827fc5edf58c9296ba6c5accb5e1d4c29f731ca4e"
+    },
+    {
+      "basename": "CP737.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP737.so",
+      "sha256": "eb3198e22a8f2825131f0b2985a5fac6af047b7009e49a75db9a68aaf2a53273"
+    },
+    {
+      "basename": "CP770.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP770.so",
+      "sha256": "26b00e5d0a7e393830ec7567ea8d5821fb8df5956383621dcd5aae706e0fc153"
+    },
+    {
+      "basename": "CP771.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP771.so",
+      "sha256": "58acfeca48fbf7b149e5d1c6cf556c86a36a99d698edd682a96a0ff1238dec08"
+    },
+    {
+      "basename": "CP772.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP772.so",
+      "sha256": "6193ad1367e6cdb91d2ad7c2e71830b3f2c5c063cf9aec19214cab01098522d6"
+    },
+    {
+      "basename": "CP773.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP773.so",
+      "sha256": "b5f416269e224a63365fc6145e5b3e55a3452552cbabe5ca81aa250e641c5671"
+    },
+    {
+      "basename": "CP774.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP774.so",
+      "sha256": "e93808959be147841fa80b3e57412913ce4bee6e477ab09e06bf31eaa4cd105d"
+    },
+    {
+      "basename": "CP775.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP775.so",
+      "sha256": "2d077ccb97bbf9d3c823039b27ac69d6593f9ab7404d0278e5ce54a5ec8ae192"
+    },
+    {
+      "basename": "CP932.so",
+      "bytes": 102464,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP932.so",
+      "sha256": "b09f8b706307455d24a980128e83b34d55991e73643802c12c7e2598e01c881c"
+    },
+    {
+      "basename": "CSN_369103.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CSN_369103.so",
+      "sha256": "47c8567232965b76caac2462486f04748ddb919ce29a4a0f2108e7fd94ff2baf"
+    },
+    {
+      "basename": "CWI.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CWI.so",
+      "sha256": "8c74cc7e610c77920d9881b38cd37d525b25c45efad6be41d1c9dfaf44039ff5"
+    },
+    {
+      "basename": "DEC-MCS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/DEC-MCS.so",
+      "sha256": "b041540e7ed19cdbbc5bac6737d967bc4c5f301ae3fc666aa059ecf7bd6ca282"
+    },
+    {
+      "basename": "EBCDIC-AT-DE-A.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-AT-DE-A.so",
+      "sha256": "cf95cef119401464767e2258bb2c00dd5d1ca9e54dcc08650c2363f802ef1966"
+    },
+    {
+      "basename": "EBCDIC-AT-DE.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-AT-DE.so",
+      "sha256": "1a25f536f1fd3e631d7d25695e8d7993c5d5ce5afaeac6977fe71b26a6e1dcac"
+    },
+    {
+      "basename": "EBCDIC-CA-FR.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-CA-FR.so",
+      "sha256": "a1ca7c4562b1aabfc8ceb7b4b4c49a0353923c38a29798b98d43e036c1071866"
+    },
+    {
+      "basename": "EBCDIC-DK-NO-A.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-DK-NO-A.so",
+      "sha256": "2e8969b610d9cf0f704f75ea6b79eed34ed99e316233c2ab23cee95c322bfe8e"
+    },
+    {
+      "basename": "EBCDIC-DK-NO.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-DK-NO.so",
+      "sha256": "3df288dcab54deea488ac048a9826b47a86a10db9e27f3d938b9378b580729c7"
+    },
+    {
+      "basename": "EBCDIC-ES-A.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-ES-A.so",
+      "sha256": "caf81db9bc0ae8e25caf909ae75c8659821fbf1c0dc1da32ca626c0fe1ce3a1f"
+    },
+    {
+      "basename": "EBCDIC-ES-S.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-ES-S.so",
+      "sha256": "88607106942c93cad47841592c2287a405d78c378253e68a37cc72da2e2a2b68"
+    },
+    {
+      "basename": "EBCDIC-ES.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-ES.so",
+      "sha256": "1eec18bc4fb7ad91037fafdfe487fc4d66a703a8ba0ed4a55b28b48cfcb60c80"
+    },
+    {
+      "basename": "EBCDIC-FI-SE-A.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-FI-SE-A.so",
+      "sha256": "f6c008d85873509e3a1f4cf29755a7244b68f2a5d971cb6db27ffca5558172fb"
+    },
+    {
+      "basename": "EBCDIC-FI-SE.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-FI-SE.so",
+      "sha256": "3fe23e66f139772ab211e1f1d0cd6620b96c166ccd116dbb2645b062c3f19a3f"
+    },
+    {
+      "basename": "EBCDIC-FR.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-FR.so",
+      "sha256": "9d0d650f5cdb98849359d310d4c85bfa757e64a54d089c2cf05633eacad21892"
+    },
+    {
+      "basename": "EBCDIC-IS-FRISS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-IS-FRISS.so",
+      "sha256": "e1b4de81528d5cd534418ded7c74ca7e4d4193f2d38adbcb01968074498534a2"
+    },
+    {
+      "basename": "EBCDIC-IT.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-IT.so",
+      "sha256": "e82f564c5af1a108c5c0dcf050bf5728b7a8e9d303e5737bfb94f6f526688cd1"
+    },
+    {
+      "basename": "EBCDIC-PT.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-PT.so",
+      "sha256": "9f4667a9e6a11019526b86300c47b59ff73570f528018cf50242ecd46061b019"
+    },
+    {
+      "basename": "EBCDIC-UK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-UK.so",
+      "sha256": "cb3cff40b1fbefb2fb6b0bdbbd67f7e898ee6eb70aa862dce5711988317801f5"
+    },
+    {
+      "basename": "EBCDIC-US.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-US.so",
+      "sha256": "15cb8e7190e57da73d948b7dc8ae82a203137fa19156d74203f3d751819d0ff0"
+    },
+    {
+      "basename": "ECMA-CYRILLIC.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ECMA-CYRILLIC.so",
+      "sha256": "8d4c2e5a50f6776a8c7ca0d3f9898aa26f9b826f899327ad5600858d8c005fa2"
+    },
+    {
+      "basename": "EUC-CN.so",
+      "bytes": 24744,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-CN.so",
+      "sha256": "ab866da3322a5408ae4539ea75f493146c536c93bf3d1999ff048a930eed4d7c"
+    },
+    {
+      "basename": "EUC-JISX0213.so",
+      "bytes": 24568,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-JISX0213.so",
+      "sha256": "fac088f6409a6271db6ddcab90e2082b66c36b6da1379891b7088ebb2d76178b"
+    },
+    {
+      "basename": "EUC-JP-MS.so",
+      "bytes": 94304,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-JP-MS.so",
+      "sha256": "56e056bdc2e7e60133f62c45d76d02d07a0d1f5f3a7d1503f209a2f592e4b7ff"
+    },
+    {
+      "basename": "EUC-JP.so",
+      "bytes": 20640,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-JP.so",
+      "sha256": "f57b9311542a160f1ea97ef92cab3684bc3b3c05e0b0a7508627b330457ae7be"
+    },
+    {
+      "basename": "EUC-KR.so",
+      "bytes": 20368,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-KR.so",
+      "sha256": "ae40d52f8dc81a9991a49547b276f7899ada80d562a8c05caa907b6800b0c8ab"
+    },
+    {
+      "basename": "EUC-TW.so",
+      "bytes": 25512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-TW.so",
+      "sha256": "007c1f0caf72bccb26b4664f795728f889bda4f0eb65e49d83f28ec13cac0e8b"
+    },
+    {
+      "basename": "GB18030.so",
+      "bytes": 184152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GB18030.so",
+      "sha256": "d3e7b7f4641a5f8aa13f66d149aa6fe2eb4d8d72938e49d0144ac3443c7851e6"
+    },
+    {
+      "basename": "GBBIG5.so",
+      "bytes": 65184,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GBBIG5.so",
+      "sha256": "e645762601a1286e6a31dab8b48ccf8c4562ed782a928840b53cbf17650bfd5d"
+    },
+    {
+      "basename": "GBGBK.so",
+      "bytes": 20096,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GBGBK.so",
+      "sha256": "1b4a038d28754fc02df537ef63bfce75f1c517636f26110bff0dbcce723feb65"
+    },
+    {
+      "basename": "GBK.so",
+      "bytes": 123072,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GBK.so",
+      "sha256": "cc75163012722fe09174574629359eb2b161903203e9e860caff9bb49d3f4575"
+    },
+    {
+      "basename": "GEORGIAN-ACADEMY.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GEORGIAN-ACADEMY.so",
+      "sha256": "1d8f674b0696faf25b67cb8e5f4acb034e46bfd3238bcfb0d550f6685385eeb1"
+    },
+    {
+      "basename": "GEORGIAN-PS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GEORGIAN-PS.so",
+      "sha256": "ff5c5e9139d8d22f59f80ee48d122e6165b1307af2c16866203195fc41ae7b6b"
+    },
+    {
+      "basename": "GOST_19768-74.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GOST_19768-74.so",
+      "sha256": "604c6d16cd87ea36db4749d709491449913bbd5a0daed8766f52ac656a3c9b9c"
+    },
+    {
+      "basename": "GREEK-CCITT.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GREEK-CCITT.so",
+      "sha256": "6c8aefcd148683bcb1294278656d7dfa29018bea7dfe17aec6d2aa32dd10c9e0"
+    },
+    {
+      "basename": "GREEK7-OLD.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GREEK7-OLD.so",
+      "sha256": "af0fd4215d6f93b69e61584d53d49826ac4dd4876c96fe5e36edff13ac25c8d7"
+    },
+    {
+      "basename": "GREEK7.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GREEK7.so",
+      "sha256": "9737cdea28fa84f89565c4c5175f8713cdef2faa55b2fd53b7f58f50c607a2bf"
+    },
+    {
+      "basename": "HP-GREEK8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-GREEK8.so",
+      "sha256": "f76475fa2e4df60d70b775814ff2fe15606505c92df225431f6a2f3a6d052c8f"
+    },
+    {
+      "basename": "HP-ROMAN8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-ROMAN8.so",
+      "sha256": "56e9531ec5833fba414b2f6350b6b2ca1d7ee1511d016c1acdd2af7ad8ac3843"
+    },
+    {
+      "basename": "HP-ROMAN9.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-ROMAN9.so",
+      "sha256": "9915fbf01cfee8c0e53086e691fd6061272fa4b72de325ab1984ae74d59e8ab9"
+    },
+    {
+      "basename": "HP-THAI8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-THAI8.so",
+      "sha256": "36bffc263c834c18065864e2a04c8a36f72e35d26a9d4f01d245cf795bf5634b"
+    },
+    {
+      "basename": "HP-TURKISH8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-TURKISH8.so",
+      "sha256": "49bd792b90b63f3ddc17277a4831105f986956f1cc360722f687d3bf171f4718"
+    },
+    {
+      "basename": "IBM037.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM037.so",
+      "sha256": "3f5ff0c293fe798243649a26d829688bdb0b482fa496078cd3e76d0258b2b258"
+    },
+    {
+      "basename": "IBM038.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM038.so",
+      "sha256": "b21d3e31f956a1d71340907f5e51c1f4ec8c80ced839d0b925685d0665cbd40a"
+    },
+    {
+      "basename": "IBM1004.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1004.so",
+      "sha256": "96d8063790099e0c2cb01dcf1a7b3ea01e35e92d59e023841a4a24f964a233f6"
+    },
+    {
+      "basename": "IBM1008.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1008.so",
+      "sha256": "c7d2f22aa58979fa608cd4058dc8fc9f39f83f6a2f5e18219d6a1c6fdc7fec2d"
+    },
+    {
+      "basename": "IBM1008_420.so",
+      "bytes": 15944,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1008_420.so",
+      "sha256": "9f07648987626a51ba3167eb5bb0dd260904ff17e3d6a4c3001fa5a11bc8defe"
+    },
+    {
+      "basename": "IBM1025.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1025.so",
+      "sha256": "c5d643a5815d4af64ded371d52b9b6dc90132845b0820c8e1a6f9b66450158fb"
+    },
+    {
+      "basename": "IBM1026.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1026.so",
+      "sha256": "5ae0719a78ad9c2b60db7dbd8874ef13fd2d4d1c62ef60262634ebbbe632ffc2"
+    },
+    {
+      "basename": "IBM1046.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1046.so",
+      "sha256": "5d56e21f8e5f8acac269ee6da3cc6c9b3c6ac15643254b5325c09772614e8b5c"
+    },
+    {
+      "basename": "IBM1047.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1047.so",
+      "sha256": "2b10cb8e2970ccb16c2065caf8d6b8141894291d47398f379ba009ae286ab719"
+    },
+    {
+      "basename": "IBM1097.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1097.so",
+      "sha256": "300932a645a110c0fa8b0f8f7c5dadc0352ef23fa3314881436ab529f433b6e5"
+    },
+    {
+      "basename": "IBM1112.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1112.so",
+      "sha256": "845262ba2b9a4d3a65d92862b9bf7b89e0889b06121980913a6d213d14724a66"
+    },
+    {
+      "basename": "IBM1122.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1122.so",
+      "sha256": "99ac5860a8d77901ebe33e52d02c5c74fcac460abf261c8c25496a379f42fa87"
+    },
+    {
+      "basename": "IBM1123.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1123.so",
+      "sha256": "afd61d9c789eec0cee0346071d46f9c8d8e6f1a68b4fb5bfcebba7025da610cc"
+    },
+    {
+      "basename": "IBM1124.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1124.so",
+      "sha256": "723eb7b76ec23c8b67208ce83bdf9774f5ce25e5db043469ce9a385e77284642"
+    },
+    {
+      "basename": "IBM1129.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1129.so",
+      "sha256": "07c4e72a15b5ce5d625cd7515d1d257ab15a6d094baad1c212d439303cf18264"
+    },
+    {
+      "basename": "IBM1130.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1130.so",
+      "sha256": "d9e03d86e4acaeda66f8adddf97f2932746c9e6e7e586f52c2ce475e3f1dbc53"
+    },
+    {
+      "basename": "IBM1132.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1132.so",
+      "sha256": "04ca7963ba275ca5e68f76f20fca86029cc50cf2ff23e4240060c34c4eaac9e0"
+    },
+    {
+      "basename": "IBM1133.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1133.so",
+      "sha256": "232502560b0b0f21f124cc5fdadacd0051c3291eeafbbc43f9cc394ff8942304"
+    },
+    {
+      "basename": "IBM1137.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1137.so",
+      "sha256": "6b7480a6d024968836116225b03040105c5673bb20b207acf960e8f79dbbeceb"
+    },
+    {
+      "basename": "IBM1140.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1140.so",
+      "sha256": "e65035d503ab343eb38e6ed2cfba64806b5bf983952517841aaea59f0e52133e"
+    },
+    {
+      "basename": "IBM1141.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1141.so",
+      "sha256": "f64a9dd1f0982e520d3b38102be17a5e0aeb1a7e13e46c58403102ea40b4aefb"
+    },
+    {
+      "basename": "IBM1142.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1142.so",
+      "sha256": "edfa6068607483ed37da214f49b46162860c13e900e6abce200ee0a9b750a785"
+    },
+    {
+      "basename": "IBM1143.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1143.so",
+      "sha256": "5c5f98849ecb5c056141353e86c1384e0bedcdba1fbfab8b6f47cfd6a2c86982"
+    },
+    {
+      "basename": "IBM1144.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1144.so",
+      "sha256": "dfab13909a61c00af8a1af320b9f65c0aca2456a5b74acabcca41d27ffc747cb"
+    },
+    {
+      "basename": "IBM1145.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1145.so",
+      "sha256": "f8066cf098a20ed5fc77fcaec74cc1738388116f7917f8932140a2692cdf536d"
+    },
+    {
+      "basename": "IBM1146.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1146.so",
+      "sha256": "e8dda3b0a3f0313fa78b15d74173c6be46a5ccfacc7a8a216970d6b3e096f80d"
+    },
+    {
+      "basename": "IBM1147.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1147.so",
+      "sha256": "54b5b3d03684cad45f3341ed380a19b9bdfd2e156ab85e4def7558aeebbbba38"
+    },
+    {
+      "basename": "IBM1148.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1148.so",
+      "sha256": "54c192858acf1e27624261458e84c1787dba80c1c89708160b548d4e01981b70"
+    },
+    {
+      "basename": "IBM1149.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1149.so",
+      "sha256": "631c253bab97cccef8557c0e84e584163f81bbdbb6fe5be94069fba602e43fa1"
+    },
+    {
+      "basename": "IBM1153.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1153.so",
+      "sha256": "0112c8dc871105698c9dbe274ed1c578a9aaa76b5823d9238125a9f7f7785e40"
+    },
+    {
+      "basename": "IBM1154.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1154.so",
+      "sha256": "7fcab7161209cbe6e13020746c3d202f49e3ec4d5cd43125d1dd0c43cf2e1a02"
+    },
+    {
+      "basename": "IBM1155.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1155.so",
+      "sha256": "b876aa60c28dc499e0159b54dd15e0ce1b68b9d83865ce94ad7643e8721d3269"
+    },
+    {
+      "basename": "IBM1156.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1156.so",
+      "sha256": "10db55e311bb2f597a18d6e024f46c59ba3956a6c017251c794794a02bd07aad"
+    },
+    {
+      "basename": "IBM1157.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1157.so",
+      "sha256": "e4d23c23f33e8f85e7fcb7447c46da313ba3452d0b90799141d82250e23f6419"
+    },
+    {
+      "basename": "IBM1158.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1158.so",
+      "sha256": "5e4e1ef38889c834df302a16b54a0bc02252e2468ed4cbe7fa108bbec124fa8c"
+    },
+    {
+      "basename": "IBM1160.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1160.so",
+      "sha256": "04a8cefb7f7e18fafd01015b9268bfd2e1d9c47888bb6cd7081d4e15db8f87c8"
+    },
+    {
+      "basename": "IBM1161.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1161.so",
+      "sha256": "ad899637142e897c52c7494d59dfaaf4b60c0afef72a16bf6d7f47361544a223"
+    },
+    {
+      "basename": "IBM1162.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1162.so",
+      "sha256": "7b097f1ec28a369b383ef2d6175b068d9302c683b288e65091415757a08d6b06"
+    },
+    {
+      "basename": "IBM1163.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1163.so",
+      "sha256": "6ae4f573e8148a1410a8ca5dd77782b1c78810b99c77a5e361351717d11b3b00"
+    },
+    {
+      "basename": "IBM1164.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1164.so",
+      "sha256": "82f9ba839ef534b3becd7f6e2535b59f5f0f4bd6335c40df9a6f4e1150d5a9b2"
+    },
+    {
+      "basename": "IBM1166.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1166.so",
+      "sha256": "bd0d1a3f97e78304873489b26aaeca77521dbda1b1c2761571ee603f324e3041"
+    },
+    {
+      "basename": "IBM1167.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1167.so",
+      "sha256": "7e52523929f172a9958549a2916b4ba4d715ca2b06db33a748f2be4806ce625c"
+    },
+    {
+      "basename": "IBM12712.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM12712.so",
+      "sha256": "cb7e31c9c2ee9ee34e907851f105b5f7bbafc34b28b8eb771bfdaf39f8da28ad"
+    },
+    {
+      "basename": "IBM1364.so",
+      "bytes": 159664,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1364.so",
+      "sha256": "62981d175001c66b43ba3750b8dac7900f7e2f4b1ff827e357c7f1a876784943"
+    },
+    {
+      "basename": "IBM1371.so",
+      "bytes": 135088,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1371.so",
+      "sha256": "7cbf0d49379ca3704b1d3fd8a953325aeacd386834a1ca97e33a3ec7690a97f7"
+    },
+    {
+      "basename": "IBM1388.so",
+      "bytes": 180144,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1388.so",
+      "sha256": "1292201b48e2294a6c268d118dc4d493ac1ef1e6888b09574c25d83ec9147ab3"
+    },
+    {
+      "basename": "IBM1390.so",
+      "bytes": 237600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1390.so",
+      "sha256": "d24d950fbdaabb66016824c28d4c08e4f96d14b4e0860e243ff089de549f150c"
+    },
+    {
+      "basename": "IBM1399.so",
+      "bytes": 237600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1399.so",
+      "sha256": "a642a01dd4ecb53aa6c28e6e2498591eff0546ca475c31436392cd1ba80a4595"
+    },
+    {
+      "basename": "IBM16804.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM16804.so",
+      "sha256": "f3e7fe11c4e567103250d6aeb99934f2303f02efcfdf9ccc44db0f9bf42a93f5"
+    },
+    {
+      "basename": "IBM256.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM256.so",
+      "sha256": "6ecaa798fb308fe4a450338fa073514d7b34c178bd5865b512e9ecafdb992aba"
+    },
+    {
+      "basename": "IBM273.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM273.so",
+      "sha256": "92972adda6051b2240ce9d77542b9183c9501cfaf241123b27c37c515436996b"
+    },
+    {
+      "basename": "IBM274.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM274.so",
+      "sha256": "8a3d663faf14e9c38797932b343c75798e9a20e511650f97fed3272a2bc82dc2"
+    },
+    {
+      "basename": "IBM275.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM275.so",
+      "sha256": "88d6cc528413ae7bc5a2ea589ca18e857b2ab124896f51cf509dc0cf5db42b30"
+    },
+    {
+      "basename": "IBM277.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM277.so",
+      "sha256": "fd30fe9a53f742425fb6c44d4c71baacc853f187f25e8e5d7d49d059af9a1569"
+    },
+    {
+      "basename": "IBM278.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM278.so",
+      "sha256": "e4b196fee97ead33eb094e64d8c777109df75e3b9b8cf9ad0e234a9a735215ab"
+    },
+    {
+      "basename": "IBM280.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM280.so",
+      "sha256": "735ff79200ca696269b24ba8087e96d094645f8a2ad97ef52a2d98411838e79c"
+    },
+    {
+      "basename": "IBM281.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM281.so",
+      "sha256": "3c8e4e170e2cb6bd1b8d18646a40a1ba6b85f11872234e9abdb92a95dd8af58d"
+    },
+    {
+      "basename": "IBM284.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM284.so",
+      "sha256": "32aad1db9e19c180a11e153c0c1635ec13fbe9996e51e340744a9788d0565819"
+    },
+    {
+      "basename": "IBM285.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM285.so",
+      "sha256": "bcbdbeedff46435933fb6bbdb2dc858744b81832a86223f195f32bace2279eaa"
+    },
+    {
+      "basename": "IBM290.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM290.so",
+      "sha256": "bb05f5f50b683b8a85fa6115c1a8fe6bbe6d253764a1a54452df310549421409"
+    },
+    {
+      "basename": "IBM297.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM297.so",
+      "sha256": "9d7d1671da58e35af975fd692bf2d8d0635b4427adf843e214279590f0b840e3"
+    },
+    {
+      "basename": "IBM420.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM420.so",
+      "sha256": "360c3243b653ade3dbc508e27336ac335c46e8fa6174cb2990144bc5cb9ecae8"
+    },
+    {
+      "basename": "IBM423.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM423.so",
+      "sha256": "4ba88891f74fcd29cd6a77c8d443af1681999e5f306a47bf5c78fd7f328e1098"
+    },
+    {
+      "basename": "IBM424.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM424.so",
+      "sha256": "0408561b2fc1f6dfb21424c3293215e031213d5ada7892e972c69bd27d9c81db"
+    },
+    {
+      "basename": "IBM437.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM437.so",
+      "sha256": "9d22b016f0db856e265f0a6ccb64e68ae45e0b6ac2a1457d973a37a5d5073652"
+    },
+    {
+      "basename": "IBM4517.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4517.so",
+      "sha256": "a2afd68989da8bc8540c4674317358bc553a427d915472f23131bf2d66538256"
+    },
+    {
+      "basename": "IBM4899.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4899.so",
+      "sha256": "b53061b962e2f86cc621bf725eaacc67d0ff3c483e5509d8bd912f221fe842e8"
+    },
+    {
+      "basename": "IBM4909.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4909.so",
+      "sha256": "53d867cb1aec0f72f20533e662c3941f2f89ff3e1239b302471958782ae210e4"
+    },
+    {
+      "basename": "IBM4971.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4971.so",
+      "sha256": "e5304fdaba89c1d599efeb45a8012cc68bd75d0809d22a693e7937d1bbc8cf66"
+    },
+    {
+      "basename": "IBM500.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM500.so",
+      "sha256": "b74ce00acc8fc962b3cf10c0697d43a139c8f7d07e5a8e39f9a503241e800d30"
+    },
+    {
+      "basename": "IBM5347.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM5347.so",
+      "sha256": "bab3c9b37e2e230ae3b0c379aa16d54cc29d799a73883df4da36b1beaa6016f8"
+    },
+    {
+      "basename": "IBM803.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM803.so",
+      "sha256": "7ac2d68deec9599fe7541bfc334f54321c8fdafe81912794e2c99d270ac0e5da"
+    },
+    {
+      "basename": "IBM850.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM850.so",
+      "sha256": "3148113f55e726d74a01ad0dcf3e9679823bf20d9d6d08896f0c8a430fd4884a"
+    },
+    {
+      "basename": "IBM851.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM851.so",
+      "sha256": "bd125d1a2ff629e867531ece0749e67fb6bfeebf5476c40805c86088295397ea"
+    },
+    {
+      "basename": "IBM852.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM852.so",
+      "sha256": "2e1f95e9ce08388cd33bb66191fe4ce56762c4695f4f6435fbc6e4f36c959792"
+    },
+    {
+      "basename": "IBM855.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM855.so",
+      "sha256": "55e4c75e1b1a1b9998bbfa1a87bbef1e1f30392fe4bd51842b78e11e8634de82"
+    },
+    {
+      "basename": "IBM856.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM856.so",
+      "sha256": "af041b0ce4e040aa558ce60e945b4f94d9cf0c4d4431446b9d0a93265a17b0f1"
+    },
+    {
+      "basename": "IBM857.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM857.so",
+      "sha256": "a861e1a6b71799722a27cd9f805392620f00dafe9bc5bc5028beeedd6ac7257e"
+    },
+    {
+      "basename": "IBM858.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM858.so",
+      "sha256": "6001482c814471d7394ad855ec225240ee17731cdf3e9f6507c3f3d869b3e5c8"
+    },
+    {
+      "basename": "IBM860.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM860.so",
+      "sha256": "487c91e1048d0c3a4a9de8cc2ed40abf1f4758a4dee97a1642932e992a25aa7c"
+    },
+    {
+      "basename": "IBM861.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM861.so",
+      "sha256": "3db2ea7c9d2a83187d144235c39d43a87e1d916228a00433e3938dfe08468710"
+    },
+    {
+      "basename": "IBM862.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM862.so",
+      "sha256": "2538a795f12d77dd109dc3633b537a2e0a94a3c513d7c9ded77a30d91fa048b2"
+    },
+    {
+      "basename": "IBM863.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM863.so",
+      "sha256": "5788642ea2de96806d95699e5bee10d07ef24e382455196d4d2c1b2e70f2efe4"
+    },
+    {
+      "basename": "IBM864.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM864.so",
+      "sha256": "e536f4de442c97cad9dc84f61de56c732bfa82e08cb9918cd7a1cb05c33cc1b6"
+    },
+    {
+      "basename": "IBM865.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM865.so",
+      "sha256": "028c793598009fbd42d64d8bb8439eb7724cce9733025873a2e04a917d2e32f1"
+    },
+    {
+      "basename": "IBM866.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM866.so",
+      "sha256": "c6943689c02c637d3b6d4c0c14e2091c223f711fcbe93175a32baae5945baeeb"
+    },
+    {
+      "basename": "IBM866NAV.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM866NAV.so",
+      "sha256": "e9f30ac93d3718138db212dbdff7658d088e49790da37437f11658e9d41c8697"
+    },
+    {
+      "basename": "IBM868.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM868.so",
+      "sha256": "a83c679636e4ec0fbc362dabaf460926e0b36e169f3ec5c28724cb56b35dce4a"
+    },
+    {
+      "basename": "IBM869.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM869.so",
+      "sha256": "d7e5f67c12e55528866233c528913851093d757e5f2f01b2b477dff0b2848a14"
+    },
+    {
+      "basename": "IBM870.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM870.so",
+      "sha256": "df7970be62ab340c7bd57959693160beb493883d508c21045c578643ee236aaf"
+    },
+    {
+      "basename": "IBM871.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM871.so",
+      "sha256": "a1f1e15b2fa1010b1b2c0227e3d9f642d1dadbfaf211c880fef3c7eac63e84c0"
+    },
+    {
+      "basename": "IBM874.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM874.so",
+      "sha256": "70e319c7f673a55dfc7a3e561b201c1b3b8e552555403e0eae25fd7ae555dacb"
+    },
+    {
+      "basename": "IBM875.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM875.so",
+      "sha256": "76cccac723a771709e02aee10cce794c3aff670be34898eafbd53132160faf92"
+    },
+    {
+      "basename": "IBM880.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM880.so",
+      "sha256": "9acec63f7afb47652bd6a768c4f080693b76b9c0aa79a048fbfe09195aea6694"
+    },
+    {
+      "basename": "IBM891.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM891.so",
+      "sha256": "e005829a7e357b271b7918d4a805cfc4ba2029bdd140e255020559da0b9c616e"
+    },
+    {
+      "basename": "IBM901.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM901.so",
+      "sha256": "6c6acecc4d74252b23d6bb7b50787270259835c04393bf085396119dfd4c403a"
+    },
+    {
+      "basename": "IBM902.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM902.so",
+      "sha256": "12ceef1d8c46860d5eeece664d515894efeda3b7d91c68a380c23c87adae8d90"
+    },
+    {
+      "basename": "IBM903.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM903.so",
+      "sha256": "c805a6e711adea1a405e3e9674f65a90d664d19a50980c1a20988d544e71fe76"
+    },
+    {
+      "basename": "IBM9030.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM9030.so",
+      "sha256": "ee4e28d8263617db72dbe8a10bb9884df3c568237f508307ec6122df2b6cc0f4"
+    },
+    {
+      "basename": "IBM904.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM904.so",
+      "sha256": "049a756862bad031a6974ab90487a6efe10c29ce5c85fc0ca400dcdea50b3ee5"
+    },
+    {
+      "basename": "IBM905.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM905.so",
+      "sha256": "253671710600ae7dc794a3e6a4b4c5b7821a69f2ad0e38c2bfdb99c7acc2670b"
+    },
+    {
+      "basename": "IBM9066.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM9066.so",
+      "sha256": "0105eadb2837c60d693935299e9693f4d78554a786f6e559bc831dcef1f21788"
+    },
+    {
+      "basename": "IBM918.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM918.so",
+      "sha256": "787ed5dd13850e820548082ae93c348dec37228a2208bcf4efb640087f4c5c29"
+    },
+    {
+      "basename": "IBM921.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM921.so",
+      "sha256": "4c7171e4f75ef67c48f0c2c5e888ed9df9b8a579697f5d9a815f83e1d928a4f6"
+    },
+    {
+      "basename": "IBM922.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM922.so",
+      "sha256": "080fb1890b29f829b047ec9d4a48b9b8e9b76ce777b1d5e7c15617bcdab689de"
+    },
+    {
+      "basename": "IBM930.so",
+      "bytes": 102376,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM930.so",
+      "sha256": "0a784cdd72e10db944f55877190d7db83368287137dc50a9393b40a13ff56718"
+    },
+    {
+      "basename": "IBM932.so",
+      "bytes": 77744,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM932.so",
+      "sha256": "4b39b46bf0361d5259a67b489a211a5efa35b1756823b579ec5c63e7e32cf128"
+    },
+    {
+      "basename": "IBM933.so",
+      "bytes": 122856,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM933.so",
+      "sha256": "5613fb16e04a40183b3fdceda9411a1c68ec132f81a7b10f0f963f7c19e60bdb"
+    },
+    {
+      "basename": "IBM935.so",
+      "bytes": 90088,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM935.so",
+      "sha256": "9f713e4346936cf09f22e151733708703d797fe91dd58070207a8059182417d4"
+    },
+    {
+      "basename": "IBM937.so",
+      "bytes": 118760,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM937.so",
+      "sha256": "f19f9616eeca473c1878255a2a7f037233dbc74b3dc6d732e0a32888b718b49a"
+    },
+    {
+      "basename": "IBM939.so",
+      "bytes": 102376,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM939.so",
+      "sha256": "142a4bcbfc2509c1849cb0ae7bf56db58c24aeaa6523fe27b263483c4722ecfb"
+    },
+    {
+      "basename": "IBM943.so",
+      "bytes": 77744,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM943.so",
+      "sha256": "85676682bcf9327d715d1ac21a95d33ff3972e8336005923bd3c422186d35f03"
+    },
+    {
+      "basename": "IBM9448.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM9448.so",
+      "sha256": "5980828e7f837c7223c3d678efced1c8037d529f25abcd70461f1028c0eae70c"
+    },
+    {
+      "basename": "IEC_P27-1.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IEC_P27-1.so",
+      "sha256": "f3ab6095344e55ae7a505e2ab0cd8ceae8899aa61d4ab3fc3436f50a06798966"
+    },
+    {
+      "basename": "INIS-8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/INIS-8.so",
+      "sha256": "13b27823464cb5b9c14b120c0b92c6a570f5ce6693c26056caa008f3f8aa35cd"
+    },
+    {
+      "basename": "INIS-CYRILLIC.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/INIS-CYRILLIC.so",
+      "sha256": "ed4cb8bc9c78d000ab94385c41253914d9b99d570538b21ac718865a8c63d5db"
+    },
+    {
+      "basename": "INIS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/INIS.so",
+      "sha256": "5cd433c974855f87eb3e6d5e1c80bd5844bb9f7a2791bc71a240bf2a665670c1"
+    },
+    {
+      "basename": "ISIRI-3342.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISIRI-3342.so",
+      "sha256": "3d6f84a34e6bb5b8334f25adcd301de9083917e9d7c10145888a560389089e54"
+    },
+    {
+      "basename": "ISO-2022-CN-EXT.so",
+      "bytes": 58928,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-CN-EXT.so",
+      "sha256": "e8eae118d4dfb373c15f29b8348cc81c353be6a77ab8be68671779b2b1be7650"
+    },
+    {
+      "basename": "ISO-2022-CN.so",
+      "bytes": 42024,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-CN.so",
+      "sha256": "055950080ad105b6fb05955b2f98686ad4f56c768343d50a5b1dc07c06d30354"
+    },
+    {
+      "basename": "ISO-2022-JP-3.so",
+      "bytes": 37104,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-JP-3.so",
+      "sha256": "837522411bd4ab4f404d422bc7715e447f5e11f90491913f9b4d63d9f375e148"
+    },
+    {
+      "basename": "ISO-2022-JP.so",
+      "bytes": 62736,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-JP.so",
+      "sha256": "a02460df8b37cac81e1ab6b6e447d475f16f5ca8f32198abf653c970c3281fec"
+    },
+    {
+      "basename": "ISO-2022-KR.so",
+      "bytes": 24472,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-KR.so",
+      "sha256": "5d7a7b96a14aeb420d233006a3d328424dddde14c4a58aa7f7dfc155023c553d"
+    },
+    {
+      "basename": "ISO-IR-197.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-IR-197.so",
+      "sha256": "565a291ec26ff309bc9c14feeeb97f07b29d4ccf7657e97db9e268e90289b0d8"
+    },
+    {
+      "basename": "ISO-IR-209.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-IR-209.so",
+      "sha256": "b45d0077e677a7a7abb06cfe56ceb098230857b096cbb302f8e71fa7f43600f1"
+    },
+    {
+      "basename": "ISO646.so",
+      "bytes": 44824,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO646.so",
+      "sha256": "5b84e8cddab176424510378b8faef01457e9fc524168d050373a3afb48f81082"
+    },
+    {
+      "basename": "ISO8859-1.so",
+      "bytes": 20048,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-1.so",
+      "sha256": "ccaf47e39352a6dce19953a335b631d2639dc39a6e0f014d063cb5e31f9375f6"
+    },
+    {
+      "basename": "ISO8859-10.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-10.so",
+      "sha256": "8da4af988b5933dbdc6f26b6584f3923ad4c5b9e62e47fd5206784ab69e9acbe"
+    },
+    {
+      "basename": "ISO8859-11.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-11.so",
+      "sha256": "35efb7b750076c40c21ec8d865085e94f699c23b348a847424db406e113c56b6"
+    },
+    {
+      "basename": "ISO8859-13.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-13.so",
+      "sha256": "9bbf6641c21b6ea7e0a63d4c6c8005d3f2ab0508fc1d45b71e17e2c4fdab9228"
+    },
+    {
+      "basename": "ISO8859-14.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-14.so",
+      "sha256": "335673f75e52418003e0729977cbd12e140ae2d50f40c85443f58032b907d509"
+    },
+    {
+      "basename": "ISO8859-15.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-15.so",
+      "sha256": "e49380cc53df7dbbd46bf2c27034565100c659d35705e2a23626ca976c814f10"
+    },
+    {
+      "basename": "ISO8859-16.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-16.so",
+      "sha256": "44a60d45516d3c5b7ff6438d5cc581239cf76f46d43d725bf1802235e4b76268"
+    },
+    {
+      "basename": "ISO8859-2.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-2.so",
+      "sha256": "cea11999ffa1740f21af1e890f52cff723eef9547b250f4e8c15d578b738a6c2"
+    },
+    {
+      "basename": "ISO8859-3.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-3.so",
+      "sha256": "7ad3db34b267184f83dc334ec9d898e64f180e7677b6aae2624c0544ae3e8256"
+    },
+    {
+      "basename": "ISO8859-4.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-4.so",
+      "sha256": "ea193ce415baeb868fa07d62ad140142c851d166c07cfd133636057602f70c69"
+    },
+    {
+      "basename": "ISO8859-5.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-5.so",
+      "sha256": "01e16619102c7d044f109089043c4eca7d8396241c20b919e98116857a36e5d3"
+    },
+    {
+      "basename": "ISO8859-6.so",
+      "bytes": 24216,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-6.so",
+      "sha256": "1b1e168b64de40320a6419b5ad045565004362e504758ec47777e3ba4ecfcfb1"
+    },
+    {
+      "basename": "ISO8859-7.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-7.so",
+      "sha256": "5b99e76c049d05c218801fc555cc37d49ad77158db7c7679080849519cacbbe3"
+    },
+    {
+      "basename": "ISO8859-8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-8.so",
+      "sha256": "3893d5f558f3bb87877364d4cd3d7d5801241320be195e9c2e078263a6ef7281"
+    },
+    {
+      "basename": "ISO8859-9.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-9.so",
+      "sha256": "f9cfa427a34a390daa15bfcd51f51d3a6fbd713532a7c76f8317a5505deed3f5"
+    },
+    {
+      "basename": "ISO8859-9E.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-9E.so",
+      "sha256": "c8e8f6bce4cd7c09bed799a334d943fefe30885d97f2d62d7488d2bd3aaf7b02"
+    },
+    {
+      "basename": "ISO_10367-BOX.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_10367-BOX.so",
+      "sha256": "23b092b7f93be7dcf703783459c1409098fb97d5132bd4a8c963097fbffd6452"
+    },
+    {
+      "basename": "ISO_11548-1.so",
+      "bytes": 20048,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_11548-1.so",
+      "sha256": "8289ee65d8d8f781556416a3a057ea67b8fcbb940d337d5e4e9609aca1524bfe"
+    },
+    {
+      "basename": "ISO_2033.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_2033.so",
+      "sha256": "0552edb88dd8c94d253007369ea4acb023bab8f0c0602292c962b7794e84e4b5"
+    },
+    {
+      "basename": "ISO_5427-EXT.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_5427-EXT.so",
+      "sha256": "3cc349bfdecdfabfa964a5be15ac0f8627a3205d75076b338ea689976fab9e00"
+    },
+    {
+      "basename": "ISO_5427.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_5427.so",
+      "sha256": "f2315a30e8d50ba1f267a0d5826504d038f6f986dad2e36762afe6cce370deea"
+    },
+    {
+      "basename": "ISO_5428.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_5428.so",
+      "sha256": "920069af5e46eb70a23bc794a56d7828ce5ff7227a7f11a4469b6ead7aba9681"
+    },
+    {
+      "basename": "ISO_6937-2.so",
+      "bytes": 28488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_6937-2.so",
+      "sha256": "5d629d10fb6e38a43561266cbd9e8d75f2232eeb6506e8af1e6e6728b7e7d827"
+    },
+    {
+      "basename": "ISO_6937.so",
+      "bytes": 28488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_6937.so",
+      "sha256": "326d278f42ecef4f947825ced62611d64f938c6f2a6980d94aef6a65676084c4"
+    },
+    {
+      "basename": "JOHAB.so",
+      "bytes": 24728,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/JOHAB.so",
+      "sha256": "3dd79bcf6b2a102903b6e02e459d574f8f8b5c0c58285f832f87fa580ff3f7ac"
+    },
+    {
+      "basename": "KOI-8.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI-8.so",
+      "sha256": "1a759bbb8fbf2f9a63250f61bdf22419a9a393726c9986f56bbf39015d48c08b"
+    },
+    {
+      "basename": "KOI8-R.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-R.so",
+      "sha256": "3a7f6d5c6124210f0e7206920f0cdd97f7f24fbcd056a88c0c512cd46e95aa3d"
+    },
+    {
+      "basename": "KOI8-RU.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-RU.so",
+      "sha256": "07faf843c29036e55b63e4738307508440d20ec57a5a7370d9697242550a72cf"
+    },
+    {
+      "basename": "KOI8-T.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-T.so",
+      "sha256": "78a4c04b08547713e335ba7e55500629108b771535875cfa35104ff68d4ac0c3"
+    },
+    {
+      "basename": "KOI8-U.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-U.so",
+      "sha256": "f8e2524cc10cd1a729e4d510a44a906103ec8cba81c93b43a3a9010feae93cc2"
+    },
+    {
+      "basename": "LATIN-GREEK-1.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/LATIN-GREEK-1.so",
+      "sha256": "fbddbf9c0beeab481197f4e98da2b6fcfa45bb010da25099de720b776b1f7a23"
+    },
+    {
+      "basename": "LATIN-GREEK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/LATIN-GREEK.so",
+      "sha256": "5ccfc95e8c3be5c8637ee67155e67114d552d6da15a621a9caa75f357b2350c3"
+    },
+    {
+      "basename": "MAC-CENTRALEUROPE.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-CENTRALEUROPE.so",
+      "sha256": "cf9399e7786f74ddded2852bcdcbc5dd3808a4ebacd77ac94c444e4c87b80435"
+    },
+    {
+      "basename": "MAC-IS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-IS.so",
+      "sha256": "4b98584da36ba63604608d15a1c92b1fa9f81b0578cb5056914f15208f7cf5ca"
+    },
+    {
+      "basename": "MAC-SAMI.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-SAMI.so",
+      "sha256": "ce79994284aa3857ec037d2d4a9027a9937e12271723386e85f84d05863e8f71"
+    },
+    {
+      "basename": "MAC-UK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-UK.so",
+      "sha256": "f12ada6df1823a9bfa28c7c7296ffb85fbb8fc8f8606157bee9bf64fd84de6ba"
+    },
+    {
+      "basename": "MACINTOSH.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MACINTOSH.so",
+      "sha256": "21dce1c14c1897bbadd160db6ad361298e36af6cb027459f35b50f4132691b99"
+    },
+    {
+      "basename": "MIK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MIK.so",
+      "sha256": "31bf5f309b07e7b45c8083476b21ae59f73eb8115d9870cdd8c967fb2da8b11b"
+    },
+    {
+      "basename": "NATS-DANO.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/NATS-DANO.so",
+      "sha256": "54ce353a29b3e93bc92cd0cdc08b4de05e9bcab046b3076496e5ceeac9ec7259"
+    },
+    {
+      "basename": "NATS-SEFI.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/NATS-SEFI.so",
+      "sha256": "8681b5e0160c51227ef79df4b0735272d6d6f2692755017a3c23ada6add70226"
+    },
+    {
+      "basename": "PT154.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/PT154.so",
+      "sha256": "f620cfa5cc55514fdf2834aab078fbb501c0fbf95610f6bb4497f42128259ad8"
+    },
+    {
+      "basename": "RK1048.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/RK1048.so",
+      "sha256": "b3e7bfc6253e791db2cd65ab44ffa61c35ea9bead9f0a95fe5c801e1d4a90e47"
+    },
+    {
+      "basename": "SAMI-WS2.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/SAMI-WS2.so",
+      "sha256": "3060de6a45798bf96a251b663bbbd0b45ebab890215cef42a9f26842144d479a"
+    },
+    {
+      "basename": "SHIFT_JISX0213.so",
+      "bytes": 24568,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/SHIFT_JISX0213.so",
+      "sha256": "8146f4b170707b626b4415151f61253eb9b3bd12b11ac686ff4fa61ce5122072"
+    },
+    {
+      "basename": "SJIS.so",
+      "bytes": 102352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/SJIS.so",
+      "sha256": "2adc2704e8396168aeccd668569bc376ccba101bd33be7e67b449ce2aad7410c"
+    },
+    {
+      "basename": "T.61.so",
+      "bytes": 28488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/T.61.so",
+      "sha256": "e86eb5d75c32fdaa9e86e6f1eda41052278db6924f814879a201f90b4a6a0dce"
+    },
+    {
+      "basename": "TCVN5712-1.so",
+      "bytes": 20288,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/TCVN5712-1.so",
+      "sha256": "d3199e2130f886a3fc2faa7eed3b1b32dbf3752cfda153062d4714e9f0b4acff"
+    },
+    {
+      "basename": "TIS-620.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/TIS-620.so",
+      "sha256": "800b805a40a8d735517ffa771be8ffe685cc2831194d649a56e0183a60fbd4fe"
+    },
+    {
+      "basename": "TSCII.so",
+      "bytes": 24488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/TSCII.so",
+      "sha256": "afd9b4b2cec5ab7d8111828ac9da190a4160fe5cdf8d89bf0f8180815b353b22"
+    },
+    {
+      "basename": "UHC.so",
+      "bytes": 77800,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UHC.so",
+      "sha256": "3a7a5af6a6f0be762a33aed7c6528458f182da61999d2bcf318ea8fe91fbe843"
+    },
+    {
+      "basename": "UNICODE.so",
+      "bytes": 20216,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UNICODE.so",
+      "sha256": "de7bbb3f4a7c50fcef34937572a5585aa33b976e76ce54d3d9df0338b14b4e72"
+    },
+    {
+      "basename": "UTF-16.so",
+      "bytes": 20224,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UTF-16.so",
+      "sha256": "399bc0b17262fd97e948e974d47b4f6f480783ed42e59c5f4bf115d682c998b3"
+    },
+    {
+      "basename": "UTF-32.so",
+      "bytes": 20224,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UTF-32.so",
+      "sha256": "a2ab37f6b70688dbfcc3e3a3c5f894c50d7247bdde565f6092b5cae230df8ac5"
+    },
+    {
+      "basename": "UTF-7.so",
+      "bytes": 28792,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UTF-7.so",
+      "sha256": "06ff1c4f1968d3a006879257dfa38847b6b3aaccb2aa93f539d88f5134fadd59"
+    },
+    {
+      "basename": "VISCII.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/VISCII.so",
+      "sha256": "998ba4c5d5751def67069c8e88ebab5f159a4cd3284392f787f3c96994098664"
+    },
+    {
+      "basename": "libCNS.so",
+      "bytes": 475272,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libCNS.so",
+      "sha256": "2f585d710a3b55689a0d0e9e0d198646c4f50b253f42e0b96b28a3a67e25057d"
+    },
+    {
+      "basename": "libGB.so",
+      "bytes": 73056,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libGB.so",
+      "sha256": "b9dad12495655b4d5d0ad3df349fe5fec1a692807efe6f84a58ec65466c26960"
+    },
+    {
+      "basename": "libISOIR165.so",
+      "bytes": 64520,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libISOIR165.so",
+      "sha256": "a9a4509ef27243866da9700ac0208549ee56be076cdc613b671e720133763886"
+    },
+    {
+      "basename": "libJIS.so",
+      "bytes": 109912,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libJIS.so",
+      "sha256": "20e2a732cbb7bb9c100fa274da65cf34e08d4954f3f9609a3eb1a6100082ad3d"
+    },
+    {
+      "basename": "libJISX0213.so",
+      "bytes": 130184,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libJISX0213.so",
+      "sha256": "d4a0c1be2642bc997dad60d05b24ca6aca262c4b459591f2a8e8c01b53511675"
+    },
+    {
+      "basename": "libKSC.so",
+      "bytes": 52344,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libKSC.so",
+      "sha256": "3c9bb6accf386664311e077907eae8f8efed95991e6ce0e6385c352dd41b888b"
+    },
+    {
+      "basename": "ld-linux-x86-64.so.2",
+      "bytes": 263056,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/ld-linux-x86-64.so.2",
+      "sha256": "1640ec4d1cfcc3c19430b368cbbb057c5652eac340ecba12cf9dfbe2c3769d07"
+    },
+    {
+      "basename": "libBrokenLocale.so",
+      "bytes": 15752,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libBrokenLocale.so.1",
+      "sha256": "a6252694dfc9cb4d9b6e4ac43cafc553e686afb56f8a008c84f3c471a21450c0"
+    },
+    {
+      "basename": "libBrokenLocale.so.1",
+      "bytes": 15752,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libBrokenLocale.so.1",
+      "sha256": "a6252694dfc9cb4d9b6e4ac43cafc553e686afb56f8a008c84f3c471a21450c0"
+    },
+    {
+      "basename": "libanl.so",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libanl.so.1",
+      "sha256": "ea85c35bc92fe0a07a010397b18c1f71405c5a710bfc206376a4829685392db6"
+    },
+    {
+      "basename": "libanl.so.1",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libanl.so.1",
+      "sha256": "ea85c35bc92fe0a07a010397b18c1f71405c5a710bfc206376a4829685392db6"
+    },
+    {
+      "basename": "libc.so",
+      "bytes": 414,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc.so",
+      "sha256": "56cb5502bf01ad296592e3a926ddbe95f724ee1174eaf9ace6645f8ca7dc6563"
+    },
+    {
+      "basename": "libc.so.6",
+      "bytes": 2413096,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc.so.6",
+      "sha256": "6fcad203e10b304de3988b4e6e85df56a71f7ff9ae8898cb20fcf9bda330e2df"
+    },
+    {
+      "basename": "libc_malloc_debug.so",
+      "bytes": 64000,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc_malloc_debug.so.0",
+      "sha256": "515c4401b5604a13048384f7c03139b469678b5e4db56629803dd3c6da00ca32"
+    },
+    {
+      "basename": "libc_malloc_debug.so.0",
+      "bytes": 64000,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc_malloc_debug.so.0",
+      "sha256": "515c4401b5604a13048384f7c03139b469678b5e4db56629803dd3c6da00ca32"
+    },
+    {
+      "basename": "libdl.so",
+      "bytes": 15688,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libdl.so.2",
+      "sha256": "b865862b59d19329e775704b53560ae87bc09f2c4161f94101a9913b1936946e"
+    },
+    {
+      "basename": "libdl.so.2",
+      "bytes": 15688,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libdl.so.2",
+      "sha256": "b865862b59d19329e775704b53560ae87bc09f2c4161f94101a9913b1936946e"
+    },
+    {
+      "basename": "libm.so",
+      "bytes": 220,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libm.so",
+      "sha256": "fcbf4c3e34083739acec6ddf860bb644689618c6ba4bb2a2084a14acde1513cb"
+    },
+    {
+      "basename": "libm.so.6",
+      "bytes": 1102240,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libm.so.6",
+      "sha256": "1a5b421697440dc7095fed465890a3b964533a275b4043c689d1fd4ef57503e5"
+    },
+    {
+      "basename": "libmemusage.so",
+      "bytes": 22304,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libmemusage.so",
+      "sha256": "5f63a853854340eee204728f61e9329fec4450a1fd655230b70eaac48d19e374"
+    },
+    {
+      "basename": "libmvec.so",
+      "bytes": 1070952,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libmvec.so.1",
+      "sha256": "2fb629123591b8a1aaf9ae6dfc4e568e43be20a64727ca54ba8df7f3fcdf5f03"
+    },
+    {
+      "basename": "libmvec.so.1",
+      "bytes": 1070952,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libmvec.so.1",
+      "sha256": "2fb629123591b8a1aaf9ae6dfc4e568e43be20a64727ca54ba8df7f3fcdf5f03"
+    },
+    {
+      "basename": "libnsl.so.1",
+      "bytes": 127448,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnsl.so.1",
+      "sha256": "0e8a1f13839c75b482cfff6d5701ce49002367bedb050d6918fafaf4326e5ebf"
+    },
+    {
+      "basename": "libnss_compat.so",
+      "bytes": 45456,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_compat.so.2",
+      "sha256": "2ca5af6d1a608fb623cdb351486aeaabb98e1d0f4e948f09ede3616caddedf25"
+    },
+    {
+      "basename": "libnss_compat.so.2",
+      "bytes": 45456,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_compat.so.2",
+      "sha256": "2ca5af6d1a608fb623cdb351486aeaabb98e1d0f4e948f09ede3616caddedf25"
+    },
+    {
+      "basename": "libnss_db.so",
+      "bytes": 40520,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_db.so.2",
+      "sha256": "b48c7dd02a615d39b25bef3f35c90796442ff34eccb83afa085b5302a325db5d"
+    },
+    {
+      "basename": "libnss_db.so.2",
+      "bytes": 40520,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_db.so.2",
+      "sha256": "b48c7dd02a615d39b25bef3f35c90796442ff34eccb83afa085b5302a325db5d"
+    },
+    {
+      "basename": "libnss_dns.so.2",
+      "bytes": 15288,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_dns.so.2",
+      "sha256": "857302541bd0b6b361ae1a3b7ba25759adc25804447d3553b15a9b8c7c03ef9d"
+    },
+    {
+      "basename": "libnss_files.so.2",
+      "bytes": 15288,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_files.so.2",
+      "sha256": "b303831edcca500e5d42cf2ae1469a4edf8bacf477cf6a67b67948985070b32f"
+    },
+    {
+      "basename": "libnss_hesiod.so",
+      "bytes": 30600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_hesiod.so.2",
+      "sha256": "f3075611359f7d9f6496a90bf1f38984272a2d8f6943d47b3a846ee9598198ce"
+    },
+    {
+      "basename": "libnss_hesiod.so.2",
+      "bytes": 30600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_hesiod.so.2",
+      "sha256": "f3075611359f7d9f6496a90bf1f38984272a2d8f6943d47b3a846ee9598198ce"
+    },
+    {
+      "basename": "libpcprofile.so",
+      "bytes": 15992,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libpcprofile.so",
+      "sha256": "3ee8fb2a35eff4962e1f1b0a632854d44ccaa3bf16f40054df052bc98ec1db84"
+    },
+    {
+      "basename": "libpthread.so",
+      "bytes": 16536,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libpthread.so.0",
+      "sha256": "a91bfbc5485171fb38c6cce50e22c91f144628cadec61b57ce88c81b848d0828"
+    },
+    {
+      "basename": "libpthread.so.0",
+      "bytes": 16536,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libpthread.so.0",
+      "sha256": "a91bfbc5485171fb38c6cce50e22c91f144628cadec61b57ce88c81b848d0828"
+    },
+    {
+      "basename": "libresolv.so",
+      "bytes": 77352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libresolv.so.2",
+      "sha256": "fea017bd3b6c1637af8f9c314ce88ca046b640f15c43b9a08ab63172c8e32f31"
+    },
+    {
+      "basename": "libresolv.so.2",
+      "bytes": 77352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libresolv.so.2",
+      "sha256": "fea017bd3b6c1637af8f9c314ce88ca046b640f15c43b9a08ab63172c8e32f31"
+    },
+    {
+      "basename": "librt.so",
+      "bytes": 16352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/librt.so.1",
+      "sha256": "6f485fa6927af7702c46ce27c2862a6459fdbfccae20b9e351ec54d0c76266b3"
+    },
+    {
+      "basename": "librt.so.1",
+      "bytes": 16352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/librt.so.1",
+      "sha256": "6f485fa6927af7702c46ce27c2862a6459fdbfccae20b9e351ec54d0c76266b3"
+    },
+    {
+      "basename": "libthread_db.so",
+      "bytes": 54560,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libthread_db.so.1",
+      "sha256": "ff85303c7ebd9a2ca15ea692812670de0f2c895f0efa9d879f04833fea898c03"
+    },
+    {
+      "basename": "libthread_db.so.1",
+      "bytes": 54560,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libthread_db.so.1",
+      "sha256": "ff85303c7ebd9a2ca15ea692812670de0f2c895f0efa9d879f04833fea898c03"
+    },
+    {
+      "basename": "libutil.so",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libutil.so.1",
+      "sha256": "ce6792ec9de75545a79752bea2595144b5fa13b17b9fefce7dd195e643da6712"
+    },
+    {
+      "basename": "libutil.so.1",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libutil.so.1",
+      "sha256": "ce6792ec9de75545a79752bea2595144b5fa13b17b9fefce7dd195e643da6712"
+    },
+    {
+      "basename": "sotruss-lib.so",
+      "bytes": 16808,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/audit/sotruss-lib.so",
+      "sha256": "267696e4d942c5a289e7c84bcbddd068232268572ce0885584d9eb328d72d3f5"
+    },
+    {
+      "basename": "ANSI_X3.110.so",
+      "bytes": 28608,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ANSI_X3.110.so",
+      "sha256": "62468c9c7fd874ec7caf15c94d7867516f1aba6a124e52a7c733355b3e755c77"
+    },
+    {
+      "basename": "ARMSCII-8.so",
+      "bytes": 20136,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ARMSCII-8.so",
+      "sha256": "fbb0d01a60e5bc2ff1cb56821085ebdffcf56fb957ad47f18c7e29a3ac79748a"
+    },
+    {
+      "basename": "ASMO_449.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ASMO_449.so",
+      "sha256": "8a79bf126bccc4c810839817c57d8bf69648850501cad7b7ded180860608b370"
+    },
+    {
+      "basename": "BIG5.so",
+      "bytes": 98584,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/BIG5.so",
+      "sha256": "f5bcbb6a9a7ead34fea4960fd3f1725813792fa9091ca8c9bd515bb2a139e737"
+    },
+    {
+      "basename": "BIG5HKSCS.so",
+      "bytes": 241432,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/BIG5HKSCS.so",
+      "sha256": "49434426a7e41d96713caafdbd1c4b77ead738adef0cf3e51ea83663a3e49037"
+    },
+    {
+      "basename": "BRF.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/BRF.so",
+      "sha256": "2e89a075c853aa983260f50d05cd52cf60ca78d13fc3468357649dbf0e635cdf"
+    },
+    {
+      "basename": "CP10007.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP10007.so",
+      "sha256": "36485e3de14f24512985349d8af93b986915af67a7798e1cc903f09d13b1aaa8"
+    },
+    {
+      "basename": "CP1125.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1125.so",
+      "sha256": "c5ef2fc754ee7c42e107a242af6047927152530bae3fb717e31959b792298da2"
+    },
+    {
+      "basename": "CP1250.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1250.so",
+      "sha256": "c2928a9b11b0ec303761ab380f26361971b54ed78e5721afc8b2618df8dbb192"
+    },
+    {
+      "basename": "CP1251.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1251.so",
+      "sha256": "49b6a3b67165cd7adc64b2b81c70ef52bda246a3729daf2cccd7173ad8fb5b7d"
+    },
+    {
+      "basename": "CP1252.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1252.so",
+      "sha256": "d318ce6b96715058038d4347ca7a417a9f44c41720ba194fa3d2625d69f5efda"
+    },
+    {
+      "basename": "CP1253.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1253.so",
+      "sha256": "fdc7d17f49a01d89241ed17defb3f0b396dcf79f24eb1c2f8d65092154f8e64f"
+    },
+    {
+      "basename": "CP1254.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1254.so",
+      "sha256": "4bd8be2baba49b3737d8f8799598b5c3a6133e713eeb4d333f35eb3e4a58537c"
+    },
+    {
+      "basename": "CP1255.so",
+      "bytes": 20272,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1255.so",
+      "sha256": "ab7249cb652c7bf4897d1e7571d7a5a37f850240a5d5cccd8a336f1f709578db"
+    },
+    {
+      "basename": "CP1256.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1256.so",
+      "sha256": "fb804b340cb88eb6093c16290111ab71df598ce672d8152dd7ea1c387e170122"
+    },
+    {
+      "basename": "CP1257.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1257.so",
+      "sha256": "2780bccb2c4233f6d07ef43bc73ef611df94b62416fbf1e5009752ec4ce5a10b"
+    },
+    {
+      "basename": "CP1258.so",
+      "bytes": 20240,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP1258.so",
+      "sha256": "c330b56d4c4fe0b15740bbc827fc5edf58c9296ba6c5accb5e1d4c29f731ca4e"
+    },
+    {
+      "basename": "CP737.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP737.so",
+      "sha256": "eb3198e22a8f2825131f0b2985a5fac6af047b7009e49a75db9a68aaf2a53273"
+    },
+    {
+      "basename": "CP770.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP770.so",
+      "sha256": "26b00e5d0a7e393830ec7567ea8d5821fb8df5956383621dcd5aae706e0fc153"
+    },
+    {
+      "basename": "CP771.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP771.so",
+      "sha256": "58acfeca48fbf7b149e5d1c6cf556c86a36a99d698edd682a96a0ff1238dec08"
+    },
+    {
+      "basename": "CP772.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP772.so",
+      "sha256": "6193ad1367e6cdb91d2ad7c2e71830b3f2c5c063cf9aec19214cab01098522d6"
+    },
+    {
+      "basename": "CP773.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP773.so",
+      "sha256": "b5f416269e224a63365fc6145e5b3e55a3452552cbabe5ca81aa250e641c5671"
+    },
+    {
+      "basename": "CP774.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP774.so",
+      "sha256": "e93808959be147841fa80b3e57412913ce4bee6e477ab09e06bf31eaa4cd105d"
+    },
+    {
+      "basename": "CP775.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP775.so",
+      "sha256": "2d077ccb97bbf9d3c823039b27ac69d6593f9ab7404d0278e5ce54a5ec8ae192"
+    },
+    {
+      "basename": "CP932.so",
+      "bytes": 102464,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CP932.so",
+      "sha256": "b09f8b706307455d24a980128e83b34d55991e73643802c12c7e2598e01c881c"
+    },
+    {
+      "basename": "CSN_369103.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CSN_369103.so",
+      "sha256": "47c8567232965b76caac2462486f04748ddb919ce29a4a0f2108e7fd94ff2baf"
+    },
+    {
+      "basename": "CWI.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/CWI.so",
+      "sha256": "8c74cc7e610c77920d9881b38cd37d525b25c45efad6be41d1c9dfaf44039ff5"
+    },
+    {
+      "basename": "DEC-MCS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/DEC-MCS.so",
+      "sha256": "b041540e7ed19cdbbc5bac6737d967bc4c5f301ae3fc666aa059ecf7bd6ca282"
+    },
+    {
+      "basename": "EBCDIC-AT-DE-A.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-AT-DE-A.so",
+      "sha256": "cf95cef119401464767e2258bb2c00dd5d1ca9e54dcc08650c2363f802ef1966"
+    },
+    {
+      "basename": "EBCDIC-AT-DE.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-AT-DE.so",
+      "sha256": "1a25f536f1fd3e631d7d25695e8d7993c5d5ce5afaeac6977fe71b26a6e1dcac"
+    },
+    {
+      "basename": "EBCDIC-CA-FR.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-CA-FR.so",
+      "sha256": "a1ca7c4562b1aabfc8ceb7b4b4c49a0353923c38a29798b98d43e036c1071866"
+    },
+    {
+      "basename": "EBCDIC-DK-NO-A.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-DK-NO-A.so",
+      "sha256": "2e8969b610d9cf0f704f75ea6b79eed34ed99e316233c2ab23cee95c322bfe8e"
+    },
+    {
+      "basename": "EBCDIC-DK-NO.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-DK-NO.so",
+      "sha256": "3df288dcab54deea488ac048a9826b47a86a10db9e27f3d938b9378b580729c7"
+    },
+    {
+      "basename": "EBCDIC-ES-A.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-ES-A.so",
+      "sha256": "caf81db9bc0ae8e25caf909ae75c8659821fbf1c0dc1da32ca626c0fe1ce3a1f"
+    },
+    {
+      "basename": "EBCDIC-ES-S.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-ES-S.so",
+      "sha256": "88607106942c93cad47841592c2287a405d78c378253e68a37cc72da2e2a2b68"
+    },
+    {
+      "basename": "EBCDIC-ES.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-ES.so",
+      "sha256": "1eec18bc4fb7ad91037fafdfe487fc4d66a703a8ba0ed4a55b28b48cfcb60c80"
+    },
+    {
+      "basename": "EBCDIC-FI-SE-A.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-FI-SE-A.so",
+      "sha256": "f6c008d85873509e3a1f4cf29755a7244b68f2a5d971cb6db27ffca5558172fb"
+    },
+    {
+      "basename": "EBCDIC-FI-SE.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-FI-SE.so",
+      "sha256": "3fe23e66f139772ab211e1f1d0cd6620b96c166ccd116dbb2645b062c3f19a3f"
+    },
+    {
+      "basename": "EBCDIC-FR.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-FR.so",
+      "sha256": "9d0d650f5cdb98849359d310d4c85bfa757e64a54d089c2cf05633eacad21892"
+    },
+    {
+      "basename": "EBCDIC-IS-FRISS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-IS-FRISS.so",
+      "sha256": "e1b4de81528d5cd534418ded7c74ca7e4d4193f2d38adbcb01968074498534a2"
+    },
+    {
+      "basename": "EBCDIC-IT.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-IT.so",
+      "sha256": "e82f564c5af1a108c5c0dcf050bf5728b7a8e9d303e5737bfb94f6f526688cd1"
+    },
+    {
+      "basename": "EBCDIC-PT.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-PT.so",
+      "sha256": "9f4667a9e6a11019526b86300c47b59ff73570f528018cf50242ecd46061b019"
+    },
+    {
+      "basename": "EBCDIC-UK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-UK.so",
+      "sha256": "cb3cff40b1fbefb2fb6b0bdbbd67f7e898ee6eb70aa862dce5711988317801f5"
+    },
+    {
+      "basename": "EBCDIC-US.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EBCDIC-US.so",
+      "sha256": "15cb8e7190e57da73d948b7dc8ae82a203137fa19156d74203f3d751819d0ff0"
+    },
+    {
+      "basename": "ECMA-CYRILLIC.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ECMA-CYRILLIC.so",
+      "sha256": "8d4c2e5a50f6776a8c7ca0d3f9898aa26f9b826f899327ad5600858d8c005fa2"
+    },
+    {
+      "basename": "EUC-CN.so",
+      "bytes": 24744,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-CN.so",
+      "sha256": "ab866da3322a5408ae4539ea75f493146c536c93bf3d1999ff048a930eed4d7c"
+    },
+    {
+      "basename": "EUC-JISX0213.so",
+      "bytes": 24568,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-JISX0213.so",
+      "sha256": "fac088f6409a6271db6ddcab90e2082b66c36b6da1379891b7088ebb2d76178b"
+    },
+    {
+      "basename": "EUC-JP-MS.so",
+      "bytes": 94304,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-JP-MS.so",
+      "sha256": "56e056bdc2e7e60133f62c45d76d02d07a0d1f5f3a7d1503f209a2f592e4b7ff"
+    },
+    {
+      "basename": "EUC-JP.so",
+      "bytes": 20640,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-JP.so",
+      "sha256": "f57b9311542a160f1ea97ef92cab3684bc3b3c05e0b0a7508627b330457ae7be"
+    },
+    {
+      "basename": "EUC-KR.so",
+      "bytes": 20368,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-KR.so",
+      "sha256": "ae40d52f8dc81a9991a49547b276f7899ada80d562a8c05caa907b6800b0c8ab"
+    },
+    {
+      "basename": "EUC-TW.so",
+      "bytes": 25512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/EUC-TW.so",
+      "sha256": "007c1f0caf72bccb26b4664f795728f889bda4f0eb65e49d83f28ec13cac0e8b"
+    },
+    {
+      "basename": "GB18030.so",
+      "bytes": 184152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GB18030.so",
+      "sha256": "d3e7b7f4641a5f8aa13f66d149aa6fe2eb4d8d72938e49d0144ac3443c7851e6"
+    },
+    {
+      "basename": "GBBIG5.so",
+      "bytes": 65184,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GBBIG5.so",
+      "sha256": "e645762601a1286e6a31dab8b48ccf8c4562ed782a928840b53cbf17650bfd5d"
+    },
+    {
+      "basename": "GBGBK.so",
+      "bytes": 20096,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GBGBK.so",
+      "sha256": "1b4a038d28754fc02df537ef63bfce75f1c517636f26110bff0dbcce723feb65"
+    },
+    {
+      "basename": "GBK.so",
+      "bytes": 123072,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GBK.so",
+      "sha256": "cc75163012722fe09174574629359eb2b161903203e9e860caff9bb49d3f4575"
+    },
+    {
+      "basename": "GEORGIAN-ACADEMY.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GEORGIAN-ACADEMY.so",
+      "sha256": "1d8f674b0696faf25b67cb8e5f4acb034e46bfd3238bcfb0d550f6685385eeb1"
+    },
+    {
+      "basename": "GEORGIAN-PS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GEORGIAN-PS.so",
+      "sha256": "ff5c5e9139d8d22f59f80ee48d122e6165b1307af2c16866203195fc41ae7b6b"
+    },
+    {
+      "basename": "GOST_19768-74.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GOST_19768-74.so",
+      "sha256": "604c6d16cd87ea36db4749d709491449913bbd5a0daed8766f52ac656a3c9b9c"
+    },
+    {
+      "basename": "GREEK-CCITT.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GREEK-CCITT.so",
+      "sha256": "6c8aefcd148683bcb1294278656d7dfa29018bea7dfe17aec6d2aa32dd10c9e0"
+    },
+    {
+      "basename": "GREEK7-OLD.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GREEK7-OLD.so",
+      "sha256": "af0fd4215d6f93b69e61584d53d49826ac4dd4876c96fe5e36edff13ac25c8d7"
+    },
+    {
+      "basename": "GREEK7.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/GREEK7.so",
+      "sha256": "9737cdea28fa84f89565c4c5175f8713cdef2faa55b2fd53b7f58f50c607a2bf"
+    },
+    {
+      "basename": "HP-GREEK8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-GREEK8.so",
+      "sha256": "f76475fa2e4df60d70b775814ff2fe15606505c92df225431f6a2f3a6d052c8f"
+    },
+    {
+      "basename": "HP-ROMAN8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-ROMAN8.so",
+      "sha256": "56e9531ec5833fba414b2f6350b6b2ca1d7ee1511d016c1acdd2af7ad8ac3843"
+    },
+    {
+      "basename": "HP-ROMAN9.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-ROMAN9.so",
+      "sha256": "9915fbf01cfee8c0e53086e691fd6061272fa4b72de325ab1984ae74d59e8ab9"
+    },
+    {
+      "basename": "HP-THAI8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-THAI8.so",
+      "sha256": "36bffc263c834c18065864e2a04c8a36f72e35d26a9d4f01d245cf795bf5634b"
+    },
+    {
+      "basename": "HP-TURKISH8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/HP-TURKISH8.so",
+      "sha256": "49bd792b90b63f3ddc17277a4831105f986956f1cc360722f687d3bf171f4718"
+    },
+    {
+      "basename": "IBM037.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM037.so",
+      "sha256": "3f5ff0c293fe798243649a26d829688bdb0b482fa496078cd3e76d0258b2b258"
+    },
+    {
+      "basename": "IBM038.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM038.so",
+      "sha256": "b21d3e31f956a1d71340907f5e51c1f4ec8c80ced839d0b925685d0665cbd40a"
+    },
+    {
+      "basename": "IBM1004.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1004.so",
+      "sha256": "96d8063790099e0c2cb01dcf1a7b3ea01e35e92d59e023841a4a24f964a233f6"
+    },
+    {
+      "basename": "IBM1008.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1008.so",
+      "sha256": "c7d2f22aa58979fa608cd4058dc8fc9f39f83f6a2f5e18219d6a1c6fdc7fec2d"
+    },
+    {
+      "basename": "IBM1008_420.so",
+      "bytes": 15944,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1008_420.so",
+      "sha256": "9f07648987626a51ba3167eb5bb0dd260904ff17e3d6a4c3001fa5a11bc8defe"
+    },
+    {
+      "basename": "IBM1025.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1025.so",
+      "sha256": "c5d643a5815d4af64ded371d52b9b6dc90132845b0820c8e1a6f9b66450158fb"
+    },
+    {
+      "basename": "IBM1026.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1026.so",
+      "sha256": "5ae0719a78ad9c2b60db7dbd8874ef13fd2d4d1c62ef60262634ebbbe632ffc2"
+    },
+    {
+      "basename": "IBM1046.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1046.so",
+      "sha256": "5d56e21f8e5f8acac269ee6da3cc6c9b3c6ac15643254b5325c09772614e8b5c"
+    },
+    {
+      "basename": "IBM1047.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1047.so",
+      "sha256": "2b10cb8e2970ccb16c2065caf8d6b8141894291d47398f379ba009ae286ab719"
+    },
+    {
+      "basename": "IBM1097.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1097.so",
+      "sha256": "300932a645a110c0fa8b0f8f7c5dadc0352ef23fa3314881436ab529f433b6e5"
+    },
+    {
+      "basename": "IBM1112.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1112.so",
+      "sha256": "845262ba2b9a4d3a65d92862b9bf7b89e0889b06121980913a6d213d14724a66"
+    },
+    {
+      "basename": "IBM1122.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1122.so",
+      "sha256": "99ac5860a8d77901ebe33e52d02c5c74fcac460abf261c8c25496a379f42fa87"
+    },
+    {
+      "basename": "IBM1123.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1123.so",
+      "sha256": "afd61d9c789eec0cee0346071d46f9c8d8e6f1a68b4fb5bfcebba7025da610cc"
+    },
+    {
+      "basename": "IBM1124.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1124.so",
+      "sha256": "723eb7b76ec23c8b67208ce83bdf9774f5ce25e5db043469ce9a385e77284642"
+    },
+    {
+      "basename": "IBM1129.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1129.so",
+      "sha256": "07c4e72a15b5ce5d625cd7515d1d257ab15a6d094baad1c212d439303cf18264"
+    },
+    {
+      "basename": "IBM1130.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1130.so",
+      "sha256": "d9e03d86e4acaeda66f8adddf97f2932746c9e6e7e586f52c2ce475e3f1dbc53"
+    },
+    {
+      "basename": "IBM1132.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1132.so",
+      "sha256": "04ca7963ba275ca5e68f76f20fca86029cc50cf2ff23e4240060c34c4eaac9e0"
+    },
+    {
+      "basename": "IBM1133.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1133.so",
+      "sha256": "232502560b0b0f21f124cc5fdadacd0051c3291eeafbbc43f9cc394ff8942304"
+    },
+    {
+      "basename": "IBM1137.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1137.so",
+      "sha256": "6b7480a6d024968836116225b03040105c5673bb20b207acf960e8f79dbbeceb"
+    },
+    {
+      "basename": "IBM1140.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1140.so",
+      "sha256": "e65035d503ab343eb38e6ed2cfba64806b5bf983952517841aaea59f0e52133e"
+    },
+    {
+      "basename": "IBM1141.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1141.so",
+      "sha256": "f64a9dd1f0982e520d3b38102be17a5e0aeb1a7e13e46c58403102ea40b4aefb"
+    },
+    {
+      "basename": "IBM1142.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1142.so",
+      "sha256": "edfa6068607483ed37da214f49b46162860c13e900e6abce200ee0a9b750a785"
+    },
+    {
+      "basename": "IBM1143.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1143.so",
+      "sha256": "5c5f98849ecb5c056141353e86c1384e0bedcdba1fbfab8b6f47cfd6a2c86982"
+    },
+    {
+      "basename": "IBM1144.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1144.so",
+      "sha256": "dfab13909a61c00af8a1af320b9f65c0aca2456a5b74acabcca41d27ffc747cb"
+    },
+    {
+      "basename": "IBM1145.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1145.so",
+      "sha256": "f8066cf098a20ed5fc77fcaec74cc1738388116f7917f8932140a2692cdf536d"
+    },
+    {
+      "basename": "IBM1146.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1146.so",
+      "sha256": "e8dda3b0a3f0313fa78b15d74173c6be46a5ccfacc7a8a216970d6b3e096f80d"
+    },
+    {
+      "basename": "IBM1147.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1147.so",
+      "sha256": "54b5b3d03684cad45f3341ed380a19b9bdfd2e156ab85e4def7558aeebbbba38"
+    },
+    {
+      "basename": "IBM1148.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1148.so",
+      "sha256": "54c192858acf1e27624261458e84c1787dba80c1c89708160b548d4e01981b70"
+    },
+    {
+      "basename": "IBM1149.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1149.so",
+      "sha256": "631c253bab97cccef8557c0e84e584163f81bbdbb6fe5be94069fba602e43fa1"
+    },
+    {
+      "basename": "IBM1153.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1153.so",
+      "sha256": "0112c8dc871105698c9dbe274ed1c578a9aaa76b5823d9238125a9f7f7785e40"
+    },
+    {
+      "basename": "IBM1154.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1154.so",
+      "sha256": "7fcab7161209cbe6e13020746c3d202f49e3ec4d5cd43125d1dd0c43cf2e1a02"
+    },
+    {
+      "basename": "IBM1155.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1155.so",
+      "sha256": "b876aa60c28dc499e0159b54dd15e0ce1b68b9d83865ce94ad7643e8721d3269"
+    },
+    {
+      "basename": "IBM1156.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1156.so",
+      "sha256": "10db55e311bb2f597a18d6e024f46c59ba3956a6c017251c794794a02bd07aad"
+    },
+    {
+      "basename": "IBM1157.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1157.so",
+      "sha256": "e4d23c23f33e8f85e7fcb7447c46da313ba3452d0b90799141d82250e23f6419"
+    },
+    {
+      "basename": "IBM1158.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1158.so",
+      "sha256": "5e4e1ef38889c834df302a16b54a0bc02252e2468ed4cbe7fa108bbec124fa8c"
+    },
+    {
+      "basename": "IBM1160.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1160.so",
+      "sha256": "04a8cefb7f7e18fafd01015b9268bfd2e1d9c47888bb6cd7081d4e15db8f87c8"
+    },
+    {
+      "basename": "IBM1161.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1161.so",
+      "sha256": "ad899637142e897c52c7494d59dfaaf4b60c0afef72a16bf6d7f47361544a223"
+    },
+    {
+      "basename": "IBM1162.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1162.so",
+      "sha256": "7b097f1ec28a369b383ef2d6175b068d9302c683b288e65091415757a08d6b06"
+    },
+    {
+      "basename": "IBM1163.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1163.so",
+      "sha256": "6ae4f573e8148a1410a8ca5dd77782b1c78810b99c77a5e361351717d11b3b00"
+    },
+    {
+      "basename": "IBM1164.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1164.so",
+      "sha256": "82f9ba839ef534b3becd7f6e2535b59f5f0f4bd6335c40df9a6f4e1150d5a9b2"
+    },
+    {
+      "basename": "IBM1166.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1166.so",
+      "sha256": "bd0d1a3f97e78304873489b26aaeca77521dbda1b1c2761571ee603f324e3041"
+    },
+    {
+      "basename": "IBM1167.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1167.so",
+      "sha256": "7e52523929f172a9958549a2916b4ba4d715ca2b06db33a748f2be4806ce625c"
+    },
+    {
+      "basename": "IBM12712.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM12712.so",
+      "sha256": "cb7e31c9c2ee9ee34e907851f105b5f7bbafc34b28b8eb771bfdaf39f8da28ad"
+    },
+    {
+      "basename": "IBM1364.so",
+      "bytes": 159664,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1364.so",
+      "sha256": "62981d175001c66b43ba3750b8dac7900f7e2f4b1ff827e357c7f1a876784943"
+    },
+    {
+      "basename": "IBM1371.so",
+      "bytes": 135088,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1371.so",
+      "sha256": "7cbf0d49379ca3704b1d3fd8a953325aeacd386834a1ca97e33a3ec7690a97f7"
+    },
+    {
+      "basename": "IBM1388.so",
+      "bytes": 180144,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1388.so",
+      "sha256": "1292201b48e2294a6c268d118dc4d493ac1ef1e6888b09574c25d83ec9147ab3"
+    },
+    {
+      "basename": "IBM1390.so",
+      "bytes": 237600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1390.so",
+      "sha256": "d24d950fbdaabb66016824c28d4c08e4f96d14b4e0860e243ff089de549f150c"
+    },
+    {
+      "basename": "IBM1399.so",
+      "bytes": 237600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM1399.so",
+      "sha256": "a642a01dd4ecb53aa6c28e6e2498591eff0546ca475c31436392cd1ba80a4595"
+    },
+    {
+      "basename": "IBM16804.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM16804.so",
+      "sha256": "f3e7fe11c4e567103250d6aeb99934f2303f02efcfdf9ccc44db0f9bf42a93f5"
+    },
+    {
+      "basename": "IBM256.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM256.so",
+      "sha256": "6ecaa798fb308fe4a450338fa073514d7b34c178bd5865b512e9ecafdb992aba"
+    },
+    {
+      "basename": "IBM273.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM273.so",
+      "sha256": "92972adda6051b2240ce9d77542b9183c9501cfaf241123b27c37c515436996b"
+    },
+    {
+      "basename": "IBM274.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM274.so",
+      "sha256": "8a3d663faf14e9c38797932b343c75798e9a20e511650f97fed3272a2bc82dc2"
+    },
+    {
+      "basename": "IBM275.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM275.so",
+      "sha256": "88d6cc528413ae7bc5a2ea589ca18e857b2ab124896f51cf509dc0cf5db42b30"
+    },
+    {
+      "basename": "IBM277.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM277.so",
+      "sha256": "fd30fe9a53f742425fb6c44d4c71baacc853f187f25e8e5d7d49d059af9a1569"
+    },
+    {
+      "basename": "IBM278.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM278.so",
+      "sha256": "e4b196fee97ead33eb094e64d8c777109df75e3b9b8cf9ad0e234a9a735215ab"
+    },
+    {
+      "basename": "IBM280.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM280.so",
+      "sha256": "735ff79200ca696269b24ba8087e96d094645f8a2ad97ef52a2d98411838e79c"
+    },
+    {
+      "basename": "IBM281.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM281.so",
+      "sha256": "3c8e4e170e2cb6bd1b8d18646a40a1ba6b85f11872234e9abdb92a95dd8af58d"
+    },
+    {
+      "basename": "IBM284.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM284.so",
+      "sha256": "32aad1db9e19c180a11e153c0c1635ec13fbe9996e51e340744a9788d0565819"
+    },
+    {
+      "basename": "IBM285.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM285.so",
+      "sha256": "bcbdbeedff46435933fb6bbdb2dc858744b81832a86223f195f32bace2279eaa"
+    },
+    {
+      "basename": "IBM290.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM290.so",
+      "sha256": "bb05f5f50b683b8a85fa6115c1a8fe6bbe6d253764a1a54452df310549421409"
+    },
+    {
+      "basename": "IBM297.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM297.so",
+      "sha256": "9d7d1671da58e35af975fd692bf2d8d0635b4427adf843e214279590f0b840e3"
+    },
+    {
+      "basename": "IBM420.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM420.so",
+      "sha256": "360c3243b653ade3dbc508e27336ac335c46e8fa6174cb2990144bc5cb9ecae8"
+    },
+    {
+      "basename": "IBM423.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM423.so",
+      "sha256": "4ba88891f74fcd29cd6a77c8d443af1681999e5f306a47bf5c78fd7f328e1098"
+    },
+    {
+      "basename": "IBM424.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM424.so",
+      "sha256": "0408561b2fc1f6dfb21424c3293215e031213d5ada7892e972c69bd27d9c81db"
+    },
+    {
+      "basename": "IBM437.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM437.so",
+      "sha256": "9d22b016f0db856e265f0a6ccb64e68ae45e0b6ac2a1457d973a37a5d5073652"
+    },
+    {
+      "basename": "IBM4517.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4517.so",
+      "sha256": "a2afd68989da8bc8540c4674317358bc553a427d915472f23131bf2d66538256"
+    },
+    {
+      "basename": "IBM4899.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4899.so",
+      "sha256": "b53061b962e2f86cc621bf725eaacc67d0ff3c483e5509d8bd912f221fe842e8"
+    },
+    {
+      "basename": "IBM4909.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4909.so",
+      "sha256": "53d867cb1aec0f72f20533e662c3941f2f89ff3e1239b302471958782ae210e4"
+    },
+    {
+      "basename": "IBM4971.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM4971.so",
+      "sha256": "e5304fdaba89c1d599efeb45a8012cc68bd75d0809d22a693e7937d1bbc8cf66"
+    },
+    {
+      "basename": "IBM500.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM500.so",
+      "sha256": "b74ce00acc8fc962b3cf10c0697d43a139c8f7d07e5a8e39f9a503241e800d30"
+    },
+    {
+      "basename": "IBM5347.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM5347.so",
+      "sha256": "bab3c9b37e2e230ae3b0c379aa16d54cc29d799a73883df4da36b1beaa6016f8"
+    },
+    {
+      "basename": "IBM803.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM803.so",
+      "sha256": "7ac2d68deec9599fe7541bfc334f54321c8fdafe81912794e2c99d270ac0e5da"
+    },
+    {
+      "basename": "IBM850.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM850.so",
+      "sha256": "3148113f55e726d74a01ad0dcf3e9679823bf20d9d6d08896f0c8a430fd4884a"
+    },
+    {
+      "basename": "IBM851.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM851.so",
+      "sha256": "bd125d1a2ff629e867531ece0749e67fb6bfeebf5476c40805c86088295397ea"
+    },
+    {
+      "basename": "IBM852.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM852.so",
+      "sha256": "2e1f95e9ce08388cd33bb66191fe4ce56762c4695f4f6435fbc6e4f36c959792"
+    },
+    {
+      "basename": "IBM855.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM855.so",
+      "sha256": "55e4c75e1b1a1b9998bbfa1a87bbef1e1f30392fe4bd51842b78e11e8634de82"
+    },
+    {
+      "basename": "IBM856.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM856.so",
+      "sha256": "af041b0ce4e040aa558ce60e945b4f94d9cf0c4d4431446b9d0a93265a17b0f1"
+    },
+    {
+      "basename": "IBM857.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM857.so",
+      "sha256": "a861e1a6b71799722a27cd9f805392620f00dafe9bc5bc5028beeedd6ac7257e"
+    },
+    {
+      "basename": "IBM858.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM858.so",
+      "sha256": "6001482c814471d7394ad855ec225240ee17731cdf3e9f6507c3f3d869b3e5c8"
+    },
+    {
+      "basename": "IBM860.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM860.so",
+      "sha256": "487c91e1048d0c3a4a9de8cc2ed40abf1f4758a4dee97a1642932e992a25aa7c"
+    },
+    {
+      "basename": "IBM861.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM861.so",
+      "sha256": "3db2ea7c9d2a83187d144235c39d43a87e1d916228a00433e3938dfe08468710"
+    },
+    {
+      "basename": "IBM862.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM862.so",
+      "sha256": "2538a795f12d77dd109dc3633b537a2e0a94a3c513d7c9ded77a30d91fa048b2"
+    },
+    {
+      "basename": "IBM863.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM863.so",
+      "sha256": "5788642ea2de96806d95699e5bee10d07ef24e382455196d4d2c1b2e70f2efe4"
+    },
+    {
+      "basename": "IBM864.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM864.so",
+      "sha256": "e536f4de442c97cad9dc84f61de56c732bfa82e08cb9918cd7a1cb05c33cc1b6"
+    },
+    {
+      "basename": "IBM865.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM865.so",
+      "sha256": "028c793598009fbd42d64d8bb8439eb7724cce9733025873a2e04a917d2e32f1"
+    },
+    {
+      "basename": "IBM866.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM866.so",
+      "sha256": "c6943689c02c637d3b6d4c0c14e2091c223f711fcbe93175a32baae5945baeeb"
+    },
+    {
+      "basename": "IBM866NAV.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM866NAV.so",
+      "sha256": "e9f30ac93d3718138db212dbdff7658d088e49790da37437f11658e9d41c8697"
+    },
+    {
+      "basename": "IBM868.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM868.so",
+      "sha256": "a83c679636e4ec0fbc362dabaf460926e0b36e169f3ec5c28724cb56b35dce4a"
+    },
+    {
+      "basename": "IBM869.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM869.so",
+      "sha256": "d7e5f67c12e55528866233c528913851093d757e5f2f01b2b477dff0b2848a14"
+    },
+    {
+      "basename": "IBM870.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM870.so",
+      "sha256": "df7970be62ab340c7bd57959693160beb493883d508c21045c578643ee236aaf"
+    },
+    {
+      "basename": "IBM871.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM871.so",
+      "sha256": "a1f1e15b2fa1010b1b2c0227e3d9f642d1dadbfaf211c880fef3c7eac63e84c0"
+    },
+    {
+      "basename": "IBM874.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM874.so",
+      "sha256": "70e319c7f673a55dfc7a3e561b201c1b3b8e552555403e0eae25fd7ae555dacb"
+    },
+    {
+      "basename": "IBM875.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM875.so",
+      "sha256": "76cccac723a771709e02aee10cce794c3aff670be34898eafbd53132160faf92"
+    },
+    {
+      "basename": "IBM880.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM880.so",
+      "sha256": "9acec63f7afb47652bd6a768c4f080693b76b9c0aa79a048fbfe09195aea6694"
+    },
+    {
+      "basename": "IBM891.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM891.so",
+      "sha256": "e005829a7e357b271b7918d4a805cfc4ba2029bdd140e255020559da0b9c616e"
+    },
+    {
+      "basename": "IBM901.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM901.so",
+      "sha256": "6c6acecc4d74252b23d6bb7b50787270259835c04393bf085396119dfd4c403a"
+    },
+    {
+      "basename": "IBM902.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM902.so",
+      "sha256": "12ceef1d8c46860d5eeece664d515894efeda3b7d91c68a380c23c87adae8d90"
+    },
+    {
+      "basename": "IBM903.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM903.so",
+      "sha256": "c805a6e711adea1a405e3e9674f65a90d664d19a50980c1a20988d544e71fe76"
+    },
+    {
+      "basename": "IBM9030.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM9030.so",
+      "sha256": "ee4e28d8263617db72dbe8a10bb9884df3c568237f508307ec6122df2b6cc0f4"
+    },
+    {
+      "basename": "IBM904.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM904.so",
+      "sha256": "049a756862bad031a6974ab90487a6efe10c29ce5c85fc0ca400dcdea50b3ee5"
+    },
+    {
+      "basename": "IBM905.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM905.so",
+      "sha256": "253671710600ae7dc794a3e6a4b4c5b7821a69f2ad0e38c2bfdb99c7acc2670b"
+    },
+    {
+      "basename": "IBM9066.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM9066.so",
+      "sha256": "0105eadb2837c60d693935299e9693f4d78554a786f6e559bc831dcef1f21788"
+    },
+    {
+      "basename": "IBM918.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM918.so",
+      "sha256": "787ed5dd13850e820548082ae93c348dec37228a2208bcf4efb640087f4c5c29"
+    },
+    {
+      "basename": "IBM921.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM921.so",
+      "sha256": "4c7171e4f75ef67c48f0c2c5e888ed9df9b8a579697f5d9a815f83e1d928a4f6"
+    },
+    {
+      "basename": "IBM922.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM922.so",
+      "sha256": "080fb1890b29f829b047ec9d4a48b9b8e9b76ce777b1d5e7c15617bcdab689de"
+    },
+    {
+      "basename": "IBM930.so",
+      "bytes": 102376,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM930.so",
+      "sha256": "0a784cdd72e10db944f55877190d7db83368287137dc50a9393b40a13ff56718"
+    },
+    {
+      "basename": "IBM932.so",
+      "bytes": 77744,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM932.so",
+      "sha256": "4b39b46bf0361d5259a67b489a211a5efa35b1756823b579ec5c63e7e32cf128"
+    },
+    {
+      "basename": "IBM933.so",
+      "bytes": 122856,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM933.so",
+      "sha256": "5613fb16e04a40183b3fdceda9411a1c68ec132f81a7b10f0f963f7c19e60bdb"
+    },
+    {
+      "basename": "IBM935.so",
+      "bytes": 90088,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM935.so",
+      "sha256": "9f713e4346936cf09f22e151733708703d797fe91dd58070207a8059182417d4"
+    },
+    {
+      "basename": "IBM937.so",
+      "bytes": 118760,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM937.so",
+      "sha256": "f19f9616eeca473c1878255a2a7f037233dbc74b3dc6d732e0a32888b718b49a"
+    },
+    {
+      "basename": "IBM939.so",
+      "bytes": 102376,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM939.so",
+      "sha256": "142a4bcbfc2509c1849cb0ae7bf56db58c24aeaa6523fe27b263483c4722ecfb"
+    },
+    {
+      "basename": "IBM943.so",
+      "bytes": 77744,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM943.so",
+      "sha256": "85676682bcf9327d715d1ac21a95d33ff3972e8336005923bd3c422186d35f03"
+    },
+    {
+      "basename": "IBM9448.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IBM9448.so",
+      "sha256": "5980828e7f837c7223c3d678efced1c8037d529f25abcd70461f1028c0eae70c"
+    },
+    {
+      "basename": "IEC_P27-1.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/IEC_P27-1.so",
+      "sha256": "f3ab6095344e55ae7a505e2ab0cd8ceae8899aa61d4ab3fc3436f50a06798966"
+    },
+    {
+      "basename": "INIS-8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/INIS-8.so",
+      "sha256": "13b27823464cb5b9c14b120c0b92c6a570f5ce6693c26056caa008f3f8aa35cd"
+    },
+    {
+      "basename": "INIS-CYRILLIC.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/INIS-CYRILLIC.so",
+      "sha256": "ed4cb8bc9c78d000ab94385c41253914d9b99d570538b21ac718865a8c63d5db"
+    },
+    {
+      "basename": "INIS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/INIS.so",
+      "sha256": "5cd433c974855f87eb3e6d5e1c80bd5844bb9f7a2791bc71a240bf2a665670c1"
+    },
+    {
+      "basename": "ISIRI-3342.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISIRI-3342.so",
+      "sha256": "3d6f84a34e6bb5b8334f25adcd301de9083917e9d7c10145888a560389089e54"
+    },
+    {
+      "basename": "ISO-2022-CN-EXT.so",
+      "bytes": 58928,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-CN-EXT.so",
+      "sha256": "e8eae118d4dfb373c15f29b8348cc81c353be6a77ab8be68671779b2b1be7650"
+    },
+    {
+      "basename": "ISO-2022-CN.so",
+      "bytes": 42024,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-CN.so",
+      "sha256": "055950080ad105b6fb05955b2f98686ad4f56c768343d50a5b1dc07c06d30354"
+    },
+    {
+      "basename": "ISO-2022-JP-3.so",
+      "bytes": 37104,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-JP-3.so",
+      "sha256": "837522411bd4ab4f404d422bc7715e447f5e11f90491913f9b4d63d9f375e148"
+    },
+    {
+      "basename": "ISO-2022-JP.so",
+      "bytes": 62736,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-JP.so",
+      "sha256": "a02460df8b37cac81e1ab6b6e447d475f16f5ca8f32198abf653c970c3281fec"
+    },
+    {
+      "basename": "ISO-2022-KR.so",
+      "bytes": 24472,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-2022-KR.so",
+      "sha256": "5d7a7b96a14aeb420d233006a3d328424dddde14c4a58aa7f7dfc155023c553d"
+    },
+    {
+      "basename": "ISO-IR-197.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-IR-197.so",
+      "sha256": "565a291ec26ff309bc9c14feeeb97f07b29d4ccf7657e97db9e268e90289b0d8"
+    },
+    {
+      "basename": "ISO-IR-209.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO-IR-209.so",
+      "sha256": "b45d0077e677a7a7abb06cfe56ceb098230857b096cbb302f8e71fa7f43600f1"
+    },
+    {
+      "basename": "ISO646.so",
+      "bytes": 44824,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO646.so",
+      "sha256": "5b84e8cddab176424510378b8faef01457e9fc524168d050373a3afb48f81082"
+    },
+    {
+      "basename": "ISO8859-1.so",
+      "bytes": 20048,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-1.so",
+      "sha256": "ccaf47e39352a6dce19953a335b631d2639dc39a6e0f014d063cb5e31f9375f6"
+    },
+    {
+      "basename": "ISO8859-10.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-10.so",
+      "sha256": "8da4af988b5933dbdc6f26b6584f3923ad4c5b9e62e47fd5206784ab69e9acbe"
+    },
+    {
+      "basename": "ISO8859-11.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-11.so",
+      "sha256": "35efb7b750076c40c21ec8d865085e94f699c23b348a847424db406e113c56b6"
+    },
+    {
+      "basename": "ISO8859-13.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-13.so",
+      "sha256": "9bbf6641c21b6ea7e0a63d4c6c8005d3f2ab0508fc1d45b71e17e2c4fdab9228"
+    },
+    {
+      "basename": "ISO8859-14.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-14.so",
+      "sha256": "335673f75e52418003e0729977cbd12e140ae2d50f40c85443f58032b907d509"
+    },
+    {
+      "basename": "ISO8859-15.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-15.so",
+      "sha256": "e49380cc53df7dbbd46bf2c27034565100c659d35705e2a23626ca976c814f10"
+    },
+    {
+      "basename": "ISO8859-16.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-16.so",
+      "sha256": "44a60d45516d3c5b7ff6438d5cc581239cf76f46d43d725bf1802235e4b76268"
+    },
+    {
+      "basename": "ISO8859-2.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-2.so",
+      "sha256": "cea11999ffa1740f21af1e890f52cff723eef9547b250f4e8c15d578b738a6c2"
+    },
+    {
+      "basename": "ISO8859-3.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-3.so",
+      "sha256": "7ad3db34b267184f83dc334ec9d898e64f180e7677b6aae2624c0544ae3e8256"
+    },
+    {
+      "basename": "ISO8859-4.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-4.so",
+      "sha256": "ea193ce415baeb868fa07d62ad140142c851d166c07cfd133636057602f70c69"
+    },
+    {
+      "basename": "ISO8859-5.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-5.so",
+      "sha256": "01e16619102c7d044f109089043c4eca7d8396241c20b919e98116857a36e5d3"
+    },
+    {
+      "basename": "ISO8859-6.so",
+      "bytes": 24216,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-6.so",
+      "sha256": "1b1e168b64de40320a6419b5ad045565004362e504758ec47777e3ba4ecfcfb1"
+    },
+    {
+      "basename": "ISO8859-7.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-7.so",
+      "sha256": "5b99e76c049d05c218801fc555cc37d49ad77158db7c7679080849519cacbbe3"
+    },
+    {
+      "basename": "ISO8859-8.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-8.so",
+      "sha256": "3893d5f558f3bb87877364d4cd3d7d5801241320be195e9c2e078263a6ef7281"
+    },
+    {
+      "basename": "ISO8859-9.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-9.so",
+      "sha256": "f9cfa427a34a390daa15bfcd51f51d3a6fbd713532a7c76f8317a5505deed3f5"
+    },
+    {
+      "basename": "ISO8859-9E.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO8859-9E.so",
+      "sha256": "c8e8f6bce4cd7c09bed799a334d943fefe30885d97f2d62d7488d2bd3aaf7b02"
+    },
+    {
+      "basename": "ISO_10367-BOX.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_10367-BOX.so",
+      "sha256": "23b092b7f93be7dcf703783459c1409098fb97d5132bd4a8c963097fbffd6452"
+    },
+    {
+      "basename": "ISO_11548-1.so",
+      "bytes": 20048,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_11548-1.so",
+      "sha256": "8289ee65d8d8f781556416a3a057ea67b8fcbb940d337d5e4e9609aca1524bfe"
+    },
+    {
+      "basename": "ISO_2033.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_2033.so",
+      "sha256": "0552edb88dd8c94d253007369ea4acb023bab8f0c0602292c962b7794e84e4b5"
+    },
+    {
+      "basename": "ISO_5427-EXT.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_5427-EXT.so",
+      "sha256": "3cc349bfdecdfabfa964a5be15ac0f8627a3205d75076b338ea689976fab9e00"
+    },
+    {
+      "basename": "ISO_5427.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_5427.so",
+      "sha256": "f2315a30e8d50ba1f267a0d5826504d038f6f986dad2e36762afe6cce370deea"
+    },
+    {
+      "basename": "ISO_5428.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_5428.so",
+      "sha256": "920069af5e46eb70a23bc794a56d7828ce5ff7227a7f11a4469b6ead7aba9681"
+    },
+    {
+      "basename": "ISO_6937-2.so",
+      "bytes": 28488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_6937-2.so",
+      "sha256": "5d629d10fb6e38a43561266cbd9e8d75f2232eeb6506e8af1e6e6728b7e7d827"
+    },
+    {
+      "basename": "ISO_6937.so",
+      "bytes": 28488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/ISO_6937.so",
+      "sha256": "326d278f42ecef4f947825ced62611d64f938c6f2a6980d94aef6a65676084c4"
+    },
+    {
+      "basename": "JOHAB.so",
+      "bytes": 24728,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/JOHAB.so",
+      "sha256": "3dd79bcf6b2a102903b6e02e459d574f8f8b5c0c58285f832f87fa580ff3f7ac"
+    },
+    {
+      "basename": "KOI-8.so",
+      "bytes": 20120,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI-8.so",
+      "sha256": "1a759bbb8fbf2f9a63250f61bdf22419a9a393726c9986f56bbf39015d48c08b"
+    },
+    {
+      "basename": "KOI8-R.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-R.so",
+      "sha256": "3a7f6d5c6124210f0e7206920f0cdd97f7f24fbcd056a88c0c512cd46e95aa3d"
+    },
+    {
+      "basename": "KOI8-RU.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-RU.so",
+      "sha256": "07faf843c29036e55b63e4738307508440d20ec57a5a7370d9697242550a72cf"
+    },
+    {
+      "basename": "KOI8-T.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-T.so",
+      "sha256": "78a4c04b08547713e335ba7e55500629108b771535875cfa35104ff68d4ac0c3"
+    },
+    {
+      "basename": "KOI8-U.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/KOI8-U.so",
+      "sha256": "f8e2524cc10cd1a729e4d510a44a906103ec8cba81c93b43a3a9010feae93cc2"
+    },
+    {
+      "basename": "LATIN-GREEK-1.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/LATIN-GREEK-1.so",
+      "sha256": "fbddbf9c0beeab481197f4e98da2b6fcfa45bb010da25099de720b776b1f7a23"
+    },
+    {
+      "basename": "LATIN-GREEK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/LATIN-GREEK.so",
+      "sha256": "5ccfc95e8c3be5c8637ee67155e67114d552d6da15a621a9caa75f357b2350c3"
+    },
+    {
+      "basename": "MAC-CENTRALEUROPE.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-CENTRALEUROPE.so",
+      "sha256": "cf9399e7786f74ddded2852bcdcbc5dd3808a4ebacd77ac94c444e4c87b80435"
+    },
+    {
+      "basename": "MAC-IS.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-IS.so",
+      "sha256": "4b98584da36ba63604608d15a1c92b1fa9f81b0578cb5056914f15208f7cf5ca"
+    },
+    {
+      "basename": "MAC-SAMI.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-SAMI.so",
+      "sha256": "ce79994284aa3857ec037d2d4a9027a9937e12271723386e85f84d05863e8f71"
+    },
+    {
+      "basename": "MAC-UK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MAC-UK.so",
+      "sha256": "f12ada6df1823a9bfa28c7c7296ffb85fbb8fc8f8606157bee9bf64fd84de6ba"
+    },
+    {
+      "basename": "MACINTOSH.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MACINTOSH.so",
+      "sha256": "21dce1c14c1897bbadd160db6ad361298e36af6cb027459f35b50f4132691b99"
+    },
+    {
+      "basename": "MIK.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/MIK.so",
+      "sha256": "31bf5f309b07e7b45c8083476b21ae59f73eb8115d9870cdd8c967fb2da8b11b"
+    },
+    {
+      "basename": "NATS-DANO.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/NATS-DANO.so",
+      "sha256": "54ce353a29b3e93bc92cd0cdc08b4de05e9bcab046b3076496e5ceeac9ec7259"
+    },
+    {
+      "basename": "NATS-SEFI.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/NATS-SEFI.so",
+      "sha256": "8681b5e0160c51227ef79df4b0735272d6d6f2692755017a3c23ada6add70226"
+    },
+    {
+      "basename": "PT154.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/PT154.so",
+      "sha256": "f620cfa5cc55514fdf2834aab078fbb501c0fbf95610f6bb4497f42128259ad8"
+    },
+    {
+      "basename": "RK1048.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/RK1048.so",
+      "sha256": "b3e7bfc6253e791db2cd65ab44ffa61c35ea9bead9f0a95fe5c801e1d4a90e47"
+    },
+    {
+      "basename": "SAMI-WS2.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/SAMI-WS2.so",
+      "sha256": "3060de6a45798bf96a251b663bbbd0b45ebab890215cef42a9f26842144d479a"
+    },
+    {
+      "basename": "SHIFT_JISX0213.so",
+      "bytes": 24568,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/SHIFT_JISX0213.so",
+      "sha256": "8146f4b170707b626b4415151f61253eb9b3bd12b11ac686ff4fa61ce5122072"
+    },
+    {
+      "basename": "SJIS.so",
+      "bytes": 102352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/SJIS.so",
+      "sha256": "2adc2704e8396168aeccd668569bc376ccba101bd33be7e67b449ce2aad7410c"
+    },
+    {
+      "basename": "T.61.so",
+      "bytes": 28488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/T.61.so",
+      "sha256": "e86eb5d75c32fdaa9e86e6f1eda41052278db6924f814879a201f90b4a6a0dce"
+    },
+    {
+      "basename": "TCVN5712-1.so",
+      "bytes": 20288,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/TCVN5712-1.so",
+      "sha256": "d3199e2130f886a3fc2faa7eed3b1b32dbf3752cfda153062d4714e9f0b4acff"
+    },
+    {
+      "basename": "TIS-620.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/TIS-620.so",
+      "sha256": "800b805a40a8d735517ffa771be8ffe685cc2831194d649a56e0183a60fbd4fe"
+    },
+    {
+      "basename": "TSCII.so",
+      "bytes": 24488,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/TSCII.so",
+      "sha256": "afd9b4b2cec5ab7d8111828ac9da190a4160fe5cdf8d89bf0f8180815b353b22"
+    },
+    {
+      "basename": "UHC.so",
+      "bytes": 77800,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UHC.so",
+      "sha256": "3a7a5af6a6f0be762a33aed7c6528458f182da61999d2bcf318ea8fe91fbe843"
+    },
+    {
+      "basename": "UNICODE.so",
+      "bytes": 20216,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UNICODE.so",
+      "sha256": "de7bbb3f4a7c50fcef34937572a5585aa33b976e76ce54d3d9df0338b14b4e72"
+    },
+    {
+      "basename": "UTF-16.so",
+      "bytes": 20224,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UTF-16.so",
+      "sha256": "399bc0b17262fd97e948e974d47b4f6f480783ed42e59c5f4bf115d682c998b3"
+    },
+    {
+      "basename": "UTF-32.so",
+      "bytes": 20224,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UTF-32.so",
+      "sha256": "a2ab37f6b70688dbfcc3e3a3c5f894c50d7247bdde565f6092b5cae230df8ac5"
+    },
+    {
+      "basename": "UTF-7.so",
+      "bytes": 28792,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/UTF-7.so",
+      "sha256": "06ff1c4f1968d3a006879257dfa38847b6b3aaccb2aa93f539d88f5134fadd59"
+    },
+    {
+      "basename": "VISCII.so",
+      "bytes": 20152,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/VISCII.so",
+      "sha256": "998ba4c5d5751def67069c8e88ebab5f159a4cd3284392f787f3c96994098664"
+    },
+    {
+      "basename": "libCNS.so",
+      "bytes": 475272,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libCNS.so",
+      "sha256": "2f585d710a3b55689a0d0e9e0d198646c4f50b253f42e0b96b28a3a67e25057d"
+    },
+    {
+      "basename": "libGB.so",
+      "bytes": 73056,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libGB.so",
+      "sha256": "b9dad12495655b4d5d0ad3df349fe5fec1a692807efe6f84a58ec65466c26960"
+    },
+    {
+      "basename": "libISOIR165.so",
+      "bytes": 64520,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libISOIR165.so",
+      "sha256": "a9a4509ef27243866da9700ac0208549ee56be076cdc613b671e720133763886"
+    },
+    {
+      "basename": "libJIS.so",
+      "bytes": 109912,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libJIS.so",
+      "sha256": "20e2a732cbb7bb9c100fa274da65cf34e08d4954f3f9609a3eb1a6100082ad3d"
+    },
+    {
+      "basename": "libJISX0213.so",
+      "bytes": 130184,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libJISX0213.so",
+      "sha256": "d4a0c1be2642bc997dad60d05b24ca6aca262c4b459591f2a8e8c01b53511675"
+    },
+    {
+      "basename": "libKSC.so",
+      "bytes": 52344,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/gconv/libKSC.so",
+      "sha256": "3c9bb6accf386664311e077907eae8f8efed95991e6ce0e6385c352dd41b888b"
+    },
+    {
+      "basename": "ld-linux-x86-64.so.2",
+      "bytes": 263056,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/ld-linux-x86-64.so.2",
+      "sha256": "1640ec4d1cfcc3c19430b368cbbb057c5652eac340ecba12cf9dfbe2c3769d07"
+    },
+    {
+      "basename": "libBrokenLocale.so",
+      "bytes": 15752,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libBrokenLocale.so.1",
+      "sha256": "a6252694dfc9cb4d9b6e4ac43cafc553e686afb56f8a008c84f3c471a21450c0"
+    },
+    {
+      "basename": "libBrokenLocale.so.1",
+      "bytes": 15752,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libBrokenLocale.so.1",
+      "sha256": "a6252694dfc9cb4d9b6e4ac43cafc553e686afb56f8a008c84f3c471a21450c0"
+    },
+    {
+      "basename": "libanl.so",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libanl.so.1",
+      "sha256": "ea85c35bc92fe0a07a010397b18c1f71405c5a710bfc206376a4829685392db6"
+    },
+    {
+      "basename": "libanl.so.1",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libanl.so.1",
+      "sha256": "ea85c35bc92fe0a07a010397b18c1f71405c5a710bfc206376a4829685392db6"
+    },
+    {
+      "basename": "libc.so",
+      "bytes": 414,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc.so",
+      "sha256": "56cb5502bf01ad296592e3a926ddbe95f724ee1174eaf9ace6645f8ca7dc6563"
+    },
+    {
+      "basename": "libc.so.6",
+      "bytes": 2413096,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc.so.6",
+      "sha256": "6fcad203e10b304de3988b4e6e85df56a71f7ff9ae8898cb20fcf9bda330e2df"
+    },
+    {
+      "basename": "libc_malloc_debug.so",
+      "bytes": 64000,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc_malloc_debug.so.0",
+      "sha256": "515c4401b5604a13048384f7c03139b469678b5e4db56629803dd3c6da00ca32"
+    },
+    {
+      "basename": "libc_malloc_debug.so.0",
+      "bytes": 64000,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libc_malloc_debug.so.0",
+      "sha256": "515c4401b5604a13048384f7c03139b469678b5e4db56629803dd3c6da00ca32"
+    },
+    {
+      "basename": "libdl.so",
+      "bytes": 15688,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libdl.so.2",
+      "sha256": "b865862b59d19329e775704b53560ae87bc09f2c4161f94101a9913b1936946e"
+    },
+    {
+      "basename": "libdl.so.2",
+      "bytes": 15688,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libdl.so.2",
+      "sha256": "b865862b59d19329e775704b53560ae87bc09f2c4161f94101a9913b1936946e"
+    },
+    {
+      "basename": "libm.so",
+      "bytes": 220,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libm.so",
+      "sha256": "fcbf4c3e34083739acec6ddf860bb644689618c6ba4bb2a2084a14acde1513cb"
+    },
+    {
+      "basename": "libm.so.6",
+      "bytes": 1102240,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libm.so.6",
+      "sha256": "1a5b421697440dc7095fed465890a3b964533a275b4043c689d1fd4ef57503e5"
+    },
+    {
+      "basename": "libmemusage.so",
+      "bytes": 22304,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libmemusage.so",
+      "sha256": "5f63a853854340eee204728f61e9329fec4450a1fd655230b70eaac48d19e374"
+    },
+    {
+      "basename": "libmvec.so",
+      "bytes": 1070952,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libmvec.so.1",
+      "sha256": "2fb629123591b8a1aaf9ae6dfc4e568e43be20a64727ca54ba8df7f3fcdf5f03"
+    },
+    {
+      "basename": "libmvec.so.1",
+      "bytes": 1070952,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libmvec.so.1",
+      "sha256": "2fb629123591b8a1aaf9ae6dfc4e568e43be20a64727ca54ba8df7f3fcdf5f03"
+    },
+    {
+      "basename": "libnsl.so.1",
+      "bytes": 127448,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnsl.so.1",
+      "sha256": "0e8a1f13839c75b482cfff6d5701ce49002367bedb050d6918fafaf4326e5ebf"
+    },
+    {
+      "basename": "libnss_compat.so",
+      "bytes": 45456,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_compat.so.2",
+      "sha256": "2ca5af6d1a608fb623cdb351486aeaabb98e1d0f4e948f09ede3616caddedf25"
+    },
+    {
+      "basename": "libnss_compat.so.2",
+      "bytes": 45456,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_compat.so.2",
+      "sha256": "2ca5af6d1a608fb623cdb351486aeaabb98e1d0f4e948f09ede3616caddedf25"
+    },
+    {
+      "basename": "libnss_db.so",
+      "bytes": 40520,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_db.so.2",
+      "sha256": "b48c7dd02a615d39b25bef3f35c90796442ff34eccb83afa085b5302a325db5d"
+    },
+    {
+      "basename": "libnss_db.so.2",
+      "bytes": 40520,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_db.so.2",
+      "sha256": "b48c7dd02a615d39b25bef3f35c90796442ff34eccb83afa085b5302a325db5d"
+    },
+    {
+      "basename": "libnss_dns.so.2",
+      "bytes": 15288,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_dns.so.2",
+      "sha256": "857302541bd0b6b361ae1a3b7ba25759adc25804447d3553b15a9b8c7c03ef9d"
+    },
+    {
+      "basename": "libnss_files.so.2",
+      "bytes": 15288,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_files.so.2",
+      "sha256": "b303831edcca500e5d42cf2ae1469a4edf8bacf477cf6a67b67948985070b32f"
+    },
+    {
+      "basename": "libnss_hesiod.so",
+      "bytes": 30600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_hesiod.so.2",
+      "sha256": "f3075611359f7d9f6496a90bf1f38984272a2d8f6943d47b3a846ee9598198ce"
+    },
+    {
+      "basename": "libnss_hesiod.so.2",
+      "bytes": 30600,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libnss_hesiod.so.2",
+      "sha256": "f3075611359f7d9f6496a90bf1f38984272a2d8f6943d47b3a846ee9598198ce"
+    },
+    {
+      "basename": "libpcprofile.so",
+      "bytes": 15992,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libpcprofile.so",
+      "sha256": "3ee8fb2a35eff4962e1f1b0a632854d44ccaa3bf16f40054df052bc98ec1db84"
+    },
+    {
+      "basename": "libpthread.so",
+      "bytes": 16536,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libpthread.so.0",
+      "sha256": "a91bfbc5485171fb38c6cce50e22c91f144628cadec61b57ce88c81b848d0828"
+    },
+    {
+      "basename": "libpthread.so.0",
+      "bytes": 16536,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libpthread.so.0",
+      "sha256": "a91bfbc5485171fb38c6cce50e22c91f144628cadec61b57ce88c81b848d0828"
+    },
+    {
+      "basename": "libresolv.so",
+      "bytes": 77352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libresolv.so.2",
+      "sha256": "fea017bd3b6c1637af8f9c314ce88ca046b640f15c43b9a08ab63172c8e32f31"
+    },
+    {
+      "basename": "libresolv.so.2",
+      "bytes": 77352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libresolv.so.2",
+      "sha256": "fea017bd3b6c1637af8f9c314ce88ca046b640f15c43b9a08ab63172c8e32f31"
+    },
+    {
+      "basename": "librt.so",
+      "bytes": 16352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/librt.so.1",
+      "sha256": "6f485fa6927af7702c46ce27c2862a6459fdbfccae20b9e351ec54d0c76266b3"
+    },
+    {
+      "basename": "librt.so.1",
+      "bytes": 16352,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/librt.so.1",
+      "sha256": "6f485fa6927af7702c46ce27c2862a6459fdbfccae20b9e351ec54d0c76266b3"
+    },
+    {
+      "basename": "libthread_db.so",
+      "bytes": 54560,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libthread_db.so.1",
+      "sha256": "ff85303c7ebd9a2ca15ea692812670de0f2c895f0efa9d879f04833fea898c03"
+    },
+    {
+      "basename": "libthread_db.so.1",
+      "bytes": 54560,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libthread_db.so.1",
+      "sha256": "ff85303c7ebd9a2ca15ea692812670de0f2c895f0efa9d879f04833fea898c03"
+    },
+    {
+      "basename": "libutil.so",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libutil.so.1",
+      "sha256": "ce6792ec9de75545a79752bea2595144b5fa13b17b9fefce7dd195e643da6712"
+    },
+    {
+      "basename": "libutil.so.1",
+      "bytes": 15512,
+      "declared_source": "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/libutil.so.1",
+      "sha256": "ce6792ec9de75545a79752bea2595144b5fa13b17b9fefce7dd195e643da6712"
+    },
+    {
+      "basename": "libffi.so",
+      "bytes": 71536,
+      "declared_source": "/nix/store/hyai3q7gvdfppw4ky7s2mvhxvfyp5bh7-libffi-3.5.2/lib/libffi.so.8.2.0",
+      "sha256": "7b505734d6b5958d93e1f7e2cbe0e11e279af74553e855dab54315991124e270"
+    },
+    {
+      "basename": "libffi.so.8",
+      "bytes": 71536,
+      "declared_source": "/nix/store/hyai3q7gvdfppw4ky7s2mvhxvfyp5bh7-libffi-3.5.2/lib/libffi.so.8.2.0",
+      "sha256": "7b505734d6b5958d93e1f7e2cbe0e11e279af74553e855dab54315991124e270"
+    },
+    {
+      "basename": "libffi.so.8.2.0",
+      "bytes": 71536,
+      "declared_source": "/nix/store/hyai3q7gvdfppw4ky7s2mvhxvfyp5bh7-libffi-3.5.2/lib/libffi.so.8.2.0",
+      "sha256": "7b505734d6b5958d93e1f7e2cbe0e11e279af74553e855dab54315991124e270"
+    },
+    {
+      "basename": "libffi.so",
+      "bytes": 71536,
+      "declared_source": "/nix/store/hyai3q7gvdfppw4ky7s2mvhxvfyp5bh7-libffi-3.5.2/lib/libffi.so.8.2.0",
+      "sha256": "7b505734d6b5958d93e1f7e2cbe0e11e279af74553e855dab54315991124e270"
+    },
+    {
+      "basename": "libffi.so.8",
+      "bytes": 71536,
+      "declared_source": "/nix/store/hyai3q7gvdfppw4ky7s2mvhxvfyp5bh7-libffi-3.5.2/lib/libffi.so.8.2.0",
+      "sha256": "7b505734d6b5958d93e1f7e2cbe0e11e279af74553e855dab54315991124e270"
+    },
+    {
+      "basename": "libffi.so.8.2.0",
+      "bytes": 71536,
+      "declared_source": "/nix/store/hyai3q7gvdfppw4ky7s2mvhxvfyp5bh7-libffi-3.5.2/lib/libffi.so.8.2.0",
+      "sha256": "7b505734d6b5958d93e1f7e2cbe0e11e279af74553e855dab54315991124e270"
+    },
+    {
+      "basename": "libunistring.so",
+      "bytes": 2076792,
+      "declared_source": "/nix/store/i4gg1f526vl5psg5nqniflj4v77vc1kd-libunistring-1.4.2/lib/libunistring.so.5.2.1",
+      "sha256": "a8f5bc4a0733efe15c029aa723d538bc9dfabdf6b5d95a8f381bce1a9a74a3d0"
+    },
+    {
+      "basename": "libunistring.so.5",
+      "bytes": 2076792,
+      "declared_source": "/nix/store/i4gg1f526vl5psg5nqniflj4v77vc1kd-libunistring-1.4.2/lib/libunistring.so.5.2.1",
+      "sha256": "a8f5bc4a0733efe15c029aa723d538bc9dfabdf6b5d95a8f381bce1a9a74a3d0"
+    },
+    {
+      "basename": "libunistring.so.5.2.1",
+      "bytes": 2076792,
+      "declared_source": "/nix/store/i4gg1f526vl5psg5nqniflj4v77vc1kd-libunistring-1.4.2/lib/libunistring.so.5.2.1",
+      "sha256": "a8f5bc4a0733efe15c029aa723d538bc9dfabdf6b5d95a8f381bce1a9a74a3d0"
+    },
+    {
+      "basename": "libgcrypt.so",
+      "bytes": 1847592,
+      "declared_source": "/nix/store/ij3kvmcm83z03wmmylzdr4kygnqp2hw2-libgcrypt-1.11.2-lib/lib/libgcrypt.so.20.6.0",
+      "sha256": "aa046869d08f9a8a9ce0d0eff296cc75ae96126c4847e850bbe2468807607caa"
+    },
+    {
+      "basename": "libgcrypt.so.20",
+      "bytes": 1847592,
+      "declared_source": "/nix/store/ij3kvmcm83z03wmmylzdr4kygnqp2hw2-libgcrypt-1.11.2-lib/lib/libgcrypt.so.20.6.0",
+      "sha256": "aa046869d08f9a8a9ce0d0eff296cc75ae96126c4847e850bbe2468807607caa"
+    },
+    {
+      "basename": "libgcrypt.so.20.6.0",
+      "bytes": 1847592,
+      "declared_source": "/nix/store/ij3kvmcm83z03wmmylzdr4kygnqp2hw2-libgcrypt-1.11.2-lib/lib/libgcrypt.so.20.6.0",
+      "sha256": "aa046869d08f9a8a9ce0d0eff296cc75ae96126c4847e850bbe2468807607caa"
+    },
+    {
+      "basename": "libz.so",
+      "bytes": 128936,
+      "declared_source": "/nix/store/ixhlv41i2wpl84xgjcks061dz4yssbg3-zlib-1.3.2/lib/libz.so.1.3.2",
+      "sha256": "f972aad101dba8a8f5d9842cd53b834d58a1d3269b8f3390a8c23ee97ce5102d"
+    },
+    {
+      "basename": "libz.so.1",
+      "bytes": 128936,
+      "declared_source": "/nix/store/ixhlv41i2wpl84xgjcks061dz4yssbg3-zlib-1.3.2/lib/libz.so.1.3.2",
+      "sha256": "f972aad101dba8a8f5d9842cd53b834d58a1d3269b8f3390a8c23ee97ce5102d"
+    },
+    {
+      "basename": "libz.so.1.3.2",
+      "bytes": 128936,
+      "declared_source": "/nix/store/ixhlv41i2wpl84xgjcks061dz4yssbg3-zlib-1.3.2/lib/libz.so.1.3.2",
+      "sha256": "f972aad101dba8a8f5d9842cd53b834d58a1d3269b8f3390a8c23ee97ce5102d"
+    },
+    {
+      "basename": "afalg.so",
+      "bytes": 27616,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/engines-3/afalg.so",
+      "sha256": "0be0d14ed6e21022dba91a762d1b0c4f82f17f9c2fc1fa689c7c672ba94437f4"
+    },
+    {
+      "basename": "capi.so",
+      "bytes": 15176,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/engines-3/capi.so",
+      "sha256": "ab3414d9f268c16857e1e319ef7dcebf592d2f06f73276bf4bc92d5f87a1a37d"
+    },
+    {
+      "basename": "loader_attic.so",
+      "bytes": 70040,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/engines-3/loader_attic.so",
+      "sha256": "561eef81ac8e9018178396832a479565110d4851fac0af62e89490d1aa2ed569"
+    },
+    {
+      "basename": "padlock.so",
+      "bytes": 36040,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/engines-3/padlock.so",
+      "sha256": "e1fd2cfc2f1570c0c2299651de2186abe6d5d0fe6073d2daac7617843042d17b"
+    },
+    {
+      "basename": "libcrypto.so",
+      "bytes": 7530208,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/libcrypto.so.3",
+      "sha256": "2eca4ae386360e443a4320e495bdb78f79a0534512dd5eb57340f6e14d3eb683"
+    },
+    {
+      "basename": "libcrypto.so.3",
+      "bytes": 7530208,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/libcrypto.so.3",
+      "sha256": "2eca4ae386360e443a4320e495bdb78f79a0534512dd5eb57340f6e14d3eb683"
+    },
+    {
+      "basename": "libssl.so",
+      "bytes": 1328672,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/libssl.so.3",
+      "sha256": "78e89a68f80baa174996830f477086b0391ba70f13981dd08a62a7a525a568a6"
+    },
+    {
+      "basename": "libssl.so.3",
+      "bytes": 1328672,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/libssl.so.3",
+      "sha256": "78e89a68f80baa174996830f477086b0391ba70f13981dd08a62a7a525a568a6"
+    },
+    {
+      "basename": "legacy.so",
+      "bytes": 181176,
+      "declared_source": "/nix/store/jyys8c069vi8fnpw4n588ni1wibc09xq-openssl-3.5.9/lib/ossl-modules/legacy.so",
+      "sha256": "fdb4e83d6b7837830fdcec6a34f2845df1866b825dc1162579bcd5bb7981d7f2"
+    },
+    {
+      "basename": "libgpg-error.so",
+      "bytes": 216304,
+      "declared_source": "/nix/store/kcx00cb65s35icjy6v1yanw75zv70ipx-libgpg-error-1.59/lib/libgpg-error.so.0.41.2",
+      "sha256": "3ca749eed56454cf2c71f98501594185285526ef69a5c504a140b2506c53523f"
+    },
+    {
+      "basename": "libgpg-error.so.0",
+      "bytes": 216304,
+      "declared_source": "/nix/store/kcx00cb65s35icjy6v1yanw75zv70ipx-libgpg-error-1.59/lib/libgpg-error.so.0.41.2",
+      "sha256": "3ca749eed56454cf2c71f98501594185285526ef69a5c504a140b2506c53523f"
+    },
+    {
+      "basename": "libgpg-error.so.0.41.2",
+      "bytes": 216304,
+      "declared_source": "/nix/store/kcx00cb65s35icjy6v1yanw75zv70ipx-libgpg-error-1.59/lib/libgpg-error.so.0.41.2",
+      "sha256": "3ca749eed56454cf2c71f98501594185285526ef69a5c504a140b2506c53523f"
+    },
+    {
+      "basename": "libselinux.so",
+      "bytes": 239648,
+      "declared_source": "/nix/store/kdlv714j07803x3ynn2w4a44xi84bh0c-libselinux-3.10/lib/libselinux.so.1",
+      "sha256": "8eac090db5c64835e5a37ec8d4ea44698397fdf14e1dea324e02ce6cf2983c20"
+    },
+    {
+      "basename": "libselinux.so.1",
+      "bytes": 239648,
+      "declared_source": "/nix/store/kdlv714j07803x3ynn2w4a44xi84bh0c-libselinux-3.10/lib/libselinux.so.1",
+      "sha256": "8eac090db5c64835e5a37ec8d4ea44698397fdf14e1dea324e02ce6cf2983c20"
+    },
+    {
+      "basename": "libpcre2-16.so",
+      "bytes": 668152,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-16.so.0.14.0",
+      "sha256": "6f4737d904889c65621793417f7a894962acbfa5aca3ce5ce2785a6edde82cbb"
+    },
+    {
+      "basename": "libpcre2-16.so.0",
+      "bytes": 668152,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-16.so.0.14.0",
+      "sha256": "6f4737d904889c65621793417f7a894962acbfa5aca3ce5ce2785a6edde82cbb"
+    },
+    {
+      "basename": "libpcre2-16.so.0.14.0",
+      "bytes": 668152,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-16.so.0.14.0",
+      "sha256": "6f4737d904889c65621793417f7a894962acbfa5aca3ce5ce2785a6edde82cbb"
+    },
+    {
+      "basename": "libpcre2-32.so",
+      "bytes": 639272,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-32.so.0.14.0",
+      "sha256": "5c725f5a4b5bdf4982b6c4e2280610010027fdf7c04121dd812bf41cfa9c4528"
+    },
+    {
+      "basename": "libpcre2-32.so.0",
+      "bytes": 639272,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-32.so.0.14.0",
+      "sha256": "5c725f5a4b5bdf4982b6c4e2280610010027fdf7c04121dd812bf41cfa9c4528"
+    },
+    {
+      "basename": "libpcre2-32.so.0.14.0",
+      "bytes": 639272,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-32.so.0.14.0",
+      "sha256": "5c725f5a4b5bdf4982b6c4e2280610010027fdf7c04121dd812bf41cfa9c4528"
+    },
+    {
+      "basename": "libpcre2-8.so",
+      "bytes": 726392,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-8.so.0.14.0",
+      "sha256": "8aca39f922670c8709cdf4f9dc184491c95de361c2c049b5ca14f5109896e196"
+    },
+    {
+      "basename": "libpcre2-8.so.0",
+      "bytes": 726392,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-8.so.0.14.0",
+      "sha256": "8aca39f922670c8709cdf4f9dc184491c95de361c2c049b5ca14f5109896e196"
+    },
+    {
+      "basename": "libpcre2-8.so.0.14.0",
+      "bytes": 726392,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-8.so.0.14.0",
+      "sha256": "8aca39f922670c8709cdf4f9dc184491c95de361c2c049b5ca14f5109896e196"
+    },
+    {
+      "basename": "libpcre2-posix.so",
+      "bytes": 15992,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-posix.so.3.0.6",
+      "sha256": "685873cf2a294914aa02653e48d0405bfd7a247c79e68b18a35461454575b7a7"
+    },
+    {
+      "basename": "libpcre2-posix.so.3",
+      "bytes": 15992,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-posix.so.3.0.6",
+      "sha256": "685873cf2a294914aa02653e48d0405bfd7a247c79e68b18a35461454575b7a7"
+    },
+    {
+      "basename": "libpcre2-posix.so.3.0.6",
+      "bytes": 15992,
+      "declared_source": "/nix/store/khhzkpj9169ydnyg7jjrjx7s5ygdkcas-pcre2-10.46/lib/libpcre2-posix.so.3.0.6",
+      "sha256": "685873cf2a294914aa02653e48d0405bfd7a247c79e68b18a35461454575b7a7"
+    },
+    {
+      "basename": "libsqlite3.53.4.so",
+      "bytes": 1931448,
+      "declared_source": "/nix/store/m5r7ma34kgk9laabkfz3vn2kznkn7hnh-sqlite-3.53.4/lib/libsqlite3.53.4.so",
+      "sha256": "ba76d9f1ac30240cea160dc6e686cdb19692442d52858b9dae906227b848f176"
+    },
+    {
+      "basename": "libsqlite3.so",
+      "bytes": 1839648,
+      "declared_source": "/nix/store/m5r7ma34kgk9laabkfz3vn2kznkn7hnh-sqlite-3.53.4/lib/libsqlite3.so.3.53.4",
+      "sha256": "9806177b90dcce7cfe97b524bfc47e0ed40afcecaa6923a2672f7e982b5f8a52"
+    },
+    {
+      "basename": "libsqlite3.so.0",
+      "bytes": 1839648,
+      "declared_source": "/nix/store/m5r7ma34kgk9laabkfz3vn2kznkn7hnh-sqlite-3.53.4/lib/libsqlite3.so.3.53.4",
+      "sha256": "9806177b90dcce7cfe97b524bfc47e0ed40afcecaa6923a2672f7e982b5f8a52"
+    },
+    {
+      "basename": "libsqlite3.so.3.53.4",
+      "bytes": 1839648,
+      "declared_source": "/nix/store/m5r7ma34kgk9laabkfz3vn2kznkn7hnh-sqlite-3.53.4/lib/libsqlite3.so.3.53.4",
+      "sha256": "9806177b90dcce7cfe97b524bfc47e0ed40afcecaa6923a2672f7e982b5f8a52"
+    },
+    {
+      "basename": "libidn2.so",
+      "bytes": 211328,
+      "declared_source": "/nix/store/sgswwrxkhdlfskklqp4gsbi2cskfg07c-libidn2-2.3.8/lib/libidn2.so.0.4.0",
+      "sha256": "bc45789cf41eea249a31a507f0a8b32afd240d0f48a60a3b7e6776747d4cde14"
+    },
+    {
+      "basename": "libidn2.so.0",
+      "bytes": 211328,
+      "declared_source": "/nix/store/sgswwrxkhdlfskklqp4gsbi2cskfg07c-libidn2-2.3.8/lib/libidn2.so.0.4.0",
+      "sha256": "bc45789cf41eea249a31a507f0a8b32afd240d0f48a60a3b7e6776747d4cde14"
+    },
+    {
+      "basename": "libidn2.so.0.4.0",
+      "bytes": 211328,
+      "declared_source": "/nix/store/sgswwrxkhdlfskklqp4gsbi2cskfg07c-libidn2-2.3.8/lib/libidn2.so.0.4.0",
+      "sha256": "bc45789cf41eea249a31a507f0a8b32afd240d0f48a60a3b7e6776747d4cde14"
+    },
+    {
+      "basename": "libsecret-1.so",
+      "bytes": 492608,
+      "declared_source": "/nix/store/whg0adb5366lwb5z9xv2fwbc7qb3q9sk-libsecret-0.21.7/lib/libsecret-1.so.0.0.0",
+      "sha256": "2f618dcae3f961a51571477fad1fe0d97b162d9603cee261df6fa1c5a6180aef"
+    },
+    {
+      "basename": "libsecret-1.so.0",
+      "bytes": 492608,
+      "declared_source": "/nix/store/whg0adb5366lwb5z9xv2fwbc7qb3q9sk-libsecret-0.21.7/lib/libsecret-1.so.0.0.0",
+      "sha256": "2f618dcae3f961a51571477fad1fe0d97b162d9603cee261df6fa1c5a6180aef"
+    },
+    {
+      "basename": "libsecret-1.so.0.0.0",
+      "bytes": 492608,
+      "declared_source": "/nix/store/whg0adb5366lwb5z9xv2fwbc7qb3q9sk-libsecret-0.21.7/lib/libsecret-1.so.0.0.0",
+      "sha256": "2f618dcae3f961a51571477fad1fe0d97b162d9603cee261df6fa1c5a6180aef"
+    },
+    {
+      "basename": "libgcc_s.so",
+      "bytes": 132,
+      "declared_source": "/nix/store/xx0z77494lfxr8qjwpck246fry05n3nm-xgcc-15.2.0-libgcc/lib/libgcc_s.so",
+      "sha256": "69a56a9993b7729b29b274e65016031c81f2397f176ed5ad44d59bd50425e0bd"
+    },
+    {
+      "basename": "libgcc_s.so.1",
+      "bytes": 196888,
+      "declared_source": "/nix/store/xx0z77494lfxr8qjwpck246fry05n3nm-xgcc-15.2.0-libgcc/lib/libgcc_s.so.1",
+      "sha256": "3a5730d171c84563e8f31a8c2d2ea6048683c4b5cc39ba378dc7192b77024056"
+    },
+    {
+      "basename": "libgio-2.0.so",
+      "bytes": 2663632,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgio-2.0.so.0.8600.3",
+      "sha256": "461757ff104a750a2ac96cf2d358f26c64875575db46c54fe53f490c5c1e548c"
+    },
+    {
+      "basename": "libgio-2.0.so.0",
+      "bytes": 2663632,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgio-2.0.so.0.8600.3",
+      "sha256": "461757ff104a750a2ac96cf2d358f26c64875575db46c54fe53f490c5c1e548c"
+    },
+    {
+      "basename": "libgio-2.0.so.0.8600.3",
+      "bytes": 2663632,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgio-2.0.so.0.8600.3",
+      "sha256": "461757ff104a750a2ac96cf2d358f26c64875575db46c54fe53f490c5c1e548c"
+    },
+    {
+      "basename": "libgirepository-2.0.so",
+      "bytes": 312144,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgirepository-2.0.so.0.8600.3",
+      "sha256": "5fd3881f787a4f6c82df13823b2da9cfa6667737bfa669a6b7aac8334d50a1d5"
+    },
+    {
+      "basename": "libgirepository-2.0.so.0",
+      "bytes": 312144,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgirepository-2.0.so.0.8600.3",
+      "sha256": "5fd3881f787a4f6c82df13823b2da9cfa6667737bfa669a6b7aac8334d50a1d5"
+    },
+    {
+      "basename": "libgirepository-2.0.so.0.8600.3",
+      "bytes": 312144,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgirepository-2.0.so.0.8600.3",
+      "sha256": "5fd3881f787a4f6c82df13823b2da9cfa6667737bfa669a6b7aac8334d50a1d5"
+    },
+    {
+      "basename": "libglib-2.0.so",
+      "bytes": 1622296,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libglib-2.0.so.0.8600.3",
+      "sha256": "d88f1f3d96fcf9a6e10e9f325c4af3c656ef1186368975fbfc775c53ae92799f"
+    },
+    {
+      "basename": "libglib-2.0.so.0",
+      "bytes": 1622296,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libglib-2.0.so.0.8600.3",
+      "sha256": "d88f1f3d96fcf9a6e10e9f325c4af3c656ef1186368975fbfc775c53ae92799f"
+    },
+    {
+      "basename": "libglib-2.0.so.0.8600.3",
+      "bytes": 1622296,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libglib-2.0.so.0.8600.3",
+      "sha256": "d88f1f3d96fcf9a6e10e9f325c4af3c656ef1186368975fbfc775c53ae92799f"
+    },
+    {
+      "basename": "libglib-2.0.so.0.8600.3-gdb.py",
+      "bytes": 248,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libglib-2.0.so.0.8600.3-gdb.py",
+      "sha256": "75cffdedcb6eb96329290ee78f2409b149fd1344ef77df7be40f84af2df94bfa"
+    },
+    {
+      "basename": "libgmodule-2.0.so",
+      "bytes": 26032,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgmodule-2.0.so.0.8600.3",
+      "sha256": "ea9a43a619f533a659d5b008aa3e8bbce1680451e4cb6d31d660633730914c60"
+    },
+    {
+      "basename": "libgmodule-2.0.so.0",
+      "bytes": 26032,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgmodule-2.0.so.0.8600.3",
+      "sha256": "ea9a43a619f533a659d5b008aa3e8bbce1680451e4cb6d31d660633730914c60"
+    },
+    {
+      "basename": "libgmodule-2.0.so.0.8600.3",
+      "bytes": 26032,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgmodule-2.0.so.0.8600.3",
+      "sha256": "ea9a43a619f533a659d5b008aa3e8bbce1680451e4cb6d31d660633730914c60"
+    },
+    {
+      "basename": "libgobject-2.0.so",
+      "bytes": 485752,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgobject-2.0.so.0.8600.3",
+      "sha256": "2e21eef124672450f849f9aae281d943c4b910b387f1d52ca6bbf2c31a39cf9a"
+    },
+    {
+      "basename": "libgobject-2.0.so.0",
+      "bytes": 485752,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgobject-2.0.so.0.8600.3",
+      "sha256": "2e21eef124672450f849f9aae281d943c4b910b387f1d52ca6bbf2c31a39cf9a"
+    },
+    {
+      "basename": "libgobject-2.0.so.0.8600.3",
+      "bytes": 485752,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgobject-2.0.so.0.8600.3",
+      "sha256": "2e21eef124672450f849f9aae281d943c4b910b387f1d52ca6bbf2c31a39cf9a"
+    },
+    {
+      "basename": "libgobject-2.0.so.0.8600.3-gdb.py",
+      "bytes": 251,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgobject-2.0.so.0.8600.3-gdb.py",
+      "sha256": "bcd0d0414e01a49147f9c409e05c2b8ce64acce820ee142a649cc4974bfe688a"
+    },
+    {
+      "basename": "libgthread-2.0.so",
+      "bytes": 15288,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgthread-2.0.so.0.8600.3",
+      "sha256": "ed0a73921e796dab95ddfd5c8d01b065a6750ed7ef2853cdebf78fde38a52603"
+    },
+    {
+      "basename": "libgthread-2.0.so.0",
+      "bytes": 15288,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgthread-2.0.so.0.8600.3",
+      "sha256": "ed0a73921e796dab95ddfd5c8d01b065a6750ed7ef2853cdebf78fde38a52603"
+    },
+    {
+      "basename": "libgthread-2.0.so.0.8600.3",
+      "bytes": 15288,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/lib/libgthread-2.0.so.0.8600.3",
+      "sha256": "ed0a73921e796dab95ddfd5c8d01b065a6750ed7ef2853cdebf78fde38a52603"
+    },
+    {
+      "basename": "libgio-2.0.so.0.8600.3.stp",
+      "bytes": 4029,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/share/systemtap/tapset/x86_64/libgio-2.0.so.0.8600.3.stp",
+      "sha256": "a3a5701ae806327cf6baeace5d00f3bfda3fa078c747cf662c6d8c6f1c6926fa"
+    },
+    {
+      "basename": "libglib-2.0.so.0.8600.3.stp",
+      "bytes": 31637,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/share/systemtap/tapset/x86_64/libglib-2.0.so.0.8600.3.stp",
+      "sha256": "fd488f8e9ddffb2f5d27d60a449d986003ef6c34148af066ea5702539aa0ebb7"
+    },
+    {
+      "basename": "libgobject-2.0.so.0.8600.3.stp",
+      "bytes": 7746,
+      "declared_source": "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3/share/systemtap/tapset/x86_64/libgobject-2.0.so.0.8600.3.stp",
+      "sha256": "d9ec0660481b9b5002a0df81a76d9311318b99c2228da03430bd2378bc4b1f99"
+    }
+  ],
+  "schema_version": 1,
+  "status": "native-owner-runtime-proof-candidate",
+  "target": "x86_64-linux",
+  "transformations": {
+    "patchelf_tool_sha256": "73b0be26eb92dc882884b2d6c1dedeae9ea04e488da1adcb520aaf0f6e128915",
+    "producer_receipt_sha256": "545727183aa4e361eb1967fa3599dd30e5fd38a78f68dad9fec74793f8f713ee",
+    "runtime_input_manifest_sha256": "a5c4fa13e1e0cbdefb083203dd14aab606bc90524355e24bae62dcd44793300c",
+    "source_receipt_sha256": "e3c6d45bc93119ddf1da8bee6e02de3c7c3a3bbe52bb6d2664eb4b7b3d7b5273",
+    "strip_option": "--strip-all",
+    "strip_tool_sha256": "3858dbd66ae68cadd9bfee960c5ed9389da64ba00244f4956a6f8e598124ee5e",
+    "tool_search_path": "/nix/store/jjxngswsb214vb58qx485jhmilf0kxxy-coreutils-9.10/bin"
+  }
+}

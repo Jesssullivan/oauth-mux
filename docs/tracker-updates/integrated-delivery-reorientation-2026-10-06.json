@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "factual_architecture_tracker_reconciliation",
+  "authority": "Explicit user request to review and reassert Linear/projects/product objectives; prior ratified Omux-owned adapter decision; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "planned_projects": [
+    "9e2da153-a965-4d7f-b913-c2403c260527",
+    "e3f590ce-5824-4ac6-b13e-4b91ebe22ed2",
+    "d8a9b968-05ba-490b-b2f3-ece56e77b925",
+    "cf175391-16a0-4289-9dad-9809d8f77222"
+  ],
+  "planned_initiative": "fa85ab42-6abf-43f4-b5ad-a81c27bc8f3b",
+  "patch": {
+    "introOld": "No wrapper, alternate home, restart, shipped Codex fork, browser automation or synthetic promotion proves this outcome.",
+    "introNew": "Wrapper invocation, alternate home, restart, browser automation and synthetic tests do not prove this outcome. Adapter delivery through a sufficient extension, upstream contribution or explicitly maintained application modification requires its own exact version-bound ordinary-launch, native-resume and same-process handoff evidence.",
+    "codexOld": "Omux ships no Codex fork; upstream availability and live conformance remain blocking.",
+    "codexNew": "Omux owns the Codex authentication adapter and its delivery contract. There is no vendor-provided Omux hook prerequisite. A sufficient extension, upstream contribution or explicitly maintained application modification is permitted; the current candidate is experimental and no maintained Codex distribution is shipped. Exact delivery/version-bound ordinary-launch, native-resume and live same-process handoff evidence remain required; unmodified Codex support is unproved."
+  },
+  "scope": "Current descriptions only; historical suffixes unchanged; no issue status/dates/owner/membership changes; no capability/completion promotion",
+  "writes_completed": true,
+  "readbacks_pending": false,
+  "readbacks": [
+    {
+      "id": "9e2da153-a965-4d7f-b913-c2403c260527",
+      "exact_description_readback": true,
+      "historical_suffix_unchanged": true,
+      "status_unchanged": true,
+      "name_unchanged": true
+    },
+    {
+      "id": "e3f590ce-5824-4ac6-b13e-4b91ebe22ed2",
+      "exact_description_readback": true,
+      "historical_suffix_unchanged": true,
+      "status_unchanged": true,
+      "name_unchanged": true
+    },
+    {
+      "id": "d8a9b968-05ba-490b-b2f3-ece56e77b925",
+      "exact_description_readback": true,
+      "historical_suffix_unchanged": true,
+      "status_unchanged": true,
+      "name_unchanged": true
+    },
+    {
+      "id": "cf175391-16a0-4289-9dad-9809d8f77222",
+      "exact_description_readback": true,
+      "historical_suffix_unchanged": true,
+      "status_unchanged": true,
+      "name_unchanged": true
+    },
+    {
+      "id": "fa85ab42-6abf-43f4-b5ad-a81c27bc8f3b",
+      "exact_description_readback": true,
+      "historical_suffix_unchanged": true,
+      "status_unchanged": true,
+      "name_unchanged": true
+    }
+  ]
+}

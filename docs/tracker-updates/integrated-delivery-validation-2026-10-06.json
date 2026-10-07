@@ -1,0 +1,895 @@
+{
+  "schema_version": 1,
+  "kind": "scoped_resumed_source_validation",
+  "authority": "Explicit user resume and integrated implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-06T01:50:00Z",
+  "checkpoint_due": "2026-10-06T06:30:46Z",
+  "original_goal_clock_preserved": true,
+  "issues": [
+    "TIN-2057",
+    "TIN-2063",
+    "TIN-5338",
+    "TIN-5442"
+  ],
+  "epoch": "d2bd0a85-d7a8-41c1-a589-f97b1eb3b96a",
+  "receipt_path": "/home/jess/.local/state/omux-execution-20261005/d2bd0a85-d7a8-41c1-a589-f97b1eb3b96a/receipt.json",
+  "receipt_sha256": "6616f1fee0a80e032ca4567ee9f9931b9594ec497df2db267c5e74036607ef38",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "graph_sha256": "9824b5f7001d3a5470d9f593fe55db05075fa2edca1abb95bd3d3849a0fd6311",
+  "evidence": {
+    "bytes": 313945,
+    "files": 37,
+    "manifest": "test-evidence.json",
+    "sha256": "14fff9968e4de914c74a48de5e1b8430b45f8adcbc1cf919f87545a50f60ee76",
+    "state": "preserved"
+  },
+  "source": {
+    "authentication_performed": false,
+    "caller_arguments": {
+      "--dirty": "true",
+      "--parent-commit": "f5f83c1ad99c2920de6759791b327a99a02a2ec5"
+    },
+    "caller_git_metadata_verified": false,
+    "claim": "source_inventory_only",
+    "limitations": [
+      "No application execution or continuity proof",
+      "No source contents retained",
+      "No full repository, toolchain or artifact closure claim",
+      "Freeze covers observed capture interval only"
+    ],
+    "payload_output": false,
+    "schema": "omux.runtime-source-receipt.v1",
+    "scope": "finite explicitly declared selected code inputs",
+    "source_aggregate_sha256": "b8bf6304daf3d4702ef86f660d64280c3a99f884d12007b6a9deb83c27758c1d",
+    "source_inventory": "source-inventory.json",
+    "retained_files": [
+      {
+        "bytes": 660,
+        "file": "e33b2a99685fec267f4c9ebae4000207446d44d749f2c4f823cc4ae5acad36ed.evidence",
+        "sha256": "95ffda17508177bdc217b1753af761a0f08a68fed395f4b718cfdff8f53091aa",
+        "source": "test.outputs/runtime-source-receipt/receipt.json",
+        "state": "copied"
+      },
+      {
+        "bytes": 180744,
+        "file": "d798d21d291d546232dc127fa05871dc554968e740a19b475e4a923d42818487.evidence",
+        "sha256": "dc0beeb332aa0dedfde115913ba032450b948e54ba82ebc919ccd60b9b4c75b9",
+        "source": "test.outputs/runtime-source-receipt/source-inventory.json",
+        "state": "copied"
+      }
+    ],
+    "inventory_contents_retained": true,
+    "source_contents_retained": false,
+    "compiled_source_correspondence_claimed": false
+  },
+  "targets": [
+    "//tools:execution_guard_test",
+    "//tools:guard_test_evidence_test",
+    "//tools:guard_cache_test",
+    "//tools:yoga_operator_launch_test",
+    "//tools:yoga_session_qualification_test",
+    "//tools:home_manager_acquisition_test",
+    "//tools:home_manager_acquired_evaluation_test",
+    "//tools:codex_sdk_dependencies_test",
+    "//tools:codex_dependency_cache_test",
+    "//tools:codex_dependency_bundle_test",
+    "//tools:codex_dependency_union_test",
+    "//:reliability_adapter_setup_test",
+    "//:reliability_readiness_test",
+    "//:setup_verification_test",
+    "//:format_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "predicate_counts": {
+    "//tools:execution_guard_test": 44,
+    "//tools:guard_test_evidence_test": 9,
+    "//tools:guard_cache_test": 8,
+    "//tools:yoga_operator_launch_test": 17,
+    "//tools:yoga_session_qualification_test": 16,
+    "//tools:home_manager_acquisition_test": 57,
+    "//tools:home_manager_acquired_evaluation_test": 22,
+    "//tools:codex_sdk_dependencies_test": 7,
+    "//tools:codex_dependency_cache_test": 7,
+    "//tools:codex_dependency_bundle_test": 10,
+    "//tools:codex_dependency_union_test": 19,
+    "//:reliability_adapter_setup_test": 249,
+    "//:reliability_readiness_test": 248,
+    "//:setup_verification_test": 28
+  },
+  "effective_limits": {
+    "CPUQuotaPerSecUSec": "2s",
+    "KillMode": "control-group",
+    "MemoryMax": "4294967296",
+    "MemorySwapMax": "0",
+    "OOMPolicy": "kill",
+    "RuntimeMaxUSec": "20min",
+    "SendSIGKILL": "yes",
+    "TasksMax": "512",
+    "TimeoutStopUSec": "10s"
+  },
+  "scope": "Fresh unique output base; 17 declared targets pass. Unit/actor/capture predicates only. Configuration completions remain distinct from activation, usable request authority and successful installation.",
+  "previous_failed_epoch": {
+    "epoch": "bd412392-ef5a-4cc4-88f0-1e6affbe47c0",
+    "unchanged": "controller/workload125, cleanup false, tests unadmitted, dirty cache retained"
+  },
+  "gate_count": {
+    "historical_scoped_passes": 5,
+    "open": 6,
+    "no_new_gate_closed": true
+  },
+  "operator": {
+    "host": "yoga",
+    "display": "local_wayland",
+    "user_available_when_isolated_setup_ready": true,
+    "actual_live_qualification": false,
+    "toolbar_consent_proved": false,
+    "provider_access": false
+  },
+  "next": "Actual Home Manager paired source producer, then independently selected offline evaluator; frozen legacy native fixture; finite Yoga public payload preparation.",
+  "follow_on": {
+    "recorded_at": "2026-10-06T02:10:00Z",
+    "home_manager_actual": {
+      "epoch": "09323d0f-7e7a-417f-a592-d9caf9594d0a",
+      "receipt_sha256": "b9d1bf808b2c58db46abd9aa02b70a250fef80f609e239ff9d274491215cbf1e",
+      "controller_exit": 3,
+      "workload_exit": 3,
+      "descendants_empty": true,
+      "graph_sha256": "9824b5f7001d3a5470d9f593fe55db05075fa2edca1abb95bd3d3849a0fd6311",
+      "evidence_sha256": "4bd791185b6278bab748426c233120c650cf96ba1a317b5ed1d2f6a4dbf21196",
+      "failure": "acquired-verification-deadline",
+      "source": "nixpkgs",
+      "phase": "copy",
+      "source_elapsed_ms": 300001,
+      "copied_cumulative": {
+        "nodes": 84614,
+        "bytes": 168013706
+      },
+      "copied_nixpkgs_only": {
+        "nodes": 79549,
+        "bytes": 161881329
+      },
+      "expected_nixpkgs": {
+        "nodes": 89909,
+        "bytes": 189378471
+      },
+      "counters": {
+        "private_scan_count": 15,
+        "private_scan_ms": 107636,
+        "file_sync_count": 50918,
+        "file_sync_ms": 113210,
+        "nar_pass_count": 3,
+        "nar_pass_ms": 22543,
+        "pair_proof_count": 0
+      },
+      "source_pair_published": false,
+      "evaluation_executed": false,
+      "next": "Independently reviewed bounded four-lease fsync lane preserves one copy writer/all flushes/scans/custody/limits; 69 methods unrun."
+    },
+    "plan_and_yoga_partial": {
+      "epoch": "440b3f59-05da-42cc-a345-4caff371f768",
+      "receipt_sha256": "329e26b0d7d0515ba76fcacbd5eb0d0c7870f8fc84690e89d522548ea4822ae3",
+      "controller_exit": 1,
+      "workload_exit": 1,
+      "descendants_empty": true,
+      "overall_batch_pass": false,
+      "graph_sha256": "42692e5b1d585e6ec1c1c9a7efb9461c7d8ea441ee45fd5fc46fa9eaad4f1e5a",
+      "evidence_sha256": "b22633a89fc7f6dfebe88c9c662b0512bf39ec0b97e5a30122cc1e3165d6cfef",
+      "individually_passed": [
+        "//tools:codex_dependency_bundle_plan",
+        "//delivery:yoga_payload_test",
+        "//tools:yoga_proof_inputs_test"
+      ],
+      "predicate_counts": {
+        "//delivery:yoga_payload_test": 22,
+        "//tools:yoga_proof_inputs_test": 15
+      },
+      "failed_to_build": {
+        "//:application_readiness_test": "Invalid trailing semicolon in new module, source corrected; no passing compiled proof.",
+        "//:runtime_selection_producer_test": "Root selected nested module entrypoint; sibling imports refused. Root wrapper and fixture-local shadow corrected; no passing compiled proof."
+      },
+      "active_plan": {
+        "root": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/440b3f59-05da-42cc-a345-4caff371f768/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_plan/test.outputs/codex-dependency-bundle",
+        "raw_receipt_sha256": "e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66",
+        "descriptor_sha256": "50db24e82808bfea9fd00f20325874962519c76ea8d6c0e2ca2eb311a77b0feb",
+        "source_inventory_sha256": "bf635081d1e50579e6b023cccf3426a66ecc85351c27bec01866e775ee9e6c21",
+        "verified_objects": 299,
+        "missing_objects": 1420,
+        "unresolved": 34,
+        "descriptors": 1724,
+        "historical_union_preserved": {
+          "verified_objects": 305,
+          "missing_objects": 1410,
+          "unresolved": 42
+        },
+        "active_union_produced": false,
+        "offline_analysis": false,
+        "native_support": false
+      }
+    },
+    "formatter_follow_on": {
+      "epoch": "5a4493db-1c35-4693-8f62-156a17e9008f",
+      "controller_exit": 1,
+      "workload_exit": 1,
+      "descendants_empty": true,
+      "failure": "New actor fixture used array repeat syntax removed in Zig 0.17; typed @splat correction frozen. Root retry formatter active.",
+      "partial_effect": "src/engine.zig formatted",
+      "first_unadmitted_attempt": "Exact run //:format without -- src refused at private-epoch before any workload; corrected fixed allowed arguments."
+    },
+    "acceptance_unchanged": true
+  },
+  "corrected_units_partial":
+    {
+      "epoch": "3cb9638a-abcb-4807-99ef-50b785ee83a0",
+      "receipt_sha256": "33d5aca436be6002797de9050e980c1531d466444377ba6885bb91a1971ffc09",
+      "graph_sha256": "672364b29fbe4cd01111b8d91e24ba89bd480d834b61082605f75698fbc34d97",
+      "evidence_sha256": "3f127d65e1435ae0b7c41b9c0a29449e8d3c1ba45a6beb793c0470522d90e1da",
+      "controller_exit": 1,
+      "workload_exit": 1,
+      "descendants_empty": true,
+      "overall_batch_pass": false,
+      "individually_passed": [
+        "//tools:home_manager_acquisition_test",
+        "//tools:codex_dependency_union_test",
+        "//:runtime_selection_producer_test",
+        "//:format_test",
+        "//:docs_check"
+      ],
+      "predicate_counts": {
+        "//tools:home_manager_acquisition_test": 69,
+        "//tools:codex_dependency_union_test": 24,
+        "//:runtime_selection_producer_test": 69
+      },
+      "authored_native_observation_cases": 6,
+      "failed_to_build": {
+        "//:application_readiness_test": "Zig0.17 borrowed ArrayList initialization missing pointer_stability; corrected with initBuffer, unverified.",
+        "//:application_readiness_actor_test": "Engine helper shadowed report declaration; corrected readiness_report, unverified."
+      },
+      "no_acceptance_gate_closed": true
+    },
+  "bounded_acquisition_retry":
+    {
+      "epoch": "b7827dda-eb0b-4a9f-83c2-a8bb7f743369",
+      "receipt_sha256": "0bbdb69bebfd3c0c715162ad77db4956971061a62f942a969edf3bfd47c52bf1",
+      "evidence_sha256": "d817735c48f5e34a396352428a56f1c6ef3d06b27aea87e8e4e948bb4c9ec319",
+      "controller_exit": 3,
+      "workload_exit": 3,
+      "descendants_empty": true,
+      "failure": {
+        "source": "nixpkgs",
+        "phase": "source-nar",
+        "path": [
+          "inputs",
+          "source",
+          "export",
+          "copied-proof",
+          "source-nar"
+        ],
+        "source_elapsed_ms": 300000,
+        "remaining_ms": 0,
+        "final_elapsed_ms": 333898
+      },
+      "copy_complete": {
+        "nodes": 94974,
+        "bytes": 195510848,
+        "nixpkgs_nodes": 89909,
+        "nixpkgs_bytes": 189378471
+      },
+      "counters": {
+        "private_scan_count": 18,
+        "private_scan_ms": 148622,
+        "file_sync_count": 57112,
+        "file_sync_ms": 112636,
+        "nar_pass_count": 4,
+        "nar_pass_ms": 38137,
+        "pair_proof_count": 0
+      },
+      "parallel_file_sync_ms_scope": "sum of task times, not wall time",
+      "source_pair_published": false,
+      "evaluation_executed": false,
+      "next": "Optimize repeated full-scan traversal under unchanged custody/scan/deadline/resource requirements; no blind retry."
+    },
+  "readiness_cli_union_native_partial":
+    {
+      "recorded_at": "2026-10-06T02:43:17Z",
+      "epoch": "1f18782f-71a8-4ef1-9170-0fdcd4c0279f",
+      "receipt_sha256": "505b07d3e495ef9186c41d38278877b5902f139804fb8c96efd1e05fae45dede",
+      "graph_sha256": "8e4787c6feba18188cee18209109e0a726fa6957dfdccb324bcb17da00eee4e3",
+      "evidence_sha256": "ad10163136335a8ddb4e6e8b0da9fd6ce5f3e7b08423e2f4d7a71fcf2a3432bb",
+      "controller_exit": 1,
+      "workload_exit": 1,
+      "descendants_empty": true,
+      "overall_batch_pass": false,
+      "individually_passed": [
+        "//:application_readiness_test",
+        "//delivery:cli_test",
+        "//:reference_test",
+        "//tools:codex_dependency_union_producer",
+        "//:format_test",
+        "//:docs_check",
+        "//tools:runtime_source_receipt"
+      ],
+      "predicate_counts": {
+        "//:application_readiness_test": 60,
+        "//delivery:cli_test": 18,
+        "//:reference_test": 7
+      },
+      "authored_readiness_cases": 10,
+      "failures": {
+        "//:application_readiness_actor_test": "Test-only recursive execute/helper error-set inference cycle; private explicitly typed test helper corrected, unverified.",
+        "//tools:codex_repository_inputs_test": "12/13 succeeded; sealed fixture receipt rewrite PermissionError prevented one negative predicate. Test fixture corrected, unverified. Production byte-accounting feasibility separately being corrected under unchanged cap.",
+        "//delivery:installed_legacy_native_tui_test": "Actual installed evaluation failed38.3s at selected-detach/unclassified; no concrete protocol/fixture mismatch proved. Narrow diagnostics queued; cold resume unproved."
+      },
+      "active_union": {
+        "root": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/1f18782f-71a8-4ef1-9170-0fdcd4c0279f/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_union_producer/test.outputs/codex-sdk-dependency-union",
+        "raw_receipt_sha256": "5562913a6778e3ebbb21f748285a9189a4cc0dba375fcc14b745b1dc93f853cf",
+        "active_plan_sha256": "e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66",
+        "input_objects": 607,
+        "duplicate_objects": 298,
+        "verified_objects": 309,
+        "missing_objects": 1410,
+        "unresolved_rows": 34,
+        "closure_proved": false,
+        "offline_analysis_proved": false,
+        "native_support": false
+      },
+      "source_capture": {
+        "aggregate_sha256": "a295370265bf25c77f54b91d8ab390a645434775f599dd6fdbc68e99d03cfcab",
+        "receipt_file": "e33b2a99685fec267f4c9ebae4000207446d44d749f2c4f823cc4ae5acad36ed.evidence",
+        "receipt_sha256": "94646120bc2d85db6bf460ec1e340b7dfe6b7df63ec1cc3e45b8a1d8f5ecc877",
+        "inventory_file": "d798d21d291d546232dc127fa05871dc554968e740a19b475e4a923d42818487.evidence",
+        "inventory_sha256": "68c8b617a509b145486d52e9aca80595001a37f32352215a116bb61a9bf60c90",
+        "inventory_bytes": 185603,
+        "source_contents_retained": false,
+        "compiled_source_correspondence_claimed": false,
+        "limitations": "Capture interval only; unrelated source lanes continue, and test-only engine helper was corrected after actor compile failure while product artifacts built. Exact produced bytes/behavior retain their own scoped evidence; no source/compiled correspondence or native support inferred."
+      },
+      "acceptance_unchanged": true
+    },
+  "linear_checkpoint_pre_action":
+    {
+      "authority": "Explicit resumed implementation and factual Linear reconciliation; R-N13",
+      "recorded_at": "2026-10-06T02:43:17Z",
+      "mutation": "Four factual comments only; preserve issue scope/state/relations",
+      "bodies": {
+        "TIN-2057": "2026-10-06 02:43 UTC factual continuation checkpoint, authority: user-resumed integrated implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13. Original fifteen-hour clock preserved; next five-hour review remains06:30:46UTC (02:30EDT). Five historical scoped gates passed, six open; no acceptance promotion.\n\nAdmitted 1f18782f batch failed overall (controller/workload1/1, descendants empty, evidence retained). Seven targets individually passed: application-readiness60 predicates (10 authored), stdin-only CLI18 cases, source-derived reference7, fresh SDK union, format/docs and retained source inventory. `setup.applicationReadiness` reports app/demand/revision-bound diagnostic facts without credential decryption, lease creation or native-support inference. Existing seven setup phases unchanged. Actor test failed compile; its test-only helper correction is under a new gate. Native installed cold-resume evaluation failed at selected-detach; neither cold resume nor continuity passed.\n\nActual HM retries09323d0f and b7827dda remain failures; b782 completed all copies but reached unchanged source deadline during final NAR, unpublished. No achieved SLO or SLA is inferred. Exact source/path/hash/outcome receipt: docs/tracker-updates/integrated-delivery-validation-2026-10-06.json; workstreams/spec: docs/plans/omux-integrated-delivery-sprint-2026-10-05.md. No provider calls, fleet activation, Darwin or publication.",
+        "TIN-2063": "2026-10-06 02:43 UTC delivery continuation; authority: explicit user-resumed implementation and R-N13. Actual bounded acquisition b7827dda ended3/3 with empty descendants. All94974 nodes/195510848 bytes copied; final copied-source NAR hit nixpkgs300-second deadline. No pair publication/evaluation. Complete scans/NAR/per-file durability/caps retained; independently reviewed quiescent scan optimization (78 methods) is under a fresh gate, without live-monitor weakening.\n\nNew stdin-only `omux application-readiness -` and source-derived control/CLI catalogs passed real CLI18 and pure60 predicates in admitted1f18782f; batch overall failed actorcompile/materializerfixture/native-detach. Existing setup schema unchanged and ordinary launch unknown. Actor-owned test fault removes the reviewed caller-thread race; corrected helper compilation is pending. Frozen artifact937936/aa9c9f remains independent; bd412 cleanup=false/unadmitted preserved.\n\nExact receipts and paths: docs/tracker-updates/integrated-delivery-validation-2026-10-06.json; src/application_readiness.zig; src/engine.zig; src/main.zig; nix/home_manager_acquisition.py. Five historical scoped passes/six open; no fleet activation/update/removal or native-support promotion.",
+        "TIN-5338": "2026-10-06 02:43 UTC native/SDK checkpoint; Omux owns the application-specific integration. No vendor-provided Omux hook prerequisite. Authority: explicit resumed implementation; R-N13.\n\nAdmitted1f18782f overall failed1/1, descendants empty. Actual active-plan e206 mixed-parent union independently passed: raw receipt5562913a6778e3ebbb21f748285a9189a4cc0dba375fcc14b745b1dc93f853cf,309 verified objects/1410 missing/34 unresolved rows; prior305/1410/42 historical tuple preserved. 34 rows are not34 unique Git repositories. This is retained CAS provenance, not SDK closure/canonical-ID completion/offline analysis/compilation.\n\nInstalled retained runtime009/frozen164 evaluation failed38.3s at selected-detach/unclassified. No concrete predicate/protocol mismatch established; finite boundary diagnostics queued with hard ACK/status/replay/retirement requirements unchanged. Ordinary TUI cold resume, fresh native support, accepted-history and live same-process handoff remain unproved.\n\nNew repository-input materializer has13 authored tests (one fixture failure corrected); actual source accounting correction under unchanged4GiB cap precedes producer admission. Next pinned acquisition selects e206 first20 archive rows, avoiding known tool duplicates. Paths: tools/codex_dependency_union.py; tools/codex_repository_inputs.py; delivery/test_installed_legacy_native_tui.py; exact evidence docs/tracker-updates/integrated-delivery-validation-2026-10-06.json. No provider execution or Darwin operations.",
+        "TIN-5442": "2026-10-06 02:43 UTC Yoga browser delivery checkpoint; authority: user selected Yoga local Wayland and confirmed operator participation once isolated setup is ready; R-N13. Availability is not installation or consent proof.\n\nActual public-payload modeled exporter22 and exact Nix-input validator15 cases passed individually in earlier440b3f59 (overall batch failed); local-console qualification16 modeled cases passed in d2bd0a85. Frozen reviewed `delivery/yoga_stage.py` adds a private digest-selected receiver with15 authored tests now under a fresh gate. Copied tools remain nonexecutable comparison data; destination closure registration/execution/consent flags false.\n\nConcrete remaining dependencies: qualified Linux closure delivery/registration and bounded transport, offline Bazel inputs, exact local-console/logind/Wayland qualification, then actual human toolbar deny/approve. Development exact-generation manual reload/reconnect remains separate. No provider login/access; production readers disabled. No BROWSER/DEVLOOP gate closed. Paths: delivery/yoga_payload.py; delivery/yoga_stage.py; tools/yoga_session_qualification.py; docs/plans/omux-integrated-delivery-sprint-2026-10-05.md; docs/tracker-updates/integrated-delivery-validation-2026-10-06.json."
+      }
+    },
+  "linear_checkpoint_readbacks": {
+    "recorded_at": "2026-10-06T02:53:08Z",
+    "authority": "R-N13; exact four comments only",
+    "issues": {
+      "TIN-2057": {
+        "comment_id": "e3c80ac4-5fdb-4dfc-9fbf-0c82f82573c1",
+        "exact_body_readback": true,
+        "created_at": "2026-10-06T02:44:44.259Z",
+        "updated_at": "2026-10-06T02:44:44.211Z",
+        "has_next_page": false,
+        "prior_scope_readback": {
+          "issue": "TIN-2057",
+          "comment_id": "e3c80ac4-5fdb-4dfc-9fbf-0c82f82573c1",
+          "body_readback_equal": true,
+          "hasNextPage": false,
+          "metadata_unchanged": {
+            "title": true,
+            "description": true,
+            "status": true,
+            "assigneeId": true,
+            "dueDate": true,
+            "relations": true,
+            "projectId": true
+          },
+          "updatedAt": "2026-10-06T02:44:44.211Z"
+        }
+      },
+      "TIN-2063": {
+        "comment_id": "f1dab112-304f-46c6-9c96-ca24a1338f89",
+        "exact_body_readback": true,
+        "created_at": "2026-10-06T02:44:44.782Z",
+        "updated_at": "2026-10-06T02:44:44.765Z",
+        "has_next_page": false,
+        "prior_scope_readback": {
+          "issue": "TIN-2063",
+          "comment_id": "f1dab112-304f-46c6-9c96-ca24a1338f89",
+          "body_readback_equal": true,
+          "hasNextPage": false,
+          "metadata_unchanged": {
+            "title": true,
+            "description": true,
+            "status": true,
+            "assigneeId": true,
+            "dueDate": true,
+            "relations": true,
+            "projectId": true
+          },
+          "updatedAt": "2026-10-06T02:44:44.765Z"
+        }
+      },
+      "TIN-5338": {
+        "comment_id": "a30bb09d-bed6-4f57-bb02-de5d7f43d905",
+        "exact_body_readback": true,
+        "created_at": "2026-10-06T02:44:45.342Z",
+        "updated_at": "2026-10-06T02:44:45.311Z",
+        "has_next_page": false,
+        "prior_scope_readback": {
+          "issue": "TIN-5338",
+          "comment_id": "a30bb09d-bed6-4f57-bb02-de5d7f43d905",
+          "body_readback_equal": true,
+          "hasNextPage": false,
+          "metadata_unchanged": {
+            "title": true,
+            "description": true,
+            "status": true,
+            "assigneeId": true,
+            "dueDate": true,
+            "relations": true,
+            "projectId": true
+          },
+          "updatedAt": "2026-10-06T02:44:45.311Z"
+        }
+      },
+      "TIN-5442": {
+        "comment_id": "4d863791-5b17-477d-aebe-944795df0774",
+        "exact_body_readback": true,
+        "created_at": "2026-10-06T02:44:45.887Z",
+        "updated_at": "2026-10-06T02:44:45.868Z",
+        "has_next_page": false,
+        "prior_scope_readback": {
+          "issue": "TIN-5442",
+          "comment_id": "4d863791-5b17-477d-aebe-944795df0774",
+          "body_readback_equal": true,
+          "hasNextPage": false,
+          "metadata_unchanged": {
+            "title": true,
+            "description": true,
+            "status": true,
+            "assigneeId": true,
+            "dueDate": true,
+            "relations": true,
+            "projectId": true
+          },
+          "updatedAt": "2026-10-06T02:44:45.868Z"
+        }
+      }
+    }
+  },
+  "readiness_receiver_partial": {
+    "epoch": "336882b1-6bd3-4b3e-805f-2e02ff501521",
+    "receipt_sha256": "0daca025488d6a6a98dfbdf3e7938f52413bcc6139adb994a9fc581454921534",
+    "graph_sha256": "4cdd220bce3ba7dece453355331caa64dd678224e393b3ea38c5ed8b15348474",
+    "evidence_sha256": "b1f39bd3c9b54de4b14fc27f0c372dfec1fdc426d2fa8d3b3542d7e2ee262bd9",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "evidence_preserved": true,
+    "individually_passed": {
+      "//delivery:yoga_stage_test": 15,
+      "//:format_test": true,
+      "//:docs_check": true
+    },
+    "failed": {
+      "//tools:home_manager_acquisition_test": {
+        "methods": 78,
+        "failures": 2,
+        "category": "acquisition-private-ancestor-changed",
+        "scope": "full external metadata snapshots reject modeled production and mask existing staging alias refusal; correction pending"
+      },
+      "//:application_readiness_actor_test": {
+        "total": 246,
+        "authored": 4,
+        "authored_failures": 4,
+        "imported_passed": 242,
+        "category": "UnexpectedRpcFailure",
+        "scope": "compiled; finite diagnostics and demand lifetime correction require fresh gate"
+      }
+    },
+    "acceptance_gates_closed": 0
+  },
+  "repository_accounting_gate": {
+    "epoch": "5623b27e-c14d-401c-afb5-1245e61631b7",
+    "receipt_sha256": "444f957ca843a20b17e60d2fa2eda5689208775d94fed804f091b5dadab54e8b",
+    "graph_sha256": "c6cbc5f353e8e304d38db3e65d3a8aefa7960ecea798c8d2ef4dee4bb32d0d23",
+    "evidence_sha256": "0d3ddb571757068b479e458093e0d7a9678ed1335bba9cfc24b21f460fad1619",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "passed_targets": [
+      "//tools:codex_repository_inputs_test",
+      "//tools:codex_sdk_profile_test",
+      "//tools:codex_dependency_bundle_test",
+      "//tools:codex_dependency_union_test"
+    ],
+    "repository_input_methods": 16,
+    "profile_methods": 18,
+    "scope": "actual-byte accounting and unchanged default callers; no actual export, full closure, offline SDK analysis or native support",
+    "acceptance_gates_closed": 0
+  },
+  "native_repository_partial": {
+    "epoch": "8d866d80-73bf-4341-a20d-e21c34b367a7",
+    "receipt_sha256": "5100e831a5b2c711a09e61c88206092b17dafa8975887c517e507c972a69cc9a",
+    "graph_sha256": "f4cf5e1dd5a06def0e2c685ce087356ea735f033378142e1381b57e29c29f8c0",
+    "evidence_sha256": "ba4ba55df3dd6b96d9feb8619a0a53506cd89bd5f8f2eac78edea77ae00c9862",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "evidence_preserved": true,
+    "controller_failure": null,
+    "passed_targets": [
+      "//tools:runtime_source_receipt"
+    ],
+    "failed": {
+      "//:application_readiness_actor_test": {
+        "total": 246,
+        "authored": 4,
+        "authored_passed": 3,
+        "failed": 1,
+        "reason": "TestUnexpectedResult in joins retained custody",
+        "follow_on": "Fixture exact-JSON-key correction avoids capability substring false positive; unverified"
+      },
+      "//delivery:installed_legacy_native_tui_test": {
+        "seconds": 40,
+        "phase": "selected-detach",
+        "diagnostic": "detach-status-rpc",
+        "scope": "ACK passed; post-detach status RPC failed; no resume or native support proof"
+      },
+      "//tools:codex_repository_inputs_producer": {
+        "seconds": 0.6,
+        "outputs_published": false,
+        "diagnostic": "generic input export refusal",
+        "scope": "selected pins match inspected parents; finite phase diagnostics and partial-open FD cleanup corrected,23 tests pending"
+      }
+    },
+    "acceptance_gates_closed": 0,
+    "limitations": [
+      "Source capture is inventory at capture interval, not compiled-source correspondence",
+      "Prior unit passes remain scoped; this batch failed"
+    ]
+  },
+  "archive20_acquisition": {
+    "epoch": "abce474b-786f-4bd3-b102-9751fcb0fbd4",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "receipt_sha256": "21fd9b6c264b302db65c71ee8b0a5a4214eec4700422137a11a6589c38d1bec7",
+    "graph_sha256": "f4cf5e1dd5a06def0e2c685ce087356ea735f033378142e1381b57e29c29f8c0",
+    "evidence_sha256": "67c0f69ed045617f3285f2bde71466807c687bfeb5597e45a7cac5c262578498",
+    "shard_receipt_sha256": "74fac621af3ca4442e260f345323189f29b476dd18387625d95610c3d11a27c2",
+    "parent_plan_sha256": "e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66",
+    "shard_index": 0,
+    "shard_size": 20,
+    "verified_objects": 20,
+    "verified_bytes": 15616821,
+    "unresolved_rows": 34,
+    "scope": "Twenty selected archive payloads acquired and verified; mixed union reconstruction pending; no complete SDK closure, compilation or native support",
+    "acceptance_gates_closed": 0
+  },
+  "integrated_correction_partial": {
+    "epoch": "874b10cd-9155-4c60-9d13-314c889a2abf",
+    "receipt_sha256": "496dde6f23a118ba224e008384711ef2d943dd5b9e2093792ad827990dc9f318",
+    "graph_sha256": "477ae9a8a1247325409172a69dfd472f745b07af7c1544620c8466cfa64701c8",
+    "evidence_sha256": "2c0cfd2c9bfc5bd22abbc1d9e8aa2422b1890392b0fb47e38e1bd012a5c774d0",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "evidence_files": 30,
+    "evidence_bytes": 306777,
+    "passed_targets": {
+      "//:application_readiness_actor_test": { "total": 246, "authored": 4 },
+      "//tools:execution_guard_test": 47,
+      "//tools:guard_yoga_profile_test": 16,
+      "//tools:home_manager_acquisition_test": 80,
+      "//delivery:yoga_payload_test": 24,
+      "//delivery:yoga_stage_test": 15,
+      "//tools:codex_dependency_union_producer": true,
+      "//:format_test": true,
+      "//:docs_check": true,
+      "//tools:runtime_source_receipt": "retained inventory only; no compiled-source correspondence"
+    },
+    "failed_targets": {
+      "//tools:codex_repository_inputs_test": {
+        "methods": 23,
+        "failures": 1,
+        "reason": "Deep-array caller JSON was expected to fail schema parsing; actual finite category was contract. Top-level object validation and decoder-boundary correction pending. No export proof."
+      },
+      "//delivery:installed_git_test": {
+        "phase": "installed-baseline-revision",
+        "scope": "No ordinary Git helper or installed success established"
+      },
+      "//delivery:installed_legacy_native_tui_test": {
+        "phase": "selected-detach",
+        "diagnostic": "detach-status-rpc/cli-process-failure",
+        "scope": "Detach ACK preceded failed status RPC; no cold resume or fresh native support established"
+      }
+    },
+    "successor_union": {
+      "raw_receipt_sha256": "066ebb1aba7aa80a81451bef9bc3496cfd8f0c08c9f3e67e7043c1a832067448",
+      "input_objects": 627,
+      "unique_objects": 329,
+      "duplicate_objects": 298,
+      "missing_objects": 1390,
+      "unresolved_rows": 34,
+      "closure_proved": false,
+      "offline_analysis_proved": false,
+      "native_support": false
+    },
+    "acceptance_gates_closed": 0
+  },
+  "format_after_corrections": {
+    "epoch": "39f04e00-6a02-4ce8-89b1-458e6a00c2cd",
+    "receipt_sha256": "0677a11f76ffcc7a0256477babf7cdbc1e1a5e39cf79bb68d8c7c87f3f091f2b",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "scope": "Source formatting only; no acceptance gate closed"
+  },
+  "home_manager_retry_after_80_gate": {
+    "epoch": "9032346a-f1e7-4806-b77a-176e09b7912f",
+    "receipt_sha256": "087a80b74a388594f7ba37271364837149d1935ccb6fb22a41f9c450669981d0",
+    "graph_sha256": "2ef5e8289802ed164f3d87c3b2f3c38249f59551162e0498e2bd546a5e6ca9e4",
+    "evidence_sha256": "02d16eb1e434b171f7577b9640cf70df3cfb86e4d5863ba2fc861f6f7126b166",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "category": "acquisition-bounded-input-or-custody-failed",
+    "phase": "copied-proof/source-nar",
+    "source": "nixpkgs",
+    "source_deadline_seconds": 300,
+    "source_elapsed_ms": 300000,
+    "copied_nodes_cumulative": 94974,
+    "copied_bytes_cumulative": 195510848,
+    "private_scans": 16,
+    "private_scan_ms": 109231,
+    "file_syncs": 57112,
+    "file_sync_task_ms_sum": 250068,
+    "pair_published": false,
+    "evaluation_executed": false,
+    "scope": "Complete source copy reached final copied NAR; finite source deadline refused publication. Pool task times are cumulative, not wall time.",
+    "acceptance_gates_closed": 0
+  },
+  "repository_schema_and_controller_initial_gate": {
+    "epoch": "4044ba4c-3266-439e-b9d1-71460e183e15",
+    "receipt_sha256": "5212f731eedd666f1f42bbaa878278426130b8d64f4ab84dcc60dcce3957cdef",
+    "graph_sha256": "7ad7fbc740f7e132d7e459766eafa86b58683d6a9d6c2d9161696acc795136a1",
+    "evidence_sha256": "e381694ef23684606b3e4ba78518fb0837266b40600b663bf1cde61e230415c8",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "passed_targets": {
+      "//tools:codex_repository_inputs_test": 25,
+      "//tools:yoga_controller_inventory_test": 23,
+      "//:docs_check": true
+    },
+    "qualification": "Controller store-file-root compatibility delta landed during graph capture/analysis interval; observed 23-case success does not establish graph-to-tested-source correspondence. Fresh frozen-source run follows. Fixture SQLite connection ResourceWarnings corrected separately; production snapshot helper already closes.",
+    "acceptance_gates_closed": 0
+  },
+  "controller_repository_actual_refusal": {
+    "epoch": "f793e79b-3021-4c86-b454-16aae1ac6f8a",
+    "receipt_sha256": "735ce9614425966cfc588c28819ef0d2a9778ef785f7e8dd87e4f5f72ead5f40",
+    "graph_sha256": "bc5597c3cb320f3752ad6bbbd8cf5cec14ac5d1efc96c38cea88dbb3953131fd",
+    "evidence_sha256": "dee36efcda6d6feaf7ef1c5b4548ae1067cb277bf7f8abd62492c2eabdea30fe",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "passed_targets": { "//tools:yoga_controller_inventory_test": 23 },
+    "failed_targets": {
+      "//tools:yoga_controller_inventory_producer": "selection_invalid; generated launcher rewrote selected physical absolute source argument to double-prefixed runfile path",
+      "//tools:codex_repository_inputs_producer": "entry-context/schema; declaration JSON argument quoting requires actual launcher regression"
+    },
+    "outputs_published": false,
+    "acceptance_gates_closed": 0
+  },
+  "launcher_and_home_manager_budget_gate": {
+    "epoch": "17f00d08-e152-4839-82a0-775afe473dbc",
+    "receipt_sha256": "1d981f02133e489076cd0b8f126c660e167331917961b81879284d6bc8021bea",
+    "graph_sha256": "2b71401d09fe6c21b5b30385ab1a01309e2918bab1fee2df3343c4d2120f0315",
+    "evidence_sha256": "553bba52210bff881b2d664c1c0259eb4c0f34729befa7370e537d513f9e8c93",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "passed_targets": {
+      "//tools:file_args_test": true,
+      "//tools:home_manager_acquisition_test": 85,
+      "//:docs_check": true
+    },
+    "scope": "Actual launcher preserves physical absolute arguments and shell-quoted nested JSON; modeled 600-second source budget predicates pass. Actual 600-second Home Manager acquisition is unrun. No acceptance gate closed."
+  },
+  "actual_export_and_installed_git_checkpoint": {
+    "epoch": "8b6bd81f-786e-49c1-b8de-ac1103e986b1",
+    "receipt_sha256": "25e347fdc0ffb453a132836980215fa2be53815aace5a12e64430f48af4d676c",
+    "graph_sha256": "2b71401d09fe6c21b5b30385ab1a01309e2918bab1fee2df3343c4d2120f0315",
+    "evidence_sha256": "560028e55bcaf57d45db2f23110fa190852c1cb6d82253291e0f382bf5d2a8d3",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "cleanup": {
+      "state": "empty",
+      "stop": "not-requested",
+      "ownership": "unproved",
+      "readback_attempts": 0
+    },
+    "evidence_files": 15,
+    "evidence_bytes": 240779,
+    "passed_targets": [
+      "//tools:yoga_controller_inventory_producer",
+      "//tools:codex_repository_inputs_producer",
+      "//delivery:installed_git_test",
+      "//tools:runtime_source_receipt"
+    ],
+    "installed_git": {
+      "restart_revision_delta": 3,
+      "completion_marker": "OMUX_INSTALLED_GIT_HELPER_OK",
+      "scope": "Provider-free installed helper, restart-baseline and no-mutation custody predicates; no Git HTTPS account enrollment or live handoff"
+    },
+    "failed_targets": {
+      "//delivery:installed_legacy_native_tui_test": {
+        "phase": "selected-detach",
+        "diagnostic": "detach-status-rpc/cli-process-failure/exit-zero-stderr/status-result",
+        "scope": "Retained runtime009/frozen164 evaluation; detach ACK precedes failed status query. No cold-resume or fresh candidate acceptance."
+      }
+    },
+    "yoga_controller_inventory": {
+      "inventory_sha256": "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+      "receipt_sha256": "58cf79e639b2c2081b5fd642a19b5f602ed8a5cf6b847d9bc78eec61626181f3",
+      "registered_paths": 472,
+      "roots": 9,
+      "registered_nar_bytes": 2829689512,
+      "registry_snapshot_verified": true,
+      "content_rehashed": false,
+      "destination_registration_verified": false,
+      "backend_executed": false,
+      "execution_authority": false
+    },
+    "sdk_repository_export": {
+      "receipt_sha256": "a3e0f52da2918da574afbcca9e7f3458cfebc83d36c6bab3ce1293293750e7cc",
+      "http_mappings": 18,
+      "git_requirements": 11,
+      "missing_objects": 1390,
+      "unresolved_rows": 34,
+      "read_bytes_accounted": 2984658799,
+      "all_canonical_ids_proved": false,
+      "git_materialization_proved": false,
+      "closure_proved": false,
+      "offline_analysis_proved": false,
+      "sdk_compilation_admitted": false,
+      "native_support": false
+    },
+    "source_capture": "Retained runtime source inventory only; no compiled-source correspondence",
+    "acceptance_gates_closed": 0
+  },
+  "linear_0347_exact_readbacks": {
+    "kind": "factual_comment_only",
+    "pre_action_key": "linear_0346_pre_action",
+    "readbacks": [
+      {
+        "issue": "TIN-2057",
+        "id": "8433d32c-1404-4f79-8100-4795d2513038",
+        "created_at": "2026-10-06T03:47:14.717Z",
+        "exact_body_readback": true,
+        "has_next_page": false,
+        "unchanged": {
+          "title": true,
+          "description": true,
+          "status": true,
+          "assignee": true,
+          "dueDate": true,
+          "relations": true,
+          "project": true
+        }
+      },
+      {
+        "issue": "TIN-2063",
+        "id": "862d4aed-1220-4849-81db-de028146d9f0",
+        "created_at": "2026-10-06T03:47:15.346Z",
+        "exact_body_readback": true,
+        "has_next_page": false,
+        "unchanged": {
+          "title": true,
+          "description": true,
+          "status": true,
+          "assignee": true,
+          "dueDate": true,
+          "relations": true,
+          "project": true
+        }
+      },
+      {
+        "issue": "TIN-5338",
+        "id": "6218e2f5-7cd3-428d-8ac6-51ed4c5fd826",
+        "created_at": "2026-10-06T03:47:15.911Z",
+        "exact_body_readback": true,
+        "has_next_page": false,
+        "unchanged": {
+          "title": true,
+          "description": true,
+          "status": true,
+          "assignee": true,
+          "dueDate": true,
+          "relations": true,
+          "project": true
+        }
+      },
+      {
+        "issue": "TIN-5442",
+        "id": "2b2662d6-ff5d-4ee4-8cad-258b162d0f1f",
+        "created_at": "2026-10-06T03:47:16.563Z",
+        "exact_body_readback": true,
+        "has_next_page": false,
+        "unchanged": {
+          "title": true,
+          "description": true,
+          "status": true,
+          "assignee": true,
+          "dueDate": true,
+          "relations": true,
+          "project": true
+        }
+      }
+    ],
+    "changes": "Four factual comments only; issue descriptions/status/assignees/due dates/relations/projects unchanged at exact readback"
+  },
+  "paused_checkin_0358": {
+    "recorded_at": "2026-10-06T03:58:37Z",
+    "authority": "User explicitly paused the tool goal; subsequent status check is not a resume",
+    "tool_goal_status": "paused",
+    "complete": false,
+    "all_existing_subagents_completed": true,
+    "owned_last_batch_terminal": true,
+    "new_workloads_started": false,
+    "new_delegation": false,
+    "historical_scoped_gates_passed": 5,
+    "acceptance_gates_open": 6,
+    "next_order": [
+      "Qualify fresh guard/source custody and capacity on explicit resume",
+      "Actual 600-second Home Manager source-pair acquisition; preserve historical 300-second refusals; genuine offline evaluation only after independently frozen pair",
+      "Verify Yoga NAR content and destination registration, qualify isolated Wayland seat, then operator toolbar consent; join exact development-generation browser reload separately",
+      "Wire and test reviewed fixed Git input producer and narrow guard route; acquire exact declared public commits and remaining SDK inputs; compile exact fresh candidate",
+      "Diagnose retained-runtime post-detach status-result failure without weakening predicates; preserve separate native, accepted-history and live-handoff gates",
+      "Finish durable lifecycle measurements and source/artifact/tracker reconciliation"
+    ],
+    "unrun_sources": [
+      "tools/codex_git_inputs.py",
+      "tools/codex_git_inputs_test.py"
+    ],
+    "unimplemented_proposals": [
+      "Exact integrated FAST Git dependency profile admission",
+      "Yoga cached NAR repository and destination registration qualification",
+      "Genuine retained-artifact Home Manager evaluator wiring"
+    ],
+    "limits": "No provider access, fleet activation, signing/publication or Darwin/PZM execution. No new acceptance gate closed."
+  },
+  "linear_0346_pre_action": {
+  "authority": "Explicit user resumed implementation/Linear reconciliation; R-N13",
+  "kind": "factual_comment_only",
+  "as_of": "2026-10-06T03:46:00Z",
+  "mutations": "No issue descriptions/status/assignees/due dates/relations/project scope",
+  "bodies": {
+    "TIN-2057": "2026-10-06 03:46 UTC factual checkpoint; resumed integrated plan and R-N13.\n\nEpoch 874 ended 3/3 with empty descendants: ten targets passed and three failed. Application readiness now passes 246 actor predicates, including all four authored cases. This proves read-only lineage and custody predicates; enrollment and continuity remain unproved. The SDK successor contains 329 verified objects, 1390 missing and 34 unresolved, with closure, offline analysis and native support false. HM 903 copied every node but hit its original 300-second deadline during final NAR proof; nothing was published. Native detach ACK preceded a failed status RPC; cold resume remains unproved.\n\nFive historical scoped gates pass; six remain open. Exact hashes and source qualifications: docs/tracker-updates/integrated-delivery-validation-2026-10-06.json. Root remains sole executor. No provider, deployment, publication or Darwin actions. The original goal and 06:30:46 UTC continuation checkpoint remain unchanged.",
+    "TIN-2063": "2026-10-06 03:46 UTC delivery checkpoint; resumed implementation and R-N13.\n\nHM's 80-method gate passed. Actual epoch 903 ended 3/3 with empty descendants after 94974 cumulative copied nodes and 195510848 bytes; publication was refused during final copied-source NAR at 300 seconds. Historical failures remain unchanged. Root ratified a 600-second source preparation allowance after independent custody review. Overall 1200 seconds, enclosing Bazel/guard timers, memory/process/CPU limits, full scans, NAR proofs, per-file fsync and ownership remain unchanged. The 85-case suite awaits fresh validation; this is preparation time, never a product SLO.\n\nThe retained 937936 artifact and aa9c9f receipt remain selected. Genuine offline evaluation and fleet activation/update/removal stay open. Readiness's 246 actor predicates now pass. Paths: docs/plans/omux-integrated-delivery-sprint-2026-10-05.md; nix/home_manager_acquisition.py; docs/tracker-updates/integrated-delivery-validation-2026-10-06.json.",
+    "TIN-5338": "2026-10-06 03:46 UTC Codex checkpoint; Omux owns the adapter implementation and delivery, without waiting for an OpenAI Omux hook.\n\nTwenty current-plan archives (15616821 bytes) joined successor 874: 329 verified objects, 1390 missing and 34 unresolved. Raw union receipt: 066ebb1aba7aa80a81451bef9bc3496cfd8f0c08c9f3e67e7043c1a832067448. Closure, offline analysis and native support remain false. Schema correction passes 25 tests; actual f793 export still refused at entry-context/schema before publication. Root is correcting Bazel JSON tokenization with an actual launcher regression. Retained runtime009/frozen164 failed at detach-status-rpc/cli-process-failure after ACK. Cold resume, accepted history and live handoff remain unproved. Finer refusal diagnostics are reviewed but unrun; new Git inputs remain under source review.\n\nEvidence and paths: docs/tracker-updates/integrated-delivery-validation-2026-10-06.json; tools/codex_repository_inputs.py; delivery/test_installed_legacy_native_tui.py.",
+    "TIN-5442": "2026-10-06 03:46 UTC browser checkpoint; resumed implementation and R-N13.\n\nYoga payload 24, staging 15, guard 47 and profile 16 passed in 874. Controller inventory's 23 modeled cases passed again in f793 after SQLite fixture cleanup. Its actual producer refused before publication: generated launcher inspection shows malformed remapping of an already absolute selection path. The narrow correction is independently reviewed and awaits an actual argv regression. Controller NAR contents and Yoga destination registration remain unproved.\n\nOperator availability at Yoga's local Wayland desktop is confirmed once isolated setup is ready. Closure delivery, wrapper ABI, offline graph, console qualification, human permission prompts and the exact development-generation reload remain open. No provider access, signing or publication. Paths: tools/yoga_controller_inventory.py; tools/rules.bzl; docs/agent-notes/2026-10-06-yoga-controller-selection.json; docs/tracker-updates/integrated-delivery-validation-2026-10-06.json."
+  }
+},
+  "limitations": [
+    "No Home Manager source-pair publication or genuine evaluation established by this batch",
+    "No fleet activation/update/removal",
+    "No human toolbar consent or provider acquisition",
+    "No full SDK closure or new candidate compilation",
+    "No native launch/resume/handoff support",
+    "No achieved SLO, contractual SLA, signing/publication or Darwin proof"
+  ]
+}

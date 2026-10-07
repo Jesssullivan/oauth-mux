@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "kind": "actual_chromium_synthetic_service_recovery_receipt",
+  "authority": "AGENTS.md; user-resumed 15-hour implementation; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "c8f63b83-f9cb-4233-a01c-5d1e6f30f33d",
+  "target": "//delivery:installed_chromium_test",
+  "profile": "installed-browser",
+  "graph_sha256": "e1a0c0ee02965569d5a697976e56ea44509d2cd301f75daba4da6438e70933b0",
+  "source_commit_declaration": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+  "source_dirty_declaration": "true",
+  "source_metadata_independently_verified": false,
+  "exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "test_evidence_sha256": "474d901fdb8b76526dc7ce4377ca5ca031ebfe94cd8d4c442e9deba6ef655e06",
+  "test_evidence": [
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 232,
+          "file": "802fac02d044cd3d96b53941a868e54233977c859cf05cb131783cd9f33a536d.evidence",
+          "sha256": "3958ad8fec14dc93df5d74f8c5e2fe72308c7dc021753b3335587edc83999fb5",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 639,
+          "file": "f47e1af1b1b9cdc509d4da143dde6ff4f1b01b1d3e77bc16510c0e3135156f17.evidence",
+          "sha256": "c1044e4bd5f084d5f1052c8bd9749558be980a24615b626a93fa092615b7e020",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//delivery:installed_chromium_test"
+    }
+  ],
+  "marker": "OMUX_INSTALLED_CHROMIUM_SYNTHETIC_SERVICE_RECOVERY_OK",
+  "qualified_browser": "Chrome/147.0.7727.116",
+  "extension": {
+    "id": "bggghdafplhajiailkafeihemlalagmm",
+    "channel": "development",
+    "zip_sha256": "0ec74f20b4d9831e760e0e133e4082298413677a1fca7c0f21c95619685dac01"
+  },
+  "scope": [
+    "Actual pinned Chromium/private profile loads keyed development extension and native host",
+    "Real extension health and tab boundary/provider-permission refusal",
+    "Production BrowserService retains synthetic pending metadata and original connect operation ID when native registration disappears",
+    "Browser restart restores native registration and shipped worker resolves original connect then distinct context disconnect",
+    "Independent daemon source preserved; account/grant state remains empty",
+    "Owned removal and private process-group cleanup"
+  ],
+  "fixture_corrections": "Exact deep object equality preserves keys/types/values/array order without relying on chrome.storage.local property insertion order; finite diagnostics preserve failures.",
+  "permissionGranted": false,
+  "toolbarConsentProved": false,
+  "providerAcquisition": false,
+  "providerAccess": false,
+  "nativeContinuityProved": false,
+  "full_browser_gate": "open; actual consent/acquisition still separate",
+  "preserved_failed_epochs": [
+    "d3770f7b-77c0-4413-ba41-c6952f1d9eef",
+    "85f54692-bc49-4cd1-b678-51715c5def7a",
+    "97e91470-e557-4385-9ec2-dd3a50270b9c",
+    "e436f79d-2bf3-413f-bdb0-590dd5deff66"
+  ],
+  "not_proved": [
+    "Human toolbar consent/provider permission acquisition",
+    "Real browser account identity/grant acquisition",
+    "Committed daemon mutation with lost reply at this boundary",
+    "Native application launch/resume/same-process handoff",
+    "Development generation restart/reload join",
+    "Home Manager/Darwin/public signing/deployment",
+    "Achieved lifecycle SLO"
+  ]
+}

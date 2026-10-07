@@ -1,0 +1,466 @@
+*** Begin Patch
+*** Update File: src/engine.zig
+@@
+     fn create(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection) !*Engine {
++        return createConfigured(io, allocator, state_dir, key, selection, null);
++    }
++
++    pub fn openWithMeasuredRootForTest(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key, root: []const u8) !*Engine {
++        if (!builtin.is_test) return error.TestOnly;
++        return createConfigured(io, allocator, state_dir, key, .default, root);
++    }
++
++    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8) !*Engine {
+         try paths.validateAbsolute(state_dir);
+@@
+         errdefer self.release();
++        if (test_root) |root| {
++            if (!builtin.is_test) return error.TestOnly;
++            if (root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
++            const descriptor = try paths.openPrivateRoot(allocator, root, false);
++            _ = std.c.close(descriptor);
++            self.codex_runtime_root = try allocator.dupe(u8, root);
++        }
+@@
+         const method = request.method;
+         const params = request.params;
++        if (builtin.is_test and eql(method, "fixture.measuredRuntime")) return self.measuredRuntimeFixture(allocator, request, channel);
+@@
++    /// All fixture actions are compiled only for tests, run on the actual
++    /// actor, and require a separately configured private synthetic root.
++    fn measuredRuntimeFixture(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) anyerror![]u8 {
++        if (!builtin.is_test) return error.TestOnly;
++        if (channel != .control or self.codex_runtime_root == null) return error.WrongChannel;
++        const mode = try control.string(request.params, "mode");
++        if (eql(mode, "inspect")) return control.success(allocator, request.id, .{
++            .selected = self.measured_codex_runtime,
++            .pending = self.runtime_measurement != null or self.runtime_measurement_requested,
++            .failure = if (self.runtime_measurement_failure) |err| @errorName(err) else null,
++            .registry = self.native_registry,
++            .epoch = self.adapter_epochs[0],
++            .revision = self.revision,
++            .poisoned = self.poisoned,
++            .removal_pending = self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null,
++        });
++        const original = self.measured_codex_runtime orelse return error.MissingMeasuredFixtureSelection;
++        if (eql(mode, "restore")) {
++            try self.restoreCommitted();
++            return control.success(allocator, request.id, .{ .preserved = std.meta.eql(self.measured_codex_runtime.?, original) });
++        }
++        if (eql(mode, "digest_refusal")) {
++            var candidate = self.persisted();
++            candidate.measured_codex_runtime.?.record_sha256[0] ^= 1;
++            const encoded = try std.json.Stringify.valueAlloc(allocator, candidate, .{});
++            defer allocator.free(encoded);
++            var refused = false;
++            validatePersistedAdmission(allocator, encoded, self.revision) catch |err| {
++                if (err != error.InvalidMeasuredRuntimeSelection) return err;
++                refused = true;
++            };
++            return control.success(allocator, request.id, .{ .refused = refused, .preserved = std.meta.eql(self.measured_codex_runtime.?, original) });
++        }
++        if (eql(mode, "channel_restore")) {
++            const original_registry = self.native_registry;
++            const original_epoch = self.adapter_epochs[0];
++            var changed = original;
++            changed.record.channel = if (changed.record.channel == .release) .development else .release;
++            changed.record_sha256 = try measured_runtime.digest(allocator, changed.record);
++            // Authenticated but wrong-channel metadata reaches the real restore
++            // path. Return memory to its prior state before exercising restore.
++            self.measured_codex_runtime = changed;
++            try self.persist(&.{});
++            self.measured_codex_runtime = original;
++            var refused = false;
++            self.restoreCommitted() catch |err| {
++                if (err != error.RuntimeSelectionDrift) return err;
++                refused = true;
++            };
++            const preserved = std.meta.eql(self.measured_codex_runtime.?, original) and std.meta.eql(self.native_registry, original_registry) and self.adapter_epochs[0] == original_epoch;
++            self.measured_codex_runtime = original;
++            self.native_registry = original_registry;
++            self.adapter_epochs[0] = original_epoch;
++            try self.persist(&.{});
++            return control.success(allocator, request.id, .{ .refused = refused, .preserved = preserved });
++        }
++        if (eql(mode, "wrong_transaction") or eql(mode, "recover_wrong_transaction") or eql(mode, "install_wrong_transaction")) {
++            var changed = original;
++            changed.record.installation.transaction[0] = if (changed.record.installation.transaction[0] == 'a') 'b' else 'a';
++            changed.record_sha256 = try measured_runtime.digest(allocator, changed.record);
++            self.measured_codex_runtime = changed;
++            if (eql(mode, "wrong_transaction")) return control.success(allocator, request.id, .{ .armed = true });
++            defer self.measured_codex_runtime = original;
++            var refused = false;
++            if (eql(mode, "recover_wrong_transaction")) {
++                self.recoverIntegrations() catch |err| {
++                    if (err != error.RuntimeSelectionDrift) return err;
++                    refused = true;
++                };
++            } else {
++                const encoded = try std.json.Stringify.valueAlloc(allocator, .{ .adapter = "codex" }, .{});
++                defer allocator.free(encoded);
++                const parsed = try std.json.parseFromSlice(std.json.Value, allocator, encoded, .{});
++                defer parsed.deinit();
++                if (self.install(allocator, request.id, parsed.value)) |reply| {
++                    allocator.free(reply);
++                } else |err| {
++                    if (err != error.RuntimeSelectionDrift) return err;
++                    refused = true;
++                }
++            }
++            return control.success(allocator, request.id, .{ .refused = refused });
++        }
++        if (eql(mode, "capacity_refusal")) {
++            // A real bounded carrier must still fail to acquire actor authority
++            // when its authenticated snapshot cannot fit. No success stub or
++            // direct Committed constructor is used for this commit attempt.
++            self.measured_codex_runtime = null;
++            try self.persist(&.{});
++            try self.saturateSnapshot(1, false);
++            const deadline: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(5000) });
++            const options = try self.setupOptions(allocator, .codex, .null);
++            defer allocator.free(options.broker_socket);
++            const descriptor = try paths.openPrivateRoot(allocator, self.codex_runtime_root.?, false);
++            defer _ = std.c.close(descriptor);
++            const observed = try measured_runtime.observe(self.io, allocator, .{ .options = options, .selection = self.instance_selection, .revision = self.revision, .deadline = deadline, .installation_path = self.codex_runtime_root.? }, descriptor);
++            defer observed.deinit();
++            var refused = false;
++            self.commitMeasuredCodexRuntime(observed, deadline) catch |err| {
++                if (err != error.SnapshotTooLarge) return err;
++                refused = true;
++            };
++            var saved = try self.db.?.readSnapshot();
++            defer saved.deinit();
++            const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
++            defer parsed.deinit();
++            return control.success(allocator, request.id, .{ .refused = refused, .memory_unselected = self.measured_codex_runtime == null, .stored_unselected = parsed.value.measured_codex_runtime == null, .poisoned = self.poisoned });
++        }
++        return error.InvalidParams;
++    }
++
+     fn uninstall(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
+*** Update File: src/native_owner_fixture.zig
+@@
+     pub fn create(io: std.Io, a: std.mem.Allocator, producer: *Fixture) !*ActorFixture {
++        return createConfigured(io, a, producer, null);
++    }
++
++    pub fn createWithMeasuredRoot(io: std.Io, a: std.mem.Allocator, producer: *Fixture, root: []const u8) !*ActorFixture {
++        return createConfigured(io, a, producer, root);
++    }
++
++    fn createConfigured(io: std.Io, a: std.mem.Allocator, producer: *Fixture, measured_root: ?[]const u8) !*ActorFixture {
+         const state = try std.fmt.allocPrintSentinel(a, "{s}/state", .{producer.root}, 0);
+@@
+-        const engine = try engine_module.Engine.openWithKey(io, a, state, key);
++        const engine = if (measured_root) |root| try engine_module.Engine.openWithMeasuredRootForTest(io, a, state, key, root) else try engine_module.Engine.openWithKey(io, a, state, key);
+@@
+     pub fn restart(self: *ActorFixture) !void {
++        return self.restartConfigured(null);
++    }
++
++    pub fn restartWithMeasuredRoot(self: *ActorFixture, root: []const u8) !void {
++        return self.restartConfigured(root);
++    }
++
++    fn restartConfigured(self: *ActorFixture, measured_root: ?[]const u8) !void {
+         // A worker may retain a raw announcement callback pointer. Join it
+@@
+-        const engine = try engine_module.Engine.openWithKey(self.io, self.allocator, self.state, self.key);
++        const engine = if (measured_root) |root| try engine_module.Engine.openWithMeasuredRootForTest(self.io, self.allocator, self.state, self.key, root) else try engine_module.Engine.openWithKey(self.io, self.allocator, self.state, self.key);
+*** Update File: BUILD.bazel
+@@
++zig_test(
++    name = "measured_runtime_actor_test",
++    main = "src/measured_runtime_actor_tests.zig",
++    srcs = ZIG_SOURCES,
++    deps = [":native_api"],
++    linkopts = ZIG_NATIVE_LINKOPTS,
++    data = ZIG_RUNTIME_DATA,
++)
+ zig_test(
+     name = "reliability_adapter_setup_test",
+*** Add File: src/measured_runtime_actor_tests.zig
++//! Actual actor/SQLite/Supervisor measurement predicates using private tiny
++//! filesystem members and the existing genuine native socket fixture. No
++//! provider, installed application, package provenance or continuity proof.
++const std = @import("std");
++const builtin = @import("builtin");
++const engine = @import("engine.zig");
++const native_fixture = @import("native_owner_fixture.zig");
++const measured = @import("integrations/measured_runtime_selection.zig");
++const setup = @import("integrations/setup.zig");
++const paths = @import("paths.zig");
++const metadata = @import("platform/file_metadata.zig");
++const control = @import("control.zig");
++const allocator = std.testing.allocator;
++const io = std.testing.io;
++const members = [_][]const u8{ "bin/codex", "lib/codex/libexec/codex.bin", "lib/codex/lib/ld-linux-x86-64.so.2", "lib/codex/share/ca-bundle.crt" };
++const Entry = struct { sha256: [64]u8, bytes: u64, mode: u32, device: u64, inode: u64, mtime_ns: i128, ctime_ns: i128, state: [9]i128 };
++fn writeMember(path: []const u8, bytes: []const u8, mode: std.c.mode_t) !void {
++    const name = try allocator.dupeSentinel(u8, path, 0);
++    defer allocator.free(name);
++    const descriptor = std.c.open(name.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .CLOEXEC = true, .NOFOLLOW = true }, mode);
++    if (descriptor < 0) return error.FixtureOpenFailed;
++    defer _ = std.c.close(descriptor);
++    if (std.c.fchmod(descriptor, mode) != 0) return error.FixtureModeFailed;
++    var offset: usize = 0;
++    while (offset < bytes.len) {
++        const count = std.c.write(descriptor, bytes[offset..].ptr, bytes.len - offset);
++        if (count <= 0) return error.FixtureWriteFailed;
++        offset += @intCast(count);
++    }
++}
++fn memberEntry(path: []const u8, bytes: []const u8) !Entry {
++    const name = try allocator.dupeSentinel(u8, path, 0);
++    defer allocator.free(name);
++    const descriptor = std.c.open(name.ptr, .{ .CLOEXEC = true, .NOFOLLOW = true });
++    if (descriptor < 0) return error.FixtureOpenFailed;
++    defer _ = std.c.close(descriptor);
++    const status = try metadata.statFd(descriptor);
++    var sha: [32]u8 = undefined;
++    std.crypto.hash.sha2.Sha256.hash(bytes, &sha, .{});
++    return .{ .sha256 = std.fmt.bytesToHex(sha, .lower), .bytes = @intCast(status.size), .mode = status.mode & 0o7777, .device = status.dev, .inode = status.ino, .mtime_ns = status.mtime_ns, .ctime_ns = status.ctime_ns, .state = .{ status.dev, status.ino, status.uid, status.gid, status.mode & 0o7777, status.nlink, status.size, status.mtime_ns, status.ctime_ns } };
++}
++fn runtimeRoot(base: []const u8) ![]u8 {
++    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
++    const root = try std.fmt.allocPrint(allocator, "{s}/measured-runtime", .{base});
++    errdefer allocator.free(root);
++    const descriptor = try paths.openPrivateRoot(allocator, root, true);
++    defer _ = std.c.close(descriptor);
++    var entries: [4]Entry = undefined;
++    for (members, 0..) |member, index| {
++        const full = try std.fmt.allocPrint(allocator, "{s}/{s}", .{root, member});
++        defer allocator.free(full);
++        const parent = try paths.openPrivateRoot(allocator, std.fs.path.dirname(full).?, true);
++        _ = std.c.close(parent);
++        try writeMember(full, member, if (index == 3) 0o644 else 0o755);
++        entries[index] = try memberEntry(full, member);
++    }
++    const status = try metadata.statFd(descriptor);
++    // Non-ELF bytes are intentional: this schema is measured local facts only.
++    const receipt = try std.json.Stringify.valueAlloc(allocator, .{
++        .schema_version = 1, .kind = "omux-codex-installed-direct-exec", .launch_profile = "linux-installed-direct-exec-v1", .target = "x86_64-linux", .native_support = false,
++        .actor_selection = "uncommitted", .executable_attribution = "unproved",
++        .installation = .{ .directory_device = status.dev, .directory_inode = status.ino, .uid = status.uid, .gid = status.gid, .mode = 0o700 },
++        .files = .{ .@"bin/codex" = entries[0], .@"lib/codex/libexec/codex.bin" = entries[1], .@"lib/codex/lib/ld-linux-x86-64.so.2" = entries[2], .@"lib/codex/share/ca-bundle.crt" = entries[3] },
++    }, .{});
++    defer allocator.free(receipt);
++    const path = try std.fmt.allocPrint(allocator, "{s}/codex-installed-runtime.json", .{root});
++    defer allocator.free(path);
++    try writeMember(path, receipt, 0o600);
++    return root;
++}
++const Reply = struct {
++    bytes: []u8,
++    parsed: std.json.Parsed(std.json.Value),
++    fn deinit(self: *Reply) void {
++        control.wipeJson(self.parsed.value);
++        self.parsed.deinit();
++        std.crypto.secureZero(u8, self.bytes);
++        allocator.free(self.bytes);
++    }
++    fn result(self: *const Reply) !std.json.Value {
++        return control.get(self.parsed.value, "result") orelse error.FixtureRpcRefused;
++    }
++    fn expectError(self: *const Reply, name: []const u8) !void {
++        const value = control.get(self.parsed.value, "error") orelse return error.ExpectedFixtureRefusal;
++        try std.testing.expectEqualStrings(name, try control.string(value, "message"));
++        try std.testing.expect(control.get(self.parsed.value, "result") == null);
++    }
++};
++fn rpc(actor: *engine.Engine, method: []const u8, params: anytype) !Reply {
++    const payload = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
++    defer allocator.free(payload);
++    const bytes = try actor.dispatch(allocator, payload, .control);
++    errdefer allocator.free(bytes);
++    return .{ .bytes = bytes, .parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) };
++}
++const Inspection = struct { selected: ?measured.Committed, registry: ?setup.RegistryWitness, pending: bool, failed: bool, poisoned: bool, removal_pending: bool, epoch: u64, revision: u64 };
++fn inspect(actor: *engine.Engine) !Inspection {
++    var reply = try rpc(actor, "fixture.measuredRuntime", .{ .mode = "inspect" });
++    defer reply.deinit();
++    const value = try reply.result();
++    const selection_bytes = try std.json.Stringify.valueAlloc(allocator, control.get(value, "selected") orelse return error.InvalidFixtureReply, .{});
++    defer allocator.free(selection_bytes);
++    const selection = try std.json.parseFromSlice(?measured.Committed, allocator, selection_bytes, .{});
++    defer selection.deinit();
++    const registry_bytes = try std.json.Stringify.valueAlloc(allocator, control.get(value, "registry") orelse return error.InvalidFixtureReply, .{});
++    defer allocator.free(registry_bytes);
++    const registry = try std.json.parseFromSlice(?setup.RegistryWitness, allocator, registry_bytes, .{});
++    defer registry.deinit();
++    const epoch = control.get(value, "epoch") orelse return error.InvalidFixtureReply;
++    const revision = control.get(value, "revision") orelse return error.InvalidFixtureReply;
++    if (epoch != .integer or epoch.integer <= 0 or revision != .integer or revision.integer < 0) return error.InvalidFixtureReply;
++    return .{ .selected = selection.value, .registry = registry.value, .pending = try control.boolean(value, "pending", false), .failed = (control.get(value, "failure") orelse return error.InvalidFixtureReply) != .null, .poisoned = try control.boolean(value, "poisoned", true), .removal_pending = try control.boolean(value, "removal_pending", true), .epoch = @intCast(epoch.integer), .revision = @intCast(revision.integer) };
++}
++fn committed(actor: *engine.Engine) !Inspection {
++    const deadline: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(5000) });
++    while (deadline.durationFromNow(io).raw.toMilliseconds() > 0) {
++        const state = try inspect(actor);
++        if (state.failed or state.poisoned) return error.MeasuredActorFixtureFailed;
++        if (!state.pending and state.selected != null) return state;
++        try io.sleep(.fromMilliseconds(10), .awake);
++    }
++    return error.MeasuredActorFixtureTimedOut;
++}
++fn operation() ![64]u8 {
++    var bytes: [32]u8 = undefined;
++    try io.randomSecure(&bytes);
++    return std.fmt.bytesToHex(bytes, .lower);
++}
++const Saved = struct {
++    config: []u8,
++    registry: []u8,
++    capability: []u8,
++    fn capture(actor: *native_fixture.ActorFixture) !Saved {
++        const config = try std.Io.Dir.cwd().readFileAlloc(io, actor.config, allocator, .limited(setup.maximum_config));
++        errdefer allocator.free(config);
++        const path = try std.fmt.allocPrint(allocator, "{s}/integrations/codex.registry", .{actor.state});
++        defer allocator.free(path);
++        const registry = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(5 * setup.maximum_config));
++        errdefer allocator.free(registry);
++        const cap = try std.fmt.allocPrint(allocator, "{s}/integrations/codex.capability", .{actor.state});
++        defer allocator.free(cap);
++        return .{ .config = config, .registry = registry, .capability = try std.Io.Dir.cwd().readFileAlloc(io, cap, allocator, .limited(65)) };
++    }
++    fn deinit(self: *Saved) void {
++        inline for (.{ "config", "registry", "capability" }) |name| {
++            std.crypto.secureZero(u8, @field(self, name));
++            allocator.free(@field(self, name));
++        }
++    }
++    fn expectSame(self: *const Saved, actor: *native_fixture.ActorFixture) !void {
++        var after = try capture(actor);
++        defer after.deinit();
++        inline for (.{ "config", "registry", "capability" }) |name| try std.testing.expect(std.mem.eql(u8, @field(self, name), @field(after, name)));
++    }
++};
++test "actual install schedules bounded measurement and SQLite restart and rollback preserve original selection" {
++    const owner = try native_fixture.Fixture.create(io, allocator);
++    defer owner.deinit();
++    const root = try runtimeRoot(owner.root);
++    defer allocator.free(root);
++    const actor = try native_fixture.ActorFixture.createWithMeasuredRoot(io, allocator, owner, root);
++    defer actor.deinit();
++    try std.testing.expect((try inspect(actor.engine.?)).selected == null);
++    try actor.install();
++    const before = try committed(actor.engine.?);
++    try before.selected.?.validate(allocator, before.registry, before.epoch, before.revision);
++    try std.testing.expect(!before.selected.?.record.native_support);
++    try std.testing.expectEqual(@as(usize, 0), owner.methodCount(.register));
++    try std.testing.expectEqual(@as(usize, 0), owner.methodCount(.announce));
++    var restored = try rpc(actor.engine.?, "fixture.measuredRuntime", .{ .mode = "restore" });
++    defer restored.deinit();
++    try std.testing.expect(try control.boolean(try restored.result(), "preserved", false));
++    try actor.restartWithMeasuredRoot(root);
++    const after = try committed(actor.engine.?);
++    try std.testing.expect(std.meta.eql(before.selected.?, after.selected.?));
++    try std.testing.expectEqual(before.epoch, after.epoch);
++    try std.testing.expect(after.selected.?.committed_revision < after.revision);
++}
++test "actual snapshot digest channel restore and registry recovery guards preserve original native custody" {
++    const owner = try native_fixture.Fixture.create(io, allocator);
++    defer owner.deinit();
++    const root = try runtimeRoot(owner.root);
++    defer allocator.free(root);
++    const actor = try native_fixture.ActorFixture.createWithMeasuredRoot(io, allocator, owner, root);
++    defer actor.deinit();
++    try actor.install();
++    const before = try committed(actor.engine.?);
++    var saved = try Saved.capture(actor);
++    defer saved.deinit();
++    for ([_][]const u8{ "digest_refusal", "channel_restore", "recover_wrong_transaction", "install_wrong_transaction" }) |mode| {
++        var reply = try rpc(actor.engine.?, "fixture.measuredRuntime", .{ .mode = mode });
++        defer reply.deinit();
++        const result = try reply.result();
++        try std.testing.expect(try control.boolean(result, "refused", false));
++        if (control.get(result, "preserved") != null) try std.testing.expect(try control.boolean(result, "preserved", false));
++        try saved.expectSame(actor);
++        const state = try inspect(actor.engine.?);
++        try std.testing.expect(std.meta.eql(before.selected.?, state.selected.?));
++        try std.testing.expect(!state.poisoned and !state.removal_pending);
++    }
++}
++test "actual removal rejects another selected transaction then clears only its owned selection across restart" {
++    const owner = try native_fixture.Fixture.create(io, allocator);
++    defer owner.deinit();
++    const root = try runtimeRoot(owner.root);
++    defer allocator.free(root);
++    const actor = try native_fixture.ActorFixture.createWithMeasuredRoot(io, allocator, owner, root);
++    defer actor.deinit();
++    try actor.install();
++    const before = try committed(actor.engine.?);
++    var saved = try Saved.capture(actor);
++    defer saved.deinit();
++    var arm = try rpc(actor.engine.?, "fixture.measuredRuntime", .{ .mode = "wrong_transaction" });
++    arm.deinit();
++    const first_op = try operation();
++    var rejected = try rpc(actor.engine.?, "integrations.remove", .{ .adapter = "codex", .operation_id = first_op[0..], .expected_revision = before.revision });
++    defer rejected.deinit();
++    try rejected.expectError("RuntimeSelectionDrift");
++    try saved.expectSame(actor);
++    const unchanged = try inspect(actor.engine.?);
++    try std.testing.expect(std.meta.eql(before.selected.?, unchanged.selected.?));
++    try std.testing.expect(!unchanged.removal_pending and !unchanged.poisoned);
++    const next_op = try operation();
++    var removed = try rpc(actor.engine.?, "integrations.remove", .{ .adapter = "codex", .operation_id = next_op[0..], .expected_revision = unchanged.revision });
++    defer removed.deinit();
++    try std.testing.expect(try control.boolean(try removed.result(), "removed", false));
++    const after = try inspect(actor.engine.?);
++    try std.testing.expect(after.selected == null);
++    try std.testing.expectEqual(before.epoch + 1, after.epoch);
++    try std.testing.expectEqual(setup.RegistryPhase.removed, after.registry.?.phase);
++    try actor.restartWithMeasuredRoot(root);
++    const reopened = try inspect(actor.engine.?);
++    try std.testing.expect(reopened.selected == null and !reopened.pending and !reopened.poisoned);
++}
++test "actual snapshot capacity refusal cannot publish measured carrier or alter native configuration" {
++    const owner = try native_fixture.Fixture.create(io, allocator);
++    defer owner.deinit();
++    const root = try runtimeRoot(owner.root);
++    defer allocator.free(root);
++    const actor = try native_fixture.ActorFixture.createWithMeasuredRoot(io, allocator, owner, root);
++    defer actor.deinit();
++    try actor.install();
++    _ = try committed(actor.engine.?);
++    var saved = try Saved.capture(actor);
++    defer saved.deinit();
++    var failed = try rpc(actor.engine.?, "fixture.measuredRuntime", .{ .mode = "capacity_refusal" });
++    defer failed.deinit();
++    const result = try failed.result();
++    try std.testing.expect(try control.boolean(result, "refused", false));
++    try std.testing.expect(try control.boolean(result, "memory_unselected", false));
++    try std.testing.expect(try control.boolean(result, "stored_unselected", false));
++    try std.testing.expect(!(try control.boolean(result, "poisoned", true)));
++    try saved.expectSame(actor);
++}
+*** Add File: docs/agent-notes/2026-10-06-measured-native-actor-tests-review.md
++# Measured runtime actor test predicates — 2026-10-06
++
++Authority: repository AGENTS.md and the root task's explicit authorization for
++a separate test patch while actual inputs remain frozen. Independent source
++review: native_selection_review, 2026-10-06; source cleared, execution pending.
++
++The proposed `//:measured_runtime_actor_test` uses the existing genuine local
++socket producer and ordinary installation RPC. A scoped `builtin.is_test`
++constructor captures the exact private fixture installation root before actor
++bootstrap. Tiny non-ELF files intentionally qualify as measured local bytes
++only. The production acquisition verifier still fails closed and native support
++remains false.
++
++Four tests exercise the real Supervisor installation worker and actor commit;
++SQLite restart and committed-state restoration; malformed digest, channel and
++transaction refusal before ownership transfer or setup effects; rejection of
++another selection's removal, then clearing only the owned selection; and a real
++carrier's failed publication when the existing snapshot capacity is saturated.
++The latter clears only its private fixture selection before attempting the new
++commit and claims rollback of that attempted selection, not restoration of an
++earlier selected record. It intentionally consumes the finite existing snapshot
++limit, approximately 16 MB. Configuration, registry and capability bytes are
++compared without printing them and wiped after use.
++
++No build or test was executed by this lane. Debug test evidence must be recorded
++separately from production ReleaseSafe validation. These predicates do not prove
++original package/source provenance, ELF launch form, installed application
++behavior, provider access, native history preservation or same-process handoff.
+*** End Patch

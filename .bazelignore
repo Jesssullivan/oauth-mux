@@ -1,5 +1,4 @@
-.zig-cache
-zig-out
-dist
+.direnv
+.git
 captures
 memory

@@ -1,0 +1,651 @@
+# UNAPPLIED supplement to 2026-10-06-yoga-controller-delivery-source.patch.
+# Apply with --recount only after source review. No qualification has run.
+# The authenticated host OS is an explicit bootstrap trust base, independent of
+# Nix. Hashing remote bytes through this fixed bootstrap precedes Nix execution;
+# it does not infer executable authority from a Nix-reported registry/digest.
+# Existing fixed 472-path d631 controller generation is unchanged.
+diff --git a/tools/yoga_executable_qualification.py b/tools/yoga_executable_qualification.py
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_executable_qualification.py
+@@ -0,0 +1,1 @@
++"""Finite executable qualification against separately trusted authenticated OS."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import shlex
++import stat
++import time
++
++SSH = '/nix/store/aq5s91svywqgs5l9zyhp1wcjqvnfa0ss-openssh-with-gssapi-10.2p1/bin/ssh'
++BOOTSTRAP_SHA = 'c056b1b590c814bc662a7ef348ba4f5789e3534ed9ae8420fdc8614fefd9bc3a'
++BOOTSTRAP_ROOT = '/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure'
++TRUST = 'authenticated-lab-yoga-host-OS:/bin/sh+/usr/bin/python3:-I:-S'
++STORE_ROOT = re.compile(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]{1,211}')
++SHA = re.compile(r'[a-f0-9]{64}')
++REMOTE_FIELDS = frozenset(('schemaVersion', 'hostAlias', 'system', 'bootstrapTrust',
++    'machineIdSha256', 'bootIdSha256', 'uid', 'homeManagerGeneration',
++    'labSourceRevision', 'labGenerationMarkerSha256', 'labDeploymentIdSha256',
++    'remoteNixPath', 'remoteNixSha256', 'remoteNixBytes'))
++
++def require(value, reason):
++    if not value:
++        raise ValueError(reason)
++
++def canonical(value):
++    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
++
++def budget(deadline_ns):
++    require(type(deadline_ns) is int and deadline_ns > time.monotonic_ns(), 'qualification-deadline-exhausted')
++    return (deadline_ns - time.monotonic_ns()) / 10**9
++
++def executable_hash(path, deadline_ns, expected=None):
++    """Hash immutable bytes with stable descriptor and ancestor custody."""
++    budget(deadline_ns)
++    root, suffix = str(path).rsplit('/bin/', 1)
++    require(STORE_ROOT.fullmatch(root) and suffix == 'ssh', 'fixed-ssh-path-required')
++    require(path == SSH, 'fixed-controller-ssh-required')
++    directory = os.open('/nix/store', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++    try:
++        initial = os.fstat(directory)
++        require(initial.st_uid == 0 and stat.S_IMODE(initial.st_mode) in (0o755, 0o1775), 'ssh-store-custody')
++        for component in (Path(root).name, 'bin'):
++            budget(deadline_ns)
++            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
++            os.close(directory)
++            directory = child
++            info = os.fstat(directory)
++            require(info.st_uid == 0 and not info.st_mode & 0o222, 'ssh-ancestor-custody')
++        descriptor = os.open('ssh', os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
++        try:
++            witness = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size,
++                                   info.st_mtime_ns, info.st_ctime_ns)
++            before = os.fstat(descriptor)
++            require(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and not before.st_mode & 0o222
++                    and before.st_mode & 0o111 and 0 < before.st_size <= 64 * 1024**2, 'ssh-executable-custody')
++            count, digest = 0, hashlib.sha256()
++            while True:
++                budget(deadline_ns)
++                data = os.read(descriptor, 65536)
++                if not data:
++                    break
++                count += len(data)
++                require(count <= before.st_size, 'ssh-size-changed')
++                digest.update(data)
++            require(count == before.st_size and witness(before) == witness(os.fstat(descriptor))
++                    == witness(os.stat('ssh', dir_fd=directory, follow_symlinks=False)), 'ssh-executable-changed')
++            require(expected is None or digest.hexdigest() == expected, 'ssh-executable-digest')
++            return digest.hexdigest()
++        finally:
++            os.close(descriptor)
++    finally:
++        os.close(directory)
++
++def local_authority(bootstrap_data, rows, deadline_ns):
++    require(hashlib.sha256(bootstrap_data).hexdigest() == BOOTSTRAP_SHA, 'fixed-bootstrap-manifest-required')
++    manifest = json.loads(bootstrap_data)
++    require(manifest['system'] == 'x86_64-linux'
++            and manifest['packages']['openssh']['out'] + '/bin/ssh' == SSH,
++            'fixed-bootstrap-ssh-mapping-required')
++    roots = {row['path'] for row in rows}
++    require(BOOTSTRAP_ROOT in roots and SSH.rsplit('/bin/', 1)[0] in roots,
++            'ssh-outside-fixed-controller-inventory')
++    return {'sshPath': SSH, 'sshSha256': executable_hash(SSH, deadline_ns)}
++
++def remote_schema(value):
++    require(type(value) is dict and set(value) == REMOTE_FIELDS and type(value['schemaVersion']) is int
++            and value['schemaVersion'] == 1 and value['hostAlias'] == 'yoga'
++            and value['system'] == 'x86_64-linux' and value['bootstrapTrust'] == TRUST,
++            'remote-qualification-schema')
++    require(type(value['uid']) is int and value['uid'] > 0
++            and type(value['remoteNixBytes']) is int and 0 < value['remoteNixBytes'] <= 64 * 1024**2
++            and type(value['homeManagerGeneration']) is str and STORE_ROOT.fullmatch(value['homeManagerGeneration'])
++            and value['homeManagerGeneration'].endswith('-home-manager-generation')
++            and type(value['remoteNixPath']) is str and value['remoteNixPath'].endswith('/bin/nix')
++            and STORE_ROOT.fullmatch(value['remoteNixPath'][:-8])
++            and all(type(value[key]) is str and SHA.fullmatch(value[key])
++                    for key in ('machineIdSha256', 'bootIdSha256', 'remoteNixSha256',
++                                'labGenerationMarkerSha256', 'labDeploymentIdSha256'))
++            and type(value['labSourceRevision']) is str and re.fullmatch('[a-f0-9]{40}', value['labSourceRevision'])
++            and value['labSourceRevision'] != '0' * 40,
++            'remote-qualification-bindings')
++    return value
++
++# No Nix, shell hashing utility, profile activation, or write occurs in capture.
++# The caller trusts the SSH-authenticated lab host OS to execute this exact code.
++REMOTE_CODE = r'''
++import hashlib,json,os,platform,re,signal,stat,sys
++from pathlib import Path
++def check(value):
++    if not value: raise ValueError('remote-bootstrap-qualification-refused')
++signal.alarm(int(sys.argv[1]))
++check(platform.system() == 'Linux' and platform.machine() == 'x86_64' and os.getuid() > 0)
++state = Path.home() / '.local/state'
++profile = state / 'nix/profiles/home-manager'
++current = state / 'home-manager/gcroots/current-home'
++for link in (profile,current):
++    info = link.lstat()
++    check(stat.S_ISLNK(info.st_mode) and info.st_uid == os.getuid())
++generation = str(profile.resolve(strict=True))
++check(generation == str(current.resolve(strict=True)))
++check(generation.startswith('/nix/store/') and len(Path(generation).parts) == 4
++      and generation.endswith('-home-manager-generation'))
++info = os.lstat(generation)
++check(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o222)
++marker_path = str((Path(generation) / 'home-files/.config/tinyland/home-manager-control-revision').resolve(strict=True))
++check(marker_path.startswith('/nix/store/'))
++marker_fd = os.open(marker_path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
++try:
++    marker_info = os.fstat(marker_fd)
++    check(stat.S_ISREG(marker_info.st_mode) and marker_info.st_uid == 0 and not marker_info.st_mode & 0o222
++          and 0 < marker_info.st_size <= 4096)
++    marker = os.read(marker_fd,4097)
++    check(len(marker) == marker_info.st_size)
++    identity = lambda x:(x.st_dev,x.st_ino,x.st_mode,x.st_uid,x.st_size,x.st_mtime_ns,x.st_ctime_ns)
++    check(identity(marker_info) == identity(os.fstat(marker_fd)) == identity(os.lstat(marker_path)))
++finally: os.close(marker_fd)
++parsed = re.fullmatch(rb'schema=2\nsource_rev=([0-9a-f]{40})\ndeployment_id=([A-Za-z0-9._+-]+@[A-Za-z0-9._-]+)\n',marker)
++check(parsed is not None and parsed.group(1) != b'0'*40 and parsed.group(2).endswith(b'@yoga'))
++nix = str((Path(generation) / 'home-path/bin/nix').resolve(strict=True))
++check(nix.startswith('/nix/store/') and len(Path(nix).parts) == 6 and nix.endswith('/bin/nix'))
++directory = os.open('/nix/store',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++try:
++    check(os.fstat(directory).st_uid == 0)
++    for part in Path(nix).parts[3:-1]:
++        child = os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory)
++        os.close(directory); directory = child
++        info = os.fstat(directory)
++        check(info.st_uid == 0 and not info.st_mode & 0o222)
++    descriptor = os.open('nix',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
++    try:
++        witness = lambda x:(x.st_dev,x.st_ino,x.st_mode,x.st_uid,x.st_size,x.st_mtime_ns,x.st_ctime_ns)
++        before = os.fstat(descriptor)
++        check(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and not before.st_mode & 0o222
++              and before.st_mode & 0o111 and 0 < before.st_size <= 64*1024**2)
++        digest,count = hashlib.sha256(),0
++        while True:
++            data = os.read(descriptor,65536)
++            if not data: break
++            count += len(data); check(count <= before.st_size); digest.update(data)
++        check(count == before.st_size and witness(before) == witness(os.fstat(descriptor))
++              == witness(os.stat('nix',dir_fd=directory,follow_symlinks=False)))
++    finally: os.close(descriptor)
++finally: os.close(directory)
++check(generation == str(profile.resolve(strict=True)) == str(current.resolve(strict=True)))
++def public_digest(path):
++    with open(path,'rb') as source: data = source.read(4097)
++    check(0 < len(data) <= 4096)
++    return hashlib.sha256(data).hexdigest()
++result = dict(schemaVersion=1,hostAlias='yoga',system='x86_64-linux',
++    bootstrapTrust='authenticated-lab-yoga-host-OS:/bin/sh+/usr/bin/python3:-I:-S',
++    machineIdSha256=public_digest('/etc/machine-id'),bootIdSha256=public_digest('/proc/sys/kernel/random/boot_id'),
++    uid=os.getuid(),homeManagerGeneration=generation,remoteNixPath=nix,
++    labSourceRevision=parsed.group(1).decode('ascii'),labGenerationMarkerSha256=hashlib.sha256(marker).hexdigest(),
++    labDeploymentIdSha256=hashlib.sha256(parsed.group(2)).hexdigest(),
++    remoteNixSha256=digest.hexdigest(),remoteNixBytes=count)
++expected = json.loads(sys.argv[2])
++check(expected is None or result == expected)
++arguments = json.loads(sys.argv[3])
++if arguments is None:
++    print(json.dumps(result,sort_keys=True,separators=(',',':')))
++else:
++    check(expected is not None and isinstance(arguments,list) and all(isinstance(x,str) for x in arguments))
++    # Nix runs only after independent OS custody/hash/generation/host comparison.
++    os.execv(nix,[nix]+arguments)
++'''
++
++def remote_command(deadline_ns, expected=None, arguments=None):
++    remaining = int(budget(deadline_ns) - 30)
++    require(remaining > 5, 'remote-qualification-cleanup-reserve')
++    require(arguments is None or expected is not None, 'remote-nix-requires-prior-qualification')
++    if expected is not None:
++        remote_schema(expected)
++    return 'exec /usr/bin/python3 -I -S -c ' + shlex.quote(REMOTE_CODE) + ' ' + str(min(75, remaining)) + ' ' \
++        + shlex.quote(canonical(expected).decode()) + ' ' + shlex.quote(canonical(arguments).decode())
+diff --git a/tools/yoga_executable_qualification_test.py b/tools/yoga_executable_qualification_test.py
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_executable_qualification_test.py
+@@ -0,0 +1,1 @@
++import copy
++import hashlib
++import json
++import shlex
++import unittest
++from unittest.mock import patch
++import yoga_executable_qualification as qualification
++
++class QualificationTests(unittest.TestCase):
++    def remote(self):
++        return dict(schemaVersion=1,hostAlias='yoga',system='x86_64-linux',bootstrapTrust=qualification.TRUST,
++            machineIdSha256='a'*64,bootIdSha256='b'*64,uid=1000,
++            labSourceRevision='f'*40,labGenerationMarkerSha256='a'*64,labDeploymentIdSha256='b'*64,
++            homeManagerGeneration='/nix/store/'+'c'*32+'-home-manager-generation',
++            remoteNixPath='/nix/store/'+'d'*32+'-nix/bin/nix',remoteNixSha256='e'*64,remoteNixBytes=42)
++
++    def test_qualify_contains_no_nix_invocation(self):
++        with patch.object(qualification.time,'monotonic_ns',return_value=0):
++            command = shlex.split(qualification.remote_command(1200*10**9))
++        self.assertEqual(command[:5],['exec','/usr/bin/python3','-I','-S','-c'])
++        self.assertEqual(command[6:],['75','null','null'])
++
++    def test_prior_remote_qualification_required_before_nix(self):
++        with patch.object(qualification.time,'monotonic_ns',return_value=0):
++            with self.assertRaisesRegex(ValueError,'prior-qualification'):
++                qualification.remote_command(1200*10**9,arguments=['store','info'])
++
++    def test_host_generation_and_executable_tuple_travels_before_exec(self):
++        remote = self.remote()
++        with patch.object(qualification.time,'monotonic_ns',return_value=0):
++            command = shlex.split(qualification.remote_command(1200*10**9,remote,['path-info','--offline']))
++        self.assertEqual(json.loads(command[7]),remote)
++        self.assertEqual(json.loads(command[8]),['path-info','--offline'])
++        self.assertLess(command[5].index('check(expected is None or result == expected)'),command[5].index('os.execv'))
++        self.assertIn("home-files/.config/tinyland/home-manager-control-revision",command[5])
++        self.assertIn("parsed.group(1) != b'0'*40",command[5])
++
++    def test_trust_base_and_generation_are_exact(self):
++        for key,value in (('bootstrapTrust','Nix-reported-self-hash'),('homeManagerGeneration','/tmp/generation'),
++                          ('remoteNixPath','/nix/store/'+'d'*32+'-nix/bin/nix; touch /tmp/x'),
++                          ('remoteNixBytes',True),('schemaVersion',True),('uid',0),
++                          ('remoteNixPath',7),('homeManagerGeneration',False),('labSourceRevision','0'*40)):
++            remote = self.remote(); remote[key] = value
++            with self.assertRaises(ValueError): qualification.remote_schema(remote)
++
++    def test_missing_or_extra_remote_field_refused(self):
++        remote = self.remote(); remote['email'] = 'prohibited'
++        with self.assertRaises(ValueError): qualification.remote_schema(remote)
++        remote = self.remote(); del remote['bootIdSha256']
++        with self.assertRaises(ValueError): qualification.remote_schema(remote)
++
++    def test_remote_alarm_and_original_deadline_reserve(self):
++        with patch.object(qualification.time,'monotonic_ns',return_value=0):
++            command = shlex.split(qualification.remote_command(42*10**9))
++            self.assertEqual(command[6],'12')
++            with self.assertRaisesRegex(ValueError,'reserve'): qualification.remote_command(35*10**9)
++
++    def test_elapsed_deadline_precedes_local_open(self):
++        with patch.object(qualification.time,'monotonic_ns',return_value=10),patch.object(qualification.os,'open') as opened:
++            with self.assertRaisesRegex(ValueError,'deadline'): qualification.executable_hash(qualification.SSH,10)
++            opened.assert_not_called()
++
++    def test_local_mapping_not_selected_by_caller(self):
++        with self.assertRaisesRegex(ValueError,'bootstrap-manifest'):
++            qualification.local_authority(b'{}',[],1200*10**9)
++
++    def test_local_manifest_pin_and_inventory_both_required(self):
++        manifest = {'system':'x86_64-linux','packages':{'openssh':{'out':qualification.SSH.rsplit('/bin/',1)[0]}}}
++        data = qualification.canonical(manifest)
++        with patch.object(qualification,'BOOTSTRAP_SHA',hashlib.sha256(data).hexdigest()), \
++                patch.object(qualification,'executable_hash',return_value='a'*64) as hashed:
++            with self.assertRaisesRegex(ValueError,'inventory'): qualification.local_authority(data,[],1200*10**9)
++            hashed.assert_not_called()
++            rows = [{'path':qualification.BOOTSTRAP_ROOT},{'path':manifest['packages']['openssh']['out']}]
++            self.assertEqual(qualification.local_authority(data,rows,1200*10**9),
++                             {'sshPath':qualification.SSH,'sshSha256':'a'*64})
++            hashed.assert_called_once_with(qualification.SSH,1200*10**9)
++
++if __name__ == '__main__': unittest.main()
+diff --git a/tools/yoga_controller_delivery.py b/tools/yoga_controller_delivery.py
+--- a/tools/yoga_controller_delivery.py
++++ b/tools/yoga_controller_delivery.py
+@@ -14,1 +14,2 @@
+ from verify_cached_nars import parse_inventory, expected_hash
++import yoga_executable_qualification as qualification
+@@ -82,5 +83,0 @@
+-def admission(arguments, *, site=False, pack=False, recovery=False):
+-    require(arguments == ['test', LABEL] and not any((site, pack, recovery)),
+-            'fixed-yoga-delivery-target-required')
+-    return {'PrivateNetwork': 'no'}
+-
+@@ -169,11 +165,8 @@
+-        require(set(authority) == {'schemaVersion', 'hostAlias', 'sshPath', 'sshSha256',
+-                                  'remoteNixPath', 'remoteNixSha256'}
+-                and authority['schemaVersion'] == 1 and authority['hostAlias'] == HOST
+-                and authority['sshPath'] == ssh and STORE.fullmatch(authority['remoteNixPath'])
+-                and all(re.fullmatch(r'[a-f0-9]{64}', authority[key])
+-                        for key in ('sshSha256', 'remoteNixSha256')),
+-                'independent-executable-authority-schema')
+-        qualify_ssh(ssh, authority['sshSha256'], deadline)
++        require(type(authority) is dict and set(authority) == {'sshPath', 'sshSha256', 'remote'}
++                and authority['sshPath'] == ssh == qualification.SSH
++                and type(authority['sshSha256']) is str and qualification.SHA.fullmatch(authority['sshSha256']),
++                'controller-executable-authority-schema')
++        qualification.executable_hash(ssh, int(deadline * 10**9), authority['sshSha256'])
++        if authority['remote'] is not None:
++            qualification.remote_schema(authority['remote'])
+@@ -195,35 +188,18 @@
+     def nix_call(self, arguments, bound=2 * 1024 * 1024):
+-        path = shlex.quote(self.authority['remoteNixPath'])
+-        sha = self.authority['remoteNixSha256']
+-        return self.call('set -eu; test -f ' + path + ' && test ! -L ' + path
+-            + '; test "$(/usr/bin/sha256sum ' + path + ' | /usr/bin/cut -d " " -f 1)" = '
+-            + shlex.quote(sha) + '; exec ' + path + ' ' + arguments, bound)
++        return self.call(qualification.remote_command(int(self.deadline * 10**9),
++            self.authority['remote'], shlex.split(arguments)), bound)
++
++    def qualify(self):
++        output = strict_json(self.call(qualification.remote_command(int(self.deadline * 10**9)), 8192))
++        return qualification.remote_schema(output)
+ 
+     def inspect(self):
+-        output = self.call(PROBE, 4096).decode('ascii').splitlines()
+-        require(len(output) == 3, 'destination-probe-schema')
+-        fields = {}
+-        for line in output:
+-            key, value = line.split('=', 1)
+-            require(key not in fields, 'duplicate-destination-field')
+-            fields[key] = value
+-        require(set(fields) == {'nix', 'uid', 'availableKiB'}
+-                and STORE.fullmatch(fields['nix'])
+-                and re.fullmatch(r'[0-9]{1,12}', fields['uid'])
+-                and re.fullmatch(r'[0-9]{1,18}', fields['availableKiB']),
+-                'destination-probe-schema')
+-        require(fields['nix'] == self.authority['remoteNixPath'], 'remote-nix-selection-differs')
+-        self.nix = fields['nix']
++        require(self.qualify() == self.authority['remote'], 'remote-qualification-changed')
+         info = strict_json(self.nix_call(
+             '--extra-experimental-features nix-command store info --json --store daemon', 8192))
+         require(type(info) is dict and type(info.get('trusted')) is bool,
+                 'destination-daemon-trust-schema')
+         return {'hostAlias': HOST, 'system': 'x86_64-linux',
+                 'authentication': 'existing-SSH-strict-host-key',
+-                'remoteNix': self.nix, 'uid': int(fields['uid']),
+-                'availableBytes': int(fields['availableKiB']) * 1024,
++                'executableQualification': self.authority['remote'],
++                'availableBytes': None,
+                 'daemonClientTrusted': info['trusted']}
+@@ -272,6 +248,8 @@
+-    parser.add_argument('--mode', choices=('inspect', 'verify', 'copy'), required=True)
+-    parser.add_argument('--authority', required=True)
++    parser.add_argument('--mode', choices=('qualify', 'inspect', 'verify'), required=True)
++    parser.add_argument('--authority')
++    parser.add_argument('--bootstrap-manifest', required=True)
+     args = parser.parse_args()
++    require(os.environ.get('OMUX_YOGA_DELIVERY_MODE') == args.mode, 'fixed-guard-mode-envelope-required')
+@@ -282,12 +260,28 @@
+-    authority_data = read_public(args.authority, 8192, deadline)
+-    require(re.fullmatch(r'[a-f0-9]{64}', authority_sha256)
+-            and hashlib.sha256(authority_data).hexdigest() == authority_sha256,
+-            'independent-authority-digest')
+-    authority = strict_json(authority_data)
+     rows = selected(read_public(args.inventory, 8 * 1024**2, deadline),
+                     read_public(args.receipt, 8 * 1024**2, deadline))
+-    require(args.mode != 'copy', 'copy-held-owned-destination-containment-and-store-access')
++    local = qualification.local_authority(read_public(args.bootstrap_manifest, 2 * 1024**2, deadline),
++                                           rows, int(deadline * 10**9))
++    if args.mode == 'qualify':
++        require(args.authority is None and not authority_sha256, 'qualification-cannot-self-select-authority')
++        authority = dict(local, remote=None)
++    else:
++        require(args.authority is not None and qualification.SHA.fullmatch(authority_sha256),
++                'prior-guard-qualified-OS-receipt-required')
++        authority_data = read_public(args.authority, 16384, deadline)
++        require(hashlib.sha256(authority_data).hexdigest() == authority_sha256, 'prior-qualification-digest')
++        evidence = strict_json(authority_data)
++        require(type(evidence) is dict and set(evidence) == {'schemaVersion', 'scope', 'bootstrapManifestSha256',
++            'inventorySha256', 'sourceReceiptSha256', 'sshPath', 'sshSha256', 'remote'}
++            and type(evidence['schemaVersion']) is int and evidence['schemaVersion'] == 1
++            and evidence['scope'] == 'yoga-authenticated-OS-executable-qualification-v1'
++            and evidence['bootstrapManifestSha256'] == qualification.BOOTSTRAP_SHA
++            and evidence['inventorySha256'] == INVENTORY_SHA and evidence['sourceReceiptSha256'] == RECEIPT_SHA
++            and all(evidence[key] == local[key] for key in local), 'prior-qualification-controller-binding')
++        authority = dict(local, remote=qualification.remote_schema(evidence['remote']))
+@@ -305,2 +299,10 @@
+             backend = Backend(str(Path(args.ssh).resolve(strict=True)), options, deadline, authority)
+-            result['destination'] = backend.inspect()
++            if args.mode == 'qualify':
++                result['qualification'] = dict(schemaVersion=1,
++                    scope='yoga-authenticated-OS-executable-qualification-v1',
++                    bootstrapManifestSha256=qualification.BOOTSTRAP_SHA,
++                    inventorySha256=INVENTORY_SHA, sourceReceiptSha256=RECEIPT_SHA,
++                    **local, remote=backend.qualify())
++            else:
++                result['destination'] = backend.inspect()
+diff --git a/tools/guard_yoga_delivery_profile.py b/tools/guard_yoga_delivery_profile.py
+--- a/tools/guard_yoga_delivery_profile.py
++++ b/tools/guard_yoga_delivery_profile.py
+@@ -6,2 +6,5 @@
+-LABELS = frozenset(('//tools:yoga_controller_inspect', '//tools:yoga_controller_verify'))
++MODES = {'//tools:yoga_controller_qualify': 'qualify',
++         '//tools:yoga_controller_inspect': 'inspect',
++         '//tools:yoga_controller_verify': 'verify'}
++LABELS = frozenset(MODES)
+@@ -22,9 +25,18 @@
+-def envelope(deadline_ns, authority_sha256, approved_sha256):
+-    # Only guard-owned selection may call this. User CLI cannot approve its own
+-    # hash. approved_sha256 must come from separately reviewed frozen graph data.
++def envelope(deadline_ns, arguments, approved_sha256=None):
++    selected(arguments)
+     import time
+-    if (type(deadline_ns) is not int or not 30 * 10**9 < deadline_ns - time.monotonic_ns() <= 1200 * 10**9
+-            or approved_sha256 is None or authority_sha256 != approved_sha256):
+-        raise ValueError('independent authority and enclosing deadline required')
+-    return {'OMUX_YOGA_DELIVERY_DEADLINE_NS': str(deadline_ns),
+-            'OMUX_YOGA_DELIVERY_AUTHORITY_SHA256': approved_sha256}
++    import re
++    mode = MODES[arguments[1]]
++    if type(deadline_ns) is not int or not 30 * 10**9 < deadline_ns - time.monotonic_ns() <= 1200 * 10**9:
++        raise ValueError('original enclosing deadline required')
++    if mode == 'qualify' and approved_sha256 is not None or mode != 'qualify' and (
++            type(approved_sha256) is not str or not re.fullmatch('[a-f0-9]{64}', approved_sha256)):
++        raise ValueError('prior authenticated OS qualification required; no selfapproval')
++    result = {'OMUX_YOGA_DELIVERY_DEADLINE_NS': str(deadline_ns), 'OMUX_YOGA_DELIVERY_MODE': mode}
++    if approved_sha256 is not None:
++        result['OMUX_YOGA_DELIVERY_AUTHORITY_SHA256'] = approved_sha256
++    return result
++
++def run_options(values):
++    require_keys = {'OMUX_YOGA_DELIVERY_DEADLINE_NS', 'OMUX_YOGA_DELIVERY_MODE'}
++    if not require_keys <= set(values) or not set(values) <= require_keys | {'OMUX_YOGA_DELIVERY_AUTHORITY_SHA256'}:
++        raise ValueError('fixed delivery envelope keys required')
++    return ['--run_env=' + key + '=' + values[key] for key in sorted(values)]
+# ROOT integration contract (report first; these source-path joins are not applied):
+# * Guard accepts profile yoga-controller-delivery and ONLY these three run labels.
+# * Capture `original_deadline_ns = time.monotonic_ns() + 1200*10**9` before
+#   tool/bootstrap/lock/epoch work. Under the existing HOME coordination lock,
+#   require residual budget >30 seconds; never capture a second deadline.
+# * Mode qualify requires no authority selector. Inspect/verify bind authority to
+#   a public canonical extraction of qualification from a successful prior exact
+#   qualify epoch: terminal local guard exit/workload exit0, descendants_empty,
+#   exact graph and fixed receipts. Select exact extraction bytes before running;
+#   caller-provided authority paths/hashes without that producer chain are refused.
+# * Add `run_options(envelope(original_deadline_ns, arguments, approved_sha))` to
+#   the fixed Bazel run command. Workers never take deadline/hash overrides.
+# * Existing system-manager PROPERTIES remain 4GiB/512tasks/CPU2/1200sec.
+#   RuntimeMaxSec must be <= residual original deadline, and monitor/cleanup
+#   deadlines must be capped by original_deadline_ns, including bootstrap delay.
+# * blocked_paths()/system mask support uses existing standard policy for this
+#   profile: daemon socket + /run + become directory masks are still mandatory.
+#   Explicit SSH user-config/agent access is the reviewed authentication boundary;
+#   no become secret is used remotely, and no other masked path is opened.
+# * A child alarm/output bound proves finite qualification, not destination
+#   aggregate containment or complete remote cleanup. Keep those false/unknown.
+# * Copy requires a separate future exact destination ownership/aggregate/store
+#   contract. No copy target or store-mutation authority is added here.
+diff --git a/tools/BUILD.bazel b/tools/BUILD.bazel
+--- a/tools/BUILD.bazel
++++ b/tools/BUILD.bazel
+@@ -690,1 +690,12 @@
++python_test(
++    name = "yoga_executable_qualification_test",
++    main = "yoga_executable_qualification_test.py",
++    srcs = ["yoga_executable_qualification.py"],
++)
++
++# Replace the base patch's generic delivery binary with three fixed modes.
++# Declare bootstrap manifest at its unchanged qualified root. @omux_host ssh
++# is a wrapper: the backend resolves its script path differently, so the fixed
++# SSH executable is used directly after pinned manifest/inventory qualification.
+ python_test(
+diff --git a/tools/yoga_delivery_rules.bzl b/tools/yoga_delivery_rules.bzl
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_delivery_rules.bzl
+@@ -0,0 +1,1 @@
++"""Three fixed read-only modes; caller arguments are not executable selectors."""
++load(':rules.bzl', 'host_python_binary')
++
++def yoga_delivery_binaries():
++    common = [
++        '--ssh', '/nix/store/aq5s91svywqgs5l9zyhp1wcjqvnfa0ss-openssh-with-gssapi-10.2p1/bin/ssh',
++        '--inventory', '$(location @omux_yoga_controller_nars//:inventory.json)',
++        '--receipt', '$(location @omux_yoga_delivery_inputs//:d631-receipt.json)',
++        '--bootstrap-manifest', '$(location @omux_yoga_delivery_inputs//:bootstrap-native.json)',
++    ]
++    for mode in ['qualify', 'inspect', 'verify']:
++        host_python_binary(
++            name = 'yoga_controller_' + mode,
++            main = 'yoga_controller_delivery.py',
++            srcs = ['yoga_executable_qualification.py', 'verify_cached_nars.py',
++                    'host_closure_transfer.py', 'ssh_policy.py'],
++            data = ['@omux_yoga_controller_nars//:inventory.json',
++                    '@omux_yoga_delivery_inputs//:d631-receipt.json',
++                    '@omux_yoga_delivery_inputs//:bootstrap-native.json'] +
++                   ([] if mode == 'qualify' else ['@omux_yoga_delivery_inputs//:authority.json']),
++            args = common + ['--mode', mode] + ([] if mode == 'qualify' else
++                   ['--authority', '$(location @omux_yoga_delivery_inputs//:authority.json)']),
++            tags = ['manual', 'no-remote', 'no-cache'],
++            target_compatible_with = ['@platforms//os:linux', '@platforms//cpu:x86_64'],
++        )
+diff --git a/tools/yoga_delivery_inputs.bzl b/tools/yoga_delivery_inputs.bzl
+--- a/tools/yoga_delivery_inputs.bzl
++++ b/tools/yoga_delivery_inputs.bzl
+@@ -6,1 +6,16 @@
+     ctx.symlink(receipt, 'd631-receipt.json')
++    bootstrap = ctx.path('/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure/native.json')
++    if not bootstrap.exists:
++        fail('fixed d631 bootstrap manifest unavailable')
++    ctx.symlink(bootstrap, 'bootstrap-native.json')
++    authority = ctx.os.environ.get('OMUX_YOGA_DELIVERY_QUALIFICATION')
++    if authority:
++        if not authority.startswith('/home/jess/.local/state/omux-yoga-delivery-20261006/') or '/..' in authority or '\n' in authority or '\r' in authority:
++            fail('authority must be a guard-bound prior local qualification output')
++        selected = ctx.path(authority)
++        if not selected.exists:
++            fail('guard-bound Yoga OS qualification unavailable')
++        ctx.watch(selected)
++        ctx.symlink(selected, 'authority.json')
++    else:
++        # Qualify has no prior authority. Inspect/verify require hash+schema before SSH.
++        ctx.file('authority.json', '')
+@@ -7,1 +22,1 @@
+-    ctx.file('BUILD.bazel', 'exports_files(["d631-receipt.json"], visibility=["//visibility:public"])\n')
++    ctx.file('BUILD.bazel', 'exports_files(["d631-receipt.json", "bootstrap-native.json", "authority.json"], visibility=["//visibility:public"])\n')
+@@ -12,1 +27,2 @@
+     local = True,
++    environ = ['OMUX_YOGA_DELIVERY_QUALIFICATION'],
+diff --git a/tools/BUILD.bazel b/tools/BUILD.bazel
+--- a/tools/BUILD.bazel
++++ b/tools/BUILD.bazel
+@@ -4,1 +4,2 @@
+ load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
++load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
+@@ -700,12 +701,1 @@
+-host_python_binary(
+-    name = "yoga_controller_delivery",
+-    main = "yoga_controller_delivery.py",
+-    srcs = ["verify_cached_nars.py", "host_closure_transfer.py", "ssh_policy.py"],
+-    data = ["@omux_host//:ssh", "@omux_yoga_controller_nars//:inventory.json"],
+-    args = ["--ssh", "$(location @omux_host//:ssh)",
+-            "--inventory", "$(location @omux_yoga_controller_nars//:inventory.json)"],
+-    tags = ["manual"],
+-    target_compatible_with = ["@platforms//os:linux"],
+-)
++yoga_delivery_binaries()
+# Guard repository options are fixed separately from runtime run_env:
+# --repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=<prior guarded extraction path> is
+# present only for inspect/verify. Guard checks original producer chain/custody
+# before furnishing it. Backend checks exact canonical extraction SHA again.
+# @omux_host closure remains d631 bootstrap; no Nix realization is involved.
+diff --git a/tools/yoga_controller_delivery_test.py b/tools/yoga_controller_delivery_test.py
+--- a/tools/yoga_controller_delivery_test.py
++++ b/tools/yoga_controller_delivery_test.py
+@@ -5,1 +5,2 @@
+ import yoga_controller_delivery as delivery
++import guard_yoga_delivery_profile as profile
+@@ -44,6 +45,5 @@
+-        authority = {'schemaVersion': 1, 'hostAlias': 'yoga',
+-                     'sshPath': '/nix/store/fixed/bin/ssh', 'sshSha256': '0'*64,
+-                     'remoteNixPath': '/nix/store/' + 'a'*32 + '-nix/bin/nix',
+-                     'remoteNixSha256': '1'*64}
+-        with patch.object(delivery, 'qualify_ssh', side_effect=ValueError('digest')), \
++        authority = {'sshPath': delivery.qualification.SSH, 'sshSha256': '0'*64, 'remote': None}
++        with patch.object(delivery.qualification, 'executable_hash', side_effect=ValueError('digest')), \
+@@ -83,6 +83,7 @@
+-        self.assertEqual(delivery.admission(['test', delivery.LABEL]), {'PrivateNetwork': 'no'})
+-        for arguments in (['run', delivery.LABEL], ['test', '//...'],
+-                          ['test', delivery.LABEL, '//:docs_check']):
++        label = '//tools:yoga_controller_qualify'
++        self.assertEqual(profile.selected(['run', label]), {'PrivateNetwork': 'no'})
++        for arguments in (['test', label], ['run', '//...'],
++                          ['run', label, '//:docs_check'], ['run', '//tools:yoga_controller_copy']):
+             with self.assertRaises(ValueError):
+-                delivery.admission(arguments)
++                profile.selected(arguments)
+@@ -101,5 +102,5 @@
+-        with patch.object(backend, 'call', return_value=b'uid=1000\nuid=1000\navailableKiB=5\n'):
++        backend.deadline = 1200
++        with patch.object(delivery.qualification.time, 'monotonic_ns', return_value=0), \
++                patch.object(backend, 'call', return_value=b'{"uid":1000,"uid":1000}'):
+             with self.assertRaisesRegex(ValueError, 'duplicate'):
+-                backend.inspect()
++                backend.qualify()
+diff --git a/tools/BUILD.bazel b/tools/BUILD.bazel
+--- a/tools/BUILD.bazel
++++ b/tools/BUILD.bazel
+@@ -696,1 +696,2 @@
+-            "host_closure_transfer.py", "ssh_policy.py"],
++            "host_closure_transfer.py", "ssh_policy.py", "yoga_executable_qualification.py",
++            "guard_yoga_delivery_profile.py"],
+diff --git a/tools/guard_yoga_delivery_profile_test.py b/tools/guard_yoga_delivery_profile_test.py
+new file mode 100644
+--- /dev/null
++++ b/tools/guard_yoga_delivery_profile_test.py
+@@ -0,0 +1,1 @@
++import unittest
++from unittest.mock import patch
++import guard_yoga_delivery_profile as profile
++
++class ProfileTests(unittest.TestCase):
++    def test_fixed_state_and_existing_home_coordinator(self):
++        args = ['run','//tools:yoga_controller_qualify']
++        self.assertEqual(profile.coordination(profile.COORDINATION,profile.STATE,args),profile.COORDINATION)
++        for coordination,state in ((profile.STATE,profile.STATE),(profile.COORDINATION,profile.COORDINATION)):
++            with self.assertRaises(ValueError): profile.coordination(coordination,state,args)
++
++    def test_provider_free_fixed_labels_and_no_flags(self):
++        for label in profile.MODES:
++            self.assertEqual(profile.selected(['run',label]),{'PrivateNetwork':'no'})
++        for args in (['test','//tools:yoga_controller_qualify'],['run','//tools:yoga_controller_copy'],
++                     ['run','//tools:yoga_controller_qualify','--','--seconds','1200']):
++            with self.assertRaises(ValueError): profile.selected(args)
++        with self.assertRaises(ValueError): profile.selected(['run','//tools:yoga_controller_qualify'],site=True)
++
++    def test_deadline_origin_and_prior_digest_rules(self):
++        with patch('time.monotonic_ns',return_value=100*10**9):
++            result = profile.envelope(1200*10**9,['run','//tools:yoga_controller_qualify'])
++            self.assertEqual(result['OMUX_YOGA_DELIVERY_DEADLINE_NS'],str(1200*10**9))
++            self.assertNotIn('OMUX_YOGA_DELIVERY_AUTHORITY_SHA256',result)
++            with self.assertRaises(ValueError): profile.envelope(1301*10**9,['run','//tools:yoga_controller_qualify'])
++            with self.assertRaises(ValueError): profile.envelope(130*10**9,['run','//tools:yoga_controller_qualify'])
++            with self.assertRaises(ValueError): profile.envelope(1200*10**9,['run','//tools:yoga_controller_qualify'],'a'*64)
++            with self.assertRaises(ValueError): profile.envelope(1200*10**9,['run','//tools:yoga_controller_inspect'])
++            result = profile.envelope(1200*10**9,['run','//tools:yoga_controller_verify'],'a'*64)
++            self.assertEqual(result['OMUX_YOGA_DELIVERY_AUTHORITY_SHA256'],'a'*64)
++            self.assertIn('--run_env=OMUX_YOGA_DELIVERY_DEADLINE_NS='+str(1200*10**9),profile.run_options(result))
++
++if __name__ == '__main__': unittest.main()
+diff --git a/tools/BUILD.bazel b/tools/BUILD.bazel
+--- a/tools/BUILD.bazel
++++ b/tools/BUILD.bazel
+@@ -690,1 +690,7 @@
++python_test(
++    name = "guard_yoga_delivery_profile_test",
++    main = "guard_yoga_delivery_profile_test.py",
++    srcs = ["guard_yoga_delivery_profile.py"],
++)
++
+ python_test(

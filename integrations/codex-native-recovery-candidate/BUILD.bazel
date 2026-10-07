@@ -1,0 +1,107 @@
+load("//tools:rules.bzl", "host_python_binary", "python_binary", "python_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# R-N13: a separate unshipped epoch; existing candidate data stays immutable.
+filegroup(name = "public_sources", srcs = glob(["*.bazel", "*.md", "*.json", "*.patch", "*.tar.gz"], allow_empty = True))
+filegroup(name = "artifact_files", srcs = glob(["*.json", "*.patch", "*.tar.gz"], allow_empty = True))
+exports_files(["README.md"])
+
+# R-N13: all48 introduced baseline paths besides auth_broker.rs, which the
+# shared producer already supplies. Future additional paths are explicit args.
+_BASELINE_NEW_FILES = [
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerCapabilitiesParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerCapabilitiesResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerRegisterParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerRegisterResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerThreadStatusParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerThreadStatusResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerUnregisterParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxBrokerUnregisterResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerAnnounceParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerAnnounceResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerCapabilitiesParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerCapabilitiesResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerIdentifyParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerIdentifyResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerRegisterParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerRegisterResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerThreadsParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerThreadsResponse.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerUnregisterParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerUnregisterResponse.json",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerCapabilities.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerCapabilitiesParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerCapabilitiesResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerRegisterParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerRegisterResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerThreadStatusParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerThreadStatusResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerUnregisterParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxBrokerUnregisterResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerAnnounceParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerAnnounceResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerCapabilitiesParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerCapabilitiesResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerIdentifyParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerIdentifyResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerRegisterParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerRegisterResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerThread.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerThreadsParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerThreadsResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerUnregisterParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerUnregisterResponse.ts",
+    "codex-rs/app-server/src/owner_control.rs",
+    "codex-rs/core/src/auth_broker_owner_tests.rs",
+    "codex-rs/core/src/native_owner_startup_tests.rs",
+    "codex-rs/core/src/native_peer.c",
+    "codex-rs/core/src/native_peer.h",
+    "codex-rs/core/src/native_peer.rs",
+]
+
+# Explicit new paths observed in the saved stable schema output. The cancelled
+# SDK batch is not a producer PASS; import and staging remain separately gated.
+_RECOVERY_NEW_SCHEMA_FILES = [
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerAttachmentStatusParams.json",
+    "codex-rs/app-server-protocol/schema/json/v2/OmuxOwnerAttachmentStatusResponse.json",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerAttachmentStatusParams.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerAttachmentStatusResponse.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerAttachmentDisposition.ts",
+    "codex-rs/app-server-protocol/schema/typescript/v2/OmuxOwnerNativeRef.ts",
+]
+
+python_binary(
+    name = "refresh_artifact",
+    main = "//integrations/codex-upstream:refresh_artifact.py",
+    srcs = ["//integrations/codex-upstream:patch_io.py"],
+    args = [piece for name in _BASELINE_NEW_FILES + _RECOVERY_NEW_SCHEMA_FILES for piece in ["--new-file", name]],
+)
+
+# Explicit invocation until root stages and verifies this epoch's artifact.
+python_test(
+    name = "artifact_test",
+    main = "//integrations/codex-owner-candidate:artifact_test.py",
+    srcs = ["//integrations/codex-upstream:patch_io.py"],
+    data = ["README.md", ":artifact_files"],
+    args = ["--artifact-dir", "$(location README.md)"],
+    tags = ["manual"],
+)
+
+host_python_binary(
+    name = "restore_source",
+    main = "//integrations/codex-upstream:restore_source.py",
+    srcs = ["//integrations/codex-upstream:patch_io.py"],
+    data = ["README.md", ":artifact_files", "@omux_host//:git", "@omux_host//:ca-bundle.crt"],
+    args = ["--artifact-dir", "$(location README.md)", "--git", "$(location @omux_host//:git)", "--ca-file", "$(location @omux_host//:ca-bundle.crt)"],
+)
+
+# Original selection is bound to all164 prior changes and the pinned mirror.
+# This target exports originals; it does not consume edited source bytes.
+host_python_binary(
+    name = "export_pristine_subset",
+    main = "//integrations/codex-upstream:export_pristine_subset.py",
+    srcs = ["//integrations/codex-upstream:restore_source.py", "//integrations/codex-upstream:patch_io.py"],
+    data = ["//integrations/codex-owner-candidate:public_sources", "//integrations/codex-owner-candidate:README.md", "@omux_host//:git", "@omux_host//:ca-bundle.crt"],
+    args = ["--artifact-dir", "$(location //integrations/codex-owner-candidate:README.md)", "--git", "$(location @omux_host//:git)", "--ca-file", "$(location @omux_host//:ca-bundle.crt)"],
+)

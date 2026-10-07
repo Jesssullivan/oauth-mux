@@ -1,0 +1,570 @@
+# Unapplied source review artifact. Inspect/verify are real SSH read-only operations.
+# Copy is held: owned destination aggregate containment and scoped store mutation
+# remain absent. Local aggregate guard/shared HOME lock/profile admission must be
+# wired/reviewed before invocation. No daemon mask changes in this patch.
+diff --git a/tools/yoga_controller_delivery.py b/tools/yoga_controller_delivery.py
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_controller_delivery.py
+@@ -0,0 +1,301 @@
++"""Fixed Yoga inspect/verify backend; no copy, trust mutation or remote cleanup."""
++import argparse
++import hashlib
++import json
++import selectors
++import signal
++import stat
++import subprocess
++import os
++from pathlib import Path
++import re
++import shlex
++import time
++from host_closure_transfer import SSH_OPTIONS, GateError, category
++from ssh_policy import operator_config
++from verify_cached_nars import parse_inventory, expected_hash
++
++LABEL = '//tools:yoga_controller_delivery'
++HOST = 'yoga'
++INVENTORY_SHA = '2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8'
++RECEIPT_SHA = 'f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a'
++EPOCH = 'd6311994-5212-4034-ac93-49b06405db88'
++STORE = re.compile(r'/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._-]+/bin/nix')
++RESERVE = 30
++
++def require(value, reason):
++    if not value:
++        raise GateError(reason)
++
++def strict_json(data):
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            require(key not in result, 'duplicate-json-field')
++            result[key] = value
++        return result
++    return json.loads(data, object_pairs_hook=pairs,
++        parse_constant=lambda _: (_ for _ in ()).throw(GateError('nonfinite-json')))
++
++def fence(deadline):
++    require(time.monotonic() < deadline, 'shared-deadline-exhausted')
++
++def owned_io(command, env, deadline, bound):
++    fence(deadline)
++    buffers = {True: bytearray(), False: bytearray()}
++    cleanup_errors = []
++    selector = None
++    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++                            start_new_session=True, env=env)
++    try:
++        # No poll/wait is permitted here: retain zombie leader as PGID anchor.
++        require(os.getpgid(proc.pid) == proc.pid, 'child-group-anchor')
++        selector = selectors.DefaultSelector()
++        selector.register(proc.stdout, selectors.EVENT_READ, True)
++        selector.register(proc.stderr, selectors.EVENT_READ, False)
++        while selector.get_map() or os.waitid(os.P_PID, proc.pid,
++                os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
++            fence(deadline - 5)
++            for key, _ in selector.select(min(0.25, max(0, deadline - time.monotonic() - 5))):
++                data = os.read(key.fileobj.fileno(), 4096)
++                if not data:
++                    selector.unregister(key.fileobj)
++                    continue
++                buffers[key.data].extend(data)
++                require(len(buffers[key.data]) <= (bound if key.data else 65536),
++                        'bounded-operation-output')
++    finally:
++        # This child has not been reaped; its original group ID cannot be reused.
++        try:
++            require(os.getpgid(proc.pid) == proc.pid, 'child-group-anchor-lost')
++            os.killpg(proc.pid, signal.SIGKILL)
++        except ProcessLookupError:
++            cleanup_errors.append('child-group-anchor-unavailable')
++        except BaseException:
++            cleanup_errors.append('child-group-cleanup-failed')
++        try:
++            proc.wait(timeout=max(0.001, deadline - time.monotonic()))
++        except BaseException:
++            cleanup_errors.append('child-reap-unproved')
++        for resource in (selector, proc.stdout, proc.stderr):
++            if resource is not None:
++                try:
++                    resource.close()
++                except BaseException:
++                    cleanup_errors.append('child-resource-release-failed')
++        require(not cleanup_errors, ','.join(cleanup_errors))
++    fence(deadline)
++    return proc.returncode, bytes(buffers[True]), bytes(buffers[False])
++
++def admission(arguments, *, site=False, pack=False, recovery=False):
++    require(arguments == ['test', LABEL] and not any((site, pack, recovery)),
++            'fixed-yoga-delivery-target-required')
++    return {'PrivateNetwork': 'no'}
++
++def selected(inventory, receipt):
++    rows = parse_inventory(inventory, INVENTORY_SHA)
++    require(len(rows) == 472 and sum(row['narSize'] for row in rows) == 2829689512,
++            'fixed-controller-inventory-required')
++    require(hashlib.sha256(receipt).hexdigest() == RECEIPT_SHA,
++            'fixed-controller-receipt-required')
++    strict_json(inventory)
++    evidence = strict_json(receipt)
++    require(evidence['id'] == EPOCH and evidence['artifact_epoch'] == EPOCH
++            and type(evidence['exit']) is int and evidence['exit'] == 0
++            and type(evidence['workload_exit']) is int and evidence['workload_exit'] == 0
++            and evidence['descendants_empty'] is True,
++            'terminal-controller-evidence-required')
++    return rows
++
++def registry(actual, rows):
++    require(type(actual) is dict and set(actual) == {row['path'] for row in rows},
++            'destination-registration-set')
++    for row in rows:
++        item = actual[row['path']]
++        require(type(item) is dict and type(item.get('narSize')) is int
++                and item['narSize'] == row['narSize']
++                and expected_hash(item.get('narHash')) == expected_hash(row['narHash'])
++                and type(item.get('references')) is list
++                and len(item['references']) == len(set(item['references']))
++                and sorted(item['references']) == sorted(row['references']),
++                'destination-registration-content')
++
++PROBE = r'''set -eu
++test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64
++test "$(id -un)" = jsullivan2
++omux_nix=$(readlink -f /nix/var/nix/profiles/default/bin/nix)
++case "$omux_nix" in /nix/store/*/bin/nix) ;; *) exit 3 ;; esac
++test -x "$omux_nix" && test ! -L "$omux_nix"
++printf 'nix=%s\n' "$omux_nix"
++printf 'uid=%s\n' "$(id -u)"
++df -Pk /nix/store | awk 'NR==2 {print "availableKiB=" $4}'
++'''
++
++def qualify_ssh(path, expected, deadline):
++    fence(deadline)
++    require(path.startswith('/nix/store/'), 'local-ssh-authority-path')
++    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
++    try:
++        before = os.fstat(descriptor)
++        require(stat.S_ISREG(before.st_mode) and before.st_uid == 0
++                and not before.st_mode & 0o222 and before.st_mode & 0o111
++                and 0 < before.st_size <= 64 * 1024**2, 'local-ssh-authority-custody')
++        digest = hashlib.sha256()
++        count = 0
++        while True:
++            fence(deadline)
++            data = os.read(descriptor, 65536)
++            if not data:
++                break
++            count += len(data)
++            require(count <= before.st_size, 'local-ssh-size-changed')
++            digest.update(data)
++        fields = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mode,
++                               info.st_uid, info.st_mtime_ns, info.st_ctime_ns)
++        require(count == before.st_size and fields(before) == fields(os.fstat(descriptor))
++                == fields(os.lstat(path)), 'local-ssh-authority-changed')
++        require(digest.hexdigest() == expected, 'local-ssh-executable-digest')
++        fence(deadline)
++    finally:
++        os.close(descriptor)
++
++class Backend:
++    def __init__(self, ssh, options, deadline, authority):
++        self.ssh, self.options, self.deadline = ssh, options, deadline
++        self.authority = authority
++        require(set(authority) == {'schemaVersion', 'hostAlias', 'sshPath', 'sshSha256',
++                                  'remoteNixPath', 'remoteNixSha256'}
++                and authority['schemaVersion'] == 1 and authority['hostAlias'] == HOST
++                and authority['sshPath'] == ssh and STORE.fullmatch(authority['remoteNixPath'])
++                and all(re.fullmatch(r'[a-f0-9]{64}', authority[key])
++                        for key in ('sshSha256', 'remoteNixSha256')),
++                'independent-executable-authority-schema')
++        qualify_ssh(ssh, authority['sshSha256'], deadline)
++        fence(deadline)
++        self.env = {key: value for key, value in os.environ.items()
++                    if key in ('HOME', 'SSH_AUTH_SOCK')}
++
++    def call(self, script, bound=2 * 1024 * 1024):
++        remaining = self.deadline - time.monotonic() - RESERVE
++        require(remaining > 0, 'shared-deadline-exhausted')
++        status, output, error = owned_io([self.ssh, *self.options, *SSH_OPTIONS,
++                                        HOST, script], self.env,
++                                       min(self.deadline, time.monotonic() + remaining), bound)
++        if status:
++            raise GateError(category(error))
++        return output
++
++    def nix_call(self, arguments, bound=2 * 1024 * 1024):
++        path = shlex.quote(self.authority['remoteNixPath'])
++        sha = self.authority['remoteNixSha256']
++        return self.call('set -eu; test -f ' + path + ' && test ! -L ' + path
++            + '; test "$(/usr/bin/sha256sum ' + path + ' | /usr/bin/cut -d " " -f 1)" = '
++            + shlex.quote(sha) + '; exec ' + path + ' ' + arguments, bound)
++
++    def inspect(self):
++        output = self.call(PROBE, 4096).decode('ascii').splitlines()
++        require(len(output) == 3, 'destination-probe-schema')
++        fields = {}
++        for line in output:
++            key, value = line.split('=', 1)
++            require(key not in fields, 'duplicate-destination-field')
++            fields[key] = value
++        require(set(fields) == {'nix', 'uid', 'availableKiB'}
++                and STORE.fullmatch(fields['nix'])
++                and re.fullmatch(r'[0-9]{1,12}', fields['uid'])
++                and re.fullmatch(r'[0-9]{1,18}', fields['availableKiB']),
++                'destination-probe-schema')
++        require(fields['nix'] == self.authority['remoteNixPath'], 'remote-nix-selection-differs')
++        self.nix = fields['nix']
++        info = strict_json(self.nix_call(
++            '--extra-experimental-features nix-command store info --json --store daemon', 8192))
++        require(type(info) is dict and type(info.get('trusted')) is bool,
++                'destination-daemon-trust-schema')
++        return {'hostAlias': HOST, 'system': 'x86_64-linux',
++                'authentication': 'existing-SSH-strict-host-key',
++                'remoteNix': self.nix, 'uid': int(fields['uid']),
++                'availableBytes': int(fields['availableKiB']) * 1024,
++                'daemonClientTrusted': info['trusted']}
++
++    def verify(self, rows):
++        names = ' '.join(shlex.quote(row['path']) for row in rows)
++        actual = strict_json(self.nix_call(
++            '--extra-experimental-features nix-command path-info --offline --json ' + names))
++        registry(actual, rows)
++        # Rehash actual destination bytes, rather than trusting its registry.
++        for row in rows:
++            output = self.nix_call(
++                '--extra-experimental-features nix-command hash path --type sha256 --sri '
++                + shlex.quote(row['path']), 4096).decode('ascii').strip()
++            require(expected_hash(output) == expected_hash(row['narHash']),
++                    'destination-nar-content-mismatch')
++
++def read_public(path, maximum, deadline):
++    fence(deadline)
++    resolved = Path(path).resolve(strict=True)
++    descriptor = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
++    try:
++        before = os.fstat(descriptor)
++        require(stat.S_ISREG(before.st_mode) and before.st_uid in (0, os.getuid())
++                and not before.st_mode & 0o022 and 0 < before.st_size <= maximum,
++                'public-input-custody')
++        pieces = bytearray()
++        while True:
++            fence(deadline)
++            data = os.read(descriptor, min(65536, maximum + 1 - len(pieces)))
++            if not data:
++                break
++            pieces.extend(data)
++            require(len(pieces) <= maximum, 'public-input-bound')
++        fields = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
++        require(fields(before) == fields(os.fstat(descriptor)) == fields(os.lstat(resolved)),
++                'public-input-changed')
++        return bytes(pieces)
++    finally:
++        os.close(descriptor)
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--ssh', required=True)
++    parser.add_argument('--inventory', required=True)
++    parser.add_argument('--receipt', required=True)
++    parser.add_argument('--mode', choices=('inspect', 'verify', 'copy'), required=True)
++    parser.add_argument('--authority', required=True)
++    args = parser.parse_args()
++    deadline_text = os.environ.get('OMUX_YOGA_DELIVERY_DEADLINE_NS', '')
++    authority_sha256 = os.environ.get('OMUX_YOGA_DELIVERY_AUTHORITY_SHA256', '')
++    require(re.fullmatch(r'[0-9]{1,20}', deadline_text), 'guard-deadline-envelope-required')
++    deadline = int(deadline_text) / 10**9
++    require(RESERVE < deadline - time.monotonic() <= 1200, 'deadline-bound')
++    authority_data = read_public(args.authority, 8192, deadline)
++    require(re.fullmatch(r'[a-f0-9]{64}', authority_sha256)
++            and hashlib.sha256(authority_data).hexdigest() == authority_sha256,
++            'independent-authority-digest')
++    authority = strict_json(authority_data)
++    rows = selected(read_public(args.inventory, 8 * 1024**2, deadline),
++                    read_public(args.receipt, 8 * 1024**2, deadline))
++    require(args.mode != 'copy', 'copy-held-owned-destination-containment-and-store-access')
++    result = {'schemaVersion': 1, 'scope': 'yoga-controller-destination-readonly-v1',
++              'inventorySha256': INVENTORY_SHA, 'sourceReceiptSha256': RECEIPT_SHA,
++              'mode': args.mode, 'passed': False, 'remoteCleanup': 'unknown',
++              'remoteOwnedContainmentVerified': False, 'copyPerformed': False,
++              'destinationRegistrationVerified': False, 'destinationContentRehashed': False,
++              'offlineGraphVerified': False, 'wrapperExecutionAuthority': False}
++    try:
++        with operator_config() as options:
++            backend = Backend(str(Path(args.ssh).resolve(strict=True)), options, deadline, authority)
++            result['destination'] = backend.inspect()
++            if args.mode == 'verify':
++                backend.verify(rows)
++                result['destinationRegistrationVerified'] = True
++                result['destinationContentRehashed'] = True
++        fence(deadline)
++        result['narByteCountAuthority'] = 'registration size only; destination content independently SHA256-rehashed'
++        result['passed'] = True
++    except (ValueError, OSError, UnicodeError, KeyError) as error:
++        result['gate'] = str(error) if isinstance(error, GateError) else 'destination-input-or-operation-unavailable'
++    print(json.dumps(result, sort_keys=True))
++    return 0 if result['passed'] else 2
++
++if __name__ == '__main__':
++    raise SystemExit(main())
+diff --git a/tools/yoga_controller_delivery_test.py b/tools/yoga_controller_delivery_test.py
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_controller_delivery_test.py
+@@ -0,0 +1,112 @@
++import json
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch, Mock
++import yoga_controller_delivery as delivery
++
++class DeliveryTests(unittest.TestCase):
++    def test_setup_failure_unwinds_owned_child(self):
++        child = Mock(pid=321, returncode=0)
++        with patch.object(delivery.subprocess, 'Popen', return_value=child), \
++                patch.object(delivery.os, 'getpgid', return_value=321), \
++                patch.object(delivery.os, 'killpg') as kill, \
++                patch.object(delivery.selectors, 'DefaultSelector', side_effect=RuntimeError('setup')), \
++                patch.object(delivery.time, 'monotonic', return_value=0):
++            with self.assertRaisesRegex(RuntimeError, 'setup'):
++                delivery.owned_io(['fixed'], {}, 20, 10)
++            kill.assert_called_once_with(321, delivery.signal.SIGKILL)
++            child.wait.assert_called_once()
++            child.stdout.close.assert_called_once()
++            child.stderr.close.assert_called_once()
++            child.poll.assert_not_called()
++
++    def test_exit_observed_unreaped_until_signal_then_wait(self):
++        order = []
++        child = Mock(pid=321, returncode=0)
++        child.wait.side_effect = lambda **kwargs: order.append('reap')
++        selector = Mock()
++        selector.get_map.return_value = {}
++        with patch.object(delivery.subprocess, 'Popen', return_value=child), \
++                patch.object(delivery.os, 'getpgid', return_value=321), \
++                patch.object(delivery.os, 'waitid', return_value=object()) as observe, \
++                patch.object(delivery.os, 'killpg', side_effect=lambda *args: order.append('signal')), \
++                patch.object(delivery.selectors, 'DefaultSelector', return_value=selector), \
++                patch.object(delivery.time, 'monotonic', return_value=0):
++            delivery.owned_io(['fixed'], {}, 20, 10)
++            self.assertEqual(order, ['signal', 'reap'])
++            self.assertTrue(observe.call_args.args[2] & delivery.os.WNOWAIT)
++            child.poll.assert_not_called()
++            selector.close.assert_called_once()
++
++    def test_authority_refused_before_ssh_spawn(self):
++        authority = {'schemaVersion': 1, 'hostAlias': 'yoga',
++                     'sshPath': '/nix/store/fixed/bin/ssh', 'sshSha256': '0'*64,
++                     'remoteNixPath': '/nix/store/' + 'a'*32 + '-nix/bin/nix',
++                     'remoteNixSha256': '1'*64}
++        with patch.object(delivery, 'qualify_ssh', side_effect=ValueError('digest')), \
++                patch.object(delivery.subprocess, 'Popen') as spawn:
++            with self.assertRaisesRegex(ValueError, 'digest'):
++                delivery.Backend(authority['sshPath'], [], 20, authority)
++            spawn.assert_not_called()
++
++    def test_local_digest_deadline_precedes_open(self):
++        with patch.object(delivery.time, 'monotonic', return_value=20), \
++                patch.object(delivery.os, 'open') as opened:
++            with self.assertRaisesRegex(ValueError, 'deadline'):
++                delivery.qualify_ssh('/nix/store/fixed/bin/ssh', '0'*64, 20)
++            opened.assert_not_called()
++
++    def test_local_digest_rejects_owner_writable_and_closes(self):
++        info = SimpleNamespace(st_mode=delivery.stat.S_IFREG | 0o755,
++                               st_uid=0, st_size=1)
++        with patch.object(delivery.time, 'monotonic', return_value=0), \
++                patch.object(delivery.os, 'open', return_value=7), \
++                patch.object(delivery.os, 'fstat', return_value=info), \
++                patch.object(delivery.os, 'close') as closed:
++            with self.assertRaisesRegex(ValueError, 'custody'):
++                delivery.qualify_ssh('/nix/store/fixed/bin/ssh', '0'*64, 20)
++            closed.assert_called_once_with(7)
++
++    def test_final_fence_rejects_exhaustion(self):
++        with patch.object(delivery.time, 'monotonic', return_value=20):
++            with self.assertRaisesRegex(ValueError, 'deadline'):
++                delivery.fence(20)
++
++    def test_duplicate_json_fields_refused(self):
++        with self.assertRaisesRegex(ValueError, 'duplicate-json'):
++            delivery.strict_json(b'{"trusted":true,"trusted":false}')
++
++    def test_exact_graph_admission(self):
++        self.assertEqual(delivery.admission(['test', delivery.LABEL]), {'PrivateNetwork': 'no'})
++        for arguments in (['run', delivery.LABEL], ['test', '//...'],
++                          ['test', delivery.LABEL, '//:docs_check']):
++            with self.assertRaises(ValueError):
++                delivery.admission(arguments)
++
++    def test_registry_is_not_content_proof(self):
++        row = {'path': '/nix/store/' + 'a'*32 + '-input', 'narSize': 1,
++               'narHash': 'sha256:' + '0'*64, 'references': []}
++        backend = delivery.Backend.__new__(delivery.Backend)
++        backend.nix = '/nix/store/' + 'b'*32 + '-nix/bin/nix'
++        with patch.object(backend, 'nix_call', side_effect=[json.dumps({row['path']: row}).encode(),
++                ('sha256:' + '1'*64).encode()]):
++            with self.assertRaisesRegex(ValueError, 'content-mismatch'):
++                backend.verify([row])
++
++    def test_schema_rejects_duplicate_fields(self):
++        backend = delivery.Backend.__new__(delivery.Backend)
++        with patch.object(backend, 'call', return_value=b'uid=1000\nuid=1000\navailableKiB=5\n'):
++            with self.assertRaisesRegex(ValueError, 'duplicate'):
++                backend.inspect()
++
++    def test_shared_deadline_does_not_reset(self):
++        backend = delivery.Backend.__new__(delivery.Backend)
++        backend.deadline = 50
++        with patch.object(delivery.time, 'monotonic', return_value=21), \
++                patch.object(delivery, 'owned_io') as bounded:
++            with self.assertRaisesRegex(ValueError, 'deadline'):
++                backend.call('fixed-read-only-command')
++            bounded.assert_not_called()
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tools/BUILD.bazel b/tools/BUILD.bazel
+--- a/tools/BUILD.bazel
++++ b/tools/BUILD.bazel
+@@ -690,1 +690,19 @@
++python_test(
++    name = "yoga_controller_delivery_test",
++    main = "yoga_controller_delivery_test.py",
++    srcs = ["yoga_controller_delivery.py", "verify_cached_nars.py",
++            "host_closure_transfer.py", "ssh_policy.py"],
++)
++
++host_python_binary(
++    name = "yoga_controller_delivery",
++    main = "yoga_controller_delivery.py",
++    srcs = ["verify_cached_nars.py", "host_closure_transfer.py", "ssh_policy.py"],
++    data = ["@omux_host//:ssh", "@omux_yoga_controller_nars//:inventory.json"],
++    args = ["--ssh", "$(location @omux_host//:ssh)",
++            "--inventory", "$(location @omux_yoga_controller_nars//:inventory.json)"],
++    tags = ["manual"],
++    target_compatible_with = ["@platforms//os:linux"],
++)
++
+ python_test(
+# Integration prerequisites before actual invocation:
+# - Freeze the exact raw d631 receipt as declared public Bazel input; --receipt is
+#   digest-fixed, but current graph target intentionally lacks that data binding.
+# - Wire finite guard run admission for this manual binary (helper admission test
+#   models test syntax and must be reconciled with chosen guard run syntax).
+# - Guard must bind its private deadline envelope to its original deadline and
+#   authority digest to separately reviewed public data; caller-selected hashes do
+#   not independently grant executable authority. Backend never resets deadline.
+# - Public inputs now bounded nofollow/stable regular reads; declared alias resolution
+#   remains restricted by the independently bound graph data paths at guard admission.
+# - Select existing HOME lock, fixed separate Yoga transfer state and original caps.
+# - Permit only reviewed operator SSH policy/auth access; retain daemon masks.
+# - Supply independently approved exact local SSH and remote Nix paths/digests;
+#   remote Nix is hashed before every execution. Authenticated host OS bootstrap
+#   (/bin/sh, /usr/bin/sha256sum/cut, uname/id/readlink/df/awk) remains the explicitly
+#   trusted peer base, not NAR-qualified controller executable authority.
+# - Verify existing remote read-only exec containment or honestly retain unknown
+#   cleanup: bounded caller kill does not establish remote descendant disposition.
+# - No per-path realization, GC, signature/trusted-user changes or source transfers.
+# This backend is executable inspect/verify source, not proof that it has run.
+diff --git a/tools/yoga_delivery_inputs.bzl b/tools/yoga_delivery_inputs.bzl
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_delivery_inputs.bzl
+@@ -0,0 +1,12 @@
++"""Fixed public terminal receipt; consumer additionally verifies exact SHA256."""
++def _inputs(ctx):
++    receipt = ctx.path('/home/jess/.local/state/omux-execution-20261005/d6311994-5212-4034-ac93-49b06405db88/receipt.json')
++    if not receipt.exists:
++        fail('fixed d631 terminal receipt unavailable')
++    ctx.symlink(receipt, 'd631-receipt.json')
++    ctx.file('BUILD.bazel', 'exports_files(["d631-receipt.json"], visibility=["//visibility:public"])\n')
++
++yoga_delivery_inputs = repository_rule(
++    implementation = _inputs,
++    local = True,
++)
+diff --git a/MODULE.bazel b/MODULE.bazel
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -113,1 +113,4 @@
+ )
++
++yoga_delivery_inputs = use_repo_rule("//tools:yoga_delivery_inputs.bzl", "yoga_delivery_inputs")
++yoga_delivery_inputs(name = "omux_yoga_delivery_inputs")
+diff --git a/tools/guard_yoga_delivery_profile.py b/tools/guard_yoga_delivery_profile.py
+new file mode 100644
+--- /dev/null
++++ b/tools/guard_yoga_delivery_profile.py
+@@ -0,0 +1,30 @@
++"""Finite destination-readonly admission; does not admit copy or store mutation."""
++from pathlib import Path
++
++PROFILE = 'yoga-controller-delivery'
++STATE = Path('/home/jess/.local/state/omux-yoga-delivery-20261006')
++COORDINATION = Path('/home/jess/.local/state/omux-execution-20261005')
++LABELS = frozenset(('//tools:yoga_controller_inspect', '//tools:yoga_controller_verify'))
++SSH = '/nix/store/aq5s91svywqgs5l9zyhp1wcjqvnfa0ss-openssh-with-gssapi-10.2p1/bin/ssh'
++
++def selected(arguments, *, site=False, pack=False, recovery=False):
++    if (len(arguments) != 2 or arguments[0] != 'run' or arguments[1] not in LABELS
++            or site or pack or recovery):
++        raise ValueError('exact provider-free Yoga inspect/verify target required')
++    return {'PrivateNetwork': 'no'}
++
++def coordination(selected_root, state_root, arguments):
++    selected(arguments)
++    if Path(state_root) != STATE or selected_root is None or Path(selected_root) != COORDINATION:
++        raise ValueError('fixed Yoga delivery state and existing HOME lock required')
++    return COORDINATION
++
++def envelope(deadline_ns, authority_sha256, approved_sha256):
++    # Only guard-owned selection may call this. User CLI cannot approve its own
++    # hash. approved_sha256 must come from separately reviewed frozen graph data.
++    import time
++    if (type(deadline_ns) is not int or not 30 * 10**9 < deadline_ns - time.monotonic_ns() <= 1200 * 10**9
++            or approved_sha256 is None or authority_sha256 != approved_sha256):
++        raise ValueError('independent authority and enclosing deadline required')
++    return {'OMUX_YOGA_DELIVERY_DEADLINE_NS': str(deadline_ns),
++            'OMUX_YOGA_DELIVERY_AUTHORITY_SHA256': approved_sha256}
+# Concrete root integration joins (held until independent destination tuple exists):
+# 1. guard_dependency_profile.selected_profile delegates PROFILE to selected();
+#    validate_coordination delegates to coordination(). execution_guard CLI accepts
+#    only PROFILE; blocked_paths retains the daemon mask for this readonly lane.
+# 2. Under the already-held HOME lock, guard snapshots an original absolute deadline
+#    before bootstrap, validates approved public authority, publishes envelope() vars,
+#    and supplies them via --run_env. No new target-specific timeout is permitted.
+# 3. Replace manual generic target with fixed yoga_controller_inspect/verify binaries,
+#    fixed --mode; add @omux_yoga_delivery_inputs//:d631-receipt.json data and --receipt.
+#    Backend main reads deadline/authority digest ONLY from guard-generated envelope;
+#    no caller flags may replace these. Authority JSON is separately declared data.
+# 4. Local SSH path is independently identified by pinned native/bootstrap manifests:
+#    aq5s91... openssh-with-gssapi-10.2p1. A declared digest producer must freeze its
+#    executable hash from those already d631-qualified bytes; no hash invented here.
+# 5. Exact missing destination fact: Lab Yoga HM declares nix.package=pkgs.nix but
+#    has no retained installed Yoga Nix store/bin/nix path + executable SHA witness
+#    tied to a specific deployed Lab flake/HM generation. /profiles/default is mutable.
+#    No current remote path/hash can be derived merely from that source declaration.
+#    Obtain a public generation-bound operator receipt or independently approved
+#    deployment manifest; do not use an inspect output to self-approve its executable.
+# 6. Until #5 and guard integration are complete, existing target is not admitted.
+#    Copy remains held even after readonly admission, pending destination ownership,
+#    aggregate limits, scoped store mutation and terminal descendant evidence.
+diff --git a/tools/guard_dependency_profile.py b/tools/guard_dependency_profile.py
+--- a/tools/guard_dependency_profile.py
++++ b/tools/guard_dependency_profile.py
+@@ -59,3 +59,7 @@
+ def selected_profile(profile, arguments, site_inputs=False, pack_input=False, recovery_input=False):
++    if profile == 'yoga-controller-delivery':
++        from guard_yoga_delivery_profile import selected
++        return selected(arguments, site=site_inputs, pack=pack_input,
++                        recovery=recovery_input)
+     if profile not in ('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'yoga-toolbar'):
+         raise ValueError('unknown execution profile')
+@@ -89,2 +93,5 @@
+ def validate_coordination(profile, selected, state_root, *, arguments=None):
+     state_root = Path(state_root)
++    if profile == 'yoga-controller-delivery':
++        from guard_yoga_delivery_profile import coordination
++        return coordination(selected, state_root, arguments)

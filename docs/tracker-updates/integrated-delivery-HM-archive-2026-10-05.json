@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "kind": "explicit_dirty_development_Home_Manager_archive_verification",
+  "authority": "AGENTS.md; user-resumed integrated sprint; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-05 21:19:25 UTC",
+  "epoch": "b222d7fd-731d-4d3f-b65d-3917e1d66266",
+  "graph_sha256": "77535ad2eee23522700fe236122224db7450016dad0667f65c52463a5f52b51b",
+  "exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "test_evidence_sha256": "3177ea5e41cb176ba32830583857bbf213600e685a27af4428fd87ac0c068da2",
+  "test_evidence": [
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 338,
+          "file": "1740132a128fd5eacec1eeb752a816e2625eae1f8e254122602b063e1fa6e979.evidence",
+          "sha256": "a701ba437ef96beeb9d82078ec24d49a95bc4c5dc7ba03ba7bb6aabf487d667d",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 723,
+          "file": "597f8ac2becbe9746149054bc5d77bc5ff234a08e8993e2c10025b93a580f63b.evidence",
+          "sha256": "c5583a2ed94d2f592739100a12c4c38a40f074c1d7d7a116b4fd4a914daeb69b",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//delivery:delivery_test"
+    },
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 550,
+          "file": "4add1a77f994b5740c0b400901753491aff0828c8de42e731ebc628efbbab9d1.evidence",
+          "sha256": "66d86fbb2054d69005edbc11fd23152f1632c934595fb8775abe2eeb5dd9ab2f",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 987,
+          "file": "f0d1995c1e8a32c45e10b1469d00556ab509978ad36f06fc720dd9f09a3b5ec3.evidence",
+          "sha256": "bbf9e94823fb006352a620de5b3866761ca8b31b41c98e15c6dd62d683f0ad21",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//delivery:development_home_manager_archive_verify"
+    },
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 306,
+          "file": "b8305aa6eb91b8ab8a0e5a09ad6d416004ba2f917e56aa8f9deb014a463fdc5f.evidence",
+          "sha256": "164df1ef73f06900a75a32936fdd9e4072de38e0ce45135f259da375d9c5bd5e",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 715,
+          "file": "e9d44385657ab24b752ecfe9adc2be932068f6979eac40f645e820c2c7da22e7.evidence",
+          "sha256": "f01f63df8687eab3f3a755e6803a6ae46e767a2c5d98504590de7260ec23ab8b",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//delivery:yoga_toolbar_consent_test"
+    },
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 291,
+          "file": "790c3bbed4db9f463a1f3c04850cd933e307b824b5414444e953cc2bdc29cb3e.evidence",
+          "sha256": "6f45bffdd87e25e73c3aa33983ccb7eb41c7306be18151314c723388c809ed4f",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 698,
+          "file": "3ddd72bc24c38289cba0f39e439f7a4a9f523074feb189c05c035d3cc66a0a21.evidence",
+          "sha256": "5dc8c52119cada9f6c330383c78a701d8f3aad26c636ae01ac6121d9c251a1cb",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//tools:codex_dependency_union_test"
+    }
+  ],
+  "archive": {
+    "product": {
+      "status": "experimental",
+      "version": "0.2.0-dev"
+    },
+    "target": "x86_64-linux",
+    "distribution": "portable-linux",
+    "provenance": {
+      "sourceDirty": true,
+      "sourceRevision": "f5f83c1ad99c2920de6759791b327a99a02a2ec5"
+    },
+    "archiveSha256": "937936f3011ac4177bfa38ef808223103d6b72768a1d922e1c8982c7981fcc1c",
+    "archiveBytes": 59315087,
+    "artifactCount": 138
+  },
+  "archive_path": "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/development_home_manager_archive.tar.gz",
+  "provenance_qualification": "Caller-declared base revision and dirty source faithfully rendered; no independently established clean source correspondence",
+  "passing_predicates": {
+    "packaging_methods": 71,
+    "yoga_operator_boundary_methods": 27,
+    "dependency_union_methods": 13
+  },
+  "browser_toolbar_consent_proved": false,
+  "Home_Manager_evaluation_proved": false,
+  "fleet_activation_proved": false,
+  "signing_publication": false,
+  "native_continuity": false,
+  "scope": "Separate actual full Linux/Qt development archive; existing alias/default bytes and historical metadata preserved",
+  "retained_artifact": {
+    "recorded_at": "2026-10-05T21:56:29Z",
+    "epoch": "b3bb16ac-726d-4505-bae9-6b2d23a69173",
+    "targets": [
+      "//tools:home_manager_artifact_test",
+      "//tools:home_manager_artifact_producer"
+    ],
+    "exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "graph_sha256": "38584af4586176aa7ac252bc16f000f148d2d7a1836d5937fe83cb659db31f90",
+    "test_evidence_sha256": "050c997bca0a3b25fc503b4045ebad0f87135722845b64c32483fbf50b080f11",
+    "artifact_root": "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/home_manager_artifact_producer/test.outputs/home-manager-artifact/artifact",
+    "receipt_path": "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/home_manager_artifact_producer/test.outputs/home-manager-artifact/receipt.json",
+    "coordinator_frozen_receipt_sha256": "aa9c9f0c5808da597294b04d59f1e7111567145e1c3f2790fff07c5e670e2ae8",
+    "producer_report": {
+      "activationPerformed": false,
+      "archiveSha256": "937936f3011ac4177bfa38ef808223103d6b72768a1d922e1c8982c7981fcc1c",
+      "executionAuthority": false,
+      "narHash": "sha256-/26p+DxGzgVYvB786/qezWrTb5CkJW6ApNuLE/BNSJA=",
+      "narSize": 158872216,
+      "receiptSha256": "aa9c9f0c5808da597294b04d59f1e7111567145e1c3f2790fff07c5e670e2ae8",
+      "sourceQualification": "caller-declared-dirty-development"
+    },
+    "logical_receipt": {
+      "archiveBytes": 59315087,
+      "archiveSha256": "937936f3011ac4177bfa38ef808223103d6b72768a1d922e1c8982c7981fcc1c",
+      "channel": "development",
+      "fullQt": true,
+      "kind": "omux-home-manager-development-artifact",
+      "manifestSha256": "144e8993c9604d9852cbd50a5d6eb9a0a2b1bff8591ebc81ca8b759adfd12b1d",
+      "narHash": "sha256-/26p+DxGzgVYvB786/qezWrTb5CkJW6ApNuLE/BNSJA=",
+      "narSize": 158872216,
+      "nativeBins": [
+        "bin/omux",
+        "bin/omuxd",
+        "bin/omux-native-host",
+        "bin/omux-control"
+      ],
+      "schemaVersion": 1,
+      "sourceDirty": true,
+      "sourceQualification": "caller-declared-dirty-development",
+      "sourceRevision": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+      "system": "x86_64-linux"
+    },
+    "artifact_methods_passed": 24,
+    "consumer_methods_passed": 17,
+    "consumer_method_epoch": "e006d56c-36c8-44af-b71e-a2040132ef53",
+    "actual_evaluation": false,
+    "activation": false,
+    "compiled_source_binding_proved": false
+  }
+}

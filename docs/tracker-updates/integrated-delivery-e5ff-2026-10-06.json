@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_actor_and_direct_executable_result",
+  "authority": "User-ratified Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "e5ff2883-a118-45da-ac61-e24a473590c1",
+  "original_handle": 49119,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/e5ff2883-a118-45da-ac61-e24a473590c1/receipt.json",
+  "raw_receipt_sha256": "f101593e95b824ada13be6cdaddf64098bdb854b9760aed99db0c1106207b435",
+  "graph_sha256": "069fc7582ccde0fb21a3b329528b314a8eacbc92798babe25fa30b8a78f0cf28",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {"ownership": "unproved", "readback_attempts": 0, "state": "empty", "stop": "not-requested"},
+  "test_evidence": {"bytes": 261998, "files": 13, "manifest": "test-evidence.json", "sha256": "07f0f2273f4c252ad164e40485e92119d41e969144e7430f891ef62f44da8cc3", "state": "preserved"},
+  "passed_targets": ["//:measured_runtime_actor_test", "//delivery:codex_direct_exec_test", "//:docs_check", "//:format_test", "//tools:runtime_source_receipt"],
+  "scope": "Four actor install/commit/restart/refusal/removal/capacity cases and eleven direct ELF relocation/identity cases pass. Optional OOM and installed native resume still require their own execution. Measured bytes establish neither usable authority nor backend exec incarnation/source provenance.",
+  "new_parent_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false,
+  "elapsed_seconds": 299.600
+}

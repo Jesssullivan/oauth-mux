@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_corrective_semantic_result",
+  "authority": "User-ratified Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "77f7a23d-c983-4fb5-a4a6-b7b0f1316bae",
+  "original_handle": 91360,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/77f7a23d-c983-4fb5-a4a6-b7b0f1316bae/receipt.json",
+  "raw_receipt_sha256": "ac0f9a518866fe08d9573a0a4012902217c8f0e4febe91041c716c3740b4d94a",
+  "graph_sha256": "82c008dd56d5e4a95eec1e20d04878a04c5729026d75ae3b836dca8d3d6e3ee7",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 267214,
+    "files": 19,
+    "manifest": "test-evidence.json",
+    "sha256": "00f883e558945ddf1281c1908240def38a8867ba5dcea3cd4a278d30e33f194f",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//:runtime_selection_producer_test",
+    "//tools:home_manager_acquisition_test",
+    "//tools:yoga_delivery_settings_test",
+    "//tools:execution_guard_test",
+    "//:docs_check",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_tests": [
+    {
+      "target": "//delivery:codex_direct_exec_test",
+      "ran": 11,
+      "errors": 8,
+      "passed": 3,
+      "error": "Tool rejects declared patchelf wrapper as non-ELF; requires declared underlying ELF"
+    }
+  ],
+  "scope": "Measured installed-byte pure tests compile and pass; acquisition fixture88 pass; guard/raw-vs-canonical correction pass. Actor worker, OOM isolation and installed resume not established.",
+  "new_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false,
+  "next": "Apply reviewed actor coverage and underlying patchelf declaration; measured/OOM actor gates then exact installed and Yoga qualification"
+}

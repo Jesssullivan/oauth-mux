@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "native_snapshot_restart_regression",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "dc4fd5b8-eafe-4d0c-ad4d-fbc5bdc48e0b",
+  "original_handle": 93352,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/dc4fd5b8-eafe-4d0c-ad4d-fbc5bdc48e0b/receipt.json",
+  "raw_receipt_sha256": "84b62bb28f8f8e8120da04d157637a09c7bdcc9fde19b14f263c066d8e822ff7",
+  "graph_sha256": "7364a12afc36c4948bca49acdd311bdf4c58eba944038be6d2f8191264df50ab",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 265554,
+    "files": 9,
+    "manifest": "test-evidence.json",
+    "sha256": "6b3f6176dcdf94ee87657514e6a8552dc42a4c6994dcb98adbcb9e30f3752dfa",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//:snapshot_restart_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "scope": "Complete existing snapshot-restart regression, docs and declared source capture on the pre-selector/refined-observer graph. No installed native resume, actual Yoga qualification or Home Manager evaluation claim.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

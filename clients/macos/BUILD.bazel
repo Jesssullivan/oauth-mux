@@ -1,0 +1,54 @@
+load("//tools:swift_rules.bzl", "omux_macos_application", "omux_macos_archive", "omux_swift_program")
+load("//tools:rules.bzl", "python_test")
+
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "public_sources", srcs = glob(["*.swift", "*.bazel", "*.plist"], allow_empty = True))
+exports_files(["Info.plist", "ai.xoxd.omux.daemon.plist"])
+
+omux_swift_program(
+    name = "control",
+    srcs = ["ControlWindow.swift", "DaemonConnection.swift", "DaemonStore.swift", "JSONValue.swift", "OmuxApp.swift", "RuntimePaths.swift"],
+    target_compatible_with = ["@platforms//os:macos"],
+    exec_compatible_with = ["@platforms//os:macos"],
+)
+
+omux_macos_application(
+    name = "Omux",
+    binary = ":control",
+    cli = "//:omux",
+    daemon = "//:omuxd",
+    info_plist = "Info.plist",
+    agent_plist = "ai.xoxd.omux.daemon.plist",
+    product = "//:src/product.zig",
+    target_compatible_with = ["@platforms//os:macos"],
+    exec_compatible_with = ["@platforms//os:macos"],
+)
+
+omux_macos_archive(
+    name = "archive",
+    app = ":Omux",
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+filegroup(
+    name = "resources",
+    srcs = ["Info.plist", "ai.xoxd.omux.daemon.plist"],
+)
+
+python_test(
+    name = "bundle_test",
+    main = "//tools:macos_bundle_test.py",
+    srcs = ["//tools:macos_bundle.py", "//tools:macho.py"],
+    data = [":Info.plist", ":ai.xoxd.omux.daemon.plist", "//:src/product.zig"],
+    args = [
+        "$(location :Info.plist)",
+        "$(location :ai.xoxd.omux.daemon.plist)",
+        "$(location //:src/product.zig)",
+    ],
+)
+
+python_test(
+    name = "macho_test",
+    main = "//tools:macho_test.py",
+    srcs = ["//tools:macho.py"],
+)

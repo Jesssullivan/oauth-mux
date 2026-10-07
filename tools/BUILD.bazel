@@ -1,0 +1,1377 @@
+load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
+load("@rules_zig//zig/translate-c:toolchain.bzl", "translate_c_toolchain")
+load(":zig_tools.bzl", "zig_format", "zig_format_test")
+load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
+load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
+load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA256")
+load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
+
+_CODEX_SDK_SOURCES = [
+    "codex_sdk_profile.py", "codex_fresh_source.py", "codex_recovery_delta.py",
+    "fetch_codex_archives.py", "restore_pristine_inputs.py",
+    "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py",
+    "//integrations/codex-upstream:restore_source.py", "//integrations/codex-adapter-delivery:retirement_delta.py",
+]
+
+_CODEX_GIT_INPUT_SOURCES = _CODEX_SDK_SOURCES + [
+    "codex_git_inputs.py", "codex_sdk_dependencies.py", "codex_dependency_cache.py",
+    "codex_dependency_bundle.py", "codex_dependency_union.py", "codex_repository_inputs.py",
+]
+
+_YOGA_DELIVERY_GUARD_SOURCES = ['guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
+                                'yoga_executable_qualification.py']
+
+_YOGA_GUARD_SOURCES = [
+    "guard_yoga_profile.py", "yoga_display_binding.py", "yoga_proof_inputs.py",
+    "yoga_operator_coordinator.py", "yoga_operator_launch.py",
+    "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py",
+]
+
+filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch", "*.json", "*.zig", "*.h"], allow_empty = True), visibility = ["//visibility:public"])
+
+# Finite copy of the existing declared retained proof input; no execution claim.
+python_test(
+    name = "codex_owner_runtime_input_copy",
+    main = "codex_owner_runtime_input.py",
+    data = [
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-manifest.json",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+    ],
+    args = [
+        "--archive", "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "--manifest", "$(location //integrations/codex-owner-runtime:runtime-manifest.json)",
+        "--receipt", "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "codex_owner_runtime_input_test",
+    main = "codex_owner_runtime_input_test.py",
+    srcs = ["codex_owner_runtime_input.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# Explicit offline retained input qualification; does not execute Codex.
+python_test(
+    name = "codex_owner_runtime_input_qualification",
+    main = "guard_owner_runtime_input.py",
+    srcs = ["codex_owner_runtime_input.py"],
+    data = [
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-manifest.json",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+    ],
+    args = [
+        "--archive", "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "--manifest", "$(location //integrations/codex-owner-runtime:runtime-manifest.json)",
+        "--receipt", "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "guard_owner_runtime_input_test",
+    main = "guard_owner_runtime_input_test.py",
+    srcs = ["guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(name = "runtime_source_receipt_test", main = "runtime_source_receipt_test.py", srcs = ["runtime_source_receipt.py"])
+python_test(
+    name = "yoga_display_binding_test",
+    main = "yoga_display_binding_test.py",
+    srcs = ["yoga_display_binding.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "yoga_proof_inputs_test",
+    main = "yoga_proof_inputs_test.py",
+    srcs = ["yoga_proof_inputs.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "yoga_controller_inventory_test",
+    main = "yoga_controller_inventory_test.py",
+    srcs = ["yoga_controller_inventory.py", "cached_nix_inventory.py", "verify_cached_nars.py", "yoga_proof_inputs.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Registry and independently selected wrapper bytes only; NAR proof is separate.
+python_test(
+    name = "yoga_controller_inventory_producer",
+    main = "yoga_controller_inventory.py",
+    srcs = ["cached_nix_inventory.py", "verify_cached_nars.py", "yoga_proof_inputs.py"],
+    data = ["//:docs/agent-notes/2026-10-06-yoga-controller-selection.json"],
+    args = [
+        "--selection", "/srv/fast-local/jess/git/oauth-mux/docs/agent-notes/2026-10-06-yoga-controller-selection.json",
+        "--selection-sha256", "412e31cf22e52defe6970629892e262d8ac3c1918a2393a71519d529f2830835",
+        "--native-manifest", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/874b10cd-9155-4c60-9d13-314c889a2abf/output-base/external/+omux_nix_repository+omux_nix/native.json",
+        "--bootstrap-manifest", "/nix/store/r43fs1sxk8yrlnga45ww7d2nz855cv23-native.json",
+        "--dbus-session", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/874b10cd-9155-4c60-9d13-314c889a2abf/output-base/external/+omux_nix_repository+omux_nix/tool_wrappers/dbus_run_session",
+        "--dbus-daemon", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/874b10cd-9155-4c60-9d13-314c889a2abf/output-base/external/+omux_nix_repository+omux_nix/tool_wrappers/dbus_daemon",
+        "--keyring", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/874b10cd-9155-4c60-9d13-314c889a2abf/output-base/external/+omux_nix_repository+omux_nix/tool_wrappers/gnome_keyring_daemon",
+        "--seconds", "120",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "guard_yoga_profile_test",
+    main = "guard_yoga_profile_test.py",
+    srcs = _YOGA_GUARD_SOURCES + ["system_mask_policy.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "yoga_operator_launch_test",
+    main = "yoga_operator_launch_test.py",
+    srcs = ["yoga_operator_launch.py", "yoga_operator_coordinator.py",
+            "yoga_display_binding.py", "yoga_proof_inputs.py", "guard_yoga_profile.py", "system_mask_policy.py",
+            "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "yoga_operator_coordinator_test",
+    main = "yoga_operator_coordinator_test.py",
+    srcs = ["yoga_operator_coordinator.py", "yoga_display_binding.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_binary(
+    name = "yoga_session_qualification",
+    main = "yoga_session_qualification.py",
+    srcs = ["guard_yoga_profile.py", "system_mask_policy.py", "yoga_display_binding.py",
+            "yoga_proof_inputs.py", "yoga_operator_coordinator.py",
+            "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "yoga_session_qualification_test",
+    main = "yoga_session_qualification_test.py",
+    srcs = ["yoga_session_qualification.py", "guard_yoga_profile.py", "system_mask_policy.py",
+            "yoga_display_binding.py", "yoga_proof_inputs.py", "yoga_operator_coordinator.py",
+            "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "runtime_source_receipt",
+    main = "runtime_source_receipt.py",
+    data = ["//:BUILD.bazel"],
+    file_args = {"//:selected_runtime_source_inputs": "--file"},
+    args = ["--root-anchor", "$(location //:BUILD.bazel)",
+            "--parent-commit", "f5f83c1ad99c2920de6759791b327a99a02a2ec5", "--dirty", "true"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+)
+
+filegroup(
+    name = "file_args_fixture_inputs",
+    srcs = ["file-args-fixtures/first input.txt", "file-args-fixtures/second input.txt"],
+)
+python_test(
+    name = "file_args_test",
+    main = "file_args_test.py",
+    file_args = {":file_args_fixture_inputs": "--file"},
+    args = ["--expected-sha256", "64215131207ef1ba4adba1d1fa8c146bdcf0844221739e22a5e8a9c7092a4713",
+            "--expected-sha256", "8da9afde7b00ffedad38f8122c9e80470d43f6f95afd732f04756fdce3474cc7",
+            "--physical-selection", "/srv/omux-fixture/tools/file_args_test.py",
+            "--literal-json", "'{\"outer\":{\"name\":\"public fixture\",\"enabled\":true},\"items\":[1,2]}'"],
+)
+
+python_test(
+    name = "codex_sdk_settings_test",
+    main = "codex_sdk_settings_test.py",
+    srcs = ["codex_sdk_settings.py", "fetch_codex_archives.py", "qualify_site_tools.py",
+            "cached_nix_inventory.py", "verify_cached_nars.py"],
+)
+
+python_test(
+    name = "codex_sdk_settings_producer",
+    main = "codex_sdk_settings.py",
+    srcs = ["fetch_codex_archives.py", "qualify_site_tools.py", "cached_nix_inventory.py", "verify_cached_nars.py"],
+    data = ["//:flake.nix", "//:flake.lock", "@omux_eval_source//:source_files", "@omux_eval_source//:source-input.json",
+            "@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools"],
+    args = [
+        "--nix", "$(location @omux_eval_host//:executables/nix)",
+        "--distdir", "/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/052fde9c-7e07-490f-a940-fb11820f1d31/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/fetch_codex_archives_bundle/test.outputs/bundle",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "codex_sdk_profile_test",
+    main = "codex_sdk_profile_test.py",
+    srcs = _CODEX_SDK_SOURCES,
+)
+
+python_test(
+    name = "guard_site_profile_test",
+    main = "guard_site_profile_test.py",
+    srcs = ["guard_site_profile.py", "site_coordinator_closure_qualification.py",
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"],
+)
+
+python_test(
+    name = "site_coordinator_settings_test",
+    main = "site_coordinator_settings_test.py",
+    srcs = ["site_coordinator_settings.py", "codex_sdk_settings.py", "fetch_codex_archives.py",
+            "qualify_site_tools.py", "cached_nix_inventory.py", "verify_cached_nars.py"],
+)
+
+# Candidate metadata only: this does not execute or authorize a site coordinator.
+python_test(
+    name = "site_coordinator_settings_producer",
+    main = "site_coordinator_settings.py",
+    srcs = ["codex_sdk_settings.py", "fetch_codex_archives.py", "qualify_site_tools.py",
+            "cached_nix_inventory.py", "verify_cached_nars.py"],
+    data = [
+        "@omux_site_inputs//:site_roots", "@omux_site_inputs//:site_lock",
+        "@omux_site_inputs//:site_selection", "@omux_site_inputs//:site_flake",
+        "@omux_site_eval_source//:source_files", "@omux_site_eval_source//:source-input.json",
+        "@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
+    ],
+    args = [
+        "--nix", "$(location @omux_eval_host//:executables/nix)",
+        "--flake-nix", "$(location @omux_site_inputs//:site_flake)",
+        "--flake-lock", "$(location @omux_site_inputs//:site_lock)",
+        "--tools-offline-site-roots-json", "$(location @omux_site_inputs//:site_roots)",
+        "--tools-tool-selection-nix", "$(location @omux_site_inputs//:site_selection)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "site_coordinator_qualification_test",
+    main = "site_coordinator_qualification_test.py",
+    srcs = ["site_coordinator_qualification.py"],
+)
+
+# Fixed local operator proof: version flags only; no nested build or closure claim.
+python_test(
+    name = "site_coordinator_binary_qualification",
+    main = "site_coordinator_qualification.py",
+    data = ["@omux_nix//:closure_metadata", "@omux_nix//:all_tools",
+            "@omux_eval_host//:native.json", "@omux_eval_host//:all_tools"],
+    args = [
+        "--candidate-sha256", "48253bf1b32bc341baadbe77e9fc983ad898c338166009e92e9e2f0047e7e55c",
+        "--native-manifest", "/nix/store/12waya019j1aiimr0j91lpdfk145xi9i-omux-bazel-closure/native.json",
+        "--bootstrap-manifest", "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure/native.json",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "codex_dependency_cache_test",
+    main = "codex_dependency_cache_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py"],
+)
+
+python_test(
+    name = "codex_dependency_bundle_test",
+    main = "codex_dependency_bundle_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py", "codex_dependency_bundle.py"],
+)
+# Offline, read-only named-cache export; does not prove native dependency closure.
+python_test(
+    name = "codex_dependency_union_test",
+    main = "codex_dependency_union_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py",
+                              "codex_dependency_bundle.py", "codex_dependency_union.py"],
+)
+python_test(
+    name = "codex_repository_inputs_test",
+    main = "codex_repository_inputs_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py",
+                              "codex_dependency_bundle.py", "codex_dependency_union.py",
+                              "codex_repository_inputs.py"],
+)
+# Selected offline export; all SDK/native admission flags remain false.
+python_test(
+    name = "codex_repository_inputs_producer",
+    main = "codex_repository_inputs.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py",
+                              "codex_dependency_bundle.py", "codex_dependency_union.py"],
+    args = [
+        "--plan-root", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/440b3f59-05da-42cc-a345-4caff371f768/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_plan/test.outputs/codex-dependency-bundle",
+        "--plan-sha256", "e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66",
+        "--union-root", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/874b10cd-9155-4c60-9d13-314c889a2abf/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_union_producer/test.outputs/codex-sdk-dependency-union",
+        "--union-sha256", "066ebb1aba7aa80a81451bef9bc3496cfd8f0c08c9f3e67e7043c1a832067448",
+        "--source-receipt-sha256", "6a606a9ca602e31f0050d15625038eeaaaff96432248dd803d51c3a1838871b3",
+        "--descriptor-sha256", "50db24e82808bfea9fd00f20325874962519c76ea8d6c0e2ca2eb311a77b0feb",
+        "--parent-receipts-json", "'{\"active_plan\":{\"receipt_sha256\":\"e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66\",\"root\":\"/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/440b3f59-05da-42cc-a345-4caff371f768/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_plan/test.outputs/codex-dependency-bundle\"},\"plan\":\"c6613a0e4d9b0c952a91a9bf03e2010ce02a680c45eec6c84a1df7030d31ce6b\",\"shards\":[{\"parent_plan_sha256\":\"c6613a0e4d9b0c952a91a9bf03e2010ce02a680c45eec6c84a1df7030d31ce6b\",\"receipt_sha256\":\"c2bd6aa1a8e350c891e9a16f3c7006ccf1e6d22e4394f8885d7906020c291009\",\"root\":\"/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/0ebaff4d-0225-49d7-aa4a-fc78df70db79/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_producer/test.outputs/codex-dependency-bundle\",\"shard_index\":0,\"shard_size\":16},{\"parent_plan_sha256\":\"e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66\",\"receipt_sha256\":\"74fac621af3ca4442e260f345323189f29b476dd18387625d95610c3d11a27c2\",\"root\":\"/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/abce474b-786f-4bd3-b102-9751fcb0fbd4/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_producer/test.outputs/codex-dependency-bundle\",\"shard_index\":0,\"shard_size\":20}],\"tools\":\"1d3d34323a3e19fd7e640146bf0eba006881a9bdd2d376a0493153f4cd8d30a0\",\"tools_manifest\":\"f44be109f043f1044473bfb93a0ad1da25f060c42d688fe182ab4b4bdb6b942a\"}'",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Offline, read-only named-cache export; does not prove native dependency closure.
+python_test(
+    name = "codex_dependency_bundle_plan",
+    main = "codex_dependency_bundle.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py"],
+    args = [
+        "--mode", "plan",
+        "--input-shard", "/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/0ebaff4d-0225-49d7-aa4a-fc78df70db79/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_producer/test.outputs/codex-dependency-bundle",
+        "c2bd6aa1a8e350c891e9a16f3c7006ccf1e6d22e4394f8885d7906020c291009",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# Explicit verified offline union; exports CAS bytes, not a complete native SDK.
+python_test(
+    name = "codex_dependency_union_producer",
+    main = "codex_dependency_union.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py", "codex_dependency_bundle.py"],
+    args = [
+        "--plan-root", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_plan/test.outputs/codex-dependency-bundle",
+        "--plan-sha256", "c6613a0e4d9b0c952a91a9bf03e2010ce02a680c45eec6c84a1df7030d31ce6b",
+        "--shard-root", "/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/0ebaff4d-0225-49d7-aa4a-fc78df70db79/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_producer/test.outputs/codex-dependency-bundle",
+        "--shard-sha256", "c2bd6aa1a8e350c891e9a16f3c7006ccf1e6d22e4394f8885d7906020c291009",
+        "--tools-root", "/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/052fde9c-7e07-490f-a940-fb11820f1d31/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/fetch_codex_archives_bundle/test.outputs/bundle",
+        "--tools-sha256", "1d3d34323a3e19fd7e640146bf0eba006881a9bdd2d376a0493153f4cd8d30a0",
+        "--active-plan-root", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/440b3f59-05da-42cc-a345-4caff371f768/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_plan/test.outputs/codex-dependency-bundle",
+        "--active-plan-sha256", "e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66",
+        "--active-shard", "/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/abce474b-786f-4bd3-b102-9751fcb0fbd4/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_producer/test.outputs/codex-dependency-bundle",
+        "74fac621af3ca4442e260f345323189f29b476dd18387625d95610c3d11a27c2", "0", "20",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# One independently selected, reviewed successor shard; no general network build.
+python_test(
+    name = "codex_dependency_bundle_producer",
+    main = "codex_dependency_bundle.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py", "codex_dependency_cache.py"],
+    data = ["@omux_host//:executables/nix", "@omux_host//:ca-bundle.crt", "@omux_host//:all_tools"],
+    args = [
+        "--mode", "fetch",
+        "--plan-root", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/440b3f59-05da-42cc-a345-4caff371f768/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_bundle_plan/test.outputs/codex-dependency-bundle",
+        "--plan-sha256", "e2062afb5cda472861c0e5a442312424252554c8a7fba6baf8f1725609bfdb66",
+        "--shard-index", "1", "--shard-size", "30",
+        "--nix", "$(location @omux_host//:executables/nix)",
+        "--ca-file", "$(location @omux_host//:ca-bundle.crt)",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "codex_dependency_manifest_probe",
+    main = "codex_dependency_cache.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py"],
+    args = [
+        "--descriptor-manifest", "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_sdk_dependency_descriptors/test.outputs/codex-sdk-dependencies/dependency-manifest.json",
+        "--describe",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+_CODEX_DESCRIPTOR_CACHE_ARGS = [
+    "--descriptor-manifest", "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_sdk_dependency_descriptors/test.outputs/codex-sdk-dependencies/dependency-manifest.json",
+    "--descriptor-sha256", "50db24e82808bfea9fd00f20325874962519c76ea8d6c0e2ca2eb311a77b0feb",
+]
+
+python_test(
+    name = "codex_dependency_home_cache",
+    main = "codex_dependency_cache.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py"],
+    args = _CODEX_DESCRIPTOR_CACHE_ARGS + ["--cache-directory", "/home/jess/.cache/bazel-repo-cache"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "codex_dependency_owner_cache",
+    main = "codex_dependency_cache.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py"],
+    args = _CODEX_DESCRIPTOR_CACHE_ARGS + ["--cache-directory", "/srv/fast-local/jess/state/codex/omux-bazel9-owner-coordinator-20261004/cache/repos/v1"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "site_coordinator_closure_qualification_test",
+    main = "site_coordinator_closure_qualification_test.py",
+    srcs = ["site_coordinator_closure_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py", "site_coordinator_qualification.py"],
+)
+python_test(
+    name = "site_coordinator_closure_qualification",
+    main = "site_coordinator_closure_qualification.py",
+    srcs = ["cached_nix_inventory.py", "verify_cached_nars.py", "site_coordinator_qualification.py"],
+    data = ["@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
+            "@omux_site_inputs//:site_roots", "@omux_site_inputs//:site_lock",
+            "@omux_site_inputs//:site_selection", "@omux_site_inputs//:site_flake"],
+    args = [
+        "--nix", "$(location @omux_eval_host//:executables/nix)",
+        "--candidate-sha256", "48253bf1b32bc341baadbe77e9fc983ad898c338166009e92e9e2f0047e7e55c",
+        "--binary-qualification-sha256", "a1d7e2b974c6a548245b88c07a7cce921dd1fcb31758d0ee5c50511ca3780ccd",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "home_manager_inputs_test",
+    main = "//:nix/home_manager_inputs_test.py",
+    srcs = ["//:nix/home_manager_inputs.py"],
+)
+
+python_test(
+    name = "home_manager_acquired_inputs_test",
+    main = "//:nix/home_manager_acquired_inputs_test.py",
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py"],
+)
+python_test(
+    name = "home_manager_acquisition_test",
+    main = "//:nix/home_manager_acquisition_test.py",
+    srcs = ["//:nix/home_manager_acquisition.py", "//:nix/home_manager_acquired_inputs.py",
+            "//:nix/home_manager_inputs.py", "nar_descriptor.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Finite exact Lab HM/nixpkgs acquisition; no evaluation, builds or shared-store changes.
+python_test(
+    name = "home_manager_artifact_test",
+    main = "//:nix/home_manager_artifact_test.py",
+    srcs = ["//:nix/home_manager_artifact.py", "//:nix/home_manager_acquired_inputs.py",
+            "//:nix/home_manager_inputs.py", "nar_descriptor.py", "//delivery:pack.py",
+            "//delivery:portable.py", "//delivery:test_portable.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Exact dirty development archive export; byte/NAR proof only, no activation.
+python_test(
+    name = "home_manager_artifact_producer",
+    main = "//:nix/home_manager_artifact.py",
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_inputs.py",
+            "nar_descriptor.py", "//delivery:pack.py", "//delivery:portable.py"],
+    data = ["//delivery:development_home_manager_archive"],
+    args = ["--archive", "$(location //delivery:development_home_manager_archive)",
+            "--archive-sha256", "937936f3011ac4177bfa38ef808223103d6b72768a1d922e1c8982c7981fcc1c",
+            "--source-revision", "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+            "--declared-archive-alias"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "home_manager_acquired_evaluation_test",
+    main = "//:nix/home_manager_acquired_evaluation_test.py",
+    srcs = ["//:nix/home_manager_acquired_evaluation.py", "//:nix/home_manager_acquired_inputs.py",
+            "//:nix/home_manager_acquired_inputs_test.py", "//:nix/home_manager_acquisition.py",
+            "//:nix/home_manager_artifact.py", "//:nix/home_manager_artifact_test.py",
+            "//:nix/home_manager_inputs.py", "//:nix/home_manager_evaluation_runner.py",
+            "//:nix/evaluation_runner.py", "//:nix/home_manager_io.py", "nar_descriptor.py",
+            "//delivery:pack.py", "//delivery:portable.py", "//delivery:test_portable.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# ONE-TIME retained input import. No original host root is passed in argv;
+# packer derives exactly declared regular aliases from authenticated metadata.
+python_test(
+    name = "home_manager_retained_bundle_producer",
+    main = "//:nix/home_manager_bundle.py",
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquired_evaluation.py",
+            "//:nix/home_manager_evaluation_runner.py", "//:nix/home_manager_io.py", "//:nix/evaluation_runner.py",
+            "//:nix/home_manager_acquisition.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py",
+            "//:nix/home_manager_artifact.py", "//delivery:pack.py", "//delivery:portable.py"],
+    data = ["@omux_retained_hm//:retained_inputs", "@omux_retained_hm//:layout.json",
+            "@omux_lab_home_manager_inputs//:lab-lock.json"],
+    args = ["pack", "--layout", "$(location @omux_retained_hm//:layout.json)",
+            "--lock", "$(location @omux_lab_home_manager_inputs//:lab-lock.json)"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+# Separate canonical import of the fixed retained Bazel data representation.
+# No new acquisition, original-tree write, tool invocation or producer edge.
+python_test(
+    name = "home_manager_retained_reconstruction_producer",
+    main = "//:nix/home_manager_bundle.py",
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquired_evaluation.py",
+            "//:nix/home_manager_evaluation_runner.py", "//:nix/home_manager_io.py", "//:nix/evaluation_runner.py",
+            "//:nix/home_manager_acquisition.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py",
+            "//:nix/home_manager_artifact.py", "//delivery:pack.py", "//delivery:portable.py"],
+    data = ["@omux_retained_hm//:retained_inputs", "@omux_retained_hm//:layout.json",
+            "@omux_lab_home_manager_inputs//:lab-lock.json"],
+    args = ["reconstruct", "--layout", "$(location @omux_retained_hm//:layout.json)",
+            "--lock", "$(location @omux_lab_home_manager_inputs//:lab-lock.json)"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+# Portable declared-bundle consumer, independently selected after pack success.
+python_test(
+    name = "home_manager_acquired_evaluation",
+    main = "//:nix/home_manager_bundle.py",
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquisition.py",
+            "//:nix/home_manager_artifact.py", "//:nix/home_manager_inputs.py",
+            "//:nix/home_manager_acquired_evaluation.py",
+            "//:nix/home_manager_evaluation_runner.py", "//:nix/evaluation_runner.py",
+            "//:nix/home_manager_io.py", "nar_descriptor.py", "//delivery:pack.py",
+            "//delivery:portable.py"],
+    data = ["@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
+            "@omux_lab_home_manager_inputs//:lab-lock.json",
+            "@omux_hm_bundle//:bundle", "@omux_hm_bundle//:receipt.json",
+            "//:nix/home-manager-qualified-evaluation.nix", "//:nix/consume-bazel-artifact.nix",
+            "//:nix/home-manager.nix", "//:nix/ownership-witness.nix", "//:nix/service-witness.nix"],
+    args = ["evaluate", "--nix", "$(location @omux_eval_host//:executables/nix)",
+            "--lock", "$(location @omux_lab_home_manager_inputs//:lab-lock.json)",
+            "--bundle", "$(location @omux_hm_bundle//:bundle)", "--bundle-sha256", BUNDLE_SHA256,
+            "--bundle-receipt", "$(location @omux_hm_bundle//:receipt.json)",
+            "--bundle-receipt-sha256", BUNDLE_RECEIPT_SHA256,
+            "--module", "home-manager-qualified-evaluation.nix=$(location //:nix/home-manager-qualified-evaluation.nix)",
+            "--module", "consume-bazel-artifact.nix=$(location //:nix/consume-bazel-artifact.nix)",
+            "--module", "home-manager.nix=$(location //:nix/home-manager.nix)",
+            "--module", "ownership-witness.nix=$(location //:nix/ownership-witness.nix)",
+            "--module", "service-witness.nix=$(location //:nix/service-witness.nix)"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "home_manager_bundle_test",
+    main = "//:nix/home_manager_bundle_test.py",
+    srcs = ["//:nix/home_manager_bundle.py", "//:nix/home_manager_acquired_evaluation_test.py"] +
+           ["//:nix/home_manager_acquired_evaluation.py", "//:nix/home_manager_acquired_inputs.py",
+            "//:nix/home_manager_acquired_inputs_test.py", "//:nix/home_manager_acquisition.py",
+            "//:nix/home_manager_artifact.py", "//:nix/home_manager_artifact_test.py",
+            "//:nix/home_manager_inputs.py", "//:nix/home_manager_evaluation_runner.py",
+            "//:nix/home_manager_io.py", "//:nix/evaluation_runner.py", "nar_descriptor.py",
+            "//delivery:pack.py", "//delivery:portable.py", "//delivery:test_portable.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# Finite exact Lab HM/nixpkgs acquisition; no evaluation, builds or shared-store changes.
+python_test(
+    name = "home_manager_acquisition_producer",
+    main = "//:nix/home_manager_acquisition.py",
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py"],
+    data = ["@omux_host//:executables/nix", "@omux_host//:ca-bundle.crt", "@omux_host//:all_tools",
+            "@omux_lab_home_manager_inputs//:lab-lock.json"],
+    args = ["--nix", "$(location @omux_host//:executables/nix)",
+            "--ca-file", "$(location @omux_host//:ca-bundle.crt)",
+            "--lock", "$(location @omux_lab_home_manager_inputs//:lab-lock.json)"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "retain_site_mapping_test",
+    main = "retain_site_mapping_test.py",
+    srcs = ["retain_site_mapping.py"],
+)
+
+python_test(
+    name = "retain_site_mapping",
+    main = "retain_site_mapping.py",
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "home_manager_evaluation_runner_test",
+    main = "//:nix/home_manager_evaluation_runner_test.py",
+    srcs = ["//:nix/home_manager_evaluation_runner.py", "//:nix/home_manager_inputs.py", "//:nix/home_manager_io.py", "//:nix/evaluation_runner.py"],
+)
+
+python_test(
+    name = "home_manager_source_probe_test",
+    main = "//:nix/home_manager_source_probe_test.py",
+    srcs = ["//:nix/home_manager_source_probe.py", "//:nix/home_manager_inputs.py", "//:nix/home_manager_inputs_test.py", "//:nix/home_manager_io.py"],
+)
+
+python_test(
+    name = "home_manager_source_probe",
+    main = "//:nix/home_manager_source_probe.py",
+    srcs = ["//:nix/home_manager_inputs.py", "//:nix/home_manager_io.py"],
+    data = ["nix_source_probe.py", "@omux_lab_home_manager_inputs//:lab-lock.json"],
+    args = [
+        "--probe-library", "$(location :nix_source_probe.py)",
+        "--lock", "$(location @omux_lab_home_manager_inputs//:lab-lock.json)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "codex_sdk_dependencies_test",
+    main = "codex_sdk_dependencies_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["codex_sdk_dependencies.py"],
+)
+
+python_test(
+    name = "codex_git_inputs_test",
+    main = "codex_git_inputs_test.py",
+    srcs = _CODEX_GIT_INPUT_SOURCES,
+)
+
+# One pinned public-source requirement only; guard admission fixes HOME state,
+# shared execution ownership, network profile and requirement zero separately.
+python_test(
+    name = "codex_git_input_producer_0",
+    main = "codex_git_inputs.py",
+    srcs = _CODEX_GIT_INPUT_SOURCES,
+    data = ["@omux_host//:executables/git", "@omux_host//:ca-bundle.crt", "@omux_host//:all_tools"],
+    args = [
+        "--mode", "acquire", "--requirement-index", "0",
+        "--git", "$(location @omux_host//:executables/git)",
+        "--ca-file", "$(location @omux_host//:ca-bundle.crt)",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Local operator source custody is verified before and after enumeration. This
+# receipt is an unfetched descriptor inventory, not a transitive SDK closure.
+python_test(
+    name = "codex_sdk_dependency_descriptors",
+    main = "codex_sdk_dependencies.py",
+    srcs = _CODEX_SDK_SOURCES,
+    args = [
+        "--source-root", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/cf85bdc6-5de0-4033-a57e-5e8d24301ccb/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_fresh_source_producer/test.outputs/codex-adapter-epoch",
+        "--source-receipt-sha256", "6a606a9ca602e31f0050d15625038eeaaaff96432248dd803d51c3a1838871b3",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "moderate",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "retire_browser_cache_test",
+    main = "retire_browser_cache_test.py",
+    srcs = ["retire_browser_cache.py", "prune_epoch_runfiles.py", "guard_cache.py"],
+)
+
+python_test(
+    name = "retire_browser_cache",
+    main = "retire_browser_cache.py",
+    srcs = ["prune_epoch_runfiles.py", "guard_cache.py"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "retire_browser_cache_apply",
+    main = "retire_browser_cache.py",
+    srcs = ["prune_epoch_runfiles.py", "guard_cache.py"],
+    args = ["--apply"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "codex_fresh_source_test",
+    main = "codex_fresh_source_test.py",
+    srcs = [
+        "codex_fresh_source.py", "codex_recovery_delta.py", "restore_pristine_inputs.py",
+        "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py",
+        "//integrations/codex-upstream:restore_source.py",
+        "//integrations/codex-adapter-delivery:retirement_delta.py",
+    ],
+)
+
+python_test(
+    name = "codex_fresh_source_producer",
+    main = "codex_fresh_source.py",
+    srcs = [
+        "codex_recovery_delta.py", "restore_pristine_inputs.py",
+        "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py",
+        "//integrations/codex-upstream:restore_source.py", "//integrations/codex-adapter-delivery:retirement_delta.py",
+    ],
+    data = [
+        "//integrations/codex-owner-candidate:public_sources", "//integrations/codex-owner-candidate:README.md",
+        "@omux_codex_source_artifacts//:pristine.tar.gz", "@omux_codex_source_artifacts//:pristine-receipt.json",
+        "@omux_codex_source_artifacts//:recovery-delta.patch", "@omux_codex_source_artifacts//:recovery-delta-receipt.json",
+    ],
+    args = [
+        "--artifact-dir", "$(location //integrations/codex-owner-candidate:README.md)",
+        "--pristine-archive", "$(location @omux_codex_source_artifacts//:pristine.tar.gz)",
+        "--pristine-receipt", "$(location @omux_codex_source_artifacts//:pristine-receipt.json)",
+        "--recovery-patch", "$(location @omux_codex_source_artifacts//:recovery-delta.patch)",
+        "--recovery-receipt", "$(location @omux_codex_source_artifacts//:recovery-delta-receipt.json)",
+        "--recovery-patch-sha256", "aa4bc7f3cdd281a34096260ff60dd17dfdc892c55e59e282989110383e701cf5",
+        "--recovery-receipt-sha256", "897ddcad5fac986aa5db611d1ebe4464563abe46eb74006090427f836352f521",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "codex_recovery_delta_test",
+    main = "codex_recovery_delta_test.py",
+    srcs = [
+        "codex_recovery_delta.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:refresh_artifact.py",
+    ],
+)
+
+python_test(
+    name = "codex_recovery_delta_producer",
+    main = "codex_recovery_delta.py",
+    srcs = ["//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py"],
+    data = ["//integrations/codex-owner-candidate:public_sources", "//integrations/codex-owner-candidate:README.md",
+            "@omux_codex_recovery_inputs//:code_inputs", "@omux_codex_recovery_inputs//:source-input-anchor.txt"],
+    args = [
+        "--artifact-dir", "$(location //integrations/codex-owner-candidate:README.md)",
+        "--manifest-sha256", "8eb4ed424b0373bd77250eaf59334cb765141d1fc6a2885480c840771d462b23",
+        "--source-input-directory", "$(location @omux_codex_recovery_inputs//:source-input-anchor.txt)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "guard_yoga_delivery_profile_test",
+    main = "guard_yoga_delivery_profile_test.py",
+    srcs = ["guard_yoga_delivery_profile.py"],
+)
+
+python_test(
+    name = "yoga_executable_qualification_test",
+    main = "yoga_executable_qualification_test.py",
+    srcs = ["yoga_executable_qualification.py"],
+)
+
+# Replace the base patch's generic delivery binary with three fixed modes.
+# Declare bootstrap manifest at its unchanged qualified root. @omux_host ssh
+# is a wrapper: the backend resolves its script path differently, so the fixed
+# SSH executable is used directly after pinned manifest/inventory qualification.
+python_test(
+    name = "yoga_controller_delivery_test",
+    main = "yoga_controller_delivery_test.py",
+    srcs = ["yoga_controller_delivery.py", "verify_cached_nars.py",
+            "host_closure_transfer.py", "ssh_policy.py", "yoga_executable_qualification.py",
+            "guard_yoga_delivery_profile.py"],
+)
+
+yoga_delivery_binaries()
+
+python_test(
+    name = "prune_epoch_runfiles",
+    main = "prune_epoch_runfiles.py",
+    srcs = ["guard_cache.py"],
+    data = ["prune_epoch_plan.json"],
+    args = [
+        "--state-root", "/home/jess/.local/state/omux-execution-20261005",
+        "--plan", "$(location prune_epoch_plan.json)",
+        "--plan-sha256", "79349b598e1807093e4bbabe4c8eb7cc9bf6c0f506ce6740fcc856f108c27dd1",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "prune_epoch_runfiles_apply",
+    main = "prune_epoch_runfiles.py",
+    srcs = ["guard_cache.py"],
+    data = ["prune_epoch_plan.json"],
+    args = [
+        "--state-root", "/home/jess/.local/state/omux-execution-20261005",
+        "--plan", "$(location prune_epoch_plan.json)",
+        "--plan-sha256", "79349b598e1807093e4bbabe4c8eb7cc9bf6c0f506ce6740fcc856f108c27dd1",
+        "--apply",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "prune_epoch_runfiles_test",
+    main = "prune_epoch_runfiles_test.py",
+    srcs = ["prune_epoch_runfiles.py", "guard_cache.py"],
+)
+
+cc_toolchain_environment_check(
+    name = "cc_toolchain_environment_check",
+)
+
+platform(
+    name = "darwin_aarch64",
+    constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+    visibility = ["//visibility:public"],
+)
+
+# External Zig rules use these main-repository labels for the selected execution
+# closure; coordinator bootstrap Bash never enters compiler/version actions.
+alias(
+    name = "execution_bash",
+    actual = "@omux_nix//:bash",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "execution_tools",
+    actual = "@omux_nix//:all_tools",
+    visibility = ["//visibility:public"],
+)
+
+host_python_binary(
+    name = "host_closure",
+    main = "host_closure.py",
+    data = ["@omux_host//:nix", "//:flake.nix", "//:flake.lock", "zig-index.json", "codex_upstream_archives.json"],
+    args = [
+        "--nix", "$(location @omux_host//:nix)",
+        "--flake", "$(location //:flake.nix)",
+        "--lock", "$(location //:flake.lock)",
+        "--zig-index", "$(location :zig-index.json)",
+        "--codex-manifest", "$(location :codex_upstream_archives.json)",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+    exec_compatible_with = ["@platforms//os:linux"],
+)
+
+host_python_binary(
+    name = "host_route_probe",
+    main = "host_route_probe.py",
+    srcs = ["ssh_policy.py", "host_closure_transfer.py"],
+    data = ["@omux_host//:ssh"],
+    args = ["--ssh", "$(location @omux_host//:ssh)"],
+    target_compatible_with = ["@platforms//os:linux"],
+    exec_compatible_with = ["@platforms//os:linux"],
+)
+
+host_python_binary(
+    name = "host_closure_transfer",
+    main = "host_closure_transfer.py",
+    srcs = ["ssh_policy.py"],
+    data = ["@omux_host//:ssh", "@omux_host//:nix"],
+    args = ["--ssh", "$(location @omux_host//:ssh)", "--nix", "$(location @omux_host//:nix)"],
+    target_compatible_with = ["@platforms//os:linux"],
+    exec_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "host_closure_transfer_test",
+    main = "host_closure_transfer_test.py",
+    srcs = ["host_closure_transfer.py", "ssh_policy.py"],
+)
+
+python_test(
+    name = "host_route_probe_test",
+    main = "host_route_probe_test.py",
+    srcs = ["host_route_probe.py", "host_closure_transfer.py", "ssh_policy.py"],
+)
+
+host_python_binary(
+    name = "host_probe",
+    main = "host_probe.py",
+    srcs = ["ssh_policy.py"],
+    data = ["@omux_host//:ssh"],
+    args = ["--ssh", "$(location @omux_host//:ssh)"],
+    target_compatible_with = ["@platforms//os:linux"],
+    exec_compatible_with = ["@platforms//os:linux"],
+)
+
+host_python_binary(
+    name = "host_recipe_probe",
+    main = "host_recipe_probe.py",
+    srcs = ["ssh_policy.py", "host_closure_transfer.py"],
+    data = ["@omux_host//:ssh"],
+    args = ["--ssh", "$(location @omux_host//:ssh)"],
+    target_compatible_with = ["@platforms//os:linux"],
+    exec_compatible_with = ["@platforms//os:linux"],
+)
+
+python_binary(
+    name = "deployed_fixture",
+    main = "deployed_fixture.py",
+    srcs = ["host_probe.py", "ssh_policy.py", "host_workspace.py", "host_graph.py", "host_cleanup.py"],
+    data = ["@omux_nix//:ssh"],
+    args = ["--ssh", "$(location @omux_nix//:ssh)"],
+)
+
+python_binary(
+    name = "host_cancel",
+    main = "host_cancel.py",
+    data = ["@omux_nix//:ssh"],
+    args = ["--ssh", "$(location @omux_nix//:ssh)"],
+)
+
+python_test(
+    name = "host_cancel_test",
+    main = "host_cancel_test.py",
+    srcs = ["host_cancel.py"],
+    data = ["@omux_nix//:ssh"],
+    args = ["--ssh", "$(location @omux_nix//:ssh)"],
+)
+
+python_test(
+    name = "ssh_policy_test",
+    main = "ssh_policy_test.py",
+    srcs = ["ssh_policy.py"],
+)
+
+python_test(
+    name = "deployed_fixture_test",
+    main = "deployed_fixture_test.py",
+    srcs = ["deployed_fixture.py", "host_probe.py", "ssh_policy.py", "host_workspace.py", "host_graph.py", "host_cleanup.py", "host_closure.py"],
+    data = ["@omux_nix//:bash"],
+    args = ["--bash", "$(location @omux_nix//:bash)"],
+)
+
+python_test(
+    name = "nix_file_inventory_test",
+    main = "nix_file_inventory_test.py",
+    srcs = ["nix_file_inventory.py"],
+)
+
+python_test(
+    name = "nix_interpreter_closure_test",
+    main = "nix_interpreter_closure_test.py",
+    srcs = ["nix_interpreter_closure.py"],
+)
+
+python_test(
+    name = "host_workspace_test",
+    main = "host_workspace_test.py",
+    srcs = ["host_workspace.py"],
+)
+
+python_test(
+    name = "host_graph_test",
+    main = "host_graph_test.py",
+    srcs = ["host_graph.py"],
+)
+
+host_python_binary(
+    name = "reapi_provenance",
+    main = "reapi_provenance.py",
+    target_compatible_with = ["@platforms//os:linux"],
+    exec_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "reapi_provenance_test",
+    main = "reapi_provenance_test.py",
+    srcs = ["reapi_provenance.py"],
+)
+
+python_test(
+    name = "host_cleanup_test",
+    main = "host_cleanup_test.py",
+    srcs = ["host_cleanup.py"],
+)
+
+# Packaging entrypoint only: bootstrap containment uses the pre-realized
+# interpreter before admitting any Bazel invocation.
+python_binary(
+    name = "execution_guard",
+    main = "execution_guard.py",
+    srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+            "site_coordinator_closure_qualification.py",
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+    visibility = ["//visibility:public"],
+)
+
+python_test(
+    name = "execution_guard_test",
+    main = "execution_guard_test.py",
+    srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+            "site_coordinator_closure_qualification.py",
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+)
+
+python_test(
+    name = "guard_dependency_profile_test",
+    main = "guard_dependency_profile_test.py",
+    srcs = ["guard_dependency_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
+)
+python_test(
+    name = "yoga_delivery_settings_test",
+    main = "yoga_delivery_settings_test.py",
+    srcs = _YOGA_DELIVERY_GUARD_SOURCES + ['guard_cache.py'],
+)
+
+python_test(
+    name = "system_mask_policy_test",
+    main = "system_mask_policy_test.py",
+    srcs = ["system_mask_policy.py"],
+)
+
+python_test(
+    name = "execution_guard_probe_test",
+    main = "execution_guard_probe_test.py",
+    srcs = ["execution_guard_probe.py"],
+)
+
+python_test(
+    name = "guard_cache_test",
+    main = "guard_cache_test.py",
+    srcs = ["guard_cache.py"],
+)
+
+python_test(
+    name = "cached_nix_inventory_test",
+    main = "cached_nix_inventory_test.py",
+    srcs = ["cached_nix_inventory.py"],
+)
+
+python_test(
+    name = "verify_cached_nars_test",
+    main = "verify_cached_nars_test.py",
+    srcs = ["verify_cached_nars.py"],
+)
+
+python_test(
+    name = "nar_descriptor_test",
+    main = "nar_descriptor_test.py",
+    srcs = ["nar_descriptor.py"],
+)
+
+python_test(
+    name = "verify_declared_nars_test",
+    main = "verify_declared_nars_test.py",
+    srcs = ["nar_descriptor.py", "verify_declared_nars.py", "verify_cached_nars.py"],
+)
+
+python_test(
+    name = "nar_descriptor_nix_fixture",
+    main = "nar_descriptor_nix_fixture.py",
+    srcs = ["nar_descriptor.py", "verify_cached_nars.py"],
+    data = ["@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools"],
+    args = ["--nix", "$(location @omux_eval_host//:executables/nix)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+python_test(
+    name = "cached_site_byte_verification",
+    main = "verify_declared_nars.py",
+    srcs = ["nar_descriptor.py", "verify_cached_nars.py"],
+    data = ["@omux_cached_nars//:byteproof_inputs", "@omux_cached_nars//:inventory.json", "@omux_cached_nars//:nar-descriptors.json"],
+    args = [
+        "--inventory", "$(location @omux_cached_nars//:inventory.json)",
+        "--sha256", "1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931",
+        "--descriptors", "$(location @omux_cached_nars//:nar-descriptors.json)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+python_test(
+    name = "yoga_controller_byte_verification",
+    main = "verify_declared_nars.py",
+    srcs = ["nar_descriptor.py", "verify_cached_nars.py"],
+    data = ["@omux_yoga_controller_nars//:byteproof_inputs", "@omux_yoga_controller_nars//:inventory.json", "@omux_yoga_controller_nars//:nar-descriptors.json"],
+    args = [
+        "--inventory", "$(location @omux_yoga_controller_nars//:inventory.json)",
+        "--sha256", "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+        "--descriptors", "$(location @omux_yoga_controller_nars//:nar-descriptors.json)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "qualify_site_tools_test",
+    main = "qualify_site_tools_test.py",
+    srcs = ["qualify_site_tools.py", "cached_nix_inventory.py", "verify_cached_nars.py"],
+)
+
+python_test(
+    name = "cached_site_input_validator_test",
+    main = "cached_site_input_validator_test.py",
+    srcs = ["cached_site_input_validator.py", "cached_nix_inventory.py", "verify_cached_nars.py"],
+)
+
+python_test(
+    name = "site_tool_mapping_qualification",
+    main = "qualify_site_tools.py",
+    srcs = ["cached_nix_inventory.py", "verify_cached_nars.py"],
+    data = [
+        "@omux_site_inputs//:site_roots", "@omux_site_inputs//:site_lock",
+        "@omux_site_inputs//:site_selection", "@omux_site_inputs//:site_flake",
+        "@omux_site_eval_source//:source_files", "@omux_site_eval_source//:source-input.json",
+        "@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
+    ],
+    args = [
+        "--roots", "$(location @omux_site_inputs//:site_roots)",
+        "--roots-sha256", "0414b0102496d85ec10818d45dc127c605a51a18ae2f7df53db6e5d1e9a72d27",
+        "--lock", "$(location @omux_site_inputs//:site_lock)",
+        "--lock-sha256", "8bf597bc60b2cf908a5e1772256e178e9593d0474434f4407ee1247bed38197a",
+        "--selection", "$(location @omux_site_inputs//:site_selection)",
+        "--selection-sha256", "6ab7f828fcf92df8394869029462541ce0a495bcd14ff7dc9c25c4c469abc2c7",
+        "--flake", "$(location @omux_site_inputs//:site_flake)",
+        "--flake-sha256", "ae04bb4a08b0627ca0c778e1cb8163d8493b60f9caaf65d6b400659afd6f7039",
+        "--nix", "$(location @omux_eval_host//:executables/nix)",
+        "--source-input", "$(location @omux_site_eval_source//:source-input.json)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "fetch_codex_archives_test",
+    main = "fetch_codex_archives_test.py",
+    srcs = ["fetch_codex_archives.py"],
+    data = ["codex_upstream_archives.json"],
+)
+
+python_test(
+    name = "fetch_codex_archives_bundle",
+    main = "fetch_codex_archives.py",
+    data = [
+        "codex_upstream_archives.json", "@omux_host//:executables/nix",
+        "@omux_host//:ca-bundle.crt", "@omux_host//:all_tools",
+    ],
+    args = [
+        "--bundle",
+        "--nix", "$(location @omux_host//:executables/nix)",
+        "--ca-file", "$(location @omux_host//:ca-bundle.crt)",
+        "--manifest", "$(location codex_upstream_archives.json)",
+        "--manifest-sha256", "f44be109f043f1044473bfb93a0ad1da25f060c42d688fe182ab4b4bdb6b942a",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "codex_pristine_source_test",
+    main = "codex_pristine_source_test.py",
+    srcs = [
+        "codex_pristine_source.py", "restore_pristine_inputs.py",
+        "//integrations/codex-upstream:restore_source.py",
+        "//integrations/codex-upstream:patch_io.py",
+    ],
+)
+
+python_test(
+    name = "codex_pristine_source_producer",
+    main = "codex_pristine_source.py",
+    srcs = [
+        "restore_pristine_inputs.py",
+        "//integrations/codex-upstream:restore_source.py",
+        "//integrations/codex-upstream:patch_io.py",
+    ],
+    data = [
+        "@omux_codex_pack_inputs//:pack", "@omux_codex_pack_inputs//:idx", "@omux_codex_pack_inputs//:rev",
+        "@omux_host//:executables/git", "@omux_host//:ca-bundle.crt", "@omux_host//:all_tools",
+    ],
+    args = [
+        "--git", "$(location @omux_host//:executables/git)",
+        "--ca-file", "$(location @omux_host//:ca-bundle.crt)",
+        "--pack", "$(location @omux_codex_pack_inputs//:pack)",
+        "--pack-sha256", "a5352614ad43f69db50e798865e2787aab7e8835036b2c14c55158c0f728a6d8",
+        "--idx", "$(location @omux_codex_pack_inputs//:idx)",
+        "--idx-sha256", "6b9fdc44bdc8fea494bfed8d0422e398ffe9ef780656a676a045c51c7ccd9a43",
+        "--rev", "$(location @omux_codex_pack_inputs//:rev)",
+        "--rev-sha256", "c7c1ff72452e4f924d042c06728761f9eb3097ebe60782cb19c6dead1fc72ee9",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "guard_test_evidence_test",
+    main = "guard_test_evidence_test.py",
+    srcs = ["guard_test_evidence.py"],
+)
+
+python_test(
+    name = "site_nix_source_probe",
+    main = "nix_source_probe.py",
+    data = ["@omux_site_inputs//:site_lock"],
+    args = ["--lock", "$(location @omux_site_inputs//:site_lock)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+)
+
+python_test(
+    name = "cached_site_nar_verification",
+    main = "verify_cached_nars.py",
+    data = [
+        "@omux_cached_site//:inventory.json", "@omux_cached_site//:full_closure",
+        "@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
+    ],
+    args = [
+        "--inventory", "$(location @omux_cached_site//:inventory.json)",
+        "--sha256", "1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931",
+        "--nix", "$(location @omux_eval_host//:executables/nix)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+# Operator-only store metadata snapshot; it neither realizes nor verifies NAR
+# bytes. Public inputs and expected digests are explicit review boundaries.
+python_test(
+    name = "cached_site_inventory_probe",
+    main = "cached_nix_inventory.py",
+    data = ["@omux_site_inputs//:site_roots", "@omux_site_inputs//:site_lock"],
+    args = [
+        "--roots", "$(location @omux_site_inputs//:site_roots)",
+        "--lock", "$(location @omux_site_inputs//:site_lock)",
+        "--roots-sha256", "0414b0102496d85ec10818d45dc127c605a51a18ae2f7df53db6e5d1e9a72d27",
+        "--lock-sha256", "8bf597bc60b2cf908a5e1772256e178e9593d0474434f4407ee1247bed38197a",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+)
+
+# Local operator metadata only; a match is not artifact or NAR byte proof.
+python_test(
+    name = "nix_source_probe",
+    main = "nix_source_probe.py",
+    data = ["//:flake.lock"],
+    args = ["--lock", "$(location //:flake.lock)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+)
+
+[python_test(
+    name = "execution_probe_" + phase.replace("-", "_"),
+    main = "execution_guard_probe.py",
+    args = ["--phase", phase],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual"],
+    timeout = "short",
+) for phase in ["delegation", "daemon-session", "cancellation", "output"]]
+
+filegroup(
+    name = "public_sources",
+    srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch", "*.json", "*.zig", "*.h", "*.md"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+exports_files([
+    "home_manager_retained_repository.bzl", "home_manager_bundle_repository.bzl",
+    "codex_owner_runtime_repository.bzl",
+    "nar_descriptor.py",
+    "nar_descriptor_repository_inventory.py",
+    "nix_interpreter_closure.py",
+    "cached_site_input_validator.py",
+    "cached_nix_inventory.py",
+    "verify_cached_nars.py",
+    "zig-index.json",
+    "rules_zig_017.patch",
+    "toolchain_test.zig",
+    "translate-c.BUILD.bazel",
+    "arocc.BUILD.bazel",
+    "rules.bzl",
+    "archive.py",
+    "nix_repository.bzl",
+    "host_tools_repository.bzl",
+    "nix_file_inventory.py",
+    "nix_cc_toolchain.bzl",
+    "native.h",
+    "zig_tools.bzl",
+    "apple_repository.bzl",
+    "swift_rules.bzl",
+    "nix-workers.md",
+    "macos_bundle.py",
+    "macos_bundle_test.py",
+    "native_tool_info.bzl",
+    "entropy_test.zig",
+    "macho.py",
+    "macho_test.py",
+    "runtime_zig.bzl",
+    "docs_check.py",
+    "docs_check_test.py",
+    "codex-upstream-custody.md",
+    "codex_upstream_archives.json",
+    "vault_proof_runner.py",
+    "host-proof-custody.md",
+])
+
+translate_c_toolchain(
+    name = "translate_c_impl",
+    translate_c = "@translate-c//:translate-c",
+    runtime_modules = [
+        "@translate-c//:c_builtins",
+        "@translate-c//:helpers",
+    ],
+)
+
+toolchain(
+    name = "translate_c_toolchain",
+    toolchain = ":translate_c_impl",
+    toolchain_type = "@rules_zig//zig/translate-c:toolchain_type",
+    target_settings = ["@rules_zig//zig/config/use_standalone_translate_c:enabled"],
+)
+
+zig_format(name = "format")
+
+# Linux's libc ABI matches the pinned Nix runtime closure. Portable packages
+# carry that libc and its loader rather than depending on the host libc.
+# This also avoids Zig 0.17's broken older-libc /dev/urandom return path.
+zig_target_toolchain(
+    name = "linux_x86_64_target_impl",
+    target = "x86_64-linux-gnu.2.42",
+)
+
+toolchain(
+    name = "linux_x86_64_target",
+    toolchain = ":linux_x86_64_target_impl",
+    toolchain_type = "@rules_zig//zig/target:toolchain_type",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+zig_target_toolchain(
+    name = "linux_aarch64_target_impl",
+    target = "aarch64-linux-gnu.2.42",
+)
+
+toolchain(
+    name = "linux_aarch64_target",
+    toolchain = ":linux_aarch64_target_impl",
+    toolchain_type = "@rules_zig//zig/target:toolchain_type",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+    ],
+)

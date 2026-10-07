@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "installed_provider_free_candidate_result",
+  "authority": "User-ratified Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "f95ce1a5-fe8c-44f9-81a2-1194a7aa46ac",
+  "original_handle": 76627,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/f95ce1a5-fe8c-44f9-81a2-1194a7aa46ac/receipt.json",
+  "raw_receipt_sha256": "d314261996c11675db21024265e6eb85b536fceef3bf11858d40962c60097312",
+  "graph_sha256": "9c6aae001338c65c90e49c38d6be87e2bdfc5a13f22c27b4e78ff7a0cfc1bfce",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 210933,
+    "files": 9,
+    "manifest": "test-evidence.json",
+    "sha256": "aa9d2c876428b1d8561858647225a11f041cbd31497fb936fb95ebeb76fc4f8f",
+    "state": "preserved"
+  },
+  "held_input_verified_after_cleanup": true,
+  "passed_targets": [
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_target": "//delivery:installed_legacy_native_tui_test",
+  "diagnostic": "detach-status-rpc/cli-process-failure/exit-zero-stderr/status-result/stderr-unrecognized-ascii-leading/completion-exact",
+  "cold_resume_reached": false,
+  "installed_fixture_seconds": 43.1,
+  "elapsed_seconds": 630.569,
+  "omux_archive": {
+    "sha256": "8a55814ac400e0b9de11620a7e86a50cb838ae5037a9375e794f5abbc0a584e7",
+    "bytes": 59556448,
+    "artifacts": 138,
+    "status": "experimental",
+    "version": "0.2.0-dev",
+    "distribution": "portable-linux",
+    "sourceDirty": true,
+    "sourceRevision": null
+  },
+  "retained_candidate_archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+  "scope": "Actual source/declared external runtime inputs and experimental Omux archive exercised. Exact completed detach reply with nonempty unrecognized ASCII-leading stderr fails strict CLI success. Native cold resume not reached; source-only allocation audit found no concrete bug. Previous failures retained; root will extend closed diagnostic-only categories, without accepting stderr or inferring cause.",
+  "new_parent_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false
+}

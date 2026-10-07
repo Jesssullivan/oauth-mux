@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "kind": "actual_home_manager_acquisition_refusal",
+  "authority": "Explicit user-resumed integrated implementation; R-N13",
+  "observed_at": "2026-10-06 16:50:15 UTC",
+  "epoch": "c762e01e-71be-4d70-9e22-8c8c92e9878d",
+  "root": "/home/jess/.local/state/omux-home-manager-prefetch-20261006/c762e01e-71be-4d70-9e22-8c8c92e9878d",
+  "receipt_sha256": "29b5553953c47a1d692ba27f25860899d4157d7b32a39c4790fddeb1765f8e38",
+  "graph_sha256": "2572c60dcfe92f1ffc5f53bbb5420c58f1a41b69e7568d9a130c055cf2df5ce6",
+  "test_evidence_sha256": "8282d394e103fe47684f85e832d4298c535b8c7bf70fe3131dc5a119ef3cf1b7",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "profile": "dependency-prefetch",
+  "source_preparation_allowance_seconds": 600,
+  "pair_published": false,
+  "genuine_evaluation": false,
+  "activation": "unproved",
+  "failure": {
+    "activation": "unproved",
+    "category": "acquired-verification-deadline",
+    "context": {
+      "category": "acquired-verification-deadline",
+      "counters": {
+        "ancestryCheckCount": 1383619,
+        "ancestryCheckMs": 21515,
+        "copiedBytes": 195510848,
+        "copiedNodes": 94974,
+        "fileSyncCount": 57112,
+        "fileSyncMs": 630960,
+        "monitorPolls": 74,
+        "narPassCount": 3,
+        "narPassMs": 55160,
+        "pairProofCount": 0,
+        "pairProofMs": 0,
+        "privateScanCount": 16,
+        "privateScanMs": 205303,
+        "sourceExpectedBytes": 189378471,
+        "sourceExpectedNodes": 89909
+      },
+      "diagnosticBytes": 21224,
+      "diagnosticEvents": 41,
+      "elapsedMs": 635649,
+      "finalElapsedMs": 675803,
+      "phase": "private-budget-scan",
+      "phaseElapsedMs": 32384,
+      "phasePath": [
+        "inputs",
+        "source",
+        "export",
+        "copy",
+        "copy-final-budget",
+        "private-budget-scan"
+      ],
+      "remainingMs": 0,
+      "source": "nixpkgs",
+      "sourceElapsedMs": 600000
+    },
+    "evaluationExecuted": false,
+    "passed": false,
+    "scope": "finite-paired-source-acquisition"
+  },
+  "facts": "All copied nodes are preparatory work; deadline refusal publishes no source pair. Summed fileSyncMs is worker task time, not wall-clock time. Historical 300-second refusals remain unchanged.",
+  "next": "Review concrete pipeline/budget before a new acquisition; complete independently reviewed product compile and native diagnostic work in the existing sole lane.",
+  "linear_carriers": [
+    "TIN-2063",
+    "TIN-2057"
+  ],
+  "new_acceptance_gate_closed": false
+}

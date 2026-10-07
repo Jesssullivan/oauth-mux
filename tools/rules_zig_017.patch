@@ -1,0 +1,191 @@
+diff --git a/zig/private/common/zig_cache.bzl b/zig/private/common/zig_cache.bzl
+--- a/zig/private/common/zig_cache.bzl
++++ b/zig/private/common/zig_cache.bzl
+@@ -5,10 +5,10 @@
+ VAR_CACHE_PREFIX_MACOS = "RULES_ZIG_CACHE_PREFIX_MACOS"
+ VAR_CACHE_PREFIX_WINDOWS = "RULES_ZIG_CACHE_PREFIX_WINDOWS"
+ 
+-DEFAULT_CACHE_PREFIX = "/tmp/zig-cache"
+-DEFAULT_CACHE_PREFIX_LINUX = "/tmp/zig-cache"
+-DEFAULT_CACHE_PREFIX_MACOS = "/var/tmp/zig-cache"
+-DEFAULT_CACHE_PREFIX_WINDOWS = "C:\\Temp\\zig-cache"
++DEFAULT_CACHE_PREFIX = ".omux-zig-cache"
++DEFAULT_CACHE_PREFIX_LINUX = ".omux-zig-cache"
++DEFAULT_CACHE_PREFIX_MACOS = ".omux-zig-cache"
++DEFAULT_CACHE_PREFIX_WINDOWS = ".omux-zig-cache"
+ 
+ def env_zig_cache_prefix(environ, platform):
+     """Determine the appropriate Zig cache prefix for the given platform.
+diff --git a/zig/private/common/zig_build.bzl b/zig/private/common/zig_build.bzl
+--- a/zig/private/common/zig_build.bzl
++++ b/zig/private/common/zig_build.bzl
+@@ -360,7 +360,7 @@
+         # TODO: Implement case 8b.
+         solib_parents = [
+-            "/".join([".." for _ in ctx.label.package.split("/")]),
++            "/".join([".." for component in ctx.label.package.split("/") if component]),
+             paths.join(bin_output.basename + ".runfiles", ctx.workspace_name),
+         ]
+     elif kind == "zig_static_library" and ctx.attr.emit_bin:
+         bin_output_name = _lib_prefix(zigtargetinfo.triple.os) + ctx.label.name + _static_lib_extension(zigtargetinfo.triple.os)
+@@ -494,7 +494,7 @@
+ 
+             transitive_inputs.append(depset(cdeps_inputs))
+ 
+-    if use_test_obj:
++    if use_test_obj and not semver.gte(zigtoolchaininfo.zig_version, "0.17.0"):
+         # Zig 0.16's LLVM StackProtector pass crashes for test-obj when
+         # compiler-rt provides __stack_chk_fail as an alias.
+         # See: https://codeberg.org/ziglang/zig/issues/31702
+diff --git a/zig/private/common/translate_c.bzl b/zig/private/common/translate_c.bzl
+--- a/zig/private/common/translate_c.bzl
++++ b/zig/private/common/translate_c.bzl
+@@ -6,6 +6,7 @@
+ load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+ load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+ load("//zig/private:cc_helper.bzl", "find_cc_toolchain")
++load("//zig/private/common:semver.bzl", "semver")
+ load("//zig/private/common:escape_label.bzl", "escape_label", "escape_label_str")
+ load(
+     "//zig/private/common:exec_groups.bzl",
+@@ -149,7 +150,8 @@
+ 
+     return zig_out, []
+ 
+-def _external_translate_c(*, ctx, translatectoolchaininfo, compilation_context, output_prefix):
++def _external_translate_c(*, ctx, zigtoolchaininfo, translatectoolchaininfo, compilation_context, output_prefix):
++    standalone_v2 = semver.gte(zigtoolchaininfo.zig_version, "0.17.0")
+     inputs = []
+     transitive_inputs = [compilation_context.headers]
+ 
+@@ -167,7 +169,7 @@
+     # Detect if the toolchain is the local apple cc toolchain since it requires
+     # special handling to get the builtin headers included.
+     is_local_apple_cc = _is_local_config_apple_cc(cc_toolchain)
+-    if cc_toolchain:
++    if cc_toolchain and not standalone_v2:
+         toolchain_defines_hdr = ctx.actions.declare_file("{}{}.toolchain_defines_hdr.c".format(output_prefix, ctx.label.name))
+         ctx.actions.write(toolchain_defines_hdr, "")
+ 
+@@ -192,13 +194,24 @@
+     ]))
+     inputs.append(hdr)
+ 
++    zig_out = ctx.actions.declare_file("{}{}_c.zig".format(output_prefix, ctx.label.name))
++    if zigtoolchaininfo.zig_lib.file != None:
++        transitive_inputs.append(depset([zigtoolchaininfo.zig_lib.file]))
+     args = ctx.actions.args()
++    if standalone_v2:
++        args.add("--zig-lib=" + zig_toolchain_lib_dir_path(zigtoolchaininfo))
++        args.add("--target=" + ctx.toolchains["//zig/target:toolchain_type"].zigtargetinfo.target)
++        args.add("-fmodule-libs")
++        args.add("-o=" + zig_out.path)
++        args.add("--")
++        args.add("-std=c17")
++        args.add("-DCURL_DISABLE_TYPECHECK=1")
++    else:
++        args.add("-undef")
+     args.add(hdr)
+ 
+     args.add_all([
+-        "-undef",
+         "-nobuiltininc",
+-        "-fmodule-libs",
+         "-D__building_module(x)=0",
+     ])
+ 
+@@ -251,8 +264,9 @@
+     args.add_all(getattr(compilation_context, "external_includes", []), before_each = "-isystem")
+     args.add_all(compilation_context.framework_includes, format_each = "-F%s")
+ 
+-    zig_out = ctx.actions.declare_file("{}{}_c.zig".format(output_prefix, ctx.label.name))
+-    args.add("-o", zig_out)
++    if not standalone_v2:
++        args.add("-fmodule-libs")
++        args.add("-o", zig_out)
+     args.add("--emulate=clang")
+ 
+     actions_run = ctx.actions.run
+@@ -310,6 +324,7 @@
+     if translatectoolchaininfo:
+         zig_out, translate_c_deps = _external_translate_c(
+             ctx = ctx,
++            zigtoolchaininfo = zigtoolchaininfo,
+             translatectoolchaininfo = translatectoolchaininfo,
+             compilation_context = compilation_context,
+             output_prefix = output_prefix,
+diff --git a/zig/private/common/cdeps.bzl b/zig/private/common/cdeps.bzl
+--- a/zig/private/common/cdeps.bzl
++++ b/zig/private/common/cdeps.bzl
+@@ -120,15 +120,9 @@
+     )
+ 
+ def _lib_flags(arg):
+-    (file, dynamic) = arg
+-    if dynamic:
+-        ext_skip = len(file.extension) + 1
+-        if file.basename.startswith("lib"):
+-            libname = file.basename[3:-ext_skip]
+-        else:
+-            libname = file.basename[:-ext_skip]
+-        return ["-L" + file.dirname, "-l" + libname]
+-    else:
+-        return file.path
++    (file, dynamic) = arg
++    # Link declared DSO artifacts through LLD, retaining their ELF SONAMEs.
++    # Version aliases cannot be expressed through Zig's -l library search.
++    return ["-fllvm", "-flld", file.path] if dynamic else file.path
+ 
+ def _make_to_rpath(solib_parents, os):
+     origin = "$ORIGIN"
+diff --git a/zig/private/zig_toolchain.bzl b/zig/private/zig_toolchain.bzl
+--- a/zig/private/zig_toolchain.bzl
++++ b/zig/private/zig_toolchain.bzl
+@@ -51,6 +51,8 @@
+ """
+ 
+ ATTRS = {
++    "_omux_bash": attr.label(default = Label("@@//tools:execution_bash"), executable = True, cfg = "exec"),
++    "_omux_tools": attr.label(default = Label("@@//tools:execution_tools"), cfg = "exec"),
+     "zig_exe": attr.label(
+         doc = "A hermetically downloaded Zig executable for the target platform.",
+         mandatory = True,
+@@ -81,6 +83,8 @@
+ }
+ 
+ PATH_ATTRS = {
++    "_omux_bash": attr.label(default = Label("@@//tools:execution_bash"), executable = True, cfg = "exec"),
++    "_omux_tools": attr.label(default = Label("@@//tools:execution_tools"), cfg = "exec"),
+     "zig_exe_path": attr.string(
+         doc = "Absolute path to an existing Zig executable for the target platform.",
+         mandatory = True,
+@@ -115,12 +119,8 @@
+     output = ctx.actions.declare_file(ctx.label.name + ".version_validation")
+     args = ctx.actions.args()
+     args.add_all([zig_exe, zig_version, output])
+-    ctx.actions.run_shell(
+-        outputs = [output],
+-        tools = tools,
+-        arguments = [args],
+-        command = "\n".join([
++    command = "\n".join([
+             'actual_version="$("$1" version)"',
+             "if [[ $actual_version != $2 ]]; then",
+             '  echo "Zig SDK version mismatch. Expected \'$2\' but got \'$actual_version\'." >&2',
+@@ -126,7 +126,15 @@
+             "  exit 1",
+             "fi",
+             'printf \'\' > "$3"',
+-        ]),
++        ])
++    ctx.actions.run(
++        executable = ctx.executable._omux_bash,
++        outputs = [output],
++        inputs = ctx.attr._omux_tools[DefaultInfo].files,
++        tools = tools + [ctx.attr._omux_bash[DefaultInfo].files_to_run],
++        arguments = ["-c", command, "omux-zig-version", args],
++        use_default_shell_env = False,
++        env = {"PATH": ""},
+         mnemonic = "ZigVersionValidation",
+         progress_message = "validate Zig SDK version for toolchain %{label}",
+     )

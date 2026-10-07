@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "kind": "integrated_delivery_native_removal_semantic_checkpoint",
+  "authority": "User-authorized implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "3a3cfb5f-aab8-4f0e-9101-881da050994d",
+  "original_handle": 35675,
+  "handle_terminal": true,
+  "raw_controller_receipt": "/home/jess/.local/state/omux-execution-20261005/3a3cfb5f-aab8-4f0e-9101-881da050994d/receipt.json",
+  "raw_controller_receipt_sha256": "25a417a11928b4fe893bc8fcf9b241e99c373f9b15518ac6887ca6695967d606",
+  "graph_sha256": "bf67be11f938430c2cb62496f4bf6e0a2f1a49bb2da5d5096bae593f7c886640",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 253698,
+    "files": 11,
+    "manifest": "test-evidence.json",
+    "sha256": "bf2b1cf26a00e012804d4868d12519c53f3bb7c6c49dd0a46f2a6ff130451be0",
+    "state": "preserved"
+  },
+  "targets": [
+    "//:reliability_lifecycle_native_removal_test",
+    "//:format_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "passed_targets": [
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_targets": [
+    "//:docs_check",
+    "//:reliability_lifecycle_native_removal_test"
+  ],
+  "native_actor_result": {
+    "mode": "ReleaseSafe",
+    "elapsed_seconds": 120.7,
+    "total_cases": 250,
+    "passed_cases": 249,
+    "failed_case": "Registered-owner successful removal without optional timing under allocator pressure",
+    "unchanged_timeout_seconds": 300,
+    "diagnostics": {
+      "zero_owner_9500": "successful removal without timing; replay/restart passed",
+      "registered_9500_12500": "SnapshotTooLarge; started/pending, no unregister",
+      "registered_16000_20000": "successful measured removal; exact-once unregister, configuration restore, replay/restart passed"
+    },
+    "production_starvation_hypothesis": "Disproved: reserveOutcome does not consult optional witness/shared physical envelope; existing post-reservation budget branch retained. No production change justified."
+  },
+  "docs_failure": "New compact-output note unclassified; authority classification corrected afterward, unverified",
+  "source_follow_on": {
+    "pressure_candidates": [
+      12500,
+      13500,
+      14500,
+      15500
+    ],
+    "scope": "Four-point fixture calibration; mandatory successful-unmeasured removal/deletion/replay assertions unchanged",
+    "status": "applied_unrun"
+  },
+  "new_acceptance_gate_closed": false,
+  "remaining_scope": "Installed native resume, accepted history, live handoff, achieved SLO/SLA, stock support and Darwin remain unproved"
+}

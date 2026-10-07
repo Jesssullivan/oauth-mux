@@ -1,0 +1,11 @@
+# Inert NAR byte-proof graph
+
+Authority: October 5 authorized implementation, AGENTS.md and R-HOOK-CONVERGENCE-20261004. The BlueZ 5.86 `etc/bluetooth/{input,main,network}.conf` aliases point outside the immutable closure. Only literal link metadata was inspected; host target contents were never read. Default executable closure admission stays strict.
+
+New, unused sources form a separate byte-proof graph: `nar_descriptor.py`, `nar_descriptor_repository_inventory.py`, `cached_nar_repository.bzl`, and `verify_declared_nars.py`, with pure test sources and a separately declared `nar_descriptor_nix_fixture.py` comparison fixture. Root owns module/target wiring and all execution.
+
+Bootstrap generation serializes directory metadata, executable bits, regular sizes and literal symlink targets. It declares only indexed regular-file labels as byte inputs. Links, including external host configuration aliases, remain inert descriptor data and never grant execution or target-reading authority. Canonical NAR strings use unsigned 64-bit little-endian lengths, zero padding to eight bytes and byte-sorted directory entries, following the [official format](https://nix.dev/manual/nix/2.34/protocols/nix-archive).
+
+The verification action consumes the declared descriptor plus its exact regular-label set, rejects missing/duplicate/traversal/special nodes, and streams regular bytes without a full mirror. An input opener begins at a declared label, admits only its exact declared alias namespaces, and checks the prescribed immutable regular target with no-follow directory/file opening, size and executable mode validation. There is no ambient original-store fallback. Hashes/sizes must match the digest-bound original inventory. Bounds include 256 MiB metadata, one million aggregate descriptor nodes, 16 GiB NAR output, 600 seconds overall and 120 seconds per root.
+
+The synthetic comparison fixture must pass against pinned Nix before the new serializer supports a byte-proof claim. The 401-root closure verification, flake mapping and actual browser acceptance are independent gates. No new helper, test, Nix command, browser or package was executed by this workstream; current sources are proposals pending root review and contained validation.

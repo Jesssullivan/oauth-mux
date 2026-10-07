@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "yoga_bootstrap_fixed_step_refusal",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "7c4880c0-e3aa-439c-bedd-a8cdee3233c9",
+  "original_handle": 68164,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-yoga-delivery-20261006/7c4880c0-e3aa-439c-bedd-a8cdee3233c9/receipt.json",
+  "raw_receipt_sha256": "09a373f2c6f746c09a625786b4774b04d77abcb4f8ad29db7110420bc7578adc",
+  "graph_sha256": "7364a12afc36c4948bca49acdd311bdf4c58eba944038be6d2f8191264df50ab",
+  "controller_exit": 2,
+  "workload_exit": 2,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "source_verified_after_cleanup": true,
+  "gate": "declared-nix-operation-failed",
+  "operation_failure": {
+    "stage": "authenticated-os-qualification",
+    "ssh_exit_status": 1,
+    "os_bootstrap_failure": {
+      "category": "missing-input",
+      "step": "nix-resolution"
+    }
+  },
+  "qualification": null,
+  "inspect_verify_executed": false,
+  "copy_performed": false,
+  "remote_cleanup": "unknown",
+  "remote_owned_containment_verified": false,
+  "scope": "Fresh categorical evidence identifies the assumed Home Manager generation Nix selection as missing. Home Manager marker and installed OS bootstrap interpreter passed earlier sequential predicates; current alternative system-profile Nix is not qualified. Lab-declared source binding is under independent review; no manual symlink, PATH substitution or fleet activation.",
+  "toolbar_consent_proved": false,
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false,
+  "linear_carriers": [
+    "TIN-2063",
+    "TIN-5442",
+    "TIN-2720"
+  ]
+}

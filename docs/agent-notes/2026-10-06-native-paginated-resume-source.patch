@@ -1,0 +1,274 @@
+diff --git a/delivery/test_installed_native_tui.py b/delivery/test_installed_native_tui.py
+--- a/delivery/test_installed_native_tui.py
++++ b/delivery/test_installed_native_tui.py
+@@ -30,7 +30,8 @@
+ import termios
+ import time
+ 
+-import test_installed_native_interop as support
++import test_installed_native_interop as support
++import native_resumed_checkpoint
+ 
+ PHASE = "private-context"
+ PHASES = ("private-context", "runtime-verification", "keyring-startup", "daemon-startup",
+@@ -267,30 +268,14 @@
+     return row, (information.st_dev, information.st_ino), hashlib.sha256(payload).digest(), payload
+ 
+ 
+-def resumed_history(before, resumed, thread):
+-    # Native Session::initialize_history checkpoints effective settings on
+-    # resume even without a turn. Preserve every original byte and allow only
+-    # that one explicitly typed native metadata append, never accepted work.
+-    require(resumed[:2] == before[:2] and resumed[3].startswith(before[3]) and before[3].endswith(b"\n"),
+-            "cold native resume changed original history bytes or identity")
+-    suffix = resumed[3][len(before[3]):].splitlines()
+-    require(len(suffix) == 1, "cold native resume appended unexpected history")
+-    event = json.loads(suffix[0], object_pairs_hook=strict_object)
+-    require(isinstance(event, dict) and set(event) == {"timestamp", "type", "payload"}
+-            and event["type"] == "event_msg" and isinstance(event["timestamp"], str)
+-            and isinstance(event["payload"], dict), "cold native metadata append envelope changed")
+-    body = event["payload"]
+-    require(set(body) == {"type", "thread_id", "thread_settings"}
+-            and body["type"] == "thread_settings_applied" and body["thread_id"] == thread
+-            and isinstance(body["thread_settings"], dict), "cold native append was not settings metadata")
+-    settings = body["thread_settings"]
+-    required = {"model", "model_provider_id", "approval_policy", "approvals_reviewer", "permission_profile",
+-                "cwd", "collaboration_mode", "disabled_plugin_ids"}
+-    optional = {"service_tier", "active_permission_profile", "runtime_workspace_roots", "reasoning_effort",
+-                "reasoning_summary", "personality"}
+-    require(required <= set(settings) <= required | optional and settings["cwd"] == before[0][3]
+-            and settings["approval_policy"] == "never" and settings["disabled_plugin_ids"] == [],
+-            "cold native settings snapshot changed provider-free policy")
++def resumed_history(before, resumed, thread):
++    # Native Session::initialize_history checkpoints effective settings on
++    # resume even without a turn. Preserve every original byte and allow only
++    # that one explicitly typed native metadata append, never accepted work.
++    require(resumed[:2] == before[:2] and resumed[3].startswith(before[3]) and before[3].endswith(b"\n"),
++            "cold native resume changed original history bytes or identity")
++    native_resumed_checkpoint.validate_paginated_checkpoint(
++        before[3], resumed[3][len(before[3]):], thread, before[0][3])
+ 
+ 
+ def wait_resumed_checkpoint(home, thread, terminal, before):
+diff --git a/delivery/BUILD.bazel b/delivery/BUILD.bazel
+--- a/delivery/BUILD.bazel
++++ b/delivery/BUILD.bazel
+@@ -437,7 +437,8 @@
+     main = "test_installed_native_tui.py",
+     srcs = [
+         "pack.py", "install.py", "portable.py", "test_installed_custody.py",
+-        "test_installed_native_interop.py",
++        "test_installed_native_interop.py",
++        "native_resumed_checkpoint.py",
+         "//integrations/codex-owner-runtime:runtime_package.py",
+         "//integrations/codex-upstream:patch_io.py",
+         "//integrations/codex-upstream:restore_source.py",
+@@ -468,7 +469,8 @@
+     main = "test_installed_legacy_native_tui.py",
+     srcs = [
+         "pack.py", "install.py", "portable.py", "codex_runtime_selection.py",
+-        "test_installed_custody.py", "test_installed_native_interop.py", "test_installed_native_tui.py",
++        "test_installed_custody.py", "test_installed_native_interop.py", "test_installed_native_tui.py",
++        "native_resumed_checkpoint.py",
+         "//integrations/codex-owner-runtime:runtime_package.py",
+         "//integrations/codex-upstream:patch_io.py",
+         "//integrations/codex-upstream:restore_source.py",
+@@ -620,3 +622,9 @@
+     timeout = "short",
+     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+ )
++
++python_test(
++    name = "native_resumed_checkpoint_test",
++    main = "test_native_resumed_checkpoint.py",
++    srcs = ["native_resumed_checkpoint.py"],
++)
+diff --git a/delivery/native_resumed_checkpoint.py b/delivery/native_resumed_checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/delivery/native_resumed_checkpoint.py
+@@ -0,0 +1,71 @@
++"""Strict retained-candidate paginated native resume checkpoint predicate.
++
++R-HOOK-CONVERGENCE-20261004 / R-N13. Reads supplied bounded bytes only.
++The rollout's own session_meta.history_mode must declare pagination; SQLite
++mode alone and a UI feature flag do not authorize this format. No legacy or
++stock capability is inferred. This helper creates no history or authority.
++"""
++import json
++
++MAX_HISTORY_BYTES = 1024 * 1024
++MAX_ORDINAL = (1 << 64) - 1
++
++
++def require(condition, message):
++    if not condition:
++        raise ValueError(message)
++
++
++def strict_object(pairs):
++    result = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError("native JSON contains duplicate keys")
++        result[key] = value
++    return result
++
++
++def ordinal(record):
++    value = record.get("ordinal") if isinstance(record, dict) else None
++    # bool is an int subclass in Python; the native writer emits a u64 number.
++    require(type(value) is int and 0 <= value <= MAX_ORDINAL,
++            "cold native metadata append envelope changed")
++    return value
++
++
++def validate_paginated_checkpoint(prefix, appended, thread, original_cwd):
++    require(type(prefix) is bytes and type(appended) is bytes
++            and 0 < len(prefix) <= MAX_HISTORY_BYTES
++            and 0 < len(appended) <= MAX_HISTORY_BYTES and prefix.endswith(b"\n"),
++            "cold native metadata append envelope changed")
++    original = prefix.splitlines()
++    root = json.loads(original[0], object_pairs_hook=strict_object)
++    require(isinstance(root, dict) and root.get("type") == "session_meta"
++            and isinstance(root.get("payload"), dict)
++            and root["payload"].get("history_mode") == "paginated",
++            "cold native metadata append envelope changed")
++    # ordinal_state_for_rollout reads the final valid original record and uses
++    # checked_add(1). The caller has already validated every original JSON line;
++    # never infer the next ordinal from record count or SQLite history_mode.
++    previous = ordinal(json.loads(original[-1], object_pairs_hook=strict_object))
++    require(previous < MAX_ORDINAL, "cold native metadata append envelope changed")
++    suffix = appended.splitlines()
++    require(len(suffix) == 1, "cold native resume appended unexpected history")
++    event = json.loads(suffix[0], object_pairs_hook=strict_object)
++    require(isinstance(event, dict) and set(event) == {"timestamp", "ordinal", "type", "payload"}
++            and event["type"] == "event_msg" and isinstance(event["timestamp"], str)
++            and isinstance(event["payload"], dict) and ordinal(event) == previous + 1,
++            "cold native metadata append envelope changed")
++    body = event["payload"]
++    require(set(body) == {"type", "thread_id", "thread_settings"}
++            and body["type"] == "thread_settings_applied" and body["thread_id"] == thread
++            and isinstance(body["thread_settings"], dict),
++            "cold native append was not settings metadata")
++    settings = body["thread_settings"]
++    required = {"model", "model_provider_id", "approval_policy", "approvals_reviewer", "permission_profile",
++                "cwd", "collaboration_mode", "disabled_plugin_ids"}
++    optional = {"service_tier", "active_permission_profile", "runtime_workspace_roots", "reasoning_effort",
++                "reasoning_summary", "personality"}
++    require(required <= set(settings) <= required | optional and settings["cwd"] == original_cwd
++            and settings["approval_policy"] == "never" and settings["disabled_plugin_ids"] == [],
++            "cold native settings snapshot changed provider-free policy")
+diff --git a/delivery/test_native_resumed_checkpoint.py b/delivery/test_native_resumed_checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/delivery/test_native_resumed_checkpoint.py
+@@ -0,0 +1,108 @@
++"""Bounded pure native checkpoint predicates, not an installed resume proof."""
++import copy
++import json
++import unittest
++
++import native_resumed_checkpoint as checkpoint
++
++
++THREAD = "synthetic-native-thread"
++CWD = "/synthetic-native-work"
++
++
++def encoded(value):
++    return json.dumps(value, separators=(",", ":")).encode() + b"\n"
++
++
++def prefix(last=0, mode="paginated"):
++    root = {"timestamp": "fixture", "ordinal": 0, "type": "session_meta",
++            "payload": {"history_mode": mode, "id": THREAD, "session_id": THREAD}}
++    result = encoded(root)
++    if last:
++        result += encoded({"timestamp": "fixture", "ordinal": last,
++                           "type": "event_msg", "payload": {"type": "fixture_metadata"}})
++    return result
++
++
++def event(number=1):
++    return {"timestamp": "fixture", "ordinal": number, "type": "event_msg",
++            "payload": {"type": "thread_settings_applied", "thread_id": THREAD,
++                        "thread_settings": {
++                            "model": "fixture-model", "model_provider_id": "fixture-provider",
++                            "approval_policy": "never", "approvals_reviewer": "fixture",
++                            "permission_profile": {}, "cwd": CWD,
++                            "collaboration_mode": {}, "disabled_plugin_ids": []}}}
++
++
++class CheckpointTests(unittest.TestCase):
++    def validate(self, value, original=None):
++        checkpoint.validate_paginated_checkpoint(
++            prefix() if original is None else original, encoded(value), THREAD, CWD)
++
++    def test_exact_paginated_checkpoint_and_tail_ordinal(self):
++        self.validate(event())
++        # The next ordinal comes from the original tail, not prefix line count.
++        self.validate(event(8), prefix(last=7))
++        self.validate(event(checkpoint.MAX_ORDINAL), prefix(last=checkpoint.MAX_ORDINAL - 1))
++
++    def test_missing_ordinal_refused(self):
++        value = event()
++        del value["ordinal"]
++        with self.assertRaises(ValueError):
++            self.validate(value)
++
++    def test_boolean_noninteger_negative_and_overflow_ordinals_refused(self):
++        for number in (True, False, "1", 1.0, None, -1, checkpoint.MAX_ORDINAL + 1):
++            with self.subTest(number=number), self.assertRaises(ValueError):
++                self.validate(event(number))
++
++    def test_gap_and_regressed_ordinal_refused(self):
++        for number in (0, 6, 7, 9):
++            with self.subTest(number=number), self.assertRaises(ValueError):
++                self.validate(event(number), prefix(last=7))
++
++    def test_original_tail_requires_integer_u64_and_room_for_next(self):
++        for number in (True, "7", -1, checkpoint.MAX_ORDINAL, checkpoint.MAX_ORDINAL + 1):
++            original = prefix() + encoded({"ordinal": number, "type": "event_msg", "payload": {}})
++            with self.subTest(number=number), self.assertRaises(ValueError):
++                self.validate(event(), original)
++
++    def test_rollout_declares_paginated_format_not_sql_or_ui_guess(self):
++        for mode in ("legacy", None, "future"):
++            with self.subTest(mode=mode), self.assertRaises(ValueError):
++                self.validate(event(), prefix(mode=mode))
++
++    def test_extra_envelope_field_refused(self):
++        value = event()
++        value["unexpected"] = True
++        with self.assertRaises(ValueError):
++            self.validate(value)
++
++    def test_extra_events_refused_even_if_each_is_settings(self):
++        with self.assertRaises(ValueError):
++            checkpoint.validate_paginated_checkpoint(
++                prefix(), encoded(event()) + encoded(event(2)), THREAD, CWD)
++
++    def test_duplicate_ordinal_refused(self):
++        payload = encoded(event()).replace(b'"ordinal":1', b'"ordinal":1,"ordinal":1', 1)
++        with self.assertRaises(ValueError):
++            checkpoint.validate_paginated_checkpoint(prefix(), payload, THREAD, CWD)
++
++    def test_original_thread_event_kind_and_provider_free_policy_preserved(self):
++        mutations = (
++            ("thread", lambda value: value["payload"].update(thread_id="different-fixture-thread")),
++            ("kind", lambda value: value["payload"].update(type="user_message")),
++            ("cwd", lambda value: value["payload"]["thread_settings"].update(cwd="/other-fixture-work")),
++            ("approval", lambda value: value["payload"]["thread_settings"].update(approval_policy="on-request")),
++            ("plugin", lambda value: value["payload"]["thread_settings"].update(disabled_plugin_ids=["fixture"])),
++            ("extra-setting", lambda value: value["payload"]["thread_settings"].update(unexpected=True)),
++        )
++        for label, mutate in mutations:
++            value = copy.deepcopy(event())
++            mutate(value)
++            with self.subTest(label=label), self.assertRaises(ValueError):
++                self.validate(value)
++
++
++if __name__ == "__main__":
++    unittest.main()

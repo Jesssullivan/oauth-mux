@@ -1,0 +1,14 @@
+[Unit]
+Description=Omux per-user account and continuity service
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=omux daemon
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

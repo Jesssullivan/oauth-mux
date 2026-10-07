@@ -1,0 +1,79 @@
+load("//tools:rules.bzl", "extension_archive", "node_test", "python_binary", "python_test")
+load(":channel_rules.bzl", "channel_archive", "development_identity")
+
+package(default_visibility = ["//visibility:public"])
+
+# Public-only identity for local release-channel coexistence evaluation.
+# It supplies no signing authority or published/store extension identity.
+development_identity(name = "generate_release_evaluation_identity")
+filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "shared/*", "chromium/*.json", "chromium/*.public-key", "firefox/*.json"], allow_empty = True))
+filegroup(name = "public_sources", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.md", "shared/*", "chromium/*.json", "chromium/*.public-key", "firefox/*.json"], allow_empty = True))
+
+exports_files(["README.md"])
+
+# Explicit one-time local action. Inspect its public output, then pin it in
+# chromium/development.public-key; repeated invocation creates a new identity.
+development_identity(
+    name = "generate_development_identity",
+    tags = ["manual"],
+)
+
+node_test(
+    name = "protocol_test",
+    main = "shared/protocol.test.mjs",
+    srcs = glob(["shared/*.mjs"], exclude = ["shared/protocol.test.mjs", "shared/bridge.test.mjs"]),
+)
+
+node_test(
+    name = "tests",
+    main = "shared/bridge.test.mjs",
+    srcs = glob(["shared/*.mjs"], exclude = ["shared/bridge.test.mjs"]),
+    data = ["chromium/manifest.json", "firefox/manifest.json", ":chromium_package", ":firefox_package"],
+    args = ["--chromiumArchive=$(location :chromium_package)", "--firefoxArchive=$(location :firefox_package)"],
+)
+
+extension_archive(
+    name = "chromium_package",
+    browser_manifest = "chromium/manifest.json",
+    srcs = glob(["shared/*"], exclude = ["shared/*.test.mjs"]),
+)
+
+extension_archive(
+    name = "firefox_package",
+    browser_manifest = "firefox/manifest.json",
+    srcs = glob(["shared/*"], exclude = ["shared/*.test.mjs"]),
+    output_suffix = ".xpi",
+)
+
+# Public identity is pinned after its declared generation receipt. It is not a
+# signing credential; this archive remains unsigned and unpublished.
+channel_archive(
+    name = "chromium_release_evaluation_package",
+    browser_manifest = "chromium/manifest.json",
+    public_key = "chromium/evaluation-release.public-key",
+    channel = "release",
+    srcs = glob(["shared/*"], exclude = ["shared/*.test.mjs"]),
+    tags = ["manual"],
+)
+
+channel_archive(
+    name = "chromium_dev_package",
+    browser_manifest = "chromium/manifest.json",
+    public_key = "chromium/development.public-key",
+    channel = "development",
+    srcs = glob(["shared/*"], exclude = ["shared/*.test.mjs"]),
+)
+
+python_binary(
+    name = "host_setup",
+    main = "native_host_setup.py",
+)
+
+python_binary(name = "channel_archive_cli", main = "channel.py")
+python_test(name = "channel_test", main = "channel_test.py", srcs = ["channel.py"])
+
+python_test(
+    name = "host_setup_test",
+    main = "native_host_setup_test.py",
+    srcs = ["native_host_setup.py"],
+)

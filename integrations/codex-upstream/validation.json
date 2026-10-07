@@ -1,0 +1,328 @@
+{
+  "artifact_status": "upstream-patch-candidate",
+  "native_support": false,
+  "upstream_commit": "00c972ed5d6ff6499317fd41b7f23605b8e6850d",
+  "validation_environment": {
+    "flake_shell": "codex-upstream",
+    "bazel": "9.0.1",
+    "rust": "1.95.0",
+    "toolchain_authority": "The pinned official upstream Bazel module graph declares and hashes native Rust, LLVM, formatter and dependency tools. The x86_64-linux codex-upstream Nix shell contains the eleven audited upstream archives and supplies their immutable distdir plus the exact test helper PATH through a supplemental Bazel rc.",
+    "tool_archive_manifest": "../../tools/codex_upstream_archives.json",
+    "tool_archive_count": 11,
+    "tool_archive_manifest_sha256": "24d38455e433f5a4eae5d5c5d65c3eb556a6ccd87030d9ec37a9a97907dbfc06",
+    "tool_custody_scope": "Audited x86_64-linux native production targets, schema exports, formatter and focused synthetic tests; optional lint tools and other native platforms require separate audited closure.",
+    "module_sha256": "1a6c8685d241a5390ff94432581e842c2950cbe5262b47b27d8db467cebec4c2",
+    "original_module_lock_sha256": "be65892b2bdb12c0867dabfcaaf7ca4ee7a9ae4915e0d0de9c99448158777d31",
+    "resolved_module_lock_sha256": "3416c08d3ddff96ec9e0b76d7d89eaa2b75cc8d81f0a9f661d8b8466d1343657",
+    "cargo_lock_sha256": "72efa81ed947d07ed4fbb3e10b094715ff00626126d758aaed56733c97887e5f",
+    "original_workspace_manifest_sha256": "7b04f6170671ae813412fc9cd27eedf1dead02a0a22e1625962a0d2847f5c6c5",
+    "normalized_workspace_manifest_sha256": "c732c370ca012d0da7944d463601b3c834eb862a85866d3274db9d2acecea978",
+    "validation_overlay": "validation-overlay.patch",
+    "validation_overlay_sha256": "563bb8ac31fb17ae97e1c92d140bfe633102e4714803489b551c0d0c2e4717cb",
+    "overlay_reason": "The release-tag workspace package version is 0.157.0 while its committed path-package lock versions are 0.0.0. Validation explicitly normalizes that version, records Bazel registry metadata reconciliation and scopes each wrapped test's account/config roots under TEST_TMPDIR. These three edits are excluded from the product patch.",
+    "synthetic_account_scope": "Wrapped Rust tests receive a spawned-process HOME, CODEX_HOME and XDG roots beneath TEST_TMPDIR, with ambient API token variables removed. The unsharded CLI login fixture explicitly owns its temporary CODEX_HOME and file credential backend. No personal account files or provider credentials are used.",
+    "lockfile_mode": "error after the recorded reconciliation"
+  },
+  "validation_epoch": "expired-acquire-cleanup-2026-10-03-evening",
+  "history_scope": "historical_artifact and historical_checks belong to patch 450e7515209a5a1efd5b239e0e868b06f0e79ce883bdb2616a3afa106f478360. Their 55 broker predicates, 318 protocol tests and eight-target compilation do not certify the current candidate bytes. Current checks below establish only their explicit predicates; failed custody epochs remain separate from the successful durable-source compilation.",
+  "artifact": {
+    "reviewed_changed_files": 107,
+    "producer_invocation_id": "0d1f1c9f-6d5a-4b9b-a658-4f65681206de",
+    "producer_invocation_id_source": "Bazel command.profile.gz alias identifies the retained command-0d1f1c9f-6d5a-4b9b-a658-4f65681206de.profile.gz; the local generator output did not print an invocation ID.",
+    "producer_elapsed_seconds": 113.711,
+    "producer_target": "//integrations/codex-upstream:refresh_artifact",
+    "producer_inputs": {
+      "original_tar": "/tmp/omux-codex-original-v0157.tar",
+      "edited_checkout": "/tmp/omux-codex-upstream-v0157",
+      "declared_new_paths": "All 17 manifest files whose before_sha256 is null except codex-rs/core/src/auth_broker.rs were supplied individually with --new-file; auth_broker.rs remains the producer's default new file.",
+      "output": "/srv/fast-local/jess/git/oauth-mux/integrations/codex-upstream"
+    },
+    "patch_sha256": "4a236da5663485458744375f8844898682d4b9f160fd37c00e912fd7cd2e76c3",
+    "base_sha256": "a3b5e866401a055ae55a4cb64e3feb6a7ff414dae7150bdc9fab70a8d26dd494",
+    "binary_overlay_sha256": "be1a71b46dae300e3e4497d2bed3fc82a3efb2b0e954b31527df7c4bd2e08f7e",
+    "changed_source": "codex-rs/core/src/auth_broker.rs",
+    "changed_source_sha256": "16a15745d138e2786ec9cc0cabb3589452a22f636ab2d0055eec608f8887bd8c",
+    "scope": "The existing 107-file candidate gains structurally decoded lease cleanup before expiry validation and truthful retained-custody diagnostics. The immutable original archive, attribution and binary protocol overlay retain their prior hashes. No public wire/config schema changed; no live or installed support is promoted."
+  },
+  "checks": {
+    "upstream_source_restoration": {
+      "status": "passed",
+      "ruling_id": "R-N13",
+      "source": "/srv/fast-local/jess/state/codex/omux-codex-source-00c972ed/source",
+      "target": "//integrations/codex-upstream:restore_source",
+      "fetch_invocation_id": "4a1f7834-d47c-4a77-a497-73cbe5cd41f7",
+      "strict_verify_invocation_id": "bedecf63-91b6-4dde-bae3-cc509742de0c",
+      "prepare_invocation_id": "09b2b08a-113c-4ab5-a6af-31cc8cd20325",
+      "upstream_tree_oid": "6fa1a3767a92ba5d579fcaf724fdce3049c2070b",
+      "original_files": 8497,
+      "original_source_bytes": 84097652,
+      "original_inventory_sha256": "db5f14df73a76ca55008742783e9a56c94e60439ab62447e4a8e1ff0d884995c",
+      "prepared_files": 8515,
+      "prepared_source_bytes": 84372839,
+      "prepared_inventory_sha256": "d1516b7ca018277407de37b1af8463ae002e67cab7ac6664ecdbfe6fef9034a3",
+      "focused_tool_test_invocation_id": "70b8ac98-f7f5-455c-a012-4de9bd565a36",
+      "focused_tool_test_elapsed_seconds": 27.919,
+      "focused_tool_tests_passed": 1,
+      "final_focused_tool_test_invocation_id": "581207b2-a589-43b9-818c-d729243656de",
+      "final_focused_tool_test_elapsed_seconds": 7.582,
+      "final_focused_tool_tests_passed": 1,
+      "execution_closure": "/nix/store/12waya019j1aiimr0j91lpdfk145xi9i-omux-bazel-closure",
+      "coordinator_bootstrap_closure": "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
+      "scope": "Declared coordinator-only locked Git and CA fetched the fixed public official commit with personal Git configuration, credentials, hooks and prompting excluded. Exact commit/tree, fsck, every tracked blob/mode/symlink and complete inventories passed; the exact 107-file candidate and separately hashed three-file validation overlay were applied and their resulting whole-source inventory and graph hashes checked. The first prepare attempt 5f204045-a2fb-4736-b031-d5a8b1a4a120 stopped before source writes because its parser did not accept recorded Git index metadata; the focused regression and subsequent preparation passed. Durable per-file receipts are held at the source custody root. This restoration does not itself prove upstream compilation, broker behavior or live continuity."
+    },
+    "upstream_declared_formatter": {
+      "status": "passed",
+      "invocation_id": "bfe5bfc5-1352-4fd9-b470-d34f0a2bafbb",
+      "elapsed_seconds": 48.787,
+      "target": "@rules_rust//tools/upstream_wrapper:rustfmt",
+      "scope": "Only the changed codex-rs/core/src/auth_broker.rs, edition 2024, through the audited codex-upstream Nix shell and declared upstream Bazel formatter."
+    },
+    "upstream_auth_broker_tests": {
+      "status": "passed",
+      "invocation_id": "ce230cfb-6e1d-43f3-af5b-b3cccdfd3639",
+      "elapsed_seconds": 1858.068,
+      "target": "//codex-rs/core:core-unit-tests",
+      "rust_tests_passed": 17,
+      "rust_tests_failed": 0,
+      "rust_tests_ignored": 0,
+      "rust_tests_filtered_out": 2594,
+      "test_elapsed_seconds": 0.47,
+      "command": "nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --ignore-environment --keep HOME --command bash -c 'exec bazelisk --nosystem_rc --nohome_rc --bazelrc=\"$OMUX_CODEX_BAZELRC\" --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof test --keep_going --jobs=4 --strategy=sandboxed --lockfile_mode=error --test_output=all --test_filter=auth_broker --test_arg=auth_broker --test_arg=--test-threads=1 --test_sharding_strategy=disabled //codex-rs/core:core-unit-tests'",
+      "action_custody": "Bazel reported five linux-sandbox and three local processes plus two internal processes. The changed production core rlib compiled in linux-sandbox; the declared upstream core test binary retained its local/no-sandbox target behavior. All inputs used the audited locked Nix/upstream graph; test roots and credentials remained synthetic.",
+      "regression": "expired_acquired_lease_abandons_exactly_once_without_replay observes one structurally valid expired acquisition and exactly one terminal abandoned report, then retains the private listener to detect any extra connection. It never materializes, reports acceptance, reacquires or replays.",
+      "fixture_expectation_change": "The historical mixed expired lease/grant fixture expected four calls without abandonment. Its grant/generation checks now expect three materialize calls; expired acquisition is a separate two-call acquisition/terminal-abandonment regression.",
+      "scope": "Current source compilation of core and its test dependencies plus 17 actual auth_broker predicates, including cleanup, native ancillary ownership, opaque context and route metadata fences. This test receipt is separate from the eight-target compilation below; it is not the historical broader 55-predicate run or live native handoff proof."
+    },
+    "artifact_source_oracle": {
+      "status": "passed",
+      "invocation_id": "4cad1391-3a88-4b86-9456-f2a774adf0a3",
+      "invocation_id_source": "Retained Bazel command profile alias; the local test output did not print an invocation ID.",
+      "elapsed_seconds": 60.983,
+      "targets": ["//integrations/codex-upstream:patch_test", "//integrations/codex-upstream:tooling_test"],
+      "tests_passed": 2,
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof test --jobs=4 --test_output=all //integrations/codex-upstream:patch_test //integrations/codex-upstream:tooling_test",
+      "scope": "Current 107-file exact patch/binary application, checksums, attribution, deterministic packaging and guard-before-expiry source invariants passed in processwrapper-sandbox. This oracle does not execute Rust or prove live continuity."
+    },
+    "upstream_eight_target_compilation": {
+      "status": "passed",
+      "ruling_id": "R-N13",
+      "invocation_id": "f76aed1e-36a7-4f9b-9c16-35cd91e9b4e0",
+      "started_at_utc": "2026-10-04T04:10:38Z",
+      "completion_observed_at_utc": "2026-10-04T04:47:52Z",
+      "elapsed_seconds": 2224.019,
+      "critical_path_seconds": 723.95,
+      "working_directory": "/srv/fast-local/jess/state/codex/omux-codex-source-00c972ed/source",
+      "output_base": "/srv/fast-local/jess/state/codex/omux-codex-bazel-proof/a57fdb225bfffe3e6bc230eb9e43949f",
+      "command": "env -i HOME=/home/jess PATH=/nix/var/nix/profiles/default/bin:/usr/bin:/bin nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --ignore-environment --keep HOME --command bash -c 'exec bazelisk --nosystem_rc --nohome_rc --bazelrc=\"$OMUX_CODEX_BAZELRC\" --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof build --invocation_id=f76aed1e-36a7-4f9b-9c16-35cd91e9b4e0 --keep_going --jobs=4 --strategy=sandboxed --lockfile_mode=error //codex-rs/core:core //codex-rs/app-server:app-server //codex-rs/config:config //codex-rs/app-server-protocol:app-server-protocol //codex-rs/tui:tui //codex-rs/cli:codex //codex-rs/config-schema:codex-write-config-schema //bazel/schema:public-schema-bundle'",
+      "targets": ["//codex-rs/core:core", "//codex-rs/app-server:app-server", "//codex-rs/config:config", "//codex-rs/app-server-protocol:app-server-protocol", "//codex-rs/tui:tui", "//codex-rs/cli:codex", "//codex-rs/config-schema:codex-write-config-schema", "//bazel/schema:public-schema-bundle"],
+      "compiled_target_count": 8,
+      "reported_total_actions": 7844,
+      "reported_processes": { "linux_sandbox": 6459, "internal": 1385 },
+      "cache_hit_count_reported": false,
+      "declared_public_schema_actions": {
+        "count": 2,
+        "modes": ["stable", "experimental"],
+        "helper": "schema_fixtures_tests::write_schema_fixtures_from_env",
+        "helper_tests_passed_per_action": 1,
+        "protocol_tests_filtered_out_per_action": 318,
+        "helper_elapsed_seconds": [9.33, 9.32],
+        "elapsed_mode_attribution": "Merged concurrent output does not reliably pair the two elapsed values with modes; both declared modes passed.",
+        "scope": "Inherent sandboxed schema-writer actions of the explicitly requested eighth target, recorded separately from the eight target count and 17 broker predicates. They generated Bazel output trees and did not overwrite source fixtures or rerun the 318-test protocol suite."
+      },
+      "scope": "Fresh compilation of the exact current 107-file candidate from verified complete durable source, through the audited upstream Nix/Bazel graph. All eight approved targets passed; final process summary reports 6,459 linux-sandbox and 1,385 internal processes without a cache-hit count. Ordinary upstream graph/compiler warnings remained, including unused status_account_display; no source-integrity warning occurred. This compile receipt does not promote installed native support, stock hooks or live continuity."
+    },
+    "post_build_prepared_source_verification": {
+      "status": "passed",
+      "ruling_id": "R-N13",
+      "invocation_id": "916e727b-2b7d-43fa-a8be-663f9e325cee",
+      "target": "//integrations/codex-upstream:restore_source",
+      "phase": "verify-prepared",
+      "bazel_build_phase_elapsed_seconds": 25.263,
+      "completion_observed_at_utc": "2026-10-04T04:57:26Z",
+      "receipt_file": "/srv/fast-local/jess/state/codex/omux-codex-source-00c972ed/verify-prepared-receipt-feac1a9e297444bbac99652e4d63bb7e.json",
+      "tracked_source_files": 8515,
+      "source_bytes": 84372839,
+      "tracked_inventory_sha256": "d1516b7ca018277407de37b1af8463ae002e67cab7ac6664ecdbfe6fef9034a3",
+      "generated_output_link_count": 4,
+      "generated_output_names": ["bazel-bin", "bazel-out", "bazel-source", "bazel-testlogs"],
+      "prior_strict_attempt": {
+        "status": "failed",
+        "invocation_id": "889c08ae-ce97-4e4c-a293-09021263bcd5",
+        "bazel_build_phase_elapsed_seconds": 0.606,
+        "reason": "The strict original inventory predicate rejected the four observed Bazel convenience links created at build completion. No source files or links were deleted or changed. The scoped follow-up permits only these four owned exact-target links with canonical trusted output-base binding, rejects redirects/nonlinks/extras, and records them separately from source. This was a source-inventory predicate failure, not an execution guard-hook refusal."
+      },
+      "scope": "Read-only complete candidate verification after the eight-target build: pinned Git originals, exact candidate/validation overlay, every tracked file byte/mode/ownership and native symlink boundary passed. Exactly four generated convenience symlinks were checked separately against the observed canonical a57fdb225bfffe3e6bc230eb9e43949f output base and local_linux-fastbuild targets; no output trees were traversed. The tracked inventory and patch digest remain unchanged. Exclusive no-follow private 0600 per-phase receipts preserve prior records. This does not certify empty-directory inventory, same-user tamper resistance or crash durability of the restored source tree."
+    },
+    "upstream_eight_target_compilation_failed_temporary_custody_epoch": {
+      "status": "failed",
+      "invocation_id": "0197ea30-4adc-4d3e-9e6e-b4526b2cd8a1",
+      "started_at_utc": "2026-10-04T03:45:26Z",
+      "completion_observed_at_utc": "2026-10-04T03:48:13Z",
+      "elapsed_seconds": 162.031,
+      "critical_path_seconds": 133.56,
+      "targets": ["//codex-rs/core:core", "//codex-rs/app-server:app-server", "//codex-rs/config:config", "//codex-rs/app-server-protocol:app-server-protocol", "//codex-rs/tui:tui", "//codex-rs/cli:codex", "//codex-rs/config-schema:codex-write-config-schema", "//bazel/schema:public-schema-bundle"],
+      "command": "env -i HOME=/home/jess PATH=/nix/var/nix/profiles/default/bin:/usr/bin:/bin nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --ignore-environment --keep HOME --command bash -c 'exec bazelisk --nosystem_rc --nohome_rc --bazelrc=\"$OMUX_CODEX_BAZELRC\" --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof build --invocation_id=0197ea30-4adc-4d3e-9e6e-b4526b2cd8a1 --keep_going --jobs=4 --strategy=sandboxed --lockfile_mode=error //codex-rs/core:core //codex-rs/app-server:app-server //codex-rs/config:config //codex-rs/app-server-protocol:app-server-protocol //codex-rs/tui:tui //codex-rs/cli:codex //codex-rs/config-schema:codex-write-config-schema //bazel/schema:public-schema-bundle'",
+      "reported_processes": { "linux_sandbox": 19, "internal": 2, "action_cache_hits": 2041 },
+      "reported_top_level_targets_succeeded": 7,
+      "failure": "cloud-tasks Rust compilation could not read codex-rs/cloud-tasks/src/lib.rs. Read-only inspection afterward confirmed that file, tui/assets/inline_visualization/visualize.css, MODULE.bazel and the original full upstream tar were absent from the preexisting temporary source inputs.",
+      "integrity_warning": "Skipping uploading outputs because of concurrent modifications with --guard_against_concurrent_changes enabled: /srv/fast-local/jess/state/codex/omux-codex-bazel-proof/d061963da430963e5a54110450e6d50b/execroot/_main/codex-rs/tui/assets/inline_visualization/visualize.css was modified during execution",
+      "scope": "Failed compilation against a checkout whose inputs disappeared during the invocation. The reported partial seven-target result is not accepted as current-candidate provenance or an eight-target pass. The 17-predicate focused core receipt remains separate, and previous eight-target receipts remain historical. No candidate source, patch or manifest was changed by this build; no installed/live support is promoted."
+    },
+    "upstream_generated_fixture_reconciliation": {
+      "status": "not_rerun",
+      "scope": "No config/protocol schema or compressed fixture bytes changed in this epoch; the current source oracle verifies their packaged hashes. The previous 318-test exporter/schema receipts remain historical."
+    },
+    "live_provider_continuity": { "status": "not_performed" },
+    "cross_account_opaque_context_reconstruction": { "status": "not_proven" }
+  },
+  "evening_environment": "Every evening invocation began with env -i HOME=/home/jess PATH=/nix/var/nix/profiles/default/bin:/usr/bin:/bin and used locked Nix through Bazel. No personal account roots or provider credentials were used. The formatter/auth_broker gate used the separate audited codex-upstream shell; packaging/oracle used the Omux shell in a separate output base under the same proof root.",
+  "historical_artifact": {
+    "reviewed_changed_files": 107,
+    "producer_invocation_id": "a8b27af2-2b59-4f04-b84a-3a94c185f3ba",
+    "patch_sha256": "450e7515209a5a1efd5b239e0e868b06f0e79ce883bdb2616a3afa106f478360",
+    "base_sha256": "a3b5e866401a055ae55a4cb64e3feb6a7ff414dae7150bdc9fab70a8d26dd494",
+    "binary_overlay_sha256": "be1a71b46dae300e3e4497d2bed3fc82a3efb2b0e954b31527df7c4bd2e08f7e",
+    "manifest_sha256": "07322d84a6a5cdd741a57c6763b9fcc34135aa16224b2ac9c045e26e8c0795c5",
+    "scope": "Reviewable text patch plus exact compressed protocol-fixture replacements; verified original and resulting hashes for every source, LICENSE and NOTICE."
+  },
+  "historical_checks": {
+    "artifact_source_oracle": {
+      "status": "passed",
+      "invocation_id": "684c6dd1-d611-401b-a0c5-d068270fe930",
+      "command": "nix develop --command bazelisk test //integrations/codex-upstream:patch_test //integrations/codex-upstream:tooling_test",
+      "scope": "Final 107-file exact source and binary-overlay application, checksums, attribution, actual native auth/cancellation/admission/UI guards and generated contract fixtures. This source oracle does not execute Rust or promote native support."
+    },
+    "upstream_declared_formatter": {
+      "status": "passed",
+      "invocation_id": "fcc053b8-dd74-4b00-88ee-89f809730272",
+      "followup_invocation_ids": ["d9834d3a-73d4-4012-b043-ff0988b1ae6b", "a6d7361b-12ca-4846-b4a3-25cba2b905ff"],
+      "target": "@rules_rust//tools/upstream_wrapper:rustfmt",
+      "scope": "All changed Rust sources; focused formatter reruns cover the subsequent Arc<Config> coercion and SessionSource qualification compiler fixes."
+    },
+    "upstream_source_checkpoint": {
+      "status": "passed",
+      "invocation_id": "f0f7ee16-6591-4efc-a114-41d0c8367435",
+      "elapsed_seconds": 430.029,
+      "targets": ["//codex-rs/core:core", "//codex-rs/app-server:app-server", "//codex-rs/config:config", "//codex-rs/app-server-protocol:app-server-protocol", "//codex-rs/tui:tui", "//codex-rs/cli:codex", "//codex-rs/config-schema:codex-write-config-schema", "//bazel/schema:public-schema-bundle"],
+      "scope": "Compiled native request custody, safe detachment and cached metadata; final ancillary-auth isolation and selected-thread UI edits follow this checkpoint."
+    },
+    "upstream_protocol_fixture_checkpoint": {
+      "status": "passed",
+      "invocation_id": "fa360dbd-a900-456f-a271-c5f9b9bcdc57",
+      "target": "//codex-rs/app-server-protocol:app-server-protocol-unit-tests",
+      "rust_tests_passed": 318,
+      "rust_tests_ignored": 1,
+      "scope": "Broker wire round trips and generated JSON/TypeScript plus stable/experimental compressed fixture reconciliation. Upstream's default host test PATH applied here; final focused checks override it with the flake tool path."
+    },
+    "upstream_final_compilation": {
+      "status": "passed",
+      "invocation_id": "a3bfa1d2-cbdc-4499-8384-845c9d276a54",
+      "elapsed_seconds": 148.955,
+      "post_export_reconciliation": {
+        "status": "passed",
+        "invocation_id": "a1ce8983-f18d-4e35-8505-56c22436c513",
+        "elapsed_seconds": 10.111,
+        "scope": "The same eight production targets against the final exported config/protocol fixtures and exact packaged source; cached production actions remained valid."
+      },
+      "command": "nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --command bazelisk --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof build --keep_going --jobs=4 --strategy=sandboxed --lockfile_mode=error //codex-rs/core:core //codex-rs/app-server:app-server //codex-rs/config:config //codex-rs/app-server-protocol:app-server-protocol //codex-rs/tui:tui //codex-rs/cli:codex //codex-rs/config-schema:codex-write-config-schema //bazel/schema:public-schema-bundle",
+      "targets": ["//codex-rs/core:core", "//codex-rs/app-server:app-server", "//codex-rs/config:config", "//codex-rs/app-server-protocol:app-server-protocol", "//codex-rs/tui:tui", "//codex-rs/cli:codex", "//codex-rs/config-schema:codex-write-config-schema", "//bazel/schema:public-schema-bundle"],
+      "scope": "Frozen native per-request custody, auxiliary-auth ownership fences, idle portable detachment, cached route metadata and selected-thread terminal account UI. No installed native support or live provider continuity promotion."
+    },
+    "upstream_behavioral_tests": {
+      "status": "passed",
+      "invocation_id": "167ec256-6706-4c7f-af4b-597c352b12b7",
+      "elapsed_seconds": 235.989,
+      "command": "nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --command bazelisk --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof test --keep_going --jobs=4 --strategy=sandboxed --lockfile_mode=error --test_output=all --test_filter=broker --test_arg=broker --test_arg=--test-threads=1 --test_sharding_strategy=disabled //codex-rs/core:core-unit-tests //codex-rs/analytics:analytics-unit-tests //codex-rs/app-server:app-server-unit-tests //codex-rs/models-manager:models-manager-unit-tests //codex-rs/tui:tui-unit-tests //codex-rs/memories/write:write-unit-tests //codex-rs/core-plugins:core-plugins-unit-tests //codex-rs/cli:cli-login-test",
+      "rust_tests_passed": 55,
+      "targets": [
+        {
+          "label": "//codex-rs/core:core-unit-tests",
+          "rust_tests_passed": 25
+        },
+        {
+          "label": "//codex-rs/analytics:analytics-unit-tests",
+          "rust_tests_passed": 2
+        },
+        {
+          "label": "//codex-rs/app-server:app-server-unit-tests",
+          "rust_tests_passed": 5
+        },
+        {
+          "label": "//codex-rs/models-manager:models-manager-unit-tests",
+          "rust_tests_passed": 4
+        },
+        {
+          "label": "//codex-rs/tui:tui-unit-tests",
+          "rust_tests_passed": 13
+        },
+        {
+          "label": "//codex-rs/memories/write:write-unit-tests",
+          "rust_tests_passed": 3
+        },
+        {
+          "label": "//codex-rs/core-plugins:core-plugins-unit-tests",
+          "rust_tests_passed": 2
+        },
+        {
+          "label": "//codex-rs/cli:cli-login-test",
+          "rust_tests_passed": 1
+        }
+      ],
+      "scope": "Actual private Unix-socket broker fixtures, cancellation/terminal lease cleanup, exact adapter wire, route metadata fencing, capability symlink/FIFO rejection, ambient ownership draining, portable detach, analytics/cost/plugin/memory isolation and selected-thread account UI. Native tests use synthetic credentials and test-owned roots; provider calls and installed cross-account continuity are not exercised."
+    },
+    "native_account_ui_additional_predicates": {
+      "status": "passed",
+      "invocation_id": "805f41f9-8719-417d-9480-7c6acace260e",
+      "elapsed_seconds": 4.424,
+      "target": "//codex-rs/tui:tui-unit-tests",
+      "rust_tests_passed": 3,
+      "predicates": [
+        "loaded_status_checks_thread_custody_before_rendering_native_account",
+        "bound_thread_retains_cached_route_across_global_native_account_notifications",
+        "status_command_renders_immediately_and_refreshes_rate_limits_for_chatgpt_auth"
+      ],
+      "command": "nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --command bazelisk --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof test --jobs=4 --strategy=sandboxed --lockfile_mode=error --test_output=all --test_arg=loaded_status_checks_thread_custody_before_rendering_native_account --test_arg=bound_thread_retains_cached_route_across_global_native_account_notifications --test_arg=status_command_renders_immediately_and_refreshes_rate_limits_for_chatgpt_auth --test_arg=--test-threads=1 --test_sharding_strategy=disabled //codex-rs/tui:tui-unit-tests"
+    },
+    "upstream_config_fixture_tests": {
+      "status": "passed",
+      "invocation_id": "1d88ba0f-e72f-4d84-b5ef-8ce5f49af44c",
+      "elapsed_seconds": 6.844,
+      "target": "//codex-rs/config:config-unit-tests",
+      "rust_tests_passed": 6,
+      "command": "nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --command bazelisk --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof test --jobs=4 --strategy=sandboxed --lockfile_mode=error --test_output=all --test_filter=broker --test_arg=broker --test_arg=--test-threads=1 --test_sharding_strategy=disabled //codex-rs/config:config-unit-tests",
+      "scope": "Strict local broker config, unknown custody-field rejection, schema properties and unchanged credential-broker policy constraints."
+    },
+    "cli_synthetic_checkpoint": {
+      "status": "passed",
+      "invocation_id": "7ccaa299-e281-4c98-b7fd-00583eee8e4f",
+      "target": "//codex-rs/cli:cli-login-test",
+      "rust_tests_passed": 8,
+      "scope": "Only the CLI target completed before this wider invocation was deliberately interrupted to correct upstream argument/filter precedence. Every executed CLI fixture used its own TempDir/file credentials or local mock server. This checkpoint is not the final filtered behavior gate."
+    },
+    "generated_fixture_reconciliation": {
+      "status": "passed",
+      "protocol": {
+        "invocation_id": "487e534d-a719-4db8-9f32-87250ee2e5c1",
+        "elapsed_seconds": 29.626,
+        "target": "//codex-rs/app-server-protocol:app-server-protocol-unit-tests",
+        "rust_tests_passed": 318,
+        "rust_tests_ignored": 1,
+        "ignored_reason": "Upstream's explicit schema writer helper is intentionally ignored by the suite; its generated stable/experimental exports are validated by schema bundle targets.",
+        "command": "nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --command bazelisk --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof test --jobs=4 --strategy=sandboxed --lockfile_mode=error --test_output=errors --test_arg=--test-threads=1 --test_sharding_strategy=disabled //codex-rs/app-server-protocol:app-server-protocol-unit-tests"
+      },
+      "config_schema": {
+        "invocation_id": "4678f4be-c3dc-4b04-8a95-e681db0e43f4",
+        "target": "//codex-rs/config-schema:codex-write-config-schema",
+        "command": "nix develop /srv/fast-local/jess/git/oauth-mux#codex-upstream --command bazelisk --output_user_root=/srv/fast-local/jess/state/codex/omux-codex-bazel-proof run --jobs=4 --lockfile_mode=error //codex-rs/config-schema:codex-write-config-schema -- --out /tmp/omux-codex-upstream-v0157/codex-rs/core/config.schema.json",
+        "sha256": "3baa23e800e13869f1f67273268aa9e280e2a650c569bc193aca7c35ffdcd5f5"
+      },
+      "protocol_fixtures": {
+        "stable_sha256": "dfebf39fc4f36a19a5347d432db4d1a723d999daff9eb4cc7745b83a7a1f9961",
+        "experimental_sha256": "36920bf957c3cbff3ef921c2673faddfc77a53bf648f1e1ad83cff83d40e3d91"
+      },
+      "scope": "Final exact JSON/TypeScript protocol fixtures, stable/experimental compressed exports, and native config schema are generated by declared upstream Rust/Bazel targets and included in the hashed product artifact."
+    },
+    "live_provider_continuity": { "status": "not_performed" },
+    "cross_account_opaque_context_reconstruction": { "status": "not_proven" }
+  }
+}

@@ -1,0 +1,157 @@
+{
+  "artifact_status": "upstream-patch-candidate",
+  "native_support": false,
+  "upstream_commit": "00c972ed5d6ff6499317fd41b7f23605b8e6850d",
+  "validation_epoch": "native-owner-2026-10-04",
+  "history_scope": "This separate epoch preserves integrations/codex-upstream byte identities and historical receipts. No old broker/protocol/build counts certify this candidate.",
+  "artifact": {
+    "reviewed_changed_files": 164,
+    "patch_sha256": "2e5542c5f6a44e3a8dd38b4a4093d1735ff19771721b05fc51f55b475b1a8d46",
+    "base_sha256": "a794a67af4b6aecd9e91aeb4281354b90d10e10134e7cf6a6028b33f26a2f9d9",
+    "binary_overlay_sha256": "9d47862cd9e7e1a911d8512dad0ad0f124c928e139b778cd1e89ecfce17c5703",
+    "producer_invocation_id": "247e7ef5-8c34-458a-9c79-13e35cb1e6c3",
+    "producer_elapsed_seconds": 18.916,
+    "changed_source": "codex-rs/core/src/auth_broker.rs",
+    "changed_source_sha256": "7e2c441d20cb87c706aae1d6bfb150d40a27b5479d513cd8f5b2c73ff8d7fed8",
+    "scope": "Linux current-writer native owner custody, sealed pre-acquire registration, canonical generation protocol and typed nonterminal pending refusal. Explicit endpoint preinstall is required; automatic discovery and daemon-replacement reconciliation remain unavailable."
+  },
+  "validation_environment": {
+    "flake_shell": "codex-upstream",
+    "bazel": "9.0.1",
+    "rust": "1.95.0",
+    "llvm": "22.1.8",
+    "platform": "//codex-rs/core:owner-linux",
+    "extra_toolchain": "//codex-rs/core:owner-local-test-toolchain",
+    "tool_archive_count": 13,
+    "tool_archive_manifest": "../../tools/codex_upstream_archives.json",
+    "tool_archive_manifest_sha256": "f44be109f043f1044473bfb93a0ad1da25f060c42d688fe182ab4b4bdb6b942a",
+    "module_sha256": "1a6c8685d241a5390ff94432581e842c2950cbe5262b47b27d8db467cebec4c2",
+    "resolved_module_lock_sha256": "3416c08d3ddff96ec9e0b76d7d89eaa2b75cc8d81f0a9f661d8b8466d1343657",
+    "cargo_lock_sha256": "72efa81ed947d07ed4fbb3e10b094715ff00626126d758aaed56733c97887e5f",
+    "normalized_workspace_manifest_sha256": "c732c370ca012d0da7944d463601b3c834eb862a85866d3274db9d2acecea978",
+    "validation_overlay": "validation-overlay.patch",
+    "validation_overlay_sha256": "563bb8ac31fb17ae97e1c92d140bfe633102e4714803489b551c0d0c2e4717cb",
+    "overlay_reason": "Three explicit validation-only changes normalize the tagged workspace package version, reconcile pinned registry lock metadata and isolate synthetic test HOME/CODEX_HOME/XDG roots. They remain excluded from the product patch.",
+    "native_header_profile": "Declared GNU2.28 plus Linux6.17.13-x86_64 headers; not a runtime-kernel claim.",
+    "execution_scope": "Locked Nix plus pinned official Bazel graph in a minimal environment. Native test runners reported local execution where recorded; no fully sandboxed, installed or live claim follows from the strategy flag.",
+    "lockfile_mode": "error"
+  },
+  "schema_import": {
+    "receipt_file": "schema-import-receipt.json",
+    "receipt_sha256": "485672178e95148b88b96b9bc30970636d365a4f74be2d084a41b8d95dc1e12c",
+    "producer_invocation_id": "47b36016-b87d-4c8e-bafa-352eebd63b6c",
+    "import_invocation_id": "56dd735d-8a8f-4f0b-8c2c-8b744d8e8524",
+    "file_count": 1098,
+    "source_bytes": 4432585,
+    "normalization_performed": false,
+    "compression_performed": false
+  },
+  "checks": {
+    "native_transport_constructor_and_embedded_admission": {
+      "status": "passed",
+      "invocation_id": "02da1c06-c41a-47c2-b8cc-23f48204b345",
+      "elapsed_seconds": 516.032,
+      "critical_path_seconds": 500.97,
+      "core_rust_tests_passed": 3,
+      "app_server_rust_tests_passed": 3,
+      "protocol_rust_tests_passed": 1,
+      "scope": "Actual process transport, constructor pending barrier, real embedded ThreadStart typed refusal/Idle/work fence and exact ACK. Child helper alone is not proof; no actual installed daemon/Codex interoperation or provider handoff was exercised."
+    },
+    "pre_fixture_import_production_compilation": {
+      "status": "passed",
+      "invocation_id": "47b36016-b87d-4c8e-bafa-352eebd63b6c",
+      "elapsed_seconds": 534.734,
+      "critical_path_seconds": 520.83,
+      "labels_passed": 10,
+      "required_production_labels": 8,
+      "scope": "Predates exact exported fixture import; final-source production compilation remains required."
+    },
+    "generated_protocol_and_config_tests": {
+      "status": "passed",
+      "invocation_id": "6a50453b-b843-47c4-905c-85eaf3771a12",
+      "elapsed_seconds": 157.135,
+      "critical_path_seconds": 152.49,
+      "app_server_protocol_rust_tests_passed": 318,
+      "app_server_protocol_rust_tests_ignored": 1,
+      "config_rust_tests_passed": 342,
+      "rust_tests_failed": 0,
+      "scope": "Actual native JSON/TypeScript/stable and experimental compressed fixtures, plus config tests. Core config schema fixture is separately gated."
+    },
+    "core_config_and_auth_broker": {
+      "status": "passed",
+      "broker_invocation_id": "137f883b-c389-4960-b49b-7093a6f557e8",
+      "broker_rust_tests_passed": 21,
+      "broker_filtered": 2597,
+      "broker_rust_elapsed_seconds": 0.58,
+      "broker_bazel_elapsed_seconds": 405.073,
+      "core_config_fixture_invocation_id": "15d3f3b6-8a50-4bd8-85e0-a4e77c45b74d",
+      "core_config_fixture_rust_tests_passed": 1,
+      "core_config_fixture_filtered": 2617,
+      "scope": "The first combined filter ran only21 broker tests. Separate unique config_schema_matches_fixture filter ran the actual fixture; no zero-test or unmatched-filter proof."
+    },
+    "complete_final_source_verification": {
+      "status": "passed",
+      "invocation_id": "5a9d8326-5327-4052-8a6e-946dcc4d18ac",
+      "failed_prior_invocation_id": "9b9c8062-2e2e-4423-8dbb-f3e533c18754",
+      "profile_regression_test_invocation_id": "7ae04a04-f71b-4bfe-a632-ac532cc0ae49",
+      "tracked_files": 8546,
+      "source_bytes": 84588390,
+      "complete_inventory_sha256": "3400115fae8ef204f2ce085880b40887bcb14e2080236ba87a34be9b14fe7d3b",
+      "upstream_tree_oid": "6fa1a3767a92ba5d579fcaf724fdce3049c2070b",
+      "bazel_configuration": "owner-linux-fastbuild",
+      "generated_output_link_count": 4,
+      "scope": "Every pinned Git original plus exact product/validation overlays, complete file bytes/modes and four exact owned canonical output links; not liveness, live behavior or same-user tamper resistance."
+    },
+    "final_declared_formatter": {
+      "status": "passed",
+      "invocation_id": "083b81a4-8e25-4133-a344-9bf5af59aafd",
+      "elapsed_seconds": 4.016,
+      "changed_rust_paths_checked": 22,
+      "target": "@rules_rust//tools/upstream_wrapper:rustfmt"
+    },
+    "final_source_eight_production_labels": {
+      "status": "passed",
+      "invocation_id": "185ffba7-9b08-450f-ab29-1d405810892a",
+      "elapsed_seconds": 369.239,
+      "critical_path_seconds": 364.81,
+      "labels_passed": 8,
+      "process_counters": {
+        "reported_processes": 31,
+        "matching_action_cache_hits": 2058,
+        "internal": 5,
+        "linux_sandbox": 26
+      },
+      "scope": "All eight required production labels after fixture import; native stable/experimental PublicSchema helper actions each passed1,318filtered,8.59s/8.66s."
+    },
+    "installed_candidate_daemon_interoperation": {
+      "status": "not_performed"
+    },
+    "live_ordinary_launch_resume_provider_continuity": {
+      "status": "not_performed"
+    },
+    "daemon_replacement_uncertain_effect_reconciliation": {
+      "status": "not_implemented"
+    },
+    "final_source_native_tests": {
+      "status": "passed",
+      "invocation_id": "2e9809d2-3c39-4c4f-bb92-210743421adc",
+      "elapsed_seconds": 67.324,
+      "critical_path_seconds": 64.78,
+      "core_rust_tests_passed": 3,
+      "app_server_rust_tests_passed": 3,
+      "protocol_rust_tests_passed": 1,
+      "rust_tests_failed": 0,
+      "rust_tests_ignored": 0,
+      "scope": "Fresh final-source actual transport/constructor/embedded pending barrier and packet/wire gates. Child helper alone is not proof. No installed Omux/Codex interoperation or provider continuity."
+    },
+    "post_import_native_schema_fixed_point": {
+      "status": "passed",
+      "invocation_id": "31de0ad7-65bf-4dd1-8d25-e424821c4a20",
+      "producer_invocation_id": "185ffba7-9b08-450f-ab29-1d405810892a",
+      "receipt_sha256": "8966149bcdfbb78fddf2cd80ca481c5ee73b35e019341147e923fe3cac237f95",
+      "file_count": 1098,
+      "source_bytes": 4432585,
+      "scope": "Regenerated outputs equal all exact imported/current development fixture bytes without normalization or recompression."
+    }
+  }
+}

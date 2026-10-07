@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "observer_yoga_model_and_snapshot_native_regression",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "dc5234a2-9114-4b51-b445-1677fd009ef7",
+  "original_handle": 20696,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/dc5234a2-9114-4b51-b445-1677fd009ef7/receipt.json",
+  "raw_receipt_sha256": "4b55913c5044f39edfea24077efeaad524056291da59a522f7f0a6ae63934248",
+  "graph_sha256": "f25e96e8fd23bbee99880ea7de9ca8a701d68390536b1edd571972ef4d37e186",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "test_evidence": {
+    "bytes": 272139,
+    "files": 23,
+    "manifest": "test-evidence.json",
+    "sha256": "bc88cab564024c3ca2348b0f79229110f3cb9c36e2b523289169cf4cf749deb0",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//delivery:native_fd2_observer_test",
+    "//tools:guard_owner_runtime_input_test",
+    "//tools:yoga_controller_delivery_test",
+    "//tools:yoga_delivery_settings_test",
+    "//tools:execution_guard_test",
+    "//tools:guard_yoga_delivery_profile_test",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_targets": {
+    "//:docs_check": "New FD2 implementation note lacked authority classification; additive current-note/map correction applied after terminal action, not yet verified.",
+    "//:snapshot_native_test": "Real installed removal with oversized caller configuration failed UnexpectedRpcFailure; the failure remains preserved and under source review."
+  },
+  "observer_modeled_methods": 10,
+  "new_yoga_fixtures": 8,
+  "scope": "Owned-child syscall models, strict public host-pin/custody/diagnostic models and guard admission predicates only; no current Yoga transport or actual native observation established.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false,
+  "linear_carriers": ["TIN-5338", "TIN-2063", "TIN-5442"]
+}

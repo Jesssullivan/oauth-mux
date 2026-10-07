@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_native_browser_semantic_checkpoint",
+  "authority": "User-authorized October6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "3508bcaf-24c5-47df-94e9-dd4afa891647",
+  "original_handle": 55732,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/3508bcaf-24c5-47df-94e9-dd4afa891647/receipt.json",
+  "raw_receipt_sha256": "d012d5d9dcbc583b9e7999f9b691cc0c69adb6f8ba683ba4f8b845596580f5c2",
+  "graph_sha256": "7b82c2e014a6f0bd4a7f8c6831f44ea6f646dbe89a1ad8d9333d720fd503af6f",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 256210,
+    "files": 15,
+    "manifest": "test-evidence.json",
+    "sha256": "e2d7d2946e1188ebdffa5146855f18b78bb434faf9108f9349f462806de9651d",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//tools:codex_git_inputs_test",
+    "//delivery:native_resumed_checkpoint_test",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_targets": [
+    "//:docs_check",
+    "//:reliability_lifecycle_native_removal_test"
+  ],
+  "meaningful_cases": {
+    "git_deadline_custody": 48,
+    "native_paginated_checkpoint": 11,
+    "native_actor_passed": 249,
+    "native_actor_total": 250
+  },
+  "native_elapsed_seconds": 141.5,
+  "registered_pressure_results": {
+    "12500": "SnapshotTooLarge, started/pending unregister0",
+    "13500": "Timeout indeterminate/pending unregister1",
+    "14500": "Timeout indeterminate/pending unregister1",
+    "15500": "NativeTimeout indeterminate/pending unregister1"
+  },
+  "finding": "Near-limit16MiB repeated commits exhausted unchanged15s native operation deadline after unregister; no successful-unmeasured registered removal. Production measurement-starvation hypothesis remains disproved.",
+  "docs_failure": "Compact note linked to undeclared draft artifact; converted draft pointer to plain source path afterward, unverified",
+  "next": "Strict helper now unit-verified; run exact installed legacy native empty-history cold resume +docs correction. Replace timing-dependent registered physical sweep with deterministic actual optional-preparation OOM and all mandatory effect/custody/replay assertions; physical registered capacity margin remains unproved.",
+  "new_acceptance_gate_closed": false,
+  "whole_batch_passed": false
+}

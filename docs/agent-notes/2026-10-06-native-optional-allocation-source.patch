@@ -1,0 +1,158 @@
+# UNAPPLIED / UNRUN: root-authorized source-only registered-owner fixture correction.
+# R-HOOK-CONVERGENCE-20261004 / R-N13; AGENTS.md.
+# Apply only after the current source-frozen root action is terminal.
+# Earlier registered physical-sweep receipts remain failed and preserved:
+# 3a3: 9500/12500 SnapshotTooLarge;16000/20000 successful WITH timing.
+# 3508:12500 SnapshotTooLarge;13500/14500 Timeout;15500 NativeTimeout.
+# Revision delta6/unregister1 localizes later failures after actual detach, at
+# final retirement/setup work with the original15s deadline and1s reply reserve.
+# Nearly16MiB snapshot counting/serialization/SQLite work conflates capacity
+# calibration with runtime duration; no physical registered-margin proof exists.
+# Root authorized replacement of that never-passing sweep with deterministic
+# actual OPTIONAL post-commit OutOfMemory while retaining successful registered
+# removal, verified detach, restoration, exact-once replay/restart assertions.
+# Zero-owner actual physical-pressure coverage and other fault tests stay intact.
+# Normal witness-error catch and ledger abandonment must handle real induced OOM.
+# No production branch, deadline, resource cap, grant or replay authority changes.
+diff --git a/src/engine.zig b/src/engine.zig
+--- a/src/engine.zig
++++ b/src/engine.zig
+@@ -456,1 +456,2 @@
+-    fixture_lifecycle_fault: enum { none, preparation, sqlite_commit } = .none,
++    fixture_lifecycle_fault: enum { none, preparation, sqlite_commit, native_preparation_allocation } = .none,
++    fixture_native_allocation_failed: bool = false,
+@@ -1414,1 +1415,10 @@
+-            const captured = session.afterCommitted(self.io, self.allocator, self.mutations.snapshot().records[task.mutation_slot.?], self.revision);
++            const captured: anyerror!native_removal_witness.Witness = capture: {
++                if (builtin.is_test and self.fixture_lifecycle_fault == .native_preparation_allocation) {
++                    var failing = std.testing.FailingAllocator.init(self.allocator, .{ .fail_index = 0 });
++                    const result = session.afterCommitted(self.io, failing.allocator(), self.mutations.snapshot().records[task.mutation_slot.?], self.revision);
++                    const exhausted = if (result) |_| false else |err| err == error.OutOfMemory;
++                    self.fixture_native_allocation_failed = failing.has_induced_failure and exhausted;
++                    break :capture result;
++                }
++                break :capture session.afterCommitted(self.io, self.allocator, self.mutations.snapshot().records[task.mutation_slot.?], self.revision);
++            };
+@@ -2614,1 +2624,2 @@
+             self.fixture_lifecycle_fault = std.meta.stringToEnum(@TypeOf(self.fixture_lifecycle_fault), selected) orelse return error.InvalidParams;
++            self.fixture_native_allocation_failed = false;
+diff --git a/src/reliability_lifecycle_native_removal_tests.zig b/src/reliability_lifecycle_native_removal_tests.zig
+--- a/src/reliability_lifecycle_native_removal_tests.zig
++++ b/src/reliability_lifecycle_native_removal_tests.zig
+@@ -304,62 +304,54 @@
+-test "registered owner envelope pressure retains nested detach authority and exactly once removal" {
+-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+-    // These are bounded calibration candidates, not claimed passing limits.
+-    // Actual serializer, shared envelope, native fence and nested detach credit
+-    // determine which candidate can complete without optional timing. Require
+-    // that behavior to occur; never turn a refused candidate into success.
+-    var observed_optional_drop = false;
+-    for ([_]usize{ 12500, 13500, 14500, 15500 }) |spare_bytes| {
+-        const producer = try native_fixture.Fixture.create(std.testing.io, allocator);
+-        defer producer.destroy();
+-        const actor = try native_fixture.ActorFixture.create(std.testing.io, allocator, producer);
+-        defer actor.destroy();
+-        const original = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, actor.config, allocator, .limited(1024 * 1024));
+-        defer allocator.free(original);
+-        try actor.install();
+-        const reference = try producer.register(actor.engine.?, "pressure-native-thread");
+-        var capability = try actor.engine.?.capabilityForTest("enrollment");
+-        defer std.crypto.secureZero(u8, &capability);
+-        var pressure = try rpc(actor.engine.?, .adapter, "fixture.snapshotSaturate", .{ .application = "enrollment", .capability = &capability, .spare_bytes = spare_bytes });
+-        defer pressure.deinit();
+-        _ = try pressure.result();
+-        const params = .{ .operation_id = "8888888888888888888888888888888888888888888888888888888888888888", .expected_revision = actor.engine.?.revision, .adapter = "codex", .config_path = actor.config };
+-        var removed = try rpc(actor.engine.?, .control, "integrations.remove", params);
+-        defer removed.deinit();
+-        try pressureDiagnostic(actor.engine.?, producer, params.operation_id, params.expected_revision, spare_bytes, "registered_terminal", &removed);
+-        if (control.get(removed.parsed.value, "result") == null) {
+-            try std.testing.expect(control.get(removed.parsed.value, "error") != null);
+-            const refused = try timingSummary(actor.engine.?);
+-            try std.testing.expectEqual(@as(u64, 0), refused.removed);
+-            try std.testing.expectEqual(@as(u64, 0), refused.elapsed_measured);
+-            continue;
+-        }
+-        try std.testing.expect(try control.boolean(try removed.result(), "removed", false));
+-        const summary = try timingSummary(actor.engine.?);
+-        std.debug.print("native pressure stage=registered_projection spare={d} removed={d} elapsed_missing={d} elapsed_measured={d}\n", .{ spare_bytes, summary.removed, summary.elapsed_missing, summary.elapsed_measured });
+-        try std.testing.expectEqual(@as(u64, 1), summary.removed);
+-        try std.testing.expectEqual(@as(usize, 1), producer.methodCount(.unregister));
+-        const attachment = actor.engine.?.native_owners.lookupAttachment(reference) orelse return error.MissingAttachment;
+-        try std.testing.expect(attachment.phase == .retired and attachment.retirement == .verified_detach);
+-        const restored_config = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, actor.config, allocator, .limited(1024 * 1024));
+-        defer allocator.free(restored_config);
+-        std.debug.print("native pressure stage=registered_config spare={d} restored={any}\n", .{ spare_bytes, std.mem.eql(u8, original, restored_config) });
+-        try std.testing.expect(std.mem.eql(u8, original, restored_config));
+-        if (summary.elapsed_missing == 1) {
+-            observed_optional_drop = true;
+-            try std.testing.expectEqual(@as(u64, 0), summary.elapsed_measured);
+-        }
+-        const revision = actor.engine.?.revision;
+-        var replay = try rpc(actor.engine.?, .control, "integrations.remove", params);
+-        defer replay.deinit();
+-        try std.testing.expect(std.mem.eql(u8, removed.bytes, replay.bytes));
+-        try std.testing.expectEqual(revision, actor.engine.?.revision);
+-        try actor.restart();
+-        var restarted = try rpc(actor.engine.?, .control, "integrations.remove", params);
+-        defer restarted.deinit();
+-        try std.testing.expect(std.mem.eql(u8, removed.bytes, restarted.bytes));
+-        try std.testing.expectEqualDeep(summary, try timingSummary(actor.engine.?));
+-        try std.testing.expectEqual(@as(usize, 1), producer.methodCount(.unregister));
+-    }
+-    std.debug.print("native pressure stage=sweep_complete observed_optional_drop={any}\n", .{observed_optional_drop});
+-    try std.testing.expect(observed_optional_drop);
+-}
++test "registered owner optional measurement allocation failure preserves exactly once removal" {
++    if (builtin.os.tag != .linux) return error.SkipZigTest;
++    // A deterministic real failure of optional post-terminal allocation.
++    // This is not physical envelope-pressure coverage: its earlier sweep
++    // receipts stay failed/unproved, and native/outer deadlines stay unchanged.
++    const producer = try native_fixture.Fixture.create(std.testing.io, allocator);
++    defer producer.destroy();
++    const actor = try native_fixture.ActorFixture.create(std.testing.io, allocator, producer);
++    defer actor.destroy();
++    const original = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, actor.config, allocator, .limited(1024 * 1024));
++    defer allocator.free(original);
++    try actor.install();
++    const reference = try producer.register(actor.engine.?, "allocation-native-thread");
++    var armed = try rpc(actor.engine.?, .control, "fixture.lifecycleMeasurementFault", .{ .mode = "native_preparation_allocation" });
++    defer armed.deinit();
++    _ = try armed.result();
++    const params = .{ .operation_id = "8888888888888888888888888888888888888888888888888888888888888888", .expected_revision = actor.engine.?.revision, .adapter = "codex", .config_path = actor.config };
++    var removed = try rpc(actor.engine.?, .control, "integrations.remove", params);
++    defer removed.deinit();
++    try std.testing.expect(try control.boolean(try removed.result(), "removed", false));
++    try std.testing.expect(actor.engine.?.fixture_native_allocation_failed);
++    try std.testing.expect(!actor.engine.?.poisoned);
++    const row = (try actor.engine.?.mutations.lookup(params.operation_id)).?;
++    try std.testing.expectEqual(mutation.State.completed, row.state);
++    try std.testing.expect(!row.native_removal_witness_reserved and row.native_removal_witness == null);
++    try std.testing.expectEqual(@as(usize, 1), producer.methodCount(.unregister));
++    const attachment = actor.engine.?.native_owners.lookupAttachment(reference) orelse return error.MissingAttachment;
++    try std.testing.expect(attachment.phase == .retired and attachment.retirement == .verified_detach);
++    const restored_config = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, actor.config, allocator, .limited(1024 * 1024));
++    defer allocator.free(restored_config);
++    try std.testing.expect(std.mem.eql(u8, original, restored_config));
++    const summary = try timingSummary(actor.engine.?);
++    try std.testing.expect(summary.authority_available);
++    try std.testing.expectEqual(@as(u64, 1), summary.removed);
++    try std.testing.expectEqual(@as(u64, 1), summary.elapsed_missing);
++    try std.testing.expectEqual(@as(u64, 0), summary.elapsed_measured);
++    const revision = actor.engine.?.revision;
++    var replay = try rpc(actor.engine.?, .control, "integrations.remove", params);
++    defer replay.deinit();
++    try std.testing.expect(std.mem.eql(u8, removed.bytes, replay.bytes));
++    try std.testing.expectEqual(revision, actor.engine.?.revision);
++    try std.testing.expectEqualDeep(summary, try timingSummary(actor.engine.?));
++    try actor.restart();
++    const restarted_revision = actor.engine.?.revision;
++    var restarted = try rpc(actor.engine.?, .control, "integrations.remove", params);
++    defer restarted.deinit();
++    try std.testing.expect(std.mem.eql(u8, removed.bytes, restarted.bytes));
++    try std.testing.expectEqual(restarted_revision, actor.engine.?.revision);
++    try std.testing.expectEqualDeep(summary, try timingSummary(actor.engine.?));
++    const restored_row = (try actor.engine.?.mutations.lookup(params.operation_id)).?;
++    try std.testing.expectEqual(mutation.State.completed, restored_row.state);
++    try std.testing.expect(!restored_row.native_removal_witness_reserved and restored_row.native_removal_witness == null);
++    try std.testing.expectEqual(@as(usize, 1), producer.methodCount(.unregister));
++}

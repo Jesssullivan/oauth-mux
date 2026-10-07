@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "kind": "five_hour_continuation_checkpoint",
+  "authority": "User-ratified October6 Codex resume/installed browser proof; provider-free only; AGENTS.md R-HOOK-CONVERGENCE-20261004/R-N13",
+  "parent_goal": ".goal/omux-integrated-delivery-2026-10-05.json",
+  "plan": "docs/plans/omux-native-browser-continuation-2026-10-06.md",
+  "start": "2026-10-06T20:13:12Z",
+  "due": "2026-10-07T01:13:12Z",
+  "duration_hours": 5,
+  "timezone": "America/New_York",
+  "status": "in_progress",
+  "latest_format_epoch": "1d0c4687-fd1f-48fb-8bd1-9691989359ad",
+  "latest_format_result": "controller0_workload0_descendants_empty;format_only_no_acceptance_gate",
+  "applied_follow_on_status": "HM_reconstruction38_native_owner_removal_engine_storagePASS;observer10_Yoga8_guard_modelsPASS_dc52;history_Yoga_diagnostics_and_snapshot_native247_docs_format_sourcePASS4432;ordinary_resume_Yoga_toolbar_compact_eval_unproved;five_parent_passes_six_open",
+  "latest_model_receipt": "docs/tracker-updates/integrated-delivery-model4432-2026-10-07.json",
+  "latest_hm_model_receipt": "docs/tracker-updates/integrated-delivery-hma8ab-2026-10-06.json",
+  "latest_surrounding_regression_receipt": "docs/tracker-updates/integrated-delivery-actor0407-2026-10-06.json",
+  "latest_restart_regression_receipt": "docs/tracker-updates/integrated-delivery-restartdc4f-2026-10-07.json",
+  "new_source_pending_verification": "Yoga17PASS35d5_observer13PASSec8b;fixed_Nix_QUAL_INSPECTpass_VERIFYrefuses_metadata;ordinary_Tokio2_target44d7_terminal3_3_empty_detach_RPCrefused;exact_signed_source_delivery_gates_pending",
+  "latest_yoga_fixture_receipt": "docs/tracker-updates/integrated-delivery-model35d5-2026-10-07.json",
+  "native_test_profile": "Retained009 bootstrap_and_cold_resume_TOKIO_WORKER_THREADS2;async_workers_only;total_threads_and_prior_EAGAIN_cause_unmeasured",
+  "latest_refined_observer_model_receipt": "docs/tracker-updates/integrated-delivery-modelec8b-2026-10-07.json",
+  "latest_diagnostic_model_receipt": "docs/tracker-updates/integrated-delivery-stderr5197-2026-10-06.json",
+  "latest_semantic_receipt": "docs/tracker-updates/integrated-delivery-be799-2026-10-06.json",
+  "latest_installed_native_receipt": "docs/tracker-updates/integrated-delivery-native44d7-2026-10-07.json",
+  "latest_installed_native_result": "44d7_terminal3_3_empty_held009_aftertrue_docs_sourcePASS;explicit_Tokio_async_workers2_profile_fails_selected_detach_RPC;status_and_cold_resume_unreached;no_cause_or_improvement_claim",
+  "latest_retained_input_qualification": "docs/tracker-updates/integrated-delivery-47d9-2026-10-06.json",
+  "latest_semantic_result": "be799_terminal0_0_empty;6of6_targetsPASS;removal250_including_real_optional_OOMPASS;retained_copy119923125_exact009_and_helper10PASS;actual_B_admission47d9PASS;installed_native_unproved",
+  "latest_yoga_receipt": "docs/tracker-updates/integrated-delivery-yoga-d47f-chain-2026-10-07.json",
+  "latest_yoga_result": "d47fQUAL0_0_empty_f0c7INSPECT0_0_empty_c7f6VERIFY2_2_empty_all_source_aftertrue;fixed_system_Nix5287200B_qualified;destination_registration_content_predicate_refused_no_missing_vs_mismatch_inference;no_copy_wrapper_browser_toolbar",
+  "latest_hm_receipt": "docs/tracker-updates/integrated-delivery-hm9337-2026-10-06.json",
+  "latest_hm_result": "9337_terminal124_124_empty;declaration_complete_actual_reconstruction_deadline_expired;no_compact_pair_admitted;genuine_evaluation_unrun;no_automatic_retry",
+  "latest_installed_native_diagnostic_receipt": "docs/tracker-updates/integrated-delivery-native158b-2026-10-07.json",
+  "latest_installed_native_diagnostic_result": "158b_terminal3_3_empty_held009_aftertrue_docs_sourcePASS;selected_detach_observer_launch_fork_EAGAIN_before_CLIexec;resource_and_original_CLI_causes_unknown_cold_resume_unreached",
+  "scope": "Provider-free partial candidate resume and installed Chromium consent; parent objective/eleven gates preserved",
+  "executor": "root",
+  "latest_factual_linear_receipt": "docs/tracker-updates/integrated-delivery-linear0047-2026-10-07.json",
+  "resource_limits": {
+    "memory_bytes": 4294967296,
+    "swap_bytes": 0,
+    "tasks": 512,
+    "cpu": 2,
+    "aggregate_seconds": 1200,
+    "stop_seconds": 10
+  },
+  "provider_access": false,
+  "pzm_gf": "held",
+  "baseline_receipts": [
+    "docs/tracker-updates/integrated-delivery-3a3c-2026-10-06.json",
+    "docs/tracker-updates/integrated-delivery-HM-e3b9-2026-10-06.json",
+    "docs/tracker-updates/integrated-delivery-reorientation-2026-10-06.json"
+  ],
+  "outcomes": [
+    {
+      "id": "NB-SEMANTIC",
+      "status": "passed_scoped_predicates",
+      "evidence": ["docs/tracker-updates/integrated-delivery-3508-2026-10-06.json", "docs/tracker-updates/integrated-delivery-be799-2026-10-06.json"],
+      "issues": [
+        "TIN-2057",
+        "TIN-5338"
+      ],
+      "targets": [
+        "//tools:codex_git_inputs_test",
+        "//delivery:native_resumed_checkpoint_test",
+        "//:reliability_lifecycle_native_removal_test",
+        "//:docs_check",
+        "//:format_test",
+        "//tools:runtime_source_receipt"
+      ],
+      "criterion": "Fresh Git deadline/group custody, native paginated checkpoint and mandatory successful-unmeasured registered removal tests"
+    },
+    {
+      "id": "NB-NATIVE",
+      "status": "open",
+      "issues": [
+        "TIN-5338",
+        "TIN-5421"
+      ],
+      "targets": [
+        "//delivery:installed_legacy_native_tui_test"
+      ],
+      "criterion": "Exact retained candidate plus freshly built Omux archive; ordinary empty-history resume; original bytes/SQL row/inode; next settings ordinal; distinct owner/reference; second detach/cleanexit/sealed ledger"
+    },
+    {
+      "id": "NB-YOGA",
+      "status": "open",
+      "issues": [
+        "TIN-5442",
+        "TIN-2720"
+      ],
+      "criterion": "Fixed executable/host qualification, unchanged472-row closure, isolated Wayland browser and actual human toolbar deny/approve"
+    },
+    {
+      "id": "NB-HM",
+      "status": "open",
+      "issues": [
+        "TIN-2063"
+      ],
+      "criterion": "One finite independent compact source bundle and genuine offline module evaluation; failed e3 wrapper preserved; no activation"
+    },
+    {
+      "id": "NB-DELIVERY",
+      "status": "open",
+      "issues": [
+        "TIN-2057",
+        "TIN-2063",
+        "TIN-5338"
+      ],
+      "criterion": "Reviewable signed exact-source change based on134e ancestry; truthful local receipts/protection transition; no staged-placeholder loss"
+    }
+  ],
+  "limits": [
+    "No provider calls",
+    "No accepted-history/tool/approval proof",
+    "Stock Codex and live same-process handoff unproved",
+    "PZM/Darwin held",
+    "Publication and achieved contractual SLA separate"
+  ],
+  "clock_semantics": "Continuation checkpoint, not replacement tool goal; time closes no gate"
+}

@@ -1,0 +1,748 @@
+load("//tools:rules.bzl", "python_binary", "python_test")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load(":rules.bzl", "channel_archives", "native_resolution", "release_archive")
+load(":metadata_rules.bzl", "extension_metadata")
+load(":browser_proof_rules.bzl", "browser_runtime_authority")
+
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
+filegroup(name = "public_sources", srcs = glob(["*.py", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
+exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
+exports_files(["yoga_wrapper_authority.py", "yoga_wrapper_custody.py"])
+
+python_binary(name = "bundle", main = "pack.py", srcs = ["portable.py"])
+python_binary(name = "verify", main = "pack.py", srcs = ["portable.py"])
+python_binary(name = "install", main = "install.py", srcs = ["pack.py", "portable.py"], args = ["install"])
+python_binary(name = "uninstall", main = "install.py", srcs = ["pack.py", "portable.py"], args = ["uninstall"])
+python_binary(
+    name = "dev_stage",
+    main = "dev_stage.py",
+    srcs = ["portable.py"],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
+    data = ["//:omux", "//:omuxd", "//extensions:chromium_dev_package", ":chromium_dev_metadata",
+            "@omux_nix//:runtime_libraries", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
+    args = ["--core", "$(location //:omux)", "--daemon", "$(location //:omuxd)",
+            "--extension", "$(location //extensions:chromium_dev_package)",
+            "--metadata", "$(location :chromium_dev_metadata)",
+            "--patchelf", "$(location @omux_nix//:patchelf)",
+            "--ca-bundle", "$(location @omux_nix//:ca_bundle)"],
+)
+python_test(name = "dev_stage_test", main = "test_dev_stage.py", srcs = ["dev_stage.py", "extension_metadata.py", "portable.py"])
+python_binary(
+    name = "yoga_payload",
+    main = "yoga_payload.py",
+    srcs = ["browser_runtime_authority.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "yoga_payload_test",
+    main = "test_yoga_payload.py",
+    srcs = ["yoga_payload.py", "browser_runtime_authority.py"],
+)
+python_test(
+    name = "yoga_wrapper_authority_test",
+    main = "test_yoga_wrapper_authority.py",
+    srcs = ["yoga_wrapper_authority.py"],
+)
+python_test(
+    name = "yoga_wrapper_custody_test",
+    main = "test_yoga_wrapper_custody.py",
+    srcs = ["yoga_wrapper_custody.py", "yoga_wrapper_authority.py", "test_yoga_wrapper_authority.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_binary(
+    name = "yoga_stage",
+    main = "yoga_stage.py",
+    srcs = ["yoga_payload.py", "browser_runtime_authority.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "yoga_stage_test",
+    main = "test_yoga_stage.py",
+    srcs = ["yoga_stage.py", "yoga_payload.py", "browser_runtime_authority.py", "test_yoga_payload.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "dev_generation_test",
+    main = "test_dev_generation.py",
+    srcs = ["dev_generation.py", "dev_stage.py", "dev_stage_selected.py", "portable.py", "test_portable.py"],
+)
+python_test(
+    name = "dev_stage_runtime_test",
+    main = "test_dev_stage_runtime.py",
+    srcs = ["dev_stage.py", "test_cli.py", "portable.py"],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
+    data = ["//:omux", "//:omuxd", "//extensions:chromium_dev_package", ":chromium_dev_metadata",
+            "@omux_nix//:runtime_libraries", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
+    args = ["$(location //:omux)", "$(location //:omuxd)",
+            "$(location //extensions:chromium_dev_package)", "$(location :chromium_dev_metadata)",
+            "--patchelf", "$(location @omux_nix//:patchelf)",
+            "--ca-bundle", "$(location @omux_nix//:ca_bundle)"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "dev_generation_restart_test",
+    main = "test_dev_generation_restart.py",
+    srcs = ["dev_generation_restart.py", "dev_generation.py", "portable.py", "dev_stage.py",
+            "dev_stage_selected.py", "test_dev_generation.py", "test_portable.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Explicit retained selection; private disposable daemon restart, no browser or service activation.
+python_test(
+    name = "dev_generation_restart_retained",
+    main = "dev_generation_restart.py",
+    srcs = ["dev_generation.py", "portable.py"],
+    data = ["@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon", "@omux_nix//:native.json"],
+    args = [
+        "--stage-root", "/home/jess/.local/state/omux-execution-20261005/staged-development-selected",
+        "--generation", "0736ff39498d436bb914b1436052b803",
+        "--receipt-sha256", "37c8e707cb54fb2a9c2b21703f47256e3641b588082af61d541e4c39eb811dbc",
+        "--core-sha256", "2aa98ce48b237b776722d275bec361478d98d5188b3e770598208ac15f6d8232",
+        "--daemon-sha256", "e7a874ad2a84cdb97440765b0f7c6edb5c332d5f47ab61ba167bc18583b3ee45",
+        "--extension-sha256", "0ec74f20b4d9831e760e0e133e4082298413677a1fca7c0f21c95619685dac01",
+        "--session", "$(location @omux_nix//:dbus_run_session)",
+        "--bus", "$(location @omux_nix//:dbus_daemon)",
+        "--keyring", "$(location @omux_nix//:gnome_keyring_daemon)",
+        "--tool-manifest", "$(location @omux_nix//:native.json)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "moderate",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Operator-selected durable development staging; no service/registration changes.
+python_test(
+    name = "dev_stage_retained",
+    main = "dev_stage.py",
+    srcs = ["portable.py"],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
+    data = ["//:omux", "//:omuxd", "//extensions:chromium_dev_package", ":chromium_dev_metadata",
+            "@omux_nix//:runtime_libraries", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
+    args = [
+        "--root", "/home/jess/.local/state/omux-execution-20261005/staged-development",
+        "--core", "$(location //:omux)", "--daemon", "$(location //:omuxd)",
+        "--extension", "$(location //extensions:chromium_dev_package)",
+        "--metadata", "$(location :chromium_dev_metadata)", "--replace-owned",
+        "--patchelf", "$(location @omux_nix//:patchelf)",
+        "--ca-bundle", "$(location @omux_nix//:ca_bundle)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Explicit transaction-local retained selection; no daemon/browser activation.
+python_test(
+    name = "dev_stage_selected_retained",
+    main = "dev_stage_selected.py",
+    srcs = ["dev_stage.py", "dev_generation.py", "portable.py"],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
+    data = ["//:omux", "//:omuxd", "//extensions:chromium_dev_package", ":chromium_dev_metadata",
+            "@omux_nix//:runtime_libraries", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
+    args = [
+        "--root", "/home/jess/.local/state/omux-execution-20261005/staged-development-selected",
+        "--core", "$(location //:omux)", "--daemon", "$(location //:omuxd)",
+        "--extension", "$(location //extensions:chromium_dev_package)",
+        "--metadata", "$(location :chromium_dev_metadata)", "--replace-owned",
+        "--patchelf", "$(location @omux_nix//:patchelf)",
+        "--ca-bundle", "$(location @omux_nix//:ca_bundle)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_binary(name = "extension_metadata", main = "extension_metadata.py")
+python_test(
+    name = "yoga_toolbar_consent_test",
+    main = "test_yoga_toolbar_consent.py",
+    srcs = ["yoga_toolbar_consent.py", "yoga_toolbar_contract.py",
+            "yoga_toolbar_native_recorder.py", "chromium_native_recorder.py",
+            "yoga_wrapper_authority.py", "yoga_wrapper_custody.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+# Operator-local only. Guard admission supplies the private session/attestation
+# arguments after qualifying the seat, inputs, exact display and aggregate.
+# This label never launches another build and cannot establish consent alone.
+python_binary(
+    name = "yoga_toolbar_consent_proof",
+    main = "yoga_toolbar_consent.py",
+    srcs = ["yoga_toolbar_contract.py", "browser_runtime_authority.py",
+            "test_installed_chromium.py", "test_installed_custody.py",
+            "install.py", "pack.py", "portable.py", "yoga_wrapper_authority.py", "yoga_wrapper_custody.py"],
+    data = [":development_instance_archive", "//extensions:chromium_dev_package",
+            "yoga_toolbar_observer.mjs", "yoga_toolbar_native_recorder.py", "chromium_native_recorder.py",
+            "@omux_cached_site//:packages/chromium/bin/chromium", "@omux_cached_site//:packages/node/bin/node",
+            "@omux_cached_site//:browser_closure", "@omux_cached_site//:node_closure",
+            "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon",
+            ":qualified_browser_runtime", "@omux_nix//:native.json"],
+    args = ["--bundle", "$(location :development_instance_archive)",
+            "--extension", "$(location //extensions:chromium_dev_package)",
+            "--chromium", "$(location @omux_cached_site//:packages/chromium/bin/chromium)",
+            "--node", "$(location @omux_cached_site//:packages/node/bin/node)",
+            "--observer", "$(location yoga_toolbar_observer.mjs)",
+            "--dbus-session", "$(location @omux_nix//:dbus_run_session)",
+            "--dbus-daemon", "$(location @omux_nix//:dbus_daemon)",
+            "--keyring", "$(location @omux_nix//:gnome_keyring_daemon)",
+            "--runtime-authority", "$(location :qualified_browser_runtime)",
+            "--recorder", "$(location yoga_toolbar_native_recorder.py)",
+            "--recorder-implementation", "$(location chromium_native_recorder.py)",
+            "--tool-manifest", "$(location @omux_nix//:native.json)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(name = "extension_metadata_test", main = "test_extension_metadata.py", srcs = ["extension_metadata.py"])
+python_test(
+    name = "artifact_receipt_test",
+    main = "test_artifact_receipt.py",
+    srcs = ["artifact_receipt.py", "pack.py", "portable.py", "extension_metadata.py"],
+)
+filegroup(
+    name = "installed_receipt_bundles",
+    srcs = [":default_instance_archive", ":default_core_instance_archive", ":development_core_instance_archive"],
+)
+filegroup(
+    name = "installed_receipt_extensions",
+    srcs = ["//extensions:chromium_release_evaluation_package", "//extensions:chromium_dev_package"],
+)
+python_test(
+    name = "artifact_receipt",
+    main = "artifact_receipt.py",
+    srcs = ["pack.py", "portable.py", "extension_metadata.py"],
+    file_args = {
+        ":installed_receipt_bundles": "--bundle",
+        ":installed_receipt_extensions": "--extension",
+        ":chromium_dev_metadata": "--metadata",
+    },
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+extension_metadata(
+    name = "chromium_dev_metadata",
+    archive = "//extensions:chromium_dev_package",
+    channel = "development",
+    tags = ["manual"],
+)
+python_binary(name = "runtime_audit", main = "runtime_audit.py", srcs = ["portable.py"],
+              data = ["//clients/linux:control", "@omux_nix//:qt_runtime_libraries", "@omux_nix//:qt_platform_plugins", "@omux_nix//:qt_offscreen_plugin"],
+              args = ["$(location //clients/linux:control)", "$(location @omux_nix//:qt_offscreen_plugin)"],
+              target_compatible_with = ["@platforms//os:linux"])
+native_resolution(name = "native_runtime_resolution", control = "//clients/linux:control",
+                  target_compatible_with = ["@platforms//os:linux"])
+python_test(name = "delivery_test", main = "test_delivery.py", srcs = ["pack.py", "install.py", "portable.py", "test_portable.py"],
+            data = ["services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
+python_test(name = "update_plan_test", main = "test_update_plan.py", srcs = ["update_plan.py"])
+python_test(
+    name = "codex_runtime_selection_test",
+    main = "test_codex_runtime_selection.py",
+    srcs = [
+        "codex_runtime_selection.py", "portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+)
+python_test(name = "home_manager_service_test", main = "test_home_manager_service.py", srcs = ["home_manager_service.py"])
+python_test(
+    name = "installed_custody_process_test",
+    main = "test_installed_custody_process.py",
+    srcs = ["test_installed_custody.py", "install.py", "pack.py", "portable.py"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(name = "portable_test", main = "test_portable.py", srcs = ["portable.py"])
+python_test(name = "browser_runtime_authority_test", main = "test_browser_runtime_authority.py", srcs = ["browser_runtime_authority.py"])
+
+browser_runtime_authority(
+    name = "qualified_browser_runtime",
+    inventory = "@omux_cached_site//:inventory.json",
+    mapping = "proofs/mapping-96136df1.log",
+    mapping_sha256 = "d992fe7f4124ce731ae5338b204b993767f3b40b50883d1be1598e3ac367178d",
+    nar = "proofs/nar-120f8b34.log",
+    nar_sha256 = "42688569613bb69896d4c07f601a543c6b73f89efd27d340158462fb7fd27375",
+    exclusions = "@omux_cached_site//:execution-exclusions.json",
+    tags = ["manual"],
+)
+
+python_test(
+    name = "installed_chromium_test",
+    main = "test_installed_chromium.py",
+    srcs = ["browser_runtime_authority.py", "test_installed_custody.py", "install.py", "pack.py", "portable.py"],
+    data = [
+        ":development_instance_archive", "//extensions:chromium_dev_package", "chromium_transport.mjs", "chromium_native_recorder.py",
+        "@omux_cached_site//:packages/chromium/bin/chromium", "@omux_cached_site//:packages/node/bin/node",
+        "@omux_cached_site//:browser_closure", "@omux_cached_site//:node_closure",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon",
+        ":qualified_browser_runtime",
+    ],
+    args = [
+        "$(location :development_instance_archive)", "$(location //extensions:chromium_dev_package)",
+        "$(location @omux_cached_site//:packages/chromium/bin/chromium)", "$(location @omux_cached_site//:packages/node/bin/node)",
+        "$(location chromium_transport.mjs)", "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)", "$(location @omux_nix//:gnome_keyring_daemon)",
+        "$(location chromium_native_recorder.py)", "$(location :qualified_browser_runtime)",
+    ],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(name = "cli_test", main = "test_cli.py", srcs = [],
+            data = ["//:omux"], args = ["$(location //:omux)"],
+            target_compatible_with = ["@platforms//os:linux"])
+python_test(name = "relocation_test", main = "test_relocation.py", srcs = ["pack.py", "install.py", "portable.py"],
+            data = [":default_instance_archive", "@omux_nix//:openssl_tool", "@omux_nix//:patchelf", "//:tls_probe"],
+            args = ["$(location :default_instance_archive)", "$(location @omux_nix//:openssl_tool)", "$(location @omux_nix//:patchelf)", "$(location //:tls_probe)"],
+            env_inherit = ["HOME"],
+            target_compatible_with = ["@platforms//os:linux"])
+python_test(
+    name = "installed_custody_test",
+    main = "test_installed_custody.py",
+    srcs = ["pack.py", "install.py", "portable.py"],
+    data = [":default_instance_archive", "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["$(location :default_instance_archive)", "$(location @omux_nix//:dbus_run_session)", "$(location @omux_nix//:dbus_daemon)", "$(location @omux_nix//:gnome_keyring_daemon)"],
+    env_inherit = ["HOME"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "installed_browser_test",
+    main = "test_installed_browser.py",
+    srcs = ["test_installed_custody.py", "install.py", "pack.py", "portable.py", "//extensions:native_host_setup.py"],
+    data = [":default_instance_archive", ":development_instance_archive", "//extensions:chromium_release_evaluation_package", "//extensions:chromium_dev_package", "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["$(location :default_instance_archive)", "$(location :development_instance_archive)", "$(location //extensions:chromium_release_evaluation_package)", "$(location //extensions:chromium_dev_package)", "$(location @omux_nix//:dbus_run_session)", "$(location @omux_nix//:dbus_daemon)", "$(location @omux_nix//:gnome_keyring_daemon)"],
+    env_inherit = ["HOME"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "installed_native_interop_test",
+    main = "test_installed_native_interop.py",
+    srcs = [
+        "pack.py", "install.py", "portable.py", "test_installed_custody.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":default_instance_archive",
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon",
+        "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "installed_native_discovery_test",
+    main = "test_installed_native_discovery.py",
+    srcs = [
+        "pack.py", "install.py", "portable.py", "test_installed_custody.py",
+        "test_installed_native_interop.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":default_instance_archive",
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon",
+        "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Separate runtime epoch; the historical discovery target retains its inputs.
+python_test(
+    name = "installed_native_recovery_discovery_test",
+    main = "test_installed_native_discovery.py",
+    srcs = [
+        "pack.py", "install.py", "portable.py", "test_installed_custody.py",
+        "test_installed_native_interop.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":default_instance_archive",
+        "//integrations/codex-native-recovery-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-native-recovery-runtime:runtime-receipt.json",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon",
+        "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-native-recovery-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-native-recovery-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    tags = ["manual"],
+    env_inherit = ["HOME"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Provider-free ordinary Git uses the installed helper and genuine private vault.
+python_test(
+    name = "installed_git_test",
+    main = "test_installed_git.py",
+    srcs = [
+        "pack.py", "install.py", "portable.py", "test_installed_custody.py",
+        "test_installed_native_interop.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":default_instance_archive", "@omux_host//:git",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon",
+        "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+        "$(location @omux_host//:git)",
+    ],
+    env_inherit = ["HOME"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# New status-hook runtime bytes must be staged and independently verified first.
+python_test(
+    name = "installed_native_tui_test",
+    main = "test_installed_native_tui.py",
+    srcs = [
+        "pack.py", "install.py", "portable.py", "test_installed_custody.py",
+        "test_installed_native_interop.py",
+        "native_resumed_checkpoint.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":default_instance_archive",
+        "//integrations/codex-native-recovery-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-native-recovery-runtime:runtime-receipt.json",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon",
+        "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-native-recovery-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-native-recovery-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    tags = ["manual"],
+    env_inherit = ["HOME"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Separate retained164/runtime009 evaluation; never replaces recovery proof.
+python_test(
+    name = "installed_legacy_native_tui_test",
+    main = "test_installed_legacy_native_tui.py",
+    srcs = [
+        "pack.py", "install.py", "portable.py", "codex_runtime_selection.py",
+        "test_installed_custody.py", "test_installed_native_interop.py", "test_installed_native_tui.py",
+        "native_resumed_checkpoint.py",
+        "native_cli_stderr.py",
+        "native_fd2_observer.py",
+        "native_history_diagnostic.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":default_instance_archive",
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+        "//integrations/codex-owner-runtime:runtime-manifest.json",
+        "//integrations/codex-owner-candidate:artifact_files",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Instrumented provider-free diagnosis; never substitutes the ordinary proof.
+python_test(
+    name = "installed_legacy_native_fd2_diagnostic_test",
+    main = "test_installed_legacy_native_tui.py",
+    srcs = [
+        "pack.py", "install.py", "portable.py", "codex_runtime_selection.py",
+        "test_installed_custody.py", "test_installed_native_interop.py", "test_installed_native_tui.py",
+        "native_resumed_checkpoint.py",
+        "native_cli_stderr.py",
+        "native_fd2_observer.py",
+        "native_history_diagnostic.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":native_fd2_observer",
+        ":default_instance_archive",
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+        "//integrations/codex-owner-runtime:runtime-manifest.json",
+        "//integrations/codex-owner-candidate:artifact_files",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "--fd2-observer", "$(location :native_fd2_observer)",
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "native_history_diagnostic_test",
+    main = "test_native_history_diagnostic.py",
+    srcs = ["native_history_diagnostic.py"],
+)
+
+
+cc_binary(
+    name = "native_fd2_observer",
+    srcs = ["native_fd2_observer.c"],
+    linkopts = ["-Wl,--as-needed"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+cc_binary(
+    name = "native_fd2_observer_fixture",
+    srcs = ["native_fd2_observer_fixture.c"],
+    linkopts = ["-Wl,--as-needed", "-pthread"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "native_fd2_observer_test",
+    main = "test_native_fd2_observer.py",
+    srcs = ["native_fd2_observer.py", "portable.py"],
+    data = [":native_fd2_observer", ":native_fd2_observer_fixture",
+            "@omux_nix//:dynamic_linker", "@omux_nix//:runtime_libraries",
+            "@omux_nix//:interpreter_bash"],
+    args = ["$(location :native_fd2_observer)", "$(location :native_fd2_observer_fixture)",
+            "$(location @omux_nix//:dynamic_linker)", "$(location @omux_nix//:interpreter_bash)"],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+config_setting(name = "x86_64_linux", constraint_values = ["@platforms//cpu:x86_64", "@platforms//os:linux"])
+config_setting(name = "aarch64_linux", constraint_values = ["@platforms//cpu:aarch64", "@platforms//os:linux"])
+config_setting(name = "x86_64_macos", constraint_values = ["@platforms//cpu:x86_64", "@platforms//os:macos"])
+config_setting(name = "aarch64_macos", constraint_values = ["@platforms//cpu:aarch64", "@platforms//os:macos"])
+
+# Narrow provider-free custody lane; full-product archives remain independent.
+release_archive(
+    name = "default_core_instance_archive",
+    binary = "//:omux",
+    daemon = "//:omuxd",
+    reference = "//:reference_bundle",
+    systemd_template = "services/omux.service.in",
+    launchd_template = "services/dev.xoxd.omux.plist.in",
+    channel = "release",
+    target = select({":x86_64_linux": "x86_64-linux", ":aarch64_linux": "aarch64-linux"}),
+    target_compatible_with = ["@platforms//os:linux"],
+    tags = ["manual"],
+)
+release_archive(
+    name = "development_core_instance_archive",
+    binary = "//:omux",
+    daemon = "//:omuxd",
+    reference = "//:reference_bundle",
+    systemd_template = "services/omux.service.in",
+    launchd_template = "services/dev.xoxd.omux.plist.in",
+    channel = "development",
+    target = select({":x86_64_linux": "x86_64-linux", ":aarch64_linux": "aarch64-linux"}),
+    target_compatible_with = ["@platforms//os:linux"],
+    tags = ["manual"],
+)
+python_test(
+    name = "installed_core_browser_test",
+    main = "test_installed_browser.py",
+    srcs = ["test_installed_custody.py", "install.py", "pack.py", "portable.py", "//extensions:native_host_setup.py"],
+    data = [":default_core_instance_archive", ":development_core_instance_archive", "//extensions:chromium_release_evaluation_package", "//extensions:chromium_dev_package",
+            "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["$(location :default_core_instance_archive)", "$(location :development_core_instance_archive)", "$(location //extensions:chromium_release_evaluation_package)", "$(location //extensions:chromium_dev_package)",
+            "$(location @omux_nix//:dbus_run_session)", "$(location @omux_nix//:dbus_daemon)",
+            "$(location @omux_nix//:gnome_keyring_daemon)"],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "installed_core_custody_test",
+    main = "test_installed_custody.py",
+    srcs = ["pack.py", "install.py", "portable.py"],
+    data = [":default_core_instance_archive", "@omux_nix//:dbus_run_session",
+            "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["$(location :default_core_instance_archive)", "$(location @omux_nix//:dbus_run_session)",
+            "$(location @omux_nix//:dbus_daemon)", "$(location @omux_nix//:gnome_keyring_daemon)",
+            "--core-only"],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+channel_archives(
+    name = "release_archive",
+    # Existing aliases retain their historical null-source/dirty defaults.
+    binary = "//:omux",
+    daemon = "//:omuxd",
+    control = select({
+        ":x86_64_linux": "//clients/linux:control",
+        ":aarch64_linux": "//clients/linux:control",
+        "//conditions:default": None,
+    }),
+    qt_runtime_files = select({
+        ":x86_64_linux": ["@omux_nix//:qt_runtime_libraries"],
+        ":aarch64_linux": ["@omux_nix//:qt_runtime_libraries"],
+        "//conditions:default": [],
+    }),
+    qt_plugin_files = select({
+        ":x86_64_linux": ["@omux_nix//:qt_platform_plugins"],
+        ":aarch64_linux": ["@omux_nix//:qt_platform_plugins"],
+        "//conditions:default": [],
+    }),
+    resolution_witness = select({
+        ":x86_64_linux": ":native_runtime_resolution",
+        ":aarch64_linux": ":native_runtime_resolution",
+        "//conditions:default": None,
+    }),
+    reference = "//:reference_bundle",
+    systemd_template = "services/omux.service.in",
+    launchd_template = "services/dev.xoxd.omux.plist.in",
+    target = select({
+        ":x86_64_linux": "x86_64-linux",
+        ":aarch64_linux": "aarch64-linux",
+        ":x86_64_macos": "x86_64-macos",
+        ":aarch64_macos": "aarch64-macos",
+    }),
+)
+
+# Separate dirty development artifact for explicit paired Home Manager evaluation.
+# The base revision is caller-declared; this does not establish clean source provenance.
+release_archive(
+    name = "development_home_manager_archive",
+    binary = "//:omux",
+    daemon = "//:omuxd",
+    control = "//clients/linux:control",
+    qt_runtime_files = ["@omux_nix//:qt_runtime_libraries"],
+    qt_plugin_files = ["@omux_nix//:qt_platform_plugins"],
+    resolution_witness = ":native_runtime_resolution",
+    reference = "//:reference_bundle",
+    systemd_template = "services/omux.service.in",
+    launchd_template = "services/dev.xoxd.omux.plist.in",
+    target = "x86_64-linux",
+    channel = "development",
+    development_source_revision = "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "development_home_manager_archive_verify",
+    main = "pack.py",
+    srcs = ["portable.py"],
+    data = [":development_home_manager_archive"],
+    args = ["--verify", "$(location :development_home_manager_archive)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "native_resumed_checkpoint_test",
+    main = "test_native_resumed_checkpoint.py",
+    srcs = ["native_resumed_checkpoint.py"],
+)
+
+python_test(
+    name = "native_cli_stderr_test",
+    main = "test_native_cli_stderr.py",
+    srcs = ["native_cli_stderr.py"],
+)
+
+# New installed-image observations; retained runtime009 qualification is unchanged.
+cc_binary(
+    name = "codex_direct_exec_fixture",
+    srcs = ["codex_direct_exec_fixture.c"],
+    # The declared C++ link driver must not add its unused C++ runtime to this
+    # C-only fixture's portable dependency closure.
+    linkopts = ["-Wl,--as-needed"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "codex_direct_exec_test",
+    main = "test_codex_direct_exec.py",
+    srcs = [
+        "codex_direct_exec.py", "codex_runtime_selection.py", "portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":codex_direct_exec_fixture", "@omux_nix//:patchelf_native",
+        "@omux_nix//:patchelf_tools", "@omux_nix//:ca_bundle",
+    ],
+    args = [
+        "$(location :codex_direct_exec_fixture)",
+        "$(location @omux_nix//:patchelf_native)",
+        "$(location @omux_nix//:ca_bundle)",
+    ],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)

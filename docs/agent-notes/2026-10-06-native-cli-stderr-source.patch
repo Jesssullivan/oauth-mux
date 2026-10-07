@@ -1,0 +1,217 @@
+diff --git a/delivery/native_cli_stderr.py b/delivery/native_cli_stderr.py
+new file mode 100644
+--- /dev/null
++++ b/delivery/native_cli_stderr.py
+@@ -0,0 +1,62 @@
++"""Closed stderr categories for bounded private CLI diagnostics, never acceptance.
++
++R-HOOK-CONVERGENCE-20261004 / R-N13. Return literal categories only. Do not
++return or persist diagnostic bytes, variable paths, addresses or operation IDs.
++Recognizing a marker is not a proved cause; every nonempty stderr still fails.
++"""
++import json
++
++MAX_BYTES = 1024 * 1024
++CATEGORIES = (
++    "stderr-empty", "stderr-instance-mismatch",
++    "stderr-safe-allocator-leak-prefix", "stderr-zig-error-prefix",
++    "stderr-mutation-guidance", "stderr-unrecognized",
++    "stderr-colored-safe-allocator-leak-prefix", "stderr-colored-zig-error-prefix",
++    "stderr-safe-allocator-leak-after-preamble", "stderr-zig-error-after-preamble",
++    "stderr-zig-warning-prefix", "stderr-colored-zig-warning-prefix",
++    "stderr-json-other", "stderr-unrecognized-escape-leading",
++    "stderr-unrecognized-ascii-leading", "stderr-unrecognized-nonascii-leading",
++)
++# Only exact codes emitted by pinned Zig 0.17 log.defaultLogFileTerminal.
++COLOR_CODES = (b"\x1b[0m", b"\x1b[1m", b"\x1b[2m", b"\x1b[31m",
++               b"\x1b[32m", b"\x1b[33m", b"\x1b[35m")
++
++
++def classify(diagnostics, params, strict_object):
++    if not isinstance(diagnostics, (bytes, bytearray)) or len(diagnostics) > MAX_BYTES:
++        return "stderr-unrecognized"
++    if not diagnostics:
++        return "stderr-empty"
++    if diagnostics == b"Omux artifact instance mismatch\n":
++        return "stderr-instance-mismatch"
++    # Removing a finite color spelling is for recognition only, never for
++    # sanitizing/forwarding private bytes or making a failed invocation pass.
++    visible = bytes(diagnostics)
++    for code in COLOR_CODES:
++        visible = visible.replace(code, b"")
++    colored = visible != diagnostics
++    for prefix, plain, decorated in (
++            (b"error(SafeAllocator): leaked ", "stderr-safe-allocator-leak-prefix",
++             "stderr-colored-safe-allocator-leak-prefix"),
++            (b"error: ", "stderr-zig-error-prefix", "stderr-colored-zig-error-prefix"),
++            (b"warning: ", "stderr-zig-warning-prefix", "stderr-colored-zig-warning-prefix")):
++        if visible.startswith(prefix):
++            return decorated if colored else plain
++    if b"\nerror(SafeAllocator): leaked " in visible:
++        return "stderr-safe-allocator-leak-after-preamble"
++    if b"\nerror: " in visible:
++        return "stderr-zig-error-after-preamble"
++    try:
++        guidance = json.loads(diagnostics, object_pairs_hook=strict_object)
++    except (ValueError, UnicodeDecodeError, RecursionError):
++        if diagnostics[0] == 0x1b:
++            return "stderr-unrecognized-escape-leading"
++        if diagnostics[0] < 0x80:
++            return "stderr-unrecognized-ascii-leading"
++        return "stderr-unrecognized-nonascii-leading"
++    if isinstance(params, dict) and "operation_id" in params and guidance == {
++            "operation_id": params["operation_id"], "status": "unresolved",
++            "query": {"method": "operation.status", "params": params},
++            "message": "Query this operation in the same daemon installation before repeating the action. The CLI does not replay it."}:
++        return "stderr-mutation-guidance"
++    return "stderr-json-other"
+diff --git a/delivery/test_native_cli_stderr.py b/delivery/test_native_cli_stderr.py
+new file mode 100644
+--- /dev/null
++++ b/delivery/test_native_cli_stderr.py
+@@ -0,0 +1,83 @@
++"""Classification cannot make stderr-free success from a nonempty private stream."""
++import json
++import unittest
++import native_cli_stderr as stderr
++
++PARAMS = {"operation_id": "synthetic-operation"}
++PRIVATE = b"private fixture tail that must never be returned"
++
++
++def strict_object(pairs):
++    value = {}
++    for key, item in pairs:
++        if key in value:
++            raise ValueError("duplicate JSON key")
++        value[key] = item
++    return value
++
++
++class StderrTests(unittest.TestCase):
++    def classify(self, value, params=PARAMS):
++        result = stderr.classify(value, params, strict_object)
++        self.assertIn(result, stderr.CATEGORIES)
++        self.assertNotIn("private fixture", result)
++        if value:
++            self.assertNotEqual(result, "stderr-empty")
++        return result
++
++    def test_empty_is_only_empty(self):
++        self.assertEqual(self.classify(b""), "stderr-empty")
++        self.assertEqual(self.classify(b"\n"), "stderr-unrecognized-ascii-leading")
++
++    def test_exact_instance_marker_only(self):
++        self.assertEqual(self.classify(b"Omux artifact instance mismatch\n"), "stderr-instance-mismatch")
++        self.assertNotEqual(self.classify(b"Omux artifact instance mismatch\n" + PRIVATE),
++                            "stderr-instance-mismatch")
++
++    def test_known_plain_allocator_error_and_warning(self):
++        for prefix, expected in (
++                (b"error(SafeAllocator): leaked ", "stderr-safe-allocator-leak-prefix"),
++                (b"error: ", "stderr-zig-error-prefix"),
++                (b"warning: ", "stderr-zig-warning-prefix")):
++            self.assertEqual(self.classify(prefix + PRIVATE), expected)
++
++    def test_exact_pinned_color_codes(self):
++        self.assertEqual(self.classify(
++            b"\x1b[31m\x1b[1merror\x1b[0m\x1b[2m\x1b[1m(SafeAllocator): \x1b[0mleaked " + PRIVATE),
++            "stderr-colored-safe-allocator-leak-prefix")
++        self.assertEqual(self.classify(b"\x1b[31merror: \x1b[0m" + PRIVATE),
++                         "stderr-colored-zig-error-prefix")
++        self.assertEqual(self.classify(b"\x1b[33mwarning: \x1b[0m" + PRIVATE),
++                         "stderr-colored-zig-warning-prefix")
++
++    def test_known_marker_after_unknown_preamble_is_not_cause_proof(self):
++        self.assertEqual(self.classify(PRIVATE + b"\nerror(SafeAllocator): leaked " + PRIVATE),
++                         "stderr-safe-allocator-leak-after-preamble")
++        self.assertEqual(self.classify(PRIVATE + b"\nerror: " + PRIVATE),
++                         "stderr-zig-error-after-preamble")
++        self.assertNotEqual(self.classify(PRIVATE + b" error(SafeAllocator): leaked "),
++                            "stderr-safe-allocator-leak-after-preamble")
++
++    def test_unknown_escape_ascii_and_binary_families_stay_private(self):
++        self.assertEqual(self.classify(b"\x1b[999m" + PRIVATE), "stderr-unrecognized-escape-leading")
++        self.assertEqual(self.classify(PRIVATE), "stderr-unrecognized-ascii-leading")
++        self.assertEqual(self.classify(b"\xff" + PRIVATE), "stderr-unrecognized-nonascii-leading")
++
++    def test_exact_original_operation_guidance_only(self):
++        value = {"operation_id": PARAMS["operation_id"], "status": "unresolved",
++                 "query": {"method": "operation.status", "params": PARAMS},
++                 "message": "Query this operation in the same daemon installation before repeating the action. The CLI does not replay it."}
++        payload = json.dumps(value).encode()
++        self.assertEqual(self.classify(payload), "stderr-mutation-guidance")
++        self.assertEqual(self.classify(payload, {"operation_id": "different-synthetic-operation"}),
++                         "stderr-json-other")
++        value["unexpected"] = "private fixture"
++        self.assertEqual(self.classify(json.dumps(value).encode()), "stderr-json-other")
++
++    def test_duplicate_json_and_oversized_unknown_remain_refusals(self):
++        self.assertEqual(self.classify(b'{"kind":1,"kind":2}'), "stderr-unrecognized-ascii-leading")
++        self.assertEqual(self.classify(b"x" * (stderr.MAX_BYTES + 1)), "stderr-unrecognized")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/delivery/test_installed_legacy_native_tui.py b/delivery/test_installed_legacy_native_tui.py
+--- a/delivery/test_installed_legacy_native_tui.py
++++ b/delivery/test_installed_legacy_native_tui.py
+@@ -26,5 +26,6 @@
+ 
+ import codex_runtime_selection as selection
+ import test_installed_native_tui as tui
++import native_cli_stderr
+ 
+ support = tui.support
+@@ -59,4 +60,2 @@
+-CLI_STDERRS = ("stderr-empty", "stderr-instance-mismatch", "stderr-mutation-guidance",
+-               "stderr-safe-allocator-leak-prefix", "stderr-zig-error-prefix",
+-               "stderr-unrecognized", "unclassified")
++CLI_STDERRS = (*native_cli_stderr.CATEGORIES, "unclassified")
+ CLI_COMPLETIONS = ("completion-exact", "completion-other-result",
+@@ -288,24 +286,3 @@
+-def classify_status_stderr(diagnostics, params):
+-    # Prefix categories identify only literal bytes, never their variable tail
+-    # or a proven cause. Zig 0.17 start.callMain uses SafeAllocator in ReleaseSafe;
+-    # its deinit leak logs do not change the return code (start.zig780–810,
+-    # heap/SafeAllocator.zig712/736, and log.defaultLogFileTerminal).
+-    if not diagnostics:
+-        return "stderr-empty"
+-    if diagnostics == b"Omux artifact instance mismatch\n":  # portable.linux_launcher
+-        return "stderr-instance-mismatch"
+-    if diagnostics.startswith(b"error(SafeAllocator): leaked "):
+-        return "stderr-safe-allocator-leak-prefix"
+-    if diagnostics.startswith(b"error: "):  # Zig start.wrapMain/default log prefix
+-        return "stderr-zig-error-prefix"
+-    try:
+-        guidance = json.loads(diagnostics, object_pairs_hook=tui.strict_object)
+-    except (ValueError, UnicodeDecodeError, RecursionError):
+-        return "stderr-unrecognized"
+-    # Exact main.mutationGuidance shape, bound to this original status operation.
+-    if guidance == {
+-            "operation_id": params["operation_id"], "status": "unresolved",
+-            "query": {"method": "operation.status", "params": params},
+-            "message": "Query this operation in the same daemon installation before repeating the action. The CLI does not replay it."}:
+-        return "stderr-mutation-guidance"
+-    return "stderr-unrecognized"
++def classify_status_stderr(diagnostics, params):
++    # Classifications are private recognition, never a reason to admit stderr.
++    return native_cli_stderr.classify(diagnostics, params, tui.strict_object)
+diff --git a/delivery/BUILD.bazel b/delivery/BUILD.bazel
+--- a/delivery/BUILD.bazel
++++ b/delivery/BUILD.bazel
+@@ -475,3 +475,4 @@
+         "test_installed_custody.py", "test_installed_native_interop.py", "test_installed_native_tui.py",
+         "native_resumed_checkpoint.py",
++        "native_cli_stderr.py",
+         "//integrations/codex-owner-runtime:runtime_package.py",
+@@ -628,3 +629,9 @@
+     main = "test_native_resumed_checkpoint.py",
+     srcs = ["native_resumed_checkpoint.py"],
+ )
++
++python_test(
++    name = "native_cli_stderr_test",
++    main = "test_native_cli_stderr.py",
++    srcs = ["native_cli_stderr.py"],
++)

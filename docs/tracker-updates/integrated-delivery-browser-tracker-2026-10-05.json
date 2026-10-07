@@ -1,0 +1,363 @@
+{
+  "schema_version": 1,
+  "kind": "factual_browser_tracker_reconciliation",
+  "authority": "Explicit user-authorized Linear reconciliation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-05 20:43:12 UTC",
+  "scope": "Current evidence paragraph only; preserve issue scope/acceptance/state/ownership/dependencies and historical failed receipts",
+  "evidence": "docs/tracker-updates/integrated-delivery-chromium-2026-10-05.json",
+  "changes": [
+    {
+      "id": "TIN-2057",
+      "before": {
+        "id": "TIN-2057",
+        "uuid": "8447ad12-e88d-4b50-aaf0-a090a5ce1382",
+        "title": "Native continuity acceptance spine: ordinary launch, same process",
+        "description": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nWhole native continuity acceptance: installation, source consent, verified identity/usable authority, renewal, ordinary native launch/resume and same-process handoff. Preserve native session/history/tools/approvals; never replay accepted streams or repeat tool execution.\n\nAcceptance US-LAUNCH-01, US-ATTACH-01, US-HANDOFF-01, US-NOREPLAY-01, SC-01–11, NAC-018. Each phase requires exact version-bound successful evidence; timely safe refusals are separate outcomes. Restart, wrapper invocation, prepared fallback, route warming and synthetic tests cannot close seamless handoff.\n\nPaths: docs/product/user-stories.md, support-and-completeness.md, docs/spec/native-adapter-contract.md and reliability contracts. Historical 0/11/82-pass score and v0.1.15 retain their recorded candidate/release truth. New source/build/portable staged CLI/refusal predicates close only their named scope, not whole product support. Current resumed checkpoint: ID-AUTHORITY, ID-CONTAINMENT, ID-CHANNEL, ID-SETUP and ID-DELIVERY pass within their stated experimental scope; six other sprint gates remain open. ef255a3e passed paired installed native-host registration/channel isolation and actual CLI/Qt/daemon custody/restart/replay. b62de355 passed local SPA unit/render/archive checks. 97e91470 reached actual Chromium but failed an assertion; browser consent, fleet activation, native resume, provider/live handoff, Darwin and achieved lifecycle SLO remain unproved. Workspace evidence paths (unpublished): docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json, integrated-delivery-spa-2026-10-05.json and integrated-delivery-continuation-2026-10-05.json.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-2057>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence.",
+        "priority": {
+          "value": 1,
+          "name": "Urgent"
+        },
+        "url": "https://linear.app/tinyland/issue/TIN-2057/native-continuity-acceptance-spine-ordinary-launch-same-process",
+        "gitBranchName": "jess/tin-2057-native-continuity-acceptance-spine-ordinary-launch-same",
+        "createdAt": "2026-06-12T18:49:14.445Z",
+        "updatedAt": "2026-10-05T20:03:07.240Z",
+        "archivedAt": null,
+        "completedAt": null,
+        "startedAt": "2026-07-11T21:36:12.098Z",
+        "canceledAt": null,
+        "dueDate": "2026-10-11",
+        "slaStartedAt": null,
+        "slaMediumRiskAt": null,
+        "slaHighRiskAt": null,
+        "slaBreachesAt": null,
+        "status": "In Progress",
+        "statusType": "started",
+        "labels": [],
+        "attachments": [
+          {
+            "id": "92af6a43-7764-4736-ae2e-edea3c7a1b47",
+            "title": "PR #479 - v0.2 evaluation and dogfood ladder",
+            "subtitle": null,
+            "url": "https://github.com/Jesssullivan/oauth-mux/pull/479"
+          },
+          {
+            "id": "caa9320e-2f95-48aa-a140-0a6910007ec6",
+            "title": "GitHub v0.2 full-broker program #463",
+            "subtitle": null,
+            "url": "https://github.com/Jesssullivan/oauth-mux/issues/463"
+          }
+        ],
+        "documents": [],
+        "stateHistory": [
+          {
+            "state": {
+              "id": "c6ad8379-2b98-4ad2-ab79-3817014cfca2",
+              "name": "Todo",
+              "type": "unstarted"
+            },
+            "startedAt": "2026-06-12T18:49:14.445Z",
+            "endedAt": "2026-07-11T21:36:12.111Z"
+          },
+          {
+            "state": {
+              "id": "713c7762-4d32-44f5-93b7-ed64111df243",
+              "name": "In Progress",
+              "type": "started"
+            },
+            "startedAt": "2026-07-11T21:36:12.111Z",
+            "endedAt": null
+          }
+        ],
+        "createdBy": "Jess Sullivan",
+        "createdById": "5402ff97-3cab-4490-9922-b4d20eb0650f",
+        "assignee": "Jess Sullivan",
+        "assigneeId": "5402ff97-3cab-4490-9922-b4d20eb0650f",
+        "project": "Omux · trust, live evidence + service objectives",
+        "projectId": "d8a9b968-05ba-490b-b2f3-ece56e77b925",
+        "team": "Tinyland",
+        "teamId": "a2c482c8-4d0d-4171-82d9-553265b6c706",
+        "relations": {
+          "blocks": [],
+          "blockedBy": [
+            {
+              "id": "TIN-5342",
+              "title": "Bounded SLI measurement, budget ledger + runbook validation"
+            },
+            {
+              "id": "TIN-5338",
+              "title": "Omux-owned Codex adapter + ordinary launch/resume proof"
+            },
+            {
+              "id": "TIN-3032",
+              "title": "Native renewal adoption + explicit verified re-enrollment"
+            },
+            {
+              "id": "TIN-5341",
+              "title": "Git HTTPS/GitHub exact repository native-helper live gate"
+            },
+            {
+              "id": "TIN-2830",
+              "title": "Clean-user installed lifecycle proof on exact platform artifacts"
+            },
+            {
+              "id": "TIN-1803",
+              "title": "Redacted independent state + fresh grouped capacity views"
+            },
+            {
+              "id": "TIN-2400",
+              "title": "Generic capacity observations: scope, freshness + shared buckets"
+            },
+            {
+              "id": "TIN-2077",
+              "title": "Claude native ordinary-launch + live handoff gate"
+            }
+          ],
+          "relatedTo": [
+            {
+              "id": "TIN-3423",
+              "title": "First Loop: a weekly sweep that re-derives state at run time — one Loop, not three, because the window yields N=1"
+            },
+            {
+              "id": "TIN-2071",
+              "title": "Provider-owned enrollment factors + verified source authorization"
+            },
+            {
+              "id": "TIN-3320",
+              "title": "Shared cross-process Claude lease view with stale-owner recovery"
+            },
+            {
+              "id": "TIN-1759",
+              "title": "lab: reduce raw secret exposure in macOS launchd environment"
+            },
+            {
+              "id": "TIN-1790",
+              "title": "Extract pure broker decision core for Claude, Codex, and OpenCode adapters"
+            },
+            {
+              "id": "TIN-3024",
+              "title": "omux LaunchAgent source containment: env-i allowlist, value-free status, and doctor compatibility"
+            },
+            {
+              "id": "TIN-3018",
+              "title": "Time-box a clean OpenCode Core K3/Codex challenger without OMO"
+            },
+            {
+              "id": "TIN-3009",
+              "title": "Pi/K3 house harness: context-grounded cmux fleets and lab subtraction"
+            },
+            {
+              "id": "TIN-3003",
+              "title": "Stage 2: reconcile accepted/rejected request counters from fake-upstream evidence"
+            },
+            {
+              "id": "TIN-2797",
+              "title": "Thin SwiftUI/macOS + Qt/Linux controls and installed UX proof"
+            },
+            {
+              "id": "TIN-2105",
+              "title": "oauth-mux: prove bounded Zig build/test REAPI target class"
+            },
+            {
+              "id": "TIN-2720",
+              "title": "Chromium provider schema + verified acquisition proof"
+            },
+            {
+              "id": "TIN-2409",
+              "title": "keepalive: integer-overflow panic in KeepaliveWait.wait on far-future (never=maxInt) wake sentinel"
+            }
+          ],
+          "duplicateOf": null
+        }
+      },
+      "arguments": {
+        "id": "TIN-2057",
+        "description": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nWhole native continuity acceptance: installation, source consent, verified identity/usable authority, renewal, ordinary native launch/resume and same-process handoff. Preserve native session/history/tools/approvals; never replay accepted streams or repeat tool execution.\n\nAcceptance US-LAUNCH-01, US-ATTACH-01, US-HANDOFF-01, US-NOREPLAY-01, SC-01–11, NAC-018. Each phase requires exact version-bound successful evidence; timely safe refusals are separate outcomes. Restart, wrapper invocation, prepared fallback, route warming and synthetic tests cannot close seamless handoff.\n\nPaths: docs/product/user-stories.md, support-and-completeness.md, docs/spec/native-adapter-contract.md and reliability contracts. Historical 0/11/82-pass score and v0.1.15 retain their recorded candidate/release truth. New source/build/portable staged CLI/refusal predicates close only their named scope, not whole product support. Current resumed checkpoint: ID-AUTHORITY, ID-CONTAINMENT, ID-CHANNEL, ID-SETUP and ID-DELIVERY pass within their stated experimental scope; six other sprint gates remain open. ef255a3e passed paired installed native-host registration/channel isolation and actual CLI/Qt/daemon custody/restart/replay. b62de355 passed local SPA unit/render/archive checks. c8f63b83 passed actual pinned Chromium 147 development-extension/native-host health, permission refusal, synthetic source pending-operation recovery across browser restart, context disconnect, independent-source retention and owned cleanup. This does not prove human toolbar consent, real provider account acquisition or a committed daemon mutation with lost reply. Yoga's operator-led local Wayland toolbar proof is the next browser lane. Fleet activation, ordinary native resume, provider/live handoff, Darwin and achieved lifecycle SLO remain unproved. Earlier failed Chromium epochs retain their evidence. Workspace evidence paths (unpublished): docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json, integrated-delivery-spa-2026-10-05.json and integrated-delivery-chromium-2026-10-05.json.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-2057>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence."
+      },
+      "readback": {
+        "id": "TIN-2057",
+        "uuid": "8447ad12-e88d-4b50-aaf0-a090a5ce1382",
+        "url": "https://linear.app/tinyland/issue/TIN-2057/native-continuity-acceptance-spine-ordinary-launch-same-process",
+        "updatedAt": "2026-10-05T20:43:51.573Z",
+        "description": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nWhole native continuity acceptance: installation, source consent, verified identity/usable authority, renewal, ordinary native launch/resume and same-process handoff. Preserve native session/history/tools/approvals; never replay accepted streams or repeat tool execution.\n\nAcceptance US-LAUNCH-01, US-ATTACH-01, US-HANDOFF-01, US-NOREPLAY-01, SC-01–11, NAC-018. Each phase requires exact version-bound successful evidence; timely safe refusals are separate outcomes. Restart, wrapper invocation, prepared fallback, route warming and synthetic tests cannot close seamless handoff.\n\nPaths: docs/product/user-stories.md, support-and-completeness.md, docs/spec/native-adapter-contract.md and reliability contracts. Historical 0/11/82-pass score and v0.1.15 retain their recorded candidate/release truth. New source/build/portable staged CLI/refusal predicates close only their named scope, not whole product support. Current resumed checkpoint: ID-AUTHORITY, ID-CONTAINMENT, ID-CHANNEL, ID-SETUP and ID-DELIVERY pass within their stated experimental scope; six other sprint gates remain open. ef255a3e passed paired installed native-host registration/channel isolation and actual CLI/Qt/daemon custody/restart/replay. b62de355 passed local SPA unit/render/archive checks. c8f63b83 passed actual pinned Chromium 147 development-extension/native-host health, permission refusal, synthetic source pending-operation recovery across browser restart, context disconnect, independent-source retention and owned cleanup. This does not prove human toolbar consent, real provider account acquisition or a committed daemon mutation with lost reply. Yoga's operator-led local Wayland toolbar proof is the next browser lane. Fleet activation, ordinary native resume, provider/live handoff, Darwin and achieved lifecycle SLO remain unproved. Earlier failed Chromium epochs retain their evidence. Workspace evidence paths (unpublished): docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json, integrated-delivery-spa-2026-10-05.json and integrated-delivery-chromium-2026-10-05.json.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-2057>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence.",
+        "title": "Native continuity acceptance spine: ordinary launch, same process",
+        "status": "In Progress",
+        "assigneeId": "5402ff97-3cab-4490-9922-b4d20eb0650f",
+        "dueDate": "2026-10-11",
+        "relations": {
+          "blocks": [],
+          "blockedBy": [
+            {
+              "id": "TIN-5342",
+              "title": "Bounded SLI measurement, budget ledger + runbook validation"
+            },
+            {
+              "id": "TIN-5338",
+              "title": "Omux-owned Codex adapter + ordinary launch/resume proof"
+            },
+            {
+              "id": "TIN-3032",
+              "title": "Native renewal adoption + explicit verified re-enrollment"
+            },
+            {
+              "id": "TIN-5341",
+              "title": "Git HTTPS/GitHub exact repository native-helper live gate"
+            },
+            {
+              "id": "TIN-2830",
+              "title": "Clean-user installed lifecycle proof on exact platform artifacts"
+            },
+            {
+              "id": "TIN-1803",
+              "title": "Redacted independent state + fresh grouped capacity views"
+            },
+            {
+              "id": "TIN-2400",
+              "title": "Generic capacity observations: scope, freshness + shared buckets"
+            },
+            {
+              "id": "TIN-2077",
+              "title": "Claude native ordinary-launch + live handoff gate"
+            }
+          ],
+          "relatedTo": [
+            {
+              "id": "TIN-3423",
+              "title": "First Loop: a weekly sweep that re-derives state at run time — one Loop, not three, because the window yields N=1"
+            },
+            {
+              "id": "TIN-2071",
+              "title": "Provider-owned enrollment factors + verified source authorization"
+            },
+            {
+              "id": "TIN-3320",
+              "title": "Shared cross-process Claude lease view with stale-owner recovery"
+            },
+            {
+              "id": "TIN-1759",
+              "title": "lab: reduce raw secret exposure in macOS launchd environment"
+            },
+            {
+              "id": "TIN-1790",
+              "title": "Extract pure broker decision core for Claude, Codex, and OpenCode adapters"
+            },
+            {
+              "id": "TIN-3024",
+              "title": "omux LaunchAgent source containment: env-i allowlist, value-free status, and doctor compatibility"
+            },
+            {
+              "id": "TIN-3018",
+              "title": "Time-box a clean OpenCode Core K3/Codex challenger without OMO"
+            },
+            {
+              "id": "TIN-3009",
+              "title": "Pi/K3 house harness: context-grounded cmux fleets and lab subtraction"
+            },
+            {
+              "id": "TIN-3003",
+              "title": "Stage 2: reconcile accepted/rejected request counters from fake-upstream evidence"
+            },
+            {
+              "id": "TIN-2797",
+              "title": "Thin SwiftUI/macOS + Qt/Linux controls and installed UX proof"
+            },
+            {
+              "id": "TIN-2105",
+              "title": "oauth-mux: prove bounded Zig build/test REAPI target class"
+            },
+            {
+              "id": "TIN-2720",
+              "title": "Chromium provider schema + verified acquisition proof"
+            },
+            {
+              "id": "TIN-2409",
+              "title": "keepalive: integer-overflow panic in KeepaliveWait.wait on far-future (never=maxInt) wake sentinel"
+            }
+          ],
+          "duplicateOf": null
+        },
+        "exact_description": true,
+        "unchanged_metadata": true
+      }
+    },
+    {
+      "id": "TIN-5442",
+      "before": {
+        "id": "TIN-5442",
+        "uuid": "eb69863c-9e5b-41a8-8b33-e95df21e3153",
+        "title": "Installed Chromium connection, context disconnect and dev/release coexistence",
+        "description": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nActual Chromium installation, browser-native-host connection and selected-context lifecycle. Exact-ID/channel registration must resolve the intended daemon. Explicit reload/restart/reconnect, missing host, incompatible protocol, revoked permission and lost replies produce distinct truthful outcomes.\n\nConsent explains automatic enrollment of verified identities. Disconnect is context-specific and removes source-retained secrets while independent grants/native history retain their authority; browser disappearance detaches. Development/release extension ID, host, service, staging, socket, DB and vault stay disjoint.\n\nPaths: extensions/, delivery/test_installed_browser.py, delivery/test_installed_chromium.py, nix/, src/instance.zig. TIN-2720 owns provider identity/fields; TIN-2063 setup; TIN-2830 whole installed product.\n\nCurrent bounded evidence — resumed October 5: ef255a3e passed actual paired development/local-release-evaluation native-host registration, channel/socket/state/vault isolation and ownership-safe removal. These are installed registration predicates, separate from actual Chromium consent. Chromium retry 97e91470 passed runtime qualification and reached the actual browser fixture, then failed an assertion (controller/workload3, verified empty descendants; evidence SHA256 2a66fe0a4e0a1d80f06be7551a2885d622084c1fca5a7c0cf5143430b8e09174). A following finite diagnostic rerun is in flight; no lifecycle gate is inferred. Provider readers remain disabled. Browser consent/recovery, service activation, provider enrollment and native/live continuity remain unproved. Earlier allocation refusal remains historical, not the current blocker. Workspace evidence paths (unpublished): docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json and integrated-delivery-continuation-2026-10-05.json.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-5442>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence.",
+        "priority": {
+          "value": 2,
+          "name": "High"
+        },
+        "url": "https://linear.app/tinyland/issue/TIN-5442/installed-chromium-connection-context-disconnect-and-devrelease",
+        "gitBranchName": "jess/tin-5442-installed-chromium-connection-context-disconnect-and",
+        "createdAt": "2026-10-05T04:10:40.750Z",
+        "updatedAt": "2026-10-05T20:03:13.661Z",
+        "archivedAt": null,
+        "completedAt": null,
+        "startedAt": null,
+        "canceledAt": null,
+        "dueDate": null,
+        "slaStartedAt": null,
+        "slaMediumRiskAt": null,
+        "slaHighRiskAt": null,
+        "slaBreachesAt": null,
+        "status": "Todo",
+        "statusType": "unstarted",
+        "labels": [],
+        "attachments": [],
+        "documents": [],
+        "stateHistory": [
+          {
+            "state": {
+              "id": "c6ad8379-2b98-4ad2-ab79-3817014cfca2",
+              "name": "Todo",
+              "type": "unstarted"
+            },
+            "startedAt": "2026-10-05T04:10:40.750Z",
+            "endedAt": null
+          }
+        ],
+        "createdBy": "Jess Sullivan",
+        "createdById": "5402ff97-3cab-4490-9922-b4d20eb0650f",
+        "project": "Omux · Nix-Bazel delivery + thin clients",
+        "projectId": "e3f590ce-5824-4ac6-b13e-4b91ebe22ed2",
+        "parentId": "TIN-2063",
+        "team": "Tinyland",
+        "teamId": "a2c482c8-4d0d-4171-82d9-553265b6c706",
+        "relations": {
+          "blocks": [],
+          "blockedBy": [],
+          "relatedTo": [],
+          "duplicateOf": null
+        }
+      },
+      "arguments": {
+        "id": "TIN-5442",
+        "description": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nActual Chromium installation, browser-native-host connection and selected-context lifecycle. Exact-ID/channel registration must resolve the intended daemon. Explicit reload/restart/reconnect, missing host, incompatible protocol, revoked permission and lost replies produce distinct truthful outcomes.\n\nConsent explains automatic enrollment of verified identities. Disconnect is context-specific and removes source-retained secrets while independent grants/native history retain their authority; browser disappearance detaches. Development/release extension ID, host, service, staging, socket, DB and vault stay disjoint.\n\nPaths: extensions/, delivery/test_installed_browser.py, delivery/test_installed_chromium.py, nix/, src/instance.zig. TIN-2720 owns provider identity/fields; TIN-2063 setup; TIN-2830 whole installed product.\n\nCurrent bounded evidence — resumed October 5: ef255a3e passed actual paired development/local-release-evaluation native-host registration, channel/socket/state/vault isolation and ownership-safe removal. c8f63b83-f9cb-4233-a01c-5d1e6f30f33d passed actual pinned Chromium 147.0.7727.116 with the keyed development extension and native host (controller/workload 0, verified empty descendants; evidence SHA256 474d901fdb8b76526dc7ce4377ca5ca031ebfe94cd8d4c442e9deba6ef655e06). It proves health, permission refusal, synthetic pending-operation identity, native registration restoration across browser restart, context disconnect and independent-source retention. Permission remained ungranted. Human toolbar consent, real account acquisition and committed daemon mutation/lost-reply proof remain open. User selected Yoga with operator participation on its local Wayland desktop for the separate consent lane; its qualified display/coordinator runner is still implementation work. Provider readers remain disabled. Full browser acceptance, fleet service activation, enrollment, native/live continuity and Darwin remain unproved. Earlier failures/allocation refusals remain historical. Workspace evidence paths (unpublished): docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json and integrated-delivery-chromium-2026-10-05.json; operator proof contract: delivery/yoga-toolbar-consent-proof.md.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-5442>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence."
+      },
+      "readback": {
+        "id": "TIN-5442",
+        "uuid": "eb69863c-9e5b-41a8-8b33-e95df21e3153",
+        "url": "https://linear.app/tinyland/issue/TIN-5442/installed-chromium-connection-context-disconnect-and-devrelease",
+        "updatedAt": "2026-10-05T20:43:52.654Z",
+        "description": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nActual Chromium installation, browser-native-host connection and selected-context lifecycle. Exact-ID/channel registration must resolve the intended daemon. Explicit reload/restart/reconnect, missing host, incompatible protocol, revoked permission and lost replies produce distinct truthful outcomes.\n\nConsent explains automatic enrollment of verified identities. Disconnect is context-specific and removes source-retained secrets while independent grants/native history retain their authority; browser disappearance detaches. Development/release extension ID, host, service, staging, socket, DB and vault stay disjoint.\n\nPaths: extensions/, delivery/test_installed_browser.py, delivery/test_installed_chromium.py, nix/, src/instance.zig. TIN-2720 owns provider identity/fields; TIN-2063 setup; TIN-2830 whole installed product.\n\nCurrent bounded evidence — resumed October 5: ef255a3e passed actual paired development/local-release-evaluation native-host registration, channel/socket/state/vault isolation and ownership-safe removal. c8f63b83-f9cb-4233-a01c-5d1e6f30f33d passed actual pinned Chromium 147.0.7727.116 with the keyed development extension and native host (controller/workload 0, verified empty descendants; evidence SHA256 474d901fdb8b76526dc7ce4377ca5ca031ebfe94cd8d4c442e9deba6ef655e06). It proves health, permission refusal, synthetic pending-operation identity, native registration restoration across browser restart, context disconnect and independent-source retention. Permission remained ungranted. Human toolbar consent, real account acquisition and committed daemon mutation/lost-reply proof remain open. User selected Yoga with operator participation on its local Wayland desktop for the separate consent lane; its qualified display/coordinator runner is still implementation work. Provider readers remain disabled. Full browser acceptance, fleet service activation, enrollment, native/live continuity and Darwin remain unproved. Earlier failures/allocation refusals remain historical. Workspace evidence paths (unpublished): docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json and integrated-delivery-chromium-2026-10-05.json; operator proof contract: delivery/yoga-toolbar-consent-proof.md.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-5442>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence.",
+        "title": "Installed Chromium connection, context disconnect and dev/release coexistence",
+        "status": "Todo",
+        "assigneeId": null,
+        "dueDate": null,
+        "relations": {
+          "blocks": [],
+          "blockedBy": [],
+          "relatedTo": [],
+          "duplicateOf": null
+        },
+        "exact_description": true,
+        "unchanged_metadata": true
+      }
+    }
+  ],
+  "status": "written_and_exact_readback_verified",
+  "read_back_at": "2026-10-05 20:44:44 UTC"
+}

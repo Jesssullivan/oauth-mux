@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "actual_declared_retained_input_qualification",
+  "authority": "User-ratified Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "47d9e29a-f334-468e-8c74-ba0bd53a2786",
+  "original_handle": 63279,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/47d9e29a-f334-468e-8c74-ba0bd53a2786/receipt.json",
+  "raw_receipt_sha256": "16e90d54ae01c46f2237d59758feb000e053c0b03fc2dbebbb9d6c725b492636",
+  "graph_sha256": "9c6aae001338c65c90e49c38d6be87e2bdfc5a13f22c27b4e78ff7a0cfc1bfce",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 210587,
+    "files": 10,
+    "manifest": "test-evidence.json",
+    "sha256": "69ff422c5315b87f494df6ac3f9a773183fa915829d9c04c1f7b0dd5a7b5a238",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//tools:codex_owner_runtime_input_qualification",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "held_guard_input_verified_after_cleanup": true,
+  "explicit_outside_git_directory": "/home/jess/.local/state/omux-execution-20261005/be7993cf-ae9c-4b06-bf85-6479ce283453/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_owner_runtime_input_copy/test.outputs/0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+  "archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+  "archive_bytes": 119923125,
+  "post_seal_mode_pair": "0555/0555",
+  "ambient_selection": false,
+  "scope": "Actual external repository, declared runfiles, fixed bytes/metadata, physical custody/held descriptors and terminal input+graph readback pass. This does not execute/install Codex or qualify native support/source lineage/usable authority. Previous6e12 declaration failure remains preserved.",
+  "new_parent_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false
+}

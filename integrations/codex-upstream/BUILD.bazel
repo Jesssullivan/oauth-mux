@@ -1,0 +1,69 @@
+load("//tools:rules.bzl", "python_test", "python_binary", "host_python_binary")
+
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch"], allow_empty = True))
+filegroup(name = "public_sources", srcs = glob(["*.py", "*.bazel", "*.md", "*.json", "*.patch", "*.tar.gz"], allow_empty = True))
+
+exports_files(["README.md", "validation.json", "codex-0.157-auth-broker.patch", "upstream-base.tar.gz", "binary-overlay.tar.gz", "manifest.json"])
+exports_files(["patch_io.py", "restore_source.py", "refresh_artifact.py"])
+
+host_python_binary(
+    name = "import_schema_bundle",
+    main = "import_schema_bundle.py",
+    srcs = ["patch_io.py", "restore_source.py"],
+)
+
+python_test(
+    name = "import_schema_bundle_test",
+    main = "import_schema_bundle_test.py",
+    srcs = ["import_schema_bundle.py", "patch_io.py", "restore_source.py"],
+)
+
+host_python_binary(
+    name = "restore_source",
+    main = "restore_source.py",
+    srcs = ["patch_io.py"],
+    data = ["codex-0.157-auth-broker.patch", "upstream-base.tar.gz", "binary-overlay.tar.gz", "manifest.json", "validation.json", "validation-overlay.patch", "@omux_host//:git", "@omux_host//:ca-bundle.crt"],
+    args = ["--artifact-dir", "$(location manifest.json)", "--git", "$(location @omux_host//:git)", "--ca-file", "$(location @omux_host//:ca-bundle.crt)"],
+)
+
+python_test(name = "restore_source_test", main = "restore_source_test.py", srcs = ["restore_source.py", "patch_io.py"])
+
+host_python_binary(
+    name = "export_pristine_subset",
+    main = "export_pristine_subset.py",
+    srcs = ["restore_source.py", "patch_io.py"],
+    data = ["codex-0.157-auth-broker.patch", "upstream-base.tar.gz", "binary-overlay.tar.gz", "manifest.json", "@omux_host//:git", "@omux_host//:ca-bundle.crt"],
+    args = ["--artifact-dir", "$(location manifest.json)", "--git", "$(location @omux_host//:git)", "--ca-file", "$(location @omux_host//:ca-bundle.crt)"],
+)
+
+python_test(
+    name = "export_pristine_subset_test",
+    main = "export_pristine_subset_test.py",
+    srcs = ["export_pristine_subset.py", "restore_source.py", "patch_io.py"],
+)
+
+python_binary(name = "refresh_artifact", main = "refresh_artifact.py", srcs = ["patch_io.py"])
+
+python_test(
+    name = "tooling_test",
+    main = "patch_test.py",
+    srcs = ["patch_io.py", "refresh_artifact.py"],
+    args = ["--tooling-only"],
+)
+
+python_test(
+    name = "patch_test",
+    main = "patch_test.py",
+    srcs = ["patch_io.py", "refresh_artifact.py"],
+    data = ["codex-0.157-auth-broker.patch", "upstream-base.tar.gz", "binary-overlay.tar.gz", "manifest.json", "validation.json"],
+    args = ["--artifact-dir", "$(location manifest.json)"],
+)
+
+python_binary(
+    name = "apply_patch",
+    main = "apply_upstream.py",
+    srcs = ["patch_io.py"],
+    data = ["codex-0.157-auth-broker.patch", "upstream-base.tar.gz", "binary-overlay.tar.gz", "manifest.json"],
+    args = ["--artifact-dir", "$(location manifest.json)"],
+)

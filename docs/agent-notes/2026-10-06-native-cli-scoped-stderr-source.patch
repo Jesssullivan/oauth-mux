@@ -1,0 +1,161 @@
+diff --git a/delivery/native_cli_stderr.py b/delivery/native_cli_stderr.py
+--- a/delivery/native_cli_stderr.py
++++ b/delivery/native_cli_stderr.py
+@@ -5,6 +5,7 @@ return or persist diagnostic bytes, variable paths, addresses or operation IDs.
+ Recognizing a marker is not a proved cause; every nonempty stderr still fails.
+ """
+ import json
++import re
+ 
+ MAX_BYTES = 1024 * 1024
+ CATEGORIES = (
+@@ -16,10 +17,31 @@ CATEGORIES = (
+     "stderr-zig-warning-prefix", "stderr-colored-zig-warning-prefix",
+     "stderr-json-other", "stderr-unrecognized-escape-leading",
+     "stderr-unrecognized-ascii-leading", "stderr-unrecognized-nonascii-leading",
++    "stderr-zig-info-prefix", "stderr-colored-zig-info-prefix",
++    "stderr-zig-debug-prefix", "stderr-colored-zig-debug-prefix",
++    "stderr-scoped-zig-error-prefix", "stderr-colored-scoped-zig-error-prefix",
++    "stderr-scoped-zig-warning-prefix", "stderr-colored-scoped-zig-warning-prefix",
++    "stderr-scoped-zig-info-prefix", "stderr-colored-scoped-zig-info-prefix",
++    "stderr-scoped-zig-debug-prefix", "stderr-colored-scoped-zig-debug-prefix",
++    "stderr-zig-memory-map-fallback-format", "stderr-colored-zig-memory-map-fallback-format",
++    "stderr-unrecognized-whitespace-leading",
+ )
+ # Only exact codes emitted by pinned Zig 0.17 log.defaultLogFileTerminal.
+ COLOR_CODES = (b"\x1b[0m", b"\x1b[1m", b"\x1b[2m", b"\x1b[31m",
+                b"\x1b[32m", b"\x1b[33m", b"\x1b[35m")
++# std/log.zig uses level.asText() + optional "(scope)" + ": ". Recognize
++# only an anchored, bounded ASCII identifier spelling; never return a scope.
++SCOPED_PREFIX = re.compile(rb"(error|warning|info|debug)\([A-Za-z_][A-Za-z0-9_]{0,63}\): ")
++SCOPED_CATEGORIES = {
++    b"error": ("stderr-scoped-zig-error-prefix", "stderr-colored-scoped-zig-error-prefix"),
++    b"warning": ("stderr-scoped-zig-warning-prefix", "stderr-colored-scoped-zig-warning-prefix"),
++    b"info": ("stderr-scoped-zig-info-prefix", "stderr-colored-scoped-zig-info-prefix"),
++    b"debug": ("stderr-scoped-zig-debug-prefix", "stderr-colored-scoped-zig-debug-prefix"),
++}
++# Pinned Io/Threaded.zig:19033 uses the default scope, not a Threaded scope.
++# Exact whole-line format recognition is still not evidence of its call site.
++MEMORY_MAP_FALLBACK = re.compile(
++    rb"warning: memory mapping failed with [A-Za-z_][A-Za-z0-9_]{0,63}, falling back to file operations\n")
+ 
+ 
+ def classify(diagnostics, params, strict_object):
+@@ -35,14 +57,27 @@ def classify(diagnostics, params, strict_object):
+     for code in COLOR_CODES:
+         visible = visible.replace(code, b"")
+     colored = visible != diagnostics
++    if MEMORY_MAP_FALLBACK.fullmatch(visible):
++        return ("stderr-colored-zig-memory-map-fallback-format" if colored
++                else "stderr-zig-memory-map-fallback-format")
+     for prefix, plain, decorated in (
+             (b"error(SafeAllocator): leaked ", "stderr-safe-allocator-leak-prefix",
+              "stderr-colored-safe-allocator-leak-prefix"),
+             (b"error: ", "stderr-zig-error-prefix", "stderr-colored-zig-error-prefix"),
+             (b"warning: ", "stderr-zig-warning-prefix", "stderr-colored-zig-warning-prefix")):
+         if visible.startswith(prefix):
+             return decorated if colored else plain
+     if b"\nerror(SafeAllocator): leaked " in visible:
+         return "stderr-safe-allocator-leak-after-preamble"
+     if b"\nerror: " in visible:
+         return "stderr-zig-error-after-preamble"
++    # Preserve known error-after-preamble recognition before new generic shapes.
++    for prefix, plain, decorated in (
++            (b"info: ", "stderr-zig-info-prefix", "stderr-colored-zig-info-prefix"),
++            (b"debug: ", "stderr-zig-debug-prefix", "stderr-colored-zig-debug-prefix")):
++        if visible.startswith(prefix):
++            return decorated if colored else plain
++    scoped = SCOPED_PREFIX.match(visible)
++    if scoped is not None:
++        plain, decorated = SCOPED_CATEGORIES[scoped[1]]
++        return decorated if colored else plain
+@@ -51,6 +86,8 @@ def classify(diagnostics, params, strict_object):
+     except (ValueError, UnicodeDecodeError, RecursionError):
+         if diagnostics[0] == 0x1b:
+             return "stderr-unrecognized-escape-leading"
++        if diagnostics[0] in b" \t\r\n":
++            return "stderr-unrecognized-whitespace-leading"
+         if diagnostics[0] < 0x80:
+             return "stderr-unrecognized-ascii-leading"
+         return "stderr-unrecognized-nonascii-leading"
+diff --git a/delivery/test_native_cli_stderr.py b/delivery/test_native_cli_stderr.py
+--- a/delivery/test_native_cli_stderr.py
++++ b/delivery/test_native_cli_stderr.py
+@@ -27,7 +27,7 @@ class StderrTests(unittest.TestCase):
+ 
+     def test_empty_is_only_empty(self):
+         self.assertEqual(self.classify(b""), "stderr-empty")
+-        self.assertEqual(self.classify(b"\n"), "stderr-unrecognized-ascii-leading")
++        self.assertEqual(self.classify(b"\n"), "stderr-unrecognized-whitespace-leading")
+ 
+     def test_exact_instance_marker_only(self):
+         self.assertEqual(self.classify(b"Omux artifact instance mismatch\n"), "stderr-instance-mismatch")
+@@ -78,6 +78,68 @@ class StderrTests(unittest.TestCase):
+         self.assertEqual(self.classify(b'{"kind":1,"kind":2}'), "stderr-unrecognized-ascii-leading")
+         self.assertEqual(self.classify(b"x" * (stderr.MAX_BYTES + 1)), "stderr-unrecognized")
+ 
++    def test_scoped_levels_ignore_private_scope_and_payload(self):
++        for prefix, expected in (
++                (b"error", "stderr-scoped-zig-error-prefix"),
++                (b"warning", "stderr-scoped-zig-warning-prefix"),
++                (b"info", "stderr-scoped-zig-info-prefix"),
++                (b"debug", "stderr-scoped-zig-debug-prefix")):
++            for scope in (b"Threaded", b"SafeAllocator", b"synthetic_private_identifier"):
++                with self.subTest(prefix=prefix, scope=scope):
++                    self.assertEqual(self.classify(prefix + b"(" + scope + b"): " + PRIVATE), expected)
++                    self.assertEqual(self.classify(b"\x1b[1m" + prefix + b"\x1b[0m(" + scope
++                                                   + b"): " + PRIVATE),
++                                     expected.replace("stderr-", "stderr-colored-", 1))
++
++    def test_scoped_prefix_requires_complete_bounded_known_spelling(self):
++        for malformed in (b"err(Threaded): ", b"warn(Threaded): ", b"ERROR(Threaded): ",
++                          b"error(): ", b"error(1Threaded): ", b"error(Threaded) ",
++                          b"error(Threaded):", b"error(Threaded):\t", b"error(Threaded):\n",
++                          b"error(Threaded/path): ", b"error(private scope): ",
++                          b"error(\xff): ", b"error(" + b"x" * 65 + b"): ",
++                          b"error(Threaded\x1b[999m): "):
++            with self.subTest(prefix=malformed):
++                self.assertEqual(self.classify(malformed + PRIVATE), "stderr-unrecognized-ascii-leading")
++        self.assertEqual(self.classify(PRIVATE + b"\nerror(Threaded): " + PRIVATE),
++                         "stderr-unrecognized-ascii-leading")
++        self.assertEqual(self.classify(b"\x1b[999merror(Threaded): " + PRIVATE),
++                         "stderr-unrecognized-escape-leading")
++
++    def test_unscoped_info_and_debug_are_shapes_only(self):
++        self.assertEqual(self.classify(b"info: " + PRIVATE), "stderr-zig-info-prefix")
++        self.assertEqual(self.classify(b"debug: " + PRIVATE), "stderr-zig-debug-prefix")
++        self.assertEqual(self.classify(b"\x1b[32minfo: \x1b[0m" + PRIVATE),
++                         "stderr-colored-zig-info-prefix")
++        self.assertEqual(self.classify(b"\x1b[35mdebug: \x1b[0m" + PRIVATE),
++                         "stderr-colored-zig-debug-prefix")
++
++    def test_memory_mapping_format_requires_exact_whole_line(self):
++        exact = b"warning: memory mapping failed with AccessDenied, falling back to file operations\n"
++        self.assertEqual(self.classify(exact), "stderr-zig-memory-map-fallback-format")
++        self.assertEqual(self.classify(b"\x1b[33m" + exact + b"\x1b[0m"),
++                         "stderr-colored-zig-memory-map-fallback-format")
++        for different in (exact[:-1], exact + PRIVATE, exact + b"\n",
++                          exact.replace(b"AccessDenied", PRIVATE),
++                          exact.replace(b"AccessDenied", b"x" * 65),
++                          exact.replace(b"AccessDenied", b"\xff")):
++            self.assertEqual(self.classify(different), "stderr-zig-warning-prefix")
++
++    def test_known_errors_after_new_generic_preambles_keep_priority(self):
++        for preamble in (b"info(worker): ", b"warning(worker): ", b"error(worker): ",
++                         b"debug(worker): ", b"info: ", b"debug: "):
++            self.assertEqual(self.classify(preamble + PRIVATE + b"\nerror(SafeAllocator): leaked " + PRIVATE),
++                             "stderr-safe-allocator-leak-after-preamble")
++            self.assertEqual(self.classify(preamble + PRIVATE + b"\nerror: " + PRIVATE),
++                             "stderr-zig-error-after-preamble")
++        self.assertEqual(self.classify(b"error: " + PRIVATE + b"\nerror(SafeAllocator): leaked " + PRIVATE),
++                         "stderr-zig-error-prefix")
++
++    def test_unknown_whitespace_is_nonempty_and_does_not_trim_to_acceptance(self):
++        for prefix in (b" ", b"\t", b"\r", b"\n", b" \t\r\n"):
++            self.assertEqual(self.classify(prefix), "stderr-unrecognized-whitespace-leading")
++            self.assertEqual(self.classify(prefix + PRIVATE), "stderr-unrecognized-whitespace-leading")
++            self.assertEqual(self.classify(prefix + b"error(Threaded): " + PRIVATE),
++                             "stderr-unrecognized-whitespace-leading")
+ 
+ if __name__ == "__main__":
+     unittest.main()

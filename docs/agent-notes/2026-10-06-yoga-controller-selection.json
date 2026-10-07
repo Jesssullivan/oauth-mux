@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "scope": "yoga-controller-inventory-selection-v1",
+  "controllerTools": {
+    "python": "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12/bin/python3",
+    "systemd_run": "/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemd-run",
+    "systemctl": "/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemctl",
+    "bazel": "/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel",
+    "closure": "/nix/store/12waya019j1aiimr0j91lpdfk145xi9i-omux-bazel-closure",
+    "bootstrap_closure": "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
+    "zig_sdk": "/nix/store/vv1k6176b445ln4dphbx1k29wagrin3z-zig-sdk-0.17.0",
+    "java_home": "/nix/store/siln89j8b6k5wdzw4asl69bma0k96nns-openjdk-headless-21.0.10+7"
+  },
+  "nativeManifestSha256": "b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0",
+  "bootstrapManifestSha256": "c056b1b590c814bc662a7ef348ba4f5789e3534ed9ae8420fdc8614fefd9bc3a",
+  "wrapperSha256": {
+    "dbus_session": "0f1dc4d355e763b987340a2d984bcf058c0bb0ecca7c8ee4a513d8afd8bbabbf",
+    "dbus_daemon": "352f2f64c60f465c3aa08079abfa9c75c67db58ff872fc4f72e1366f10be1bfe",
+    "keyring": "6a5e31b15bb28687aa21078a224c6829e05e1bacf1ec83fc845d5f2254d88626"
+  }
+}

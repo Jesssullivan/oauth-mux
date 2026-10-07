@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_sprint_checkpoint",
+  "authority": "docs/plans/omux-native-admission-sprint-2026-10-04.md",
+  "start": "2026-10-04T05:29:41Z",
+  "due": "2026-10-04T10:29:41Z",
+  "duration_hours": 5,
+  "timezone": "America/New_York",
+  "status": "passed",
+  "execution_state": "foundation_checkpoint_passed",
+  "acceptance_completed_at": "2026-10-04T08:15:17Z",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "claim": "experimental_unshipped_live_continuity_unavailable",
+  "workers_maximum": 12,
+  "predecessor_checkpoint": ".goal/omux-native-evening-2026-10-03.json",
+  "predecessor_outcome": "partial; exact source preserved and local proof complete, external/native-live gates retained",
+  "predecessor_source_sha256": "0dd07baf40f743c44e8b0d36340db479b5c37adb07431dec2f6067e7f1a4452e",
+  "predecessor_source_bytes": 3567157,
+  "predecessor_source_members": 256,
+  "current_evidence": "docs/implementation/native-admission-evidence-2026-10-04.md",
+  "session_note": "docs/agent-notes/2026-10-04-sess-omux-admission-sprint.md",
+  "ruling_id": "R-N13",
+  "lab_board": {
+    "id": "0a3cc50f-fdde-458b-9e63-2ae7eb2fcc69",
+    "ruling": "R-C227",
+    "updated_at": "2026-10-04T01:16:34.056Z",
+    "latest_complete_document_list_verified": true
+  },
+  "provider_evaluation_authorized": false,
+  "personal_vault_access_authorized": false,
+  "service_activation_authorized": false,
+  "publication_authorized": false,
+  "process_signals_authorized": false,
+  "pzm_gf_worker_state": "held; separate Nix receipts do not establish REAPI readiness",
+  "acceptance": [
+    {
+      "id": "NA-MODEL",
+      "status": "passed",
+      "issues": [
+        "TIN-5337",
+        "TIN-5342"
+      ],
+      "scope": "Exact locked serializer, complete envelope and durable bounded outcome credit model",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+          "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+          "result": "passed",
+          "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=083589b8-69ad-4ae3-8f78-ef7f1b2e68e7 --jobs=4 --keep_going --test_output=errors //..."
+        }
+      ]
+    },
+    {
+      "id": "NA-NATIVE",
+      "status": "passed",
+      "issues": [
+        "TIN-1798",
+        "TIN-5338",
+        "TIN-2830"
+      ],
+      "scope": "Actual encoded-result and envelope refusal before setup/native effects",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+          "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+          "result": "passed",
+          "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=083589b8-69ad-4ae3-8f78-ef7f1b2e68e7 --jobs=4 --keep_going --test_output=errors //..."
+        }
+      ]
+    },
+    {
+      "id": "NA-IMPORT",
+      "status": "passed",
+      "issues": [
+        "TIN-2071",
+        "TIN-2063",
+        "TIN-5336"
+      ],
+      "scope": "Protected encrypted held-import completion and lifecycle authority fences",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+          "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+          "result": "passed",
+          "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=083589b8-69ad-4ae3-8f78-ef7f1b2e68e7 --jobs=4 --keep_going --test_output=errors //..."
+        }
+      ]
+    },
+    {
+      "id": "NA-ADAPTER",
+      "status": "passed",
+      "issues": [
+        "TIN-5337",
+        "TIN-5338"
+      ],
+      "scope": "Actual acquire/report reservation and accepted termination under saturation without replay",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+          "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+          "result": "passed",
+          "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=083589b8-69ad-4ae3-8f78-ef7f1b2e68e7 --jobs=4 --keep_going --test_output=errors //..."
+        }
+      ]
+    },
+    {
+      "id": "NA-FORGET",
+      "status": "passed",
+      "issues": [
+        "TIN-5336",
+        "TIN-2071"
+      ],
+      "scope": "Atomic multi-source tombstone expansion and ciphertext deletion/refusal",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+          "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+          "result": "passed",
+          "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=083589b8-69ad-4ae3-8f78-ef7f1b2e68e7 --jobs=4 --keep_going --test_output=errors //..."
+        }
+      ]
+    },
+    {
+      "id": "NA-RESTART",
+      "status": "passed",
+      "issues": [
+        "TIN-5336",
+        "TIN-5337",
+        "TIN-5340"
+      ],
+      "scope": "Actual effect/completion crash gap preserves uncertainty, credits and original work fences",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+          "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+          "result": "passed",
+          "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=083589b8-69ad-4ae3-8f78-ef7f1b2e68e7 --jobs=4 --keep_going --test_output=errors //..."
+        }
+      ]
+    },
+    {
+      "id": "NA-RECONCILIATION",
+      "status": "passed",
+      "issues": [
+        "TIN-2057",
+        "TIN-2050"
+      ],
+      "scope": "Current-input proofs, generated facts, docs, dated Linear comments and durable checkpoint",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+          "invocation_id": "53786341-50ae-4f5e-84e7-c4b035453ea4",
+          "result": "passed",
+          "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=53786341-50ae-4f5e-84e7-c4b035453ea4 --jobs=4 --test_output=errors //:docs_check //:docs_guard_test //:public_source_archive //:reference //delivery:release_archive"
+        },
+        {
+          "kind": "tracker_readback",
+          "path": "docs/tracker-updates/native-admission-sprint-2026-10-04.json"
+        },
+        {
+          "kind": "document",
+          "path": "docs/agent-notes/2026-10-04-sess-omux-admission-sprint.md"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-admission-evidence-2026-10-04.md",
+      "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+      "result": "passed",
+      "command": "nix --option eval-cache false develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-bazel9-native-proof-20261003 test --invocation_id=083589b8-69ad-4ae3-8f78-ef7f1b2e68e7 --jobs=4 --keep_going --test_output=errors //..."
+    }
+  ],
+  "local_suite": {
+    "invocation_id": "083589b8-69ad-4ae3-8f78-ef7f1b2e68e7",
+    "finished_at": "2026-10-04T07:36:43Z",
+    "elapsed_seconds": 411.374,
+    "passed": 66,
+    "failed": 0,
+    "skipped": 0,
+    "fresh": 15,
+    "matching_input_cached": 51,
+    "selected_top_level_targets": 116,
+    "reported_total_actions": 51,
+    "matching_action_cache_hits": 707,
+    "process_counters": {
+      "internal": 17,
+      "linux_sandbox": 19,
+      "processwrapper_sandbox": 30,
+      "not_a_disjoint_partition": true
+    }
+  },
+  "local_build": {
+    "invocation_id": "3f717c28-128b-4d9f-9c5b-5f2c8f5d716e",
+    "finished_at": "2026-10-04T07:40:35Z",
+    "elapsed_seconds": 13.928,
+    "selected_targets": 116,
+    "result": "passed",
+    "matching_action_cache_hits": 410,
+    "internal_actions": 1,
+    "darwin_compilation_proved": false
+  },
+  "installed_proof": {
+    "state": "passed_isolated_installed_custody",
+    "local_invocation_id": "25ce85a9-1dd9-479a-9592-e6c652b944e8",
+    "proof_source_sha256": "6d0e45c7fe60b852b251077795109da7e8213165d05d2527f37f1ba9fff5e9bd",
+    "remote_invocation_id": "8420966d-d3ff-4d00-80df-8f770bd17f3d",
+    "target": "//delivery:installed_custody_test",
+    "remote_exit_code": 0,
+    "graph_exit_code": 0,
+    "runtime_sha256": "8f54e896fd38d97d7833f33e4f2fbcdbe44480049634f7bce724ab1fb77befdc",
+    "runtime_bytes": 59990114,
+    "matches_independently_captured_local_archive": true,
+    "log_sha256": "05bb08b601b172b338d5fe3cc007ab4bd2e3b9d50e0f07f68c37233ee6056281",
+    "cleanup": "removed",
+    "current_cleanup_result": "removed",
+    "platform": "Linux x86_64 kernel 6.12.0",
+    "host": "sting",
+    "recipe": "linux-installed",
+    "carried_user_authorization": true,
+    "scope": "private XDG, disposable Secret Service, packaged daemon/CLI/offscreen Qt, owned cleanup",
+    "personal_vault": false,
+    "service_activation": false,
+    "interactive_desktop": false,
+    "live_continuity": false
+  },
+  "context_checkpoint": {
+    "capture_invocation_id": "7e0cfcfa-b2f9-4c4d-a5e4-f79f4c56bc85",
+    "source_epoch": "H2_posttracker_preclosure",
+    "source_sha256": "4f07261a19760060baaded64bff575f60b654f158e6a46a7ecc18f725d598cd1",
+    "source_bytes": 3983147,
+    "source_members": 271,
+    "all_members_match_workspace_at_capture": true,
+    "changes_from_installed_H1_are_docs_or_goals_only": true,
+    "receipt": "/srv/fast-local/jess/state/codex/omux-native-admission-frozen-20261004/preclosure-7e0cfcfa-b2f9-4c4d-a5e4-f79f4c56bc85.json",
+    "exclusive_private_fsynced_custody": true,
+    "final_status_only_context_archive_is_separate": true
+  },
+  "linear": {
+    "readback_at": "2026-10-04T08:07:15Z",
+    "comments": [
+      "3e2b2f89-618b-4523-adfc-6f2fb1079de7",
+      "69ea14e8-0039-4e80-a8e3-8494601ed5d6",
+      "53cc7681-3dd6-49d5-baaf-794a83b3fa51",
+      "f9384333-a496-4d7a-b0b7-91932aecb30f"
+    ],
+    "exact_bodies_and_fields_verified": true,
+    "other_issue_project_milestone_fields_and_prior_comments_preserved": true,
+    "dated_comment_mutations_only": 4
+  },
+  "next_stage": {
+    "path": "docs/plans/omux-native-owner-custody-next-stage-2026-10-04.md",
+    "state": "proposed_unimplemented_unratified"
+  }
+}

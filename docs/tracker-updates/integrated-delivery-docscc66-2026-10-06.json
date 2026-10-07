@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "diagnostic_note_authority_classification_verification",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "cc66bdd2-8b98-4a4c-9ab9-7e6d81a57467",
+  "original_handle": 10561,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/cc66bdd2-8b98-4a4c-9ab9-7e6d81a57467/receipt.json",
+  "raw_receipt_sha256": "7a9877cddcdb53e72b6c9881f72611830d31e123ad0303048788c721549630c0",
+  "graph_sha256": "f25e96e8fd23bbee99880ea7de9ca8a701d68390536b1edd571972ef4d37e186",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "passed_targets": ["//:docs_check", "//tools:runtime_source_receipt"],
+  "test_evidence": {"bytes": 212071, "files": 7, "manifest": "test-evidence.json", "sha256": "5e2df2db460b35399d958ce8e0eb442c4956705eee82f42123f807ad99bed22b", "state": "preserved"},
+  "scope": "Additive current-note classification and source capture; earlier dc5234a2 remains failed and snapshot-native correction is separately unverified.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

@@ -1,33 +1,29 @@
-# oauth-mux Bazel configuration.
-#
-# Endpoint authority is runtime-only. Do not put remote_cache,
-# remote_executor, credentials, or auth headers in checked-in rc files.
-
-# Bzlmod-only (house rule: Bazel 8 Bzlmod, no WORKSPACE). MODULE.bazel is the
-# sole module authority; the legacy WORKSPACE stub was removed 2026-07-02.
+# Local sandboxed actions. RBE endpoints and credentials are runtime inputs.
 common --enable_bzlmod
 common --noenable_workspace
-
-# Module resolution order (house rule): tinyland-inc/bazel-registry first,
-# then the BCR. Form mirrors site.scaffold's canonical two-registry chain.
-common --registry=https://raw.githubusercontent.com/tinyland-inc/bazel-registry/main/
 common --registry=https://bcr.bazel.build
-
-common --color=yes
-common --curses=yes
-
-build --jobs=auto
+build --spawn_strategy=sandboxed
+build --incompatible_strict_action_env
 build --show_timestamps
 test --test_output=errors
 test --test_summary=detailed
+test --test_env=TZ=UTC
+# Namespace UID remapping makes host-owned ancestors appear as overflow UID.
+# Runtime custody fixtures need their real ownership; compilation stays in the
+# namespace sandbox, and tests retain Bazel's declared-input sandbox/runfiles.
+test --strategy=TestRunner=processwrapper-sandbox
+build --@rules_zig//zig/settings:use_standalone_translate_c
 
-# GloriousFlywheel's cross-repo proof workflow invokes consumer workspaces with
-# --config=ci-cached. Keep this endpoint-free and candidate-scoped; the proof
-# workflow supplies --remote_cache, --remote_executor, forced execution, and
-# worker provenance as explicit runtime flags.
-build:ci-cached --config=flywheel-executor
+# Opt-in REAPI execution. Operator configuration supplies endpoints/auth and
+# scheduler routing. Never fall back to executing Darwin actions on the client.
+build:reapi --spawn_strategy=remote
+build:reapi --remote_local_fallback=false
+build:reapi --remote_download_outputs=all
+test:reapi --strategy=TestRunner=remote
+build:darwin-reapi --config=reapi
+build:darwin-reapi --platforms=//tools:darwin_aarch64
+build:darwin-reapi --extra_execution_platforms=@omux_nix//:execution_platform
+build:darwin-reapi --jobs=1
 
-# GloriousFlywheel behavior is endpoint-free. The wrapper supplies cache and
-# executor endpoints as validated command-line flags.
-try-import %workspace%/.bazelrc.flywheel
-try-import %workspace%/user.bazelrc
+# Fresh execution receipts must distinguish execution from cache acceptance.
+build:reapi-proof --remote_accept_cached=false

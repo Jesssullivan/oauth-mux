@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "installed_observer_launch_fork_eagain_before_cli",
+  "authority": "User-ratified provider-free October6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "158b27f5-d24e-46f7-8915-fcc9f8b870b3",
+  "original_handle": 40296,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/158b27f5-d24e-46f7-8915-fcc9f8b870b3/receipt.json",
+  "raw_receipt_sha256": "c39545ed6a5e1132dbf3abf5db80c4bbb46476400a0f888a0ecd0b824b6aceac",
+  "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "rejection": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 214697,
+    "files": 9,
+    "manifest": "test-evidence.json",
+    "sha256": "7c8186df41d5b7cbf78e3242510b74cca0bea1f3d8aa0206a607961f7e09c655",
+    "state": "preserved"
+  },
+  "held_owner_input_verified_after_cleanup": true,
+  "targets_passed": 2,
+  "targets_total": 3,
+  "passed_targets": [
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_target": "//delivery:installed_legacy_native_fd2_diagnostic_test",
+  "observer_record": "OMUX_FD2_OBSERVER_V1/error-launch-fork-busy/writer-none/image-none/sink-none/call-none/origin-none",
+  "observed": "The observer's launch fork failed EAGAIN before launching/tracing the CLI. Original CLI exit/stderr writer/cause remain unobserved, and cold resume was not reached.",
+  "resource_cause": "Unmeasured; no pids.current/events/peak or RLIMIT evidence. Omux Threaded is already bounded async4/concurrent24. CPU/task/memory caps remain unchanged.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "kind": "integrated_delivery_semantic_checkpoint",
+  "authority": "User-authorized implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "bd163b20-775b-440e-9be5-484bcad20767",
+  "original_handle": 91354,
+  "handle_terminal": true,
+  "raw_controller_receipt": "/home/jess/.local/state/omux-execution-20261005/bd163b20-775b-440e-9be5-484bcad20767/receipt.json",
+  "raw_controller_receipt_sha256": "c14cceb907c9277906281a2f930499c901c87c210d76b95b2016bc70a26b1d10",
+  "graph_sha256": "ea2733fbb8cc71e8f55b86ae6449df8815987aad149e3d479cb9257ee1535ab7",
+  "test_evidence": {
+    "bytes": 336732,
+    "files": 35,
+    "manifest": "test-evidence.json",
+    "sha256": "1d93b3ba3ba68d4997fe79b0b91b370990db2c4951dc0742822b00c5447c4180",
+    "state": "preserved"
+  },
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "passing_targets": [
+    "//tools:execution_guard_test",
+    "//tools:guard_dependency_profile_test",
+    "//tools:codex_dependency_bundle_test",
+    "//tools:codex_dependency_union_test",
+    "//:nix_evaluation_runner_test",
+    "//tools:home_manager_acquired_evaluation_test",
+    "//:mutation_authority_test",
+    "//:reliability_lifecycle_witness_test",
+    "//:reliability_lifecycle_source_actor_test",
+    "//:storage_test",
+    "//:native_owner_storage_test",
+    "//:reliability_commit_test",
+    "//:format_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_targets": [
+    {
+      "target": "//:reliability_lifecycle_native_removal_test",
+      "result": "TIMEOUT",
+      "seconds": 300,
+      "mode": "Debug",
+      "scope": "250-test imported actor suite; six of eight newly added cases reported OK, two pressure cases failed or remained unresolved before the suite timeout"
+    }
+  ],
+  "source_lifecycle_actor": {
+    "result": "PASS",
+    "cases": 247,
+    "seconds": 224.7,
+    "mode": "Debug"
+  },
+  "verified_changes": [
+    "Shared enclosing evaluator deadlines and independent unwind",
+    "Fixed HOME HTTP successor-shard admission/retention",
+    "Storage and mutation authority with separate optional native-removal witness",
+    "Preserved source-lifecycle actor predicates"
+  ],
+  "partial_native_removal": {
+    "new_cases_reported_ok": [
+      1,
+      2,
+      3,
+      6,
+      7,
+      8
+    ],
+    "pressure_4": "NativeTimeout",
+    "pressure_5": "TestUnexpectedResult",
+    "full_gate_passed": false
+  },
+  "selected_source_inventory": {
+    "receipt_sha256": "b9724dbd46ff2c8ffebb0eaf4208e3f558b014f8fc863a02e8bdf159c7504503",
+    "aggregate_sha256": "1ef2b4e956cdbd47f8403097f81a2b1793a35377c92dc3f652716537a761592d",
+    "claim": "source_inventory_only",
+    "caller_git_metadata_verified": false,
+    "full_repository_or_compiled_artifact_claim": false
+  },
+  "following_epoch_changes": {
+    "status": "unverified",
+    "native_actor_mode": "ReleaseSafe, matching omuxd/CLI declaration",
+    "native_actor_deadline_seconds": 300,
+    "native_setup_deadline": "unchanged",
+    "resource_limits": "unchanged",
+    "test_diagnostics": "bounded stage/counter/boolean/refusal metadata only",
+    "test_assertions": "unchanged"
+  },
+  "new_acceptance_gate_closed": false,
+  "installed_native_resume": false,
+  "live_handoff": false,
+  "achieved_slo": false,
+  "next": "Actual same-budget Home Manager acquisition; freeze and verify pressure diagnostics and native actor in deployed mode; native resumed-preservation fixture remains independently open"
+}

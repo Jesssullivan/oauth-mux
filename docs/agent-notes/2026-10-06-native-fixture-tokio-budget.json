@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "kind": "explicit_isolated_native_async_worker_profile",
+  "authority": "User-ratified provider-free October6 continuation; AGENTS.md/R-N13",
+  "source": "delivery/test_installed_legacy_native_tui.py",
+  "retained_archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+  "environment": {
+    "TOKIO_WORKER_THREADS": "2"
+  },
+  "reason": "Declare deterministic async-scheduler budget for bootstrap and ordinary cold resume inside the existing two-CPU test allocation.",
+  "source_evidence": "Inspected retained arg0 source has no worker_threads override; its Cargo.lock pins Tokio1.52.3. Cached Tokio source documents the environment fallback, but this source review does not freshly authenticate those crate bytes or attest the compiled runtime's dependency mapping.",
+  "status": "Applied; actual ordinary target44d7 refused at detach RPC; cold resume unreached",
+  "actual_receipt": "docs/tracker-updates/integrated-delivery-native44d7-2026-10-07.json",
+  "unchanged": [
+    "Production adapter and retained runtime bytes",
+    "4GiB/swap0/512-task/two-CPU limits",
+    "Ordinary invocation and all PID/reference/capability/SQL/inode/prefix/ordinal/status/history/deadline assertions"
+  ],
+  "limitations": [
+    "Async-worker setting does not bound total or blocking threads",
+    "No PID exhaustion or original CLI cause established",
+    "Prior failures retain their original environment/source scope",
+    "Any future passing proof must qualify this explicit test environment"
+  ]
+}

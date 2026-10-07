@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "kind": "factual_tracker_reconciliation",
+  "authority": "Explicit user factual reconciliation; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "basis": "docs/tracker-updates/integrated-delivery-8229-2026-10-06.json",
+  "pre_action_state": "source receipt and exact intended comment bodies recorded before writes",
+  "issue_metadata_changes": false,
+  "scope_changes": false,
+  "gate_closures": false,
+  "intended_comments": [
+    {
+      "issue": "TIN-2057",
+      "body": "2026-10-06 product validation checkpoint: epoch 8229cb7a-d9d1-4d53-b2e6-793cddfd7cb9 is terminal controller/workload 1/1 with empty descendants. Six targets passed; storage failed to build on an undeclared domain import, docs failed on the new note's missing authority classification, and retained-candidate cold native resume failed. Overall failure is preserved.\n\nDurable source-disconnect timing passed 27 helper/ledger cases and all 247 actor/imported cases, including five new real actor/SQLite cases. Original completion survives optional measurement failure; actual later Store denial preserves original success and poisons custody; full-envelope telemetry pressure preserves removal; malformed/future-revision witnesses refuse before recovery writes; replay/restart never repeat effects or reconstruct timing. Runtime sources: src/reliability_lifecycle_witness.zig, src/reliability_lifecycle_source.zig, src/engine.zig, src/storage.zig and src/mutation_authority.zig. This is one phase's isolated interval, not end-to-end coverage or an achieved SLO; ID-RELIABILITY stays open.\n\nExact receipt: docs/tracker-updates/integrated-delivery-8229-2026-10-06.json; raw receipt SHA256 0b4131e965a87405f810f187e0c9215c10a9e8ff6cd71e10f88dc3443a01bacc; graph 7a313747047cf93dadf936da546e811833ee53157506ffb0e9c3519cba37bf05; evidence 0d322256ba1e45c0ff14efb098af0340e8e74cc45fa2854b668bb948ed5bdb78. Subsequent declaration and diagnostic repairs remain unverified.\n\nAuthority: explicit user-resumed integrated implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13. Original 15-hour objective remains active and incomplete; next continuation review is 2026-10-06 21:05:51 UTC. Five historical scoped gates pass; six remain open. No provider login/call, fleet activation, signing/publication or Darwin/PZM operation. This is a factual checkpoint, without issue scope/state changes."
+    },
+    {
+      "issue": "TIN-2063",
+      "body": "2026-10-06 actual Home Manager checkpoint: c762e01e-71be-4d70-9e22-8c8c92e9878d ended 3/3 with empty descendants. All 94,974 nodes and 195,510,848 bytes copied, then the unchanged 600-second source-preparation deadline expired during the final private-budget scan. No source pair was published; genuine module evaluation and activation remain unproved. Receipt: docs/tracker-updates/integrated-delivery-c762-2026-10-06.json.\n\nThe reviewed follow-on replaces the 10ms admission sleep with waiting on the exact flush-completion event. It keeps four workers/one writer, every fsync, custody/proof/cleanup checks and 600/1200-second limits. All 88 modeled acquisition methods passed in 8229; that proves the scheduling predicates only. Next: measure one actual acquisition under the same budget, independently freeze a successfully published pair, then perform genuine offline evaluation against the preserved artifact. Runtime inputs and Home Manager ownership remain unchanged; no activation follows from modeled or source proof.\n\nThe storage source dependency and current-note authority classification failures in 8229 have source repairs awaiting a new declared gate. Whole-batch scoped receipt: docs/tracker-updates/integrated-delivery-8229-2026-10-06.json.\n\nAuthority: explicit user-resumed integrated implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13. Original 15-hour objective remains active and incomplete; next continuation review is 2026-10-06 21:05:51 UTC. Five historical scoped gates pass; six remain open. No provider login/call, fleet activation, signing/publication or Darwin/PZM operation. This is a factual checkpoint, without issue scope/state changes."
+    },
+    {
+      "issue": "TIN-5338",
+      "body": "2026-10-06 retained candidate checkpoint: 8229cb7a-d9d1-4d53-b2e6-793cddfd7cb9 reached cold-native-resume after completing the first detach ACK, operation status/completion, replay, native persistence/configuration preservation and clean-exit predicates. The whole retained-native fixture FAILED at cold-native-resume with an unclassified diagnostic; no ordinary resume or full native gate is passed.\n\nA fixture-only, independently reviewed diagnostic refinement now distinguishes nine fixed resume edges and finite error categories. It preserves the original calls, deadlines, native-state/identity predicates, empty-stderr/status gates and cleanup; no raw transcript, paths, identifiers or exception text is emitted. Source: delivery/test_installed_legacy_native_tui.py. Fresh execution remains queued. The earlier status failure is preserved as historical evidence; SafeAllocator is not established as this failure's cause.\n\nFresh SDK/candidate compilation, accepted-history proof, live same-process handoff and unmodified Codex continuity remain unproved. Omux owns the adapter contract and implementation; no vendor-provided hook is assumed. Exact checkpoint: docs/tracker-updates/integrated-delivery-8229-2026-10-06.json.\n\nAuthority: explicit user-resumed integrated implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13. Original 15-hour objective remains active and incomplete; next continuation review is 2026-10-06 21:05:51 UTC. Five historical scoped gates pass; six remain open. No provider login/call, fleet activation, signing/publication or Darwin/PZM operation. This is a factual checkpoint, without issue scope/state changes."
+    }
+  ],
+  "results_pending": false,
+  "recorded_at": "2026-10-06T17:30:54Z",
+  "results": [
+    {
+      "issue": "TIN-2057",
+      "comment_id": "75e1263e-a546-40ee-aa25-477f4827144a",
+      "exact_body_readback": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    },
+    {
+      "issue": "TIN-2063",
+      "comment_id": "0a161727-f1ad-4b7f-b117-0b0fb88b1e2b",
+      "exact_body_readback": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    },
+    {
+      "issue": "TIN-5338",
+      "comment_id": "2ea7fe47-82cc-46e0-b7ab-ee85b1d3d5f5",
+      "exact_body_readback": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    }
+  ],
+  "new_acceptance_gate_closed": false
+}

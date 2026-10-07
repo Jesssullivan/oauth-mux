@@ -1,35 +1,38 @@
 ---
 name: Bug report
-about: Report an oauth-mux bug with redacted diagnostics
+about: Report a version-scoped Omux failure with redacted evidence
 title: "[bug] "
 labels: bug
 assignees: ""
 ---
 
-## What happened?
+## Expected and observed behavior
 
-Describe the command, expected behavior, and actual behavior.
+Describe the normal application command, native version/hook and affected
+operation. State whether the report concerns historical v0.1.15 or the
+experimental native reset. Include artifact digest/revision, OS/architecture,
+install source, daemon availability and the specific capability involved.
 
-## Environment
+## Local evidence
 
-- oauth-mux version:
-- install lane: Homebrew / GitHub Release / curl installer / deb/rpm / Nix / worktree / other
-- OS and shell:
-- harness/provider: Codex / Claude / Figma / GitHub / Linear / other
-
-## Redacted diagnostics
-
-Please include relevant output from diagnostic commands:
+For the experimental checkout, these metadata reads use the declared graph:
 
 ```bash
-oauth-mux doctor --json
-oauth-mux accounts list --json
-oauth-mux route explain --profile <profile> --capability <capability> --json
-oauth-mux codex status-latest --json
+nix develop --command bazelisk run //:omux -- version
+nix develop --command bazelisk run //:omux -- status
+nix develop --command bazelisk run //:omux -- accounts
 ```
 
-## Privacy check
+Scrub labels, paths, handles and identifiers before sharing. A snapshot is not a
+live support claim; include the bounded reproduction and typed error. A timed-out
+mutation may have completed: reconcile state before retrying it.
 
-Do not paste raw tokens, refresh tokens, account ids, emails, credential paths,
-or session ids. Use route labels such as `codex:max-3#codex-max` and redact
-local paths.
+## Acceptance and scope
+
+Link the applicable user-story/support/native-contract ID from docs/README.md.
+Identify lost process/session/tool authority, a routine handoff prompt, unsafe
+replay, custody failure or missing capability explicitly.
+
+Do not paste credentials, cookies, OTPs, raw account IDs, emails, provider bodies,
+prompts, transcript contents or PII screenshots. Never use a paid provider call
+as an implicit diagnostic.

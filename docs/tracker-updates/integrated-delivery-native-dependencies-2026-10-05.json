@@ -1,0 +1,496 @@
+{
+  "schema_version": 1,
+  "kind": "finite_native_dependency_shard_receipt",
+  "authority": "AGENTS.md; user-resumed 15-hour sprint; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "0ebaff4d-0225-49d7-aa4a-fc78df70db79",
+  "state_root": "/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005",
+  "profile": "dependency-prefetch",
+  "target": "//tools:codex_dependency_bundle_producer",
+  "exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "graph_sha256": "e1a0c0ee02965569d5a697976e56ea44509d2cd301f75daba4da6438e70933b0",
+  "test_evidence_sha256": "4dd0684d06c5f52a540dccca3a58cf446fd4a8281f432156fb417fe1aba57556",
+  "test_evidence": [
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 354,
+          "file": "d5948c4a99a0e7ad568b9bad4c87a7ffaf9cb522cf1ebf5a086c77924c1d850e.evidence",
+          "sha256": "7477426b36fa27197f150aede8ce6b99360bf60aa751790ea4f39819b64d553c",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 773,
+          "file": "78c4513957c39da3c62ed0ec1a0e40d5bfc22ab405ef68e001e3c1abc3ae48be.evidence",
+          "sha256": "cbbc342752b08ff8b20dfd808ee019c7808e1dca3252c1ad6b624fddf92f1b79",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 2385,
+          "file": "9f10d8a9f9b4bf4d057b19e1f3c08b18697552f31a9fbb4e35795c1dfbbcc900.evidence",
+          "sha256": "192ac8a4891e91ab855d2f50335b37af729dd3c87791125493b25210dd262d9e",
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//tools:codex_dependency_bundle_producer"
+    }
+  ],
+  "limits": {
+    "CPUQuotaPerSecUSec": "2s",
+    "KillMode": "control-group",
+    "MemoryMax": "4294967296",
+    "MemorySwapMax": "0",
+    "OOMPolicy": "kill",
+    "RuntimeMaxUSec": "20min",
+    "SendSIGKILL": "yes",
+    "TasksMax": "512",
+    "TimeoutStopUSec": "10s"
+  },
+  "source_commit_declaration": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+  "source_dirty_declaration": "true",
+  "source_metadata_independently_verified": false,
+  "producer_receipt": {
+    "canonical_id_metadata_exported": false,
+    "closure_proved": false,
+    "descriptor_sha256": "50db24e82808bfea9fd00f20325874962519c76ea8d6c0e2ca2eb311a77b0feb",
+    "descriptors": [
+      {
+        "identity": "https://bcr.bazel.build/modules/abseil-cpp/20250814.1/source.json",
+        "sha256": "1692f77d1739bacf3f94337188b78583cf09bab7e420d2dc6c5605a4f86785a1",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/abseil/abseil-cpp/releases/download/20250814.1/abseil-cpp-20250814.1.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/apple_support/2.1.0/source.json",
+        "sha256": "f0b30185b1140f92f24ea963bdf783af6fc905d6e6e6f567df6968161684ec3f",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/bazelbuild/apple_support/releases/download/2.1.0/apple_support.2.1.0.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/aspect_tools_telemetry/0.3.3/source.json",
+        "sha256": "3d6372792dd0654b2e77806bf9b358e06706234f179132575a178d0ce7312790",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/aspect-build/tools_telemetry/releases/download/v0.3.3/tools_telemetry-v0.3.3.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/aws-lc/5.1.0.bcr.1/source.json",
+        "sha256": "a6bf6adfc5f9bba559d28554b7d3581b15f2813f03bc9f2ae19f0d915e97dadf",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/aws/aws-lc/archive/refs/tags/v5.1.0.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/bazel_features/1.50.0/source.json",
+        "sha256": "094367e732ece23f334eaf84089a720b861d053beeba6a6a68356d3aee1dc32b",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/bazel-contrib/bazel_features/releases/download/v1.50.0/bazel_features-v1.50.0.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/bazel_lib/3.2.2/source.json",
+        "sha256": "3d62bf30b95b71a566d9ebca50ee78d370b12522d244235b41166f65b142705d",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/bazel-contrib/bazel-lib/releases/download/v3.2.2/bazel-lib-v3.2.2.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/buildozer/8.5.1/source.json",
+        "sha256": "bd0786e0f8b6aed8c35898b4c06f64ba853d61d7c8361edb5a8d43c6ea37f5c6",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/fmeum/buildozer/releases/download/v8.5.1/buildozer-v8.5.1.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/bzip2/1.0.8.bcr.3/source.json",
+        "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://mirror.bazel.build/sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/googletest/1.17.0.bcr.2/source.json",
+        "sha256": "65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/hermetic_launcher/0.0.8/source.json",
+        "sha256": "073620caf86de7ff5c4793a3d1bf52aa50a301859182dc74d1a951c3743e735e",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/hermeticbuild/hermetic-launcher/releases/download/v0.0.8/hermetic_launcher-v0.0.8.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/jsoncpp/1.9.6/source.json",
+        "sha256": "f93b6dd7ce796b13d02c108bc9f79812245a82e577581c4c9aabe57075c90ea2",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/1.9.6.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/llvm/0.8.11/source.json",
+        "sha256": "781670efedbcffe9e6bedd086a8037a3fe467baec16d24124534062e36e727a4",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/hermeticbuild/hermetic-llvm/releases/download/v0.8.11/hermetic-llvm-v0.8.11.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/openssl/3.5.4.bcr.0/source.json",
+        "sha256": "967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/package_metadata/0.0.7/source.json",
+        "sha256": "8f27dc7393e3f3bdc793bdc4ba36d67a63c22cc9d38cc65d3204654974ea4563",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/bazel-contrib/supply-chain/releases/download/v0.0.7/supply-chain-v0.0.7.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/protobuf/34.0.bcr.1/source.json",
+        "sha256": "78e81997b89a3f1441a7d295f5c39dfe810866f2e775e011c4b225618757f0ca",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/protocolbuffers/protobuf/releases/download/v34.0/protobuf-34.0.bazel.tar.gz"
+        ]
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/pybind11_bazel/2.13.6/source.json",
+        "sha256": "cae680670bfa6e82703c03f2a3c995408cdcbf43616d7bdd198ef45d3c327731",
+        "type": "bazel-module-archive",
+        "urls": [
+          "https://github.com/pybind/pybind11_bazel/releases/download/v2.13.6/pybind11_bazel-2.13.6.tar.gz"
+        ]
+      }
+    ],
+    "native_support": false,
+    "objects": {
+      "073620caf86de7ff5c4793a3d1bf52aa50a301859182dc74d1a951c3743e735e": {
+        "bytes": 9928
+      },
+      "094367e732ece23f334eaf84089a720b861d053beeba6a6a68356d3aee1dc32b": {
+        "bytes": 19148
+      },
+      "1692f77d1739bacf3f94337188b78583cf09bab7e420d2dc6c5605a4f86785a1": {
+        "bytes": 2235716
+      },
+      "3d62bf30b95b71a566d9ebca50ee78d370b12522d244235b41166f65b142705d": {
+        "bytes": 122002
+      },
+      "3d6372792dd0654b2e77806bf9b358e06706234f179132575a178d0ce7312790": {
+        "bytes": 48393
+      },
+      "65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c": {
+        "bytes": 885595
+      },
+      "781670efedbcffe9e6bedd086a8037a3fe467baec16d24124534062e36e727a4": {
+        "bytes": 514739
+      },
+      "78e81997b89a3f1441a7d295f5c39dfe810866f2e775e011c4b225618757f0ca": {
+        "bytes": 7036742
+      },
+      "8f27dc7393e3f3bdc793bdc4ba36d67a63c22cc9d38cc65d3204654974ea4563": {
+        "bytes": 86283
+      },
+      "967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99": {
+        "bytes": 53190367
+      },
+      "a6bf6adfc5f9bba559d28554b7d3581b15f2813f03bc9f2ae19f0d915e97dadf": {
+        "bytes": 145542555
+      },
+      "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269": {
+        "bytes": 810029
+      },
+      "bd0786e0f8b6aed8c35898b4c06f64ba853d61d7c8361edb5a8d43c6ea37f5c6": {
+        "bytes": 8300
+      },
+      "cae680670bfa6e82703c03f2a3c995408cdcbf43616d7bdd198ef45d3c327731": {
+        "bytes": 6156
+      },
+      "f0b30185b1140f92f24ea963bdf783af6fc905d6e6e6f567df6968161684ec3f": {
+        "bytes": 109965
+      },
+      "f93b6dd7ce796b13d02c108bc9f79812245a82e577581c4c9aabe57075c90ea2": {
+        "bytes": 212682
+      }
+    },
+    "offline_analysis_proved": false,
+    "parent_plan_sha256": "c6613a0e4d9b0c952a91a9bf03e2010ce02a680c45eec6c84a1df7030d31ce6b",
+    "provider_evaluation": false,
+    "remaining_missing_objects": 1420,
+    "schema_version": 1,
+    "scope": "selected immutable file shard only; no Git or transitive closure proof",
+    "shard_index": 0,
+    "shard_size": 16,
+    "source_inventory_sha256": "bf635081d1e50579e6b023cccf3426a66ecc85351c27bec01866e775ee9e6c21",
+    "source_receipt_sha256": "6a606a9ca602e31f0050d15625038eeaaaff96432248dd803d51c3a1838871b3",
+    "status": "verified-missing-object-shard",
+    "unresolved": [
+      {
+        "identity": "https://bcr.bazel.build/modules/alsa_lib/1.2.9.bcr.4/source.json",
+        "reason": "archive URL/digest requires separately verified source.json; not embedded in this lock",
+        "type": "bazel-module-archive"
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/gawk/5.3.2.bcr.3/source.json",
+        "reason": "archive URL/digest requires separately verified source.json; not embedded in this lock",
+        "type": "bazel-module-archive"
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/libcap/2.27.bcr.1/source.json",
+        "reason": "archive URL/digest requires separately verified source.json; not embedded in this lock",
+        "type": "bazel-module-archive"
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/sed/4.9.bcr.3/source.json",
+        "reason": "archive URL/digest requires separately verified source.json; not embedded in this lock",
+        "type": "bazel-module-archive"
+      },
+      {
+        "identity": "appcontainer_common@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "crossterm@0.29.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "dd2d9c8821014e4a672ac8730f656a9cd08c850ccfe6def1220b13cfd70dd866",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "h3-quinn@0.0.10",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "262b5cb9c4f73e7f1be5682eb7be0a9282981acf8ccffd34e7d527cb5c2f455a",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "h3@0.0.8",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "262b5cb9c4f73e7f1be5682eb7be0a9282981acf8ccffd34e7d527cb5c2f455a",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "learning_mode_core@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "learning_mode_windows@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "mxc_config_contract@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "mxc_telemetry@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "nucleo-matcher@0.3.1",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "da2a56f83196358c8b65e5e246a0f1c9aaf4cc93100c99add0662c51ad5e36ea",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "nucleo@0.5.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "da2a56f83196358c8b65e5e246a0f1c9aaf4cc93100c99add0662c51ad5e36ea",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "process_security_environment_spec@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "runfiles@0.1.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "09cc9cc1a0823a904142cc59f795e548b23bf2061006b5749fea5815921daedb",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "sandbox_spec@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "tokio-tungstenite@0.28.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "c8845c39fb363bc7f30441eb00ea15c693cbd4697f1ad87a70798b7b4d9e10f1",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "tungstenite@0.27.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "2186bc4d049e5ad0cfc368a192de04f16b754f8b4034beba8b3183dce6f1e016",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "wxc_common@0.8.0",
+        "reason": "unsupported source needs a separate reviewed immutable input producer",
+        "source_sha256": "0040f0686868046a01aed153b3f4bf584e4ec7eb1af27a1456676a70de1b8bd7",
+        "type": "cargo-git"
+      },
+      {
+        "identity": "SDK Bazel graph",
+        "reason": "BCR source descriptors, auxiliary Cargo locks and repository-rule downloads require declared follow-on enumeration",
+        "type": "dynamic-repository-closure"
+      },
+      {
+        "identity": "unsupported-identity-sha256:2f4b881377d226998207048b9106cfd98fce8410b94a042ebbc11c85e4102312",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:4ee66bdf813d7f8b70e038f57616695550605cacf6790ae82fb9e0907adcb01f",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:51d0a3392b0324cbb0ba51fc52057482aef887ff48e3922142502508de8a39e2",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:56f99592736dd9d0172c0fa549c4f63db142a99de0050e963f526d24aa1a834a",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:65517b29d2685ae0b8cf1586e1a3fd9f61dbe4ea596f1d18679ebfd9e62d3054",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:6a9343f1b23070395d33517cef84ace604cb05407ce97bdb4d2a3b13611b5079",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:785305fe3c395749ba34d9ff117aebd556caac21c4e6ca0a97994b6e280d05eb",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:8f8ce25ff9d8c3c367ca5dc1d1ad0952be9043d1627762a94cb2681f3659bde3",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:93036b16659018e2e04b670b7a9c89be55534daaca54c64197d3da27db263432",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:ac6f23b8670a925b99f3ae0065bb5d1f582dd3677c967cd0c063460fefac4453",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:ce8024200c57fd8ab6ca1c35cd529cd395d3c7567586a896351a89679759bade",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:df867ea0620cb35d2028965b1c2438a89001edcb97a24d2fd35b658d6850360a",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:e9f6d3584c5d5f00b7d2739ff40d93928a7f508db5e86d3e9767d771660eaf48",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:ee44e56418647d5aa65ab41fa650609b9df3be5ac8b09fdecf333a78b47001ab",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:f525dd76d9fefa7965381608314e47289d3277c1ce3965d7e0fa8c4f020596ef",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:fae8945181532d3ce4b98103a8dbecf79331c8ee32d71a51308b5a8a731d0ea4",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "unsupported-identity-sha256:fdebad3233ff020447980e16abf8a1cf4e3d4c38b0113bf39a123f557c441d00",
+        "reason": "Git commit/snapshot does not establish a digest-bound downloadable archive",
+        "type": "rules-rs-git-snapshot"
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/alsa_lib/1.2.9.bcr.4/source.json",
+        "reason": "source metadata archive digest/public URL unsupported",
+        "type": "bazel-module-archive"
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/gawk/5.3.2.bcr.3/source.json",
+        "reason": "source metadata archive digest/public URL unsupported",
+        "type": "bazel-module-archive"
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/libcap/2.27.bcr.1/source.json",
+        "reason": "source metadata archive digest/public URL unsupported",
+        "type": "bazel-module-archive"
+      },
+      {
+        "identity": "https://bcr.bazel.build/modules/sed/4.9.bcr.3/source.json",
+        "reason": "source metadata archive digest/public URL unsupported",
+        "type": "bazel-module-archive"
+      }
+    ]
+  },
+  "not_proved": [
+    "complete1436-object dependency closure",
+    "unresolvedGit dependency closure",
+    "SDK consumption/offline native analysis or candidate compilation",
+    "installed native runtime identity",
+    "ordinary native launch/resume or same-process handoff",
+    "provider evaluation or public release"
+  ]
+}

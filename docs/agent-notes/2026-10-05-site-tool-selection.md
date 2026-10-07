@@ -1,0 +1,11 @@
+# Offline shared site tool selection
+
+Authority: October 5 implementation authorization, repository AGENTS.md and R-HOOK-CONVERGENCE-20261004. Sources: `tools/qualify_site_tools.py`, its test source, and neighboring SPA `tools/tool-selection.nix`. The site flake imports that shared selection; its prior package/helper selections are preserved. `site_inputs_repository.bzl` now exposes that fourth public input with `site_selection`.
+
+Qualification explicitly binds exact SHA256 bytes of site roots, lock, shared selection and flake. It requires an operator-selected cached nixpkgs source path and immutable pinned Nix executable. Before importing the source, bounded `nix --store dummy:// hash path --type sha256 --sri` verifies actual source NAR bytes against the site lock's NAR hash. No registered NAR size is needed. The pinned revision is `1c3fe55ad329cbcb28471bb30f05c9827f724c76`. Root's later contained metadata probe identified `/nix/store/l61vfkyy0qrnz9bmgx84fa7z3bjzhyp4-source`; identification alone does not prove its byte integrity or mapping.
+
+The bounded evaluator imports only that source and the shared selection, with dummy store, offline mode, disabled import-from-derivation, disabled evaluation cache, empty substituters/builders and private configuration directories. It compares exact package outPaths/versions and helper ordering to the declared root inventory. It does not evaluate the whole flake, realize a package or execute Chromium. Source serialization and evaluation each have a 120-second bound and subprocess cleanup. Root must wire declared inputs and execute qualification under containment.
+
+The cached source can be selected by a separately declared read-only database probe matching the site lock NAR hash against `ValidPaths.hash` and checking the expected source entrypoint. Official Nix source stores database NAR hashes as typed base16; the verifier accepts this form and SRI. Source mapping, dependency closure byte verification and installed browser proof remain distinct evidence gates.
+
+No build, test, Nix evaluation, browser invocation, metadata import or publication was performed by this workstream. Current guarded epochs must finish before mutable declared input sets are updated. Root was notified of the fourth public file and must bind a fresh epoch before qualifying mapping.

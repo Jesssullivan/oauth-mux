@@ -1,0 +1,28 @@
+load("//tools:rules.bzl", "python_binary")
+load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
+load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_manifest")
+
+package(default_visibility = ["//visibility:public"])
+
+# R-N13: new data anchors; the existing runtime009 archive stays immutable.
+exports_files(["README.md", "codex-owner-runtime.tar.gz", "runtime-receipt.json", "runtime-manifest.json"])
+filegroup(name = "public_sources", srcs = glob(["*.bazel", "*.md", "*.json"], allow_empty = True))
+filegroup(name = "runtime_inputs", srcs = glob(["codex-owner-runtime.tar.gz", "runtime-receipt.json"], allow_empty = True))
+
+runtime_inputs_manifest(name = "runtime_files_manifest", srcs = "@omux_nix//:runtime_libraries")
+
+python_binary(
+    name = "runtime_package",
+    main = "//integrations/codex-owner-runtime:runtime_package.py",
+    srcs = ["//delivery:portable.py", "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py"],
+    data = ["//integrations/codex-native-recovery-candidate:public_sources", "//integrations/codex-native-recovery-candidate:README.md", ":runtime_files_manifest", "@omux_nix//:ca_bundle", "@omux_nix//:tool_wrappers/strip", "@omux_nix//:patchelf", "@omux_nix//:all_tools"],
+    args = [
+        "--artifact-dir", "$(location //integrations/codex-native-recovery-candidate:README.md)",
+        "--strip", "$(location @omux_nix//:tool_wrappers/strip)",
+        "--patchelf", "$(location @omux_nix//:patchelf)",
+        "--ca-bundle", "$(location @omux_nix//:ca_bundle)",
+        "--runtime-files-manifest", "$(location :runtime_files_manifest)",
+        "--tool-path", NIX_COREUTILS_BIN,
+    ],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)

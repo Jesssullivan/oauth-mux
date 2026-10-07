@@ -1,0 +1,98 @@
+diff --git a/tools/yoga_controller_delivery.py b/tools/yoga_controller_delivery.py
+--- a/tools/yoga_controller_delivery.py
++++ b/tools/yoga_controller_delivery.py
+@@ -14,3 +14,3 @@
+ import time
+-from host_closure_transfer import SSH_OPTIONS, GateError, category
++from host_closure_transfer import SSH_OPTIONS, GateError, category, diagnostic_flags
+ from ssh_policy import operator_config
+@@ -31,3 +31,17 @@
+ 
+-def strict_json(data):
++def ssh_failure(stage, status, stderr):
++    """Finite observations only; no stderr, host/user text or command output."""
++    require(stage in ('authenticated-os-qualification', 'qualified-nix-readonly'),
++            'finite-ssh-operation-stage-required')
++    require(type(status) is int and 0 < status <= 255
++            and type(stderr) is bytes and len(stderr) <= 65536,
++            'finite-ssh-operation-failure-required')
++    flags = diagnostic_flags(stderr)
++    flags['os_bootstrap_predicate_refused'] = b'remote-bootstrap-qualification-refused' in stderr
++    flags['os_bootstrap_custody_release_incomplete'] = b'remote-custody-release-incomplete' in stderr
++    return GateError(category(stderr), hints={
++        'schemaVersion': 1, 'stage': stage, 'sshExitStatus': status,
++        'stderrFlags': flags})
++
++def strict_json(data):
+     def pairs(items):
+@@ -207,3 +221,3 @@
+ 
+-    def call(self, script, bound=2 * 1024 * 1024):
++    def call(self, script, bound=2 * 1024 * 1024, *, stage='authenticated-os-qualification'):
+         remaining = self.deadline - time.monotonic() - RESERVE
+@@ -214,3 +228,3 @@
+         if status:
+-            raise GateError(category(error))
++            raise ssh_failure(stage, status, error)
+         return output
+@@ -219,3 +233,3 @@
+         return self.call(qualification.remote_command(int(self.deadline * 10**9),
+-            self.authority['remote'], shlex.split(arguments)), bound)
++            self.authority['remote'], shlex.split(arguments)), bound, stage='qualified-nix-readonly')
+ 
+@@ -354,3 +368,5 @@
+     except (ValueError, OSError, UnicodeError, KeyError, TypeError, KeyboardInterrupt) as error:
+-        result['gate'] = str(error) if isinstance(error, GateError) else 'destination-input-or-operation-unavailable'
++        result['gate'] = str(error) if isinstance(error, GateError) else 'destination-input-or-operation-unavailable'
++        if isinstance(error, GateError) and error.hints:
++            result['operationFailure'] = error.hints
+         result['localCleanup'] = 'incomplete' if getattr(error, 'cleanup_incomplete', False) or getattr(error, '__notes__', ()) else 'completed-or-not-started'
+diff --git a/tools/yoga_controller_delivery_test.py b/tools/yoga_controller_delivery_test.py
+--- a/tools/yoga_controller_delivery_test.py
++++ b/tools/yoga_controller_delivery_test.py
+@@ -7,3 +7,44 @@
+ 
+-class DeliveryTests(unittest.TestCase):
++class DeliveryTests(unittest.TestCase):
++    def test_ssh_failure_reports_only_finite_stage_status_and_boolean_observations(self):
++        stderr = b'Host key verification failed. private-sample-must-not-escape'
++        failure = delivery.ssh_failure('authenticated-os-qualification', 255, stderr)
++        self.assertEqual(str(failure), 'store-transport')
++        self.assertEqual(set(failure.hints), {'schemaVersion', 'stage', 'sshExitStatus', 'stderrFlags'})
++        self.assertEqual(failure.hints['stage'], 'authenticated-os-qualification')
++        self.assertEqual(failure.hints['sshExitStatus'], 255)
++        self.assertTrue(failure.hints['stderrFlags']['host_key_rejected'])
++        self.assertTrue(all(type(value) is bool for value in failure.hints['stderrFlags'].values()))
++        self.assertNotIn('private-sample', json.dumps(failure.hints))
++        self.assertFalse(failure.hints['stderrFlags']['os_bootstrap_predicate_refused'])
++        for stage, status in (('caller-command', 255), ('qualified-nix-readonly', 0),
++                              ('authenticated-os-qualification', True), ('qualified-nix-readonly', 256)):
++            with self.assertRaises(ValueError):
++                delivery.ssh_failure(stage, status, stderr)
++
++    def test_nonzero_qualify_ssh_status_retains_closed_observations_after_owned_cleanup(self):
++        backend = delivery.Backend.__new__(delivery.Backend)
++        backend.ssh, backend.options, backend.deadline, backend.env = 'fixed', [], 1200, {}
++        with patch.object(delivery.time, 'monotonic', return_value=0), \
++                patch.object(delivery, 'owned_io', return_value=(255, b'', b'Connection refused')) as bounded:
++            with self.assertRaises(delivery.GateError) as captured:
++                backend.call('fixed-os-bootstrap')
++        self.assertEqual(str(captured.exception), 'store-transport')
++        self.assertTrue(captured.exception.hints['stderrFlags']['connection_refused'])
++        self.assertEqual(captured.exception.hints['stage'], 'authenticated-os-qualification')
++        self.assertEqual(bounded.call_args.args[0][-2:], ['yoga', 'fixed-os-bootstrap'])
++        self.assertEqual(bounded.call_args.args[2], 1170)
++
++    def test_readonly_nix_failure_stage_does_not_claim_os_qualification(self):
++        backend = delivery.Backend.__new__(delivery.Backend)
++        backend.deadline, backend.authority = 1200, {'remote': None}
++        with patch.object(delivery.qualification, 'remote_command', return_value='fixed-command'), \
++                patch.object(backend, 'call', side_effect=delivery.ssh_failure(
++                    'qualified-nix-readonly', 1, b'remote-bootstrap-qualification-refused')) as call:
++            with self.assertRaises(delivery.GateError) as captured:
++                backend.nix_call('--offline')
++        call.assert_called_once_with('fixed-command', 2 * 1024 * 1024, stage='qualified-nix-readonly')
++        self.assertTrue(captured.exception.hints['stderrFlags']['os_bootstrap_predicate_refused'])
++        self.assertEqual(captured.exception.hints['stage'], 'qualified-nix-readonly')
++
+     def test_setup_failure_unwinds_owned_child(self):

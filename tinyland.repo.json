@@ -4,28 +4,28 @@
 	"repo": {
 		"name": "oauth-mux",
 		"github": "Jesssullivan/oauth-mux",
-		"description": "Race-safe, embeddable, resumable multi-harness OAuth broker (omux). Pure Zig; brokers/multiplexes OAuth so agent harnesses stay afloat across accounts.",
+		"description": "Experimental, unshipped per-user account-continuity daemon with thin clients and Omux-owned native application adapters. Targets ordinary terminal launch/resume and compatible authorization handoff; live continuity remains unproved.",
 		"linear": {
-			"issue": "TIN-2105"
+			"issue": "TIN-2057"
 		}
 	},
 	"taxonomy": {
 		"primary_role": "org-utility",
-		"layers": ["org-wide-repo-contract", "bazel-package-cache-rbe"]
+		"layers": [
+			"org-wide-repo-contract",
+			"bazel-package-cache-rbe"
+		]
 	},
 	"enrollment": {
-		"forgeScope": "Jesssullivan",
-		"operatorOverlay": "jesssullivan-infra",
-		"executionPool": "tinyland-nix",
-		"substrateMode": "shared-cache-backed"
+		"substrateMode": "compatibility-local-only"
 	},
 	"contracts": {
 		"agent_contract": "AGENTS.md",
-		"just": "justfile",
+		"just": "",
 		"nix": "flake.nix",
-		"github_actions": ".github/workflows",
-		"secrets_scan": "gitleaks",
-		"conformance": "just check"
+		"github_actions": "",
+		"secrets_scan": "none",
+		"conformance": "nix develop --command bazelisk test //:docs_check"
 	},
 	"boundaries": {
 		"owns_runtime_backend": true,
@@ -39,17 +39,13 @@
 		"owns_bazel_module_authority": false
 	},
 	"authorities": {
-		"content_authority": "tinyland-inc/omux.xoxd.ai",
-		"gitops_receiver": "tinyland-inc/blahaj",
-		"ci_templates": "tinyland-inc/ci-templates",
-		"cache_rbe_authority": "tinyland-inc/GloriousFlywheel",
-		"package_registry": "tinyland-inc/bazel-registry"
+		"content_authority": "Jesssullivan/oauth-mux"
 	},
 	"supply_chain": {
 		"sbom": {
 			"status": "planned",
 			"formats": [],
-			"notes": "No SBOM recipe exists in this repo yet (no `just sbom`; pure-Zig binary, zero external Zig dependencies). Generation lands with the ci-templates migration tracked in docs/reference/tinyland-repo-manifest-notes.md; formats stay empty until a recipe picks them."
+			"notes": "No declared Bazel SBOM generation recipe or generated SBOM receipt is established. Runtime/tool inputs include pinned Zig, SQLite, libcurl and platform/UI dependencies through locked Nix/Bazel. Just and automatic CI execution lanes are retired; planned status and empty formats do not establish generated supply-chain evidence."
 		}
 	}
 }

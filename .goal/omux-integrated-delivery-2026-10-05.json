@@ -1,0 +1,593 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_sprint_checkpoint",
+  "authority": "docs/plans/omux-integrated-delivery-sprint-2026-10-05.md",
+  "session_note": "docs/agent-notes/2026-10-05-sess-omux-integrated-delivery.md",
+  "start": "2026-10-05T04:03:36Z",
+  "due": "2026-10-05T19:03:36Z",
+  "duration_hours": 15,
+  "timezone": "America/New_York",
+  "status": "in_progress",
+  "latest_resumed_at": "2026-10-06T20:13:12Z",
+  "previous_five_hour_checkpoint": "2026-10-06T21:05:51Z",
+  "next_five_hour_checkpoint": "2026-10-07T01:13:12Z",
+  "resume_authority": "Explicit user resume in force, reattach all existing subagents, reassert five-hour checkpoint/workstreams/specifications and Linear carriers",
+  "previous_paused_at": "2026-10-06T00:03:44Z",
+  "paused_at": "2026-10-06T03:55:23Z",
+  "paused_by": "User explicitly set tool goal paused; subsequent check-in requests status only",
+  "execution_state": "root_sole_executor;history4_snapshot247_restart_Yoga17_observer13_modelsPASS;ordinary44d7_Tokio2_fails_detach_RPC;Yoga_d47fQUAL_f0c7INSPECTpass_c7f6VERIFYrefuses_metadata;HM9337_timeout124_124_no_pair;five_historical_scoped_gates_passed_six_open;exact_signed_source_delivery_next",
+  "current_status_checkin": {"observed_at":"2026-10-07T00:47:01Z","acceptance_gates_passed":5,"acceptance_gates_open":6,"new_gate_closed":false,"native_receipt":"docs/tracker-updates/integrated-delivery-native44d7-2026-10-07.json","native_resume":"unproved; explicitTokio2 profile failed detach RPC","native_observer":"158b launch-fork EAGAIN before CLI; resource cause unmeasured","yoga_receipt":"docs/tracker-updates/integrated-delivery-yoga-d47f-chain-2026-10-07.json","yoga":"QUAL/INSPECT pass; destination registry metadata refusal; no copy/toolbar","home_manager":"9337 timeout no admitted pair; private filesystem residue retained","new_payload_running":false,"continuation_checkpoint":".goal/omux-native-browser-2026-10-06.json","next_review":"2026-10-07T01:13:12Z","next":"Isolated signed source materialization and finite local delivery gates"},
+  "historical_status_checkin_2135": {"observed_at": "2026-10-06T21:35:22Z", "acceptance_gates_passed": 5, "acceptance_gates_open": 6, "new_gate_closed": false, "latest_semantic_batch": "be7993cf-ae9c-4b06-bf85-6479ce283453", "semantic_targets_passed": 6, "semantic_targets_total": 6, "semantic_failure": null, "semantic_receipt": "docs/tracker-updates/integrated-delivery-be799-2026-10-06.json", "owned_execution_epoch": "be7993cf-ae9c-4b06-bf85-6479ce283453", "handle": 32845, "handle_confirmed_live": false, "handle_terminal": true, "new_payload_running": false, "controller_exit": 0, "workload_exit": 0, "descendants_empty": true, "continuation_checkpoint": ".goal/omux-native-browser-2026-10-06.json", "next_review": "2026-10-07T01:13:12Z", "next": "Explicit retained input admission/model gates then exact installed native rerun; Yoga and compact HM queued"},
+  "historical_status_checkin_2249": {"observed_at":"2026-10-06T22:49:03Z","acceptance_gates_passed":5,"acceptance_gates_open":6,"new_gate_closed":false,"native_receipt":"docs/tracker-updates/integrated-delivery-nativec9e1-2026-10-06.json","native_resume":"unproved; unknown stderr before cold resume","yoga_receipt":"docs/tracker-updates/integrated-delivery-yogaec9d-2026-10-06.json","yoga":"SSH255 host-key rejection; strict authority review next","home_manager":"canonical reconstruction publication rollback under independent source review","new_payload_running":false,"continuation_checkpoint":".goal/omux-native-browser-2026-10-06.json","next_review":"2026-10-07T01:13:12Z"},
+  "historical_status_checkin_2104": {
+    "observed_at": "2026-10-06T21:04:33Z",
+    "acceptance_gates_passed": 5,
+    "acceptance_gates_open": 6,
+    "new_gate_closed": false,
+    "latest_semantic_batch": "67297244-ea1b-47b6-9525-ee52b163fed4",
+    "semantic_targets_passed": 13,
+    "semantic_targets_total": 17,
+    "semantic_failure": "Two Zig builds shadowed helper; directexec fixture missing libstdc++ ran0; acquisition88 had1 ancestry error; corrections applied/unrun",
+    "semantic_receipt": "docs/tracker-updates/integrated-delivery-6729-2026-10-06.json",
+    "owned_execution_epoch": "67297244-ea1b-47b6-9525-ee52b163fed4",
+    "handle": 54347,
+    "handle_confirmed_live": false,
+    "handle_terminal": true,
+    "new_payload_running": false,
+    "controller_exit": 1,
+    "workload_exit": 1,
+    "descendants_empty": true,
+    "hm_terminal_receipt": "docs/tracker-updates/integrated-delivery-HM-e3b9-2026-10-06.json",
+    "memory_cap_bytes": 4294967296,
+    "tasks_cap": 512,
+    "aggregate_deadline_seconds": 1200,
+    "priority_order": [
+      "Native empty-history launch/resume and mandatory removal",
+      "Qualified Yoga delivery and human toolbar consent",
+      "One compact-source genuine Home Manager evaluation attempt",
+      "Fresh native inputs and reviewable signed source delivery"
+    ],
+    "next_review": "2026-10-07T01:13:12Z",
+    "continuation_checkpoint": ".goal/omux-native-browser-2026-10-06.json",
+    "session_note": "docs/agent-notes/2026-10-06-sess-omux-home-yoga-native.md"
+  },
+  "latest_pause_receipt_key": "paused_checkin_0358",
+  "pause_checkpoint_superseded_by": "latest_pause_checkpoint",
+  "latest_pause_checkpoint": {
+    "recorded_at": "2026-10-06T03:58:37Z",
+    "session_note": "docs/agent-notes/2026-10-05-sess-omux-integrated-delivery.md",
+    "receipt": "docs/tracker-updates/integrated-delivery-validation-2026-10-06.json",
+    "automatic_resume": false,
+    "original_clock_preserved": true,
+    "all_subagents_stopped_or_completed_at_pause": true,
+    "new_payload_running": false,
+    "last_owned_batch": "8b6bd81f-786e-49c1-b8de-ac1103e986b1",
+    "last_owned_batch_terminal": true,
+    "descendants_empty": true,
+    "complete": false,
+    "resume_order": [
+      "Fresh custody/capacity and guard admission on explicit resume",
+      "Actual HM600 source-pair acquisition, then frozen-pair genuine evaluator",
+      "Yoga NAR content/destination registration and isolated Wayland/operator proof; retain separate exact-generation reload join",
+      "Reviewed fixed Git producer and bounded network guard wiring/tests, remaining SDK inputs and fresh candidate compilation",
+      "Native status-result failure diagnosis with existing hard gates preserved",
+      "Lifecycle measurement and current-source/artifact/Linear reconciliation"
+    ]
+  },
+  "pause_checkpoint": {
+    "session_note": "docs/agent-notes/2026-10-05-sess-omux-integrated-delivery.md",
+    "automatic_resume": false,
+    "original_clock_preserved": true,
+    "all_subagents_stopped_or_completed_at_pause": true,
+    "new_payload_running": false,
+    "resume_order": [
+      "Qualify current state custody and capacity; preserve failed bd412 epoch and dirty cache",
+      "Implement and independently review categorical controller timeout diagnostics and one shared 15-second cleanup deadline",
+      "Fresh admitted guard/launcher/core-custody/source-capture validation; retain raw inventory and exact artifact tuple",
+      "Actual HM source-pair acquisition, then wire genuine offline evaluator against frozen 9379 artifact",
+      "Run reviewed retained-runtime native empty-history cold-resume fixture under its own exact scope",
+      "Qualify Yoga local Wayland/operator toolbar proof; keep development-generation reload join separate",
+      "Declare additional immutable SDK shards/Git/mapping inputs and reconcile documentation/Linear when authentication permits"
+    ]
+  },
+  "resume_evidence": "docs/tracker-updates/integrated-delivery-resume-2026-10-05.json",
+  "resumed_at": "2026-10-05T16:03:13Z",
+  "resume_allocation": {
+    "home_available_bytes": 29655379968,
+    "fast_project_177_available_bytes": 232281415680,
+    "mount_root_available_bytes": 536853876736,
+    "observed_at": "2026-10-05T16:03:13Z"
+  },
+  "last_blocked_at": "2026-10-05T14:05:10Z",
+  "blocked_audit_receipt_key": "full_goal_blocked_audit_1405",
+  "previous_blocked_reason": "Repeated selected-allocation refusals; independent complete-objective and estate audits found no remaining admissible proof or producer dispatch at 14:05 UTC. Source follow-ons and reversible superseded PR closure are preserved; one of eleven gates passed, ten remain open.",
+  "status_semantics": "Original incomplete fifteen-hour objective continues under user-ratified provider-free native/browser checkpoint20:13:12UTC October6 to01:13:12UTC October7. Original start/checkpoints/due and eleven acceptance scopes unchanged. Five historical scoped passes/six open; elapsed time closes no gate.",
+  "superseded_pr_closure_receipt_key": "superseded_pr_closures_1404",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "latest_execution_epoch": "44d7d2d3-0085-4377-838e-8b2ce9969e23",
+  "latest_execution_result": "controller3_workload3_descendants_empty;ordinary_retained009_Tokio2_selected_detach_RPCrefused;docs_sourcePASS;no_cold_resume_or_parent_acceptance_gate",
+  "latest_execution_receipt": "docs/tracker-updates/integrated-delivery-native44d7-2026-10-07.json",
+  "latest_checkin": {"observed_at":"2026-10-07T00:49:23Z","handle":48335,"handle_terminal":true,"controller_exit":3,"workload_exit":3,"descendants_empty":true,"new_payload_running":false,"new_parent_acceptance_gate_closed":false},
+  "current_owned_execution": {"epoch":"44d7d2d3-0085-4377-838e-8b2ce9969e23","handle":48335,"profile":"standard","state_root":"/home/jess/.local/state/omux-execution-20261005","targets":["//delivery:installed_legacy_native_tui_test","//:docs_check","//tools:runtime_source_receipt"],"verb":"test","handle_terminal":true,"handle_confirmed_live":false,"new_payload_running":false,"controller_exit":3,"workload_exit":3,"descendants_empty":true,"scope":"Failed ordinary retained009 explicitTokio2 profile; no cold resume or continuity"},
+  "claim": "experimental_unshipped_live_continuity_unavailable",
+  "hook_authority": "R-HOOK-CONVERGENCE-20261004",
+  "ruling_id": "R-N13",
+  "user_authority": "October 5 explicit implementation, 15-hour goal, up to 24 Sol 6.1 agents, architecture and Linear reconciliation, ownership-safe cleanup and delivery request",
+  "checkpoints": [
+    "2026-10-05T09:03:36Z",
+    "2026-10-05T14:03:36Z",
+    "2026-10-05T19:03:36Z"
+  ],
+  "predecessor_checkpoint": ".goal/omux-native-discovery-2026-10-04.json",
+  "predecessor_outcome": "Goal cleared after blocked partial checkpoint; all eight ND gates remain unpassed and old clocks/evidence remain unchanged",
+  "tracker_receipt": "docs/tracker-updates/integrated-delivery-2026-10-05.json",
+  "historical_latest_execution_epoch_2249": "ec9db9f6-0344-486a-ac8d-7f1aa3a279fc",
+  "historical_latest_execution_result_2249": "controller2_workload2_descendants_empty;Yoga_SSH255_host_key_rejection_before_OS_qualification;no_new_parent_acceptance_gate",
+  "historical_latest_execution_receipt_2249": "docs/tracker-updates/integrated-delivery-yogaec9d-2026-10-06.json",
+  "historical_checkin_2135": {"observed_at": "2026-10-06T21:35:22Z", "owned_execution_epoch": "be7993cf-ae9c-4b06-bf85-6479ce283453", "handle": 32845, "handle_closed": true, "controller_exit": 0, "workload_exit": 0, "descendants_empty": true, "passing_targets": 6, "new_parent_acceptance_gate_closed": false, "new_payload_running": false},
+  "historical_latest_checkin_2249": {"observed_at":"2026-10-06T22:49:03Z","owned_execution_epoch":"ec9db9f6-0344-486a-ac8d-7f1aa3a279fc","handle":1917,"handle_closed":true,"controller_exit":2,"workload_exit":2,"descendants_empty":true,"new_parent_acceptance_gate_closed":false,"new_payload_running":false},
+  "historical_current_owned_execution_2249": {"epoch":"ec9db9f6-0344-486a-ac8d-7f1aa3a279fc","handle":1917,"profile":"yoga-controller-delivery","state_root":"/home/jess/.local/state/omux-yoga-delivery-20261006","targets":["//tools:yoga_controller_qualify"],"verb":"run","aggregate_budget_seconds":1200,"handle_terminal":true,"handle_confirmed_live":false,"new_payload_running":false,"controller_exit":2,"workload_exit":2,"descendants_empty":true,"receipt":"docs/tracker-updates/integrated-delivery-yogaec9d-2026-10-06.json","scope":"Read-only qualifier host-key refusal before remote qualification; no consent/continuity"},
+  "historical_checkin_1748": {
+    "observed_at": "2026-10-06T17:48:00Z",
+    "owned_execution_epoch": "f10a6f07-14d1-4b7c-96d9-86f70df980a8",
+    "handle": 44358,
+    "handle_closed": true,
+    "descendants_empty": true,
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "cleanup_ownership": "unproved",
+    "receipt_sha256": "6245cf3db665290b3e9f02195ab32e7dbf23c7e62529e5d6725491c8732b73e5",
+    "graph_sha256": "5dc9c86e707a29505a63071c53fe72184bb2e40da1383985952f9601dc2138e6",
+    "test_evidence_sha256": "86a43b651f6ac42bdf42cb22f30a40a4633392d246739319466ae2b485d3a965",
+    "passing_targets": 13,
+    "failed_target": "//:docs_check",
+    "new_acceptance_gate_closed": false,
+    "all_existing_subagents_completed": true,
+    "new_payload_running": false
+  },
+  "historical_owned_execution_2135": {
+    "epoch": "be7993cf-ae9c-4b06-bf85-6479ce283453",
+    "handle": 32845,
+    "profile": "standard",
+    "state_root": "/home/jess/.local/state/omux-execution-20261005",
+    "targets": [
+      "//:reliability_lifecycle_native_removal_test", "//tools:codex_owner_runtime_input_test", "//tools:codex_owner_runtime_input_copy", "//:docs_check", "//:format_test", "//tools:runtime_source_receipt"
+    ],
+    "verb": "test",
+    "aggregate_budget_seconds": 1200,
+    "handle_confirmed_live": false,
+    "new_payload_running": false,
+    "handle_terminal": true,
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "receipt": "/home/jess/.local/state/omux-execution-20261005/be7993cf-ae9c-4b06-bf85-6479ce283453/receipt.json",
+    "scope": "Scoped optional-OOM isolation and retained input copy; installed resume, Yoga consent, HM evaluation and parent gates remain open"
+  },
+  "resumed_validation_receipt": "docs/tracker-updates/integrated-delivery-validation-2026-10-06.json",
+  "source_follow_on": {
+    "status": "Home_Manager_full_eval_unrun_SPA_exact_import_render_archive_passed",
+    "home_manager": [
+      "nix/home-manager.nix",
+      "nix/evaluation-tests.nix"
+    ],
+    "spa": [
+      "../omux.xoxd.ai/scripts/import-extension-delivery.mjs",
+      "../omux.xoxd.ai/scripts/import-extension-delivery.d.mts",
+      "../omux.xoxd.ai/scripts/import-extension-delivery.test.mts"
+    ],
+    "native_delivery": [
+      "integrations/codex-adapter-delivery/README.md",
+      "src/catalog.zig"
+    ],
+    "tracker_receipt_key": "source_follow_on_1315",
+    "tracker_comment_ids": [
+      "47b9a2ec-ee02-4b74-9806-a9cca16f504c",
+      "9a7ee17c-d182-4afe-8216-652809bda8c2",
+      "e983b653-ff85-4c01-a69a-170919ce49b9"
+    ],
+    "limitations": "SPA exact import/render/archive passed in separate qualified offline phase chain; Home Manager full paired-input evaluation/activation and native/provider/live/Darwin/reliability deployment remain unproved. Historical source_follow_on_1315 and its comment bodies retain original scope."
+  },
+  "latest_successful_execution_epoch": "be7993cf-ae9c-4b06-bf85-6479ce283453",
+  "setup_verification_follow_on": {
+    "status": "compiled_engine_CLI_Linux_UI_and_installed_custody_passed_Darwin_unrun",
+    "sources": [
+      "src/setup_verification.zig",
+      "src/engine.zig",
+      "src/control.zig",
+      "src/main.zig",
+      "src/reference.zig",
+      "clients/linux/omux_client.cpp",
+      "clients/linux/tray.cpp",
+      "clients/macos/DaemonStore.swift",
+      "clients/macos/DaemonConnection.swift",
+      "clients/macos/ControlWindow.swift"
+    ],
+    "tests": [
+      "//:setup_verification_test",
+      "//:engine_test",
+      "//delivery:cli_test",
+      "//clients/linux:transport_test",
+      "//clients/linux:setup_ui_test",
+      "//:docs_check"
+    ],
+    "authority": "Existing mutation ledger only; explicit setup.refresh operation_id plus expected_revision, prepaid started fence, immutable terminal phase facts, same-ID status reconciliation without replay",
+    "measurement_scope": "Explicit local verification, not installation/enrollment/native continuity success; process-local admission-to-terminal timing excludes commit/reply and end-to-end coverage",
+    "tracker_receipt_key": "source_setup_verification_1336",
+    "tracker_comment_ids": [
+      "e6c9672c-52f5-41ad-a76e-9a7cd4915a95",
+      "9125cc71-40a6-499b-8f89-2de5cc1ef6f1"
+    ],
+    "limitations": "ef255 passed all twelve current targets, including native timeout translations, real daemon image binding, CLI and full installed Qt custody/restart/replay. Earlier passing Linux UI/verification receipts retain their stated scope. Darwin, fleet activation, Chromium consent, provider/native continuity and achieved SLO/SLA remain unproved."
+  },
+  "latest_successful_execution_result": "be799_controller0_workload0_descendants_empty;6_targetsPASS;receiptfa1cd9eee1ed3eed51ab1cc15d81403e9ac91477d3c98b443b25531bc8eff4e7;no_new_parent_acceptance_gate",
+  "installed_setup_follow_on": {
+    "status": "passed_experimental_linux_exact_artifacts",
+    "sources": [
+      "delivery/test_installed_custody.py",
+      "src/setup_verification.zig",
+      "src/control.zig"
+    ],
+    "tests": [
+      "//delivery:installed_core_custody_test",
+      "//delivery:installed_custody_test",
+      "//:setup_verification_test"
+    ],
+    "scope": "Real packaged daemon/private Secret Service refusal, exact replay, passive measurement separation, process restart, receipt-backed worker facts and sealed terminal result checks; canonical operation-ID parity",
+    "tracker_receipt_key": "source_installed_setup_native_audit_1349",
+    "tracker_comment_ids": [
+      "e6c9672c-52f5-41ad-a76e-9a7cd4915a95",
+      "9125cc71-40a6-499b-8f89-2de5cc1ef6f1"
+    ],
+    "limitations": "ef255 full and core custody passed all assertions, including the third restart and genuine Qt closure/daemon independence. Experimental dirty archive; no OS-service activation, fleet deployment, enrollment or native continuity inferred."
+  },
+  "native_selection_audit": {
+    "status": "artifact_selection_predicates_passed_installed_binding_and_executable_attribution_pending",
+    "paths": [
+      "integrations/codex-owner-runtime/runtime_package.py",
+      "src/platform/native_peer.c",
+      "src/platform/peer.zig",
+      "src/integrations/setup.zig",
+      "integrations/codex-adapter-delivery/README.md",
+      "docs/spec/native-adapter-contract.md",
+      "delivery/codex_runtime_selection.py",
+      "delivery/test_codex_runtime_selection.py"
+    ],
+    "finding": "Portable launcher explicitly executes bundled loader; process-incarnation/packet-writer proof is not backend identity. Selected-runtime carrier and actual executable attribution are separate missing gates; kernel exe path/hash alone cannot be presumed sufficient",
+    "next": "Validate applied local-byte/channel/registry/epoch measurement and direct-exec relocation; add real actor worker coverage. Independent original artifact provenance and executable-incarnation authority remain missing; no peer-version or support promotion",
+    "tracker_receipt_key": "source_installed_setup_native_audit_1349",
+    "tracker_comment_id": "e983b653-ff85-4c01-a69a-170919ce49b9",
+    "limitations": "56ceedbc passed eight artifact-only selection predicates; no installed ownership/channel binding, registry migration or live executable verifier; native support remains false"
+  },
+  "partial_evidence": "docs/agent-notes/2026-10-05-sess-omux-integrated-delivery.md",
+  "native_support": false,
+  "live_continuity": "unavailable",
+  "provider_evaluation_authorized": false,
+  "publication_authorized": false,
+  "pzm_gf_worker_state": "held; GF coordinator owns activation",
+  "acceptance": [
+    {
+      "id": "ID-AUTHORITY",
+      "status": "passed",
+      "issues": [
+        "TIN-2057"
+      ],
+      "scope": "Ratified Omux-owned adapter architecture, current claims and evidence-preserving retirement; documentation/source-ratification only",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/plans/omux-integrated-delivery-sprint-2026-10-05.md"
+        },
+        {
+          "kind": "document",
+          "path": "docs/agent-notes/2026-10-05-sess-omux-integrated-delivery.md"
+        },
+        {
+          "kind": "tracker_readback",
+          "path": "docs/tracker-updates/integrated-delivery-2026-10-05.json"
+        }
+      ],
+      "closing_epoch": "03be3fbb-b9dd-4cf9-9fa0-6d1524a3af5f",
+      "closing_evidence_sha256": "11052802f6c5ce532f8d57c446afe915a8d21422a5dcca17ecfe4a16f8ce21bf"
+    },
+    {
+      "id": "ID-CONTAINMENT",
+      "status": "passed",
+      "issues": [
+        "TIN-2063"
+      ],
+      "scope": "Verified effective resource/time bounds before admission, exact owned cleanup on cancellation and failure, and external execution delegation exclusion for current finite local standard, dependency and qualified SPA profiles; the only SPA network exception is exact LOCK metadata regeneration",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "partial_test_receipt",
+          "path": "docs/tracker-updates/integrated-delivery-resume-2026-10-05.json",
+          "epochs": [
+            "a93d1778-3469-4be6-be27-0bc3dcb409ff",
+            "56ceedbc-156d-4459-a4b4-3aa9f371a910"
+          ],
+          "scope": "effective contained standard admission and cleanup plus finite profile predicates; full gate not promoted"
+        },
+        {
+          "kind": "document",
+          "evidence_type": "independent_gate_closure_audit",
+          "path": "docs/agent-notes/2026-10-05-containment-resume-audit.md",
+          "epochs": [
+            "80a8c353-0939-4158-9f73-8a8e926d08c9",
+            "e9cf87a2-90a5-40a5-bf4c-be2023ed11db",
+            "8e61c577-d7dc-4075-8bab-1061cc92620f",
+            "a93d1778-3469-4be6-be27-0bc3dcb409ff",
+            "4cf338e5-a630-4c6c-b869-ceb2ad5c9e9d",
+            "f3c76f3f-aff4-4953-b91a-216012c9e2f7",
+            "2eb92a24-b91f-43ae-810c-70901d40d3c3"
+          ],
+          "scope": "Actual bounded admission and cleanup, finite qualified SPA LOCK success and separate failure cleanup; dependency or product payload success is not claimed"
+        }
+      ],
+      "closing_epoch": "2eb92a24-b91f-43ae-810c-70901d40d3c3",
+      "closing_graph_sha256": "cb4e35a64a12b67dc958ca59d435111056668aad82569ca029af9c4f93bc33c9",
+      "closing_toolchain_qualification_sha256": "3e8184da017f41b90ddab42972111a930be4a4e53bbdff7df9de493386583a6b",
+      "limitations": "The 2 GiB free-space floor is sampled monitoring with possible overshoot, not an aggregate disk quota. Exact SPA LOCK alone permits public dependency metadata network access. Future FETCH or changed profiles require their own qualification. Closure promotes no other gate, installed product result, provider access, Darwin/PZM execution, native support or live continuity."
+    },
+    {
+      "id": "ID-CHANNEL",
+      "status": "passed",
+      "issues": [
+        "TIN-2063",
+        "TIN-2720"
+      ],
+      "scope": "Development/release identity, path, socket and vault isolation",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "installed_linux_gate_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json",
+          "scope": "Exact paired local RELEASE_EVALUATION/development artifacts and owned registrations/state/socket/vault isolation; unsigned/unpublished, no Chromium consent or fleet activation"
+        }
+      ],
+      "closing_epoch": "ef255a3e-8d6d-4bb7-a044-d9a42e20aded",
+      "closing_graph_sha256": "1fe1bcab8fce5e20000d48c63501ec9769f5a03b18a336e6f40e2aa6ad10664b",
+      "closing_evidence_sha256": "fd423186bb31a30c5cb4fc6264751314a627bb78231988248641ae3dc8c31582",
+      "selected_source_sha256": "594e368cc0df9c33594f843608a2315e23440839b6e4fd0cea96c77d21290ceb",
+      "limitations": "Experimental Linux only; Darwin, live provider/native continuity, Home Manager activation, signing/publication and achieved SLO/SLA remain unproved."
+    },
+    {
+      "id": "ID-DEVLOOP",
+      "status": "in_progress",
+      "issues": [
+        "TIN-2063"
+      ],
+      "scope": "Explicit declared artifact staging and safe owned replacement without nested builds",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "partial_foundation_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-foundations-2026-10-05.json",
+          "epoch": "9fcade58-0d2a-4465-9c23-a5dc4f002235",
+          "scope": "Actual artifacts staged and immutable transaction-local generation selected. Corrected selection fixture proved separately in d4fb100c; actual daemon restart in fb13c1ae. Browser reload/reconnect join open."
+        },
+        {
+          "kind": "document",
+          "evidence_type": "predicate_and_source_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-selector-2026-10-05.json",
+          "epoch": "d4fb100c-152c-41bd-9c55-52c41a958c14",
+          "scope": "27 corrected retained-generation selection methods passed; fresh341-file selected source inventory. Exact-generation daemon restart/Chromium reload still unproved."
+        },
+        {
+          "kind": "document",
+          "evidence_type": "actual_retained_generation_restart_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-restart-2026-10-05.json",
+          "epoch": "fb13c1ae-aa08-470c-a087-74f0a1b3caed",
+          "scope": "Actual retained packaged daemon private restart/clean shutdown and24 boundary tests pass; manual browser reload/reconnect join unproved."
+        }
+      ]
+    },
+    {
+      "id": "ID-FLEET",
+      "status": "in_progress",
+      "issues": [
+        "TIN-2063",
+        "TIN-2050"
+      ],
+      "scope": "Nix Home Manager artifact/service/host registration ownership and compatibility",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "partial_test_receipt",
+          "path": "docs/tracker-updates/integrated-delivery-resume-2026-10-05.json",
+          "epoch": "b635d455-23a3-4b67-a2bc-9a0d5f31fb3e",
+          "scope": "modeled Nix module evaluation only; overall batch failed and genuine HM activation unproved"
+        },
+        {
+          "kind": "document",
+          "evidence_type": "partial_foundation_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-foundations-2026-10-05.json",
+          "epoch": "9fcade58-0d2a-4465-9c23-a5dc4f002235",
+          "scope": "18 modeled fixed-pair content/NAR/custody/race predicates pass for new acquired-source receipt interface. No actual producer/receipt, genuine paired evaluation, activation/update/removal."
+        },
+        {
+          "kind": "document",
+          "evidence_type": "explicit_development_archive_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-HM-archive-2026-10-05.json",
+          "epoch": "b222d7fd-731d-4d3f-b65d-3917e1d66266",
+          "scope": "Actual fullQt dirtydevelopment archive verified,71packing predicates passed; canonical extracted artifact NAR/actual paired evaluation/activation pending."
+        }
+      ]
+    },
+    {
+      "id": "ID-BROWSER",
+      "status": "in_progress",
+      "issues": [
+        "TIN-2720",
+        "TIN-2830",
+        "TIN-5442"
+      ],
+      "scope": "Real Chromium installation and selected-context consent/reconnect/disconnect/removal",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "partial_test_receipt",
+          "path": "docs/tracker-updates/integrated-delivery-resume-2026-10-05.json",
+          "epoch": "a93d1778-3469-4be6-be27-0bc3dcb409ff",
+          "scope": "44 source lifecycle and7 framing predicates; real browser/consent/provider unproved"
+        },
+        {
+          "kind": "document",
+          "evidence_type": "partial_foundation_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-foundations-2026-10-05.json",
+          "epoch": "9fcade58-0d2a-4465-9c23-a5dc4f002235",
+          "scope": "20 authority predicates include mocked registered-root/link NAR boundaries. Actual Chromium recovery proved separately in c8f63b83; human consent/acquisition remain unproved."
+        },
+        {
+          "kind": "document",
+          "evidence_type": "actual_chromium_partial_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-chromium-2026-10-05.json",
+          "epoch": "c8f63b83-f9cb-4233-a01c-5d1e6f30f33d",
+          "scope": "Actual pinned Chromium/native-host/synthetic source uncertainty and browser restart recovery passed; toolbar consent, granted permission and real account acquisition unproved, full gate open."
+        }
+      ]
+    },
+    {
+      "id": "ID-SETUP",
+      "status": "passed",
+      "issues": [
+        "TIN-2063"
+      ],
+      "scope": "Shared truthful setup/readiness and thin-client daemon independence",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "installed_linux_gate_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-installed-setup-2026-10-05.json",
+          "scope": "Exact packaged CLI and Qt control, shared phase truth, daemon independence and sealed terminal restart/replay; no activation/enrollment/native continuity"
+        }
+      ],
+      "closing_epoch": "ef255a3e-8d6d-4bb7-a044-d9a42e20aded",
+      "closing_graph_sha256": "1fe1bcab8fce5e20000d48c63501ec9769f5a03b18a336e6f40e2aa6ad10664b",
+      "closing_evidence_sha256": "fd423186bb31a30c5cb4fc6264751314a627bb78231988248641ae3dc8c31582",
+      "selected_source_sha256": "594e368cc0df9c33594f843608a2315e23440839b6e4fd0cea96c77d21290ceb",
+      "limitations": "Experimental Linux only; Darwin, live provider/native continuity, Home Manager activation, signing/publication and achieved SLO/SLA remain unproved."
+    },
+    {
+      "id": "ID-DELIVERY",
+      "status": "passed",
+      "issues": [
+        "TIN-734"
+      ],
+      "scope": "Exact local experimental development SPA archive metadata import/rendering; source fields faithfully render caller-declared provenance",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "local_SPA_delivery_gate_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-spa-2026-10-05.json",
+          "scope": "ID-DELIVERY passed for exact local experimental development SPA archive; faithfully rendered caller-declared source provenance, capability and delivery limits"
+        }
+      ],
+      "closing_epoch": "b62de355-e8e5-4c26-a3f6-e4bb8e370f3b",
+      "closing_graph_sha256": "a4b7a4c2e6c53b4fa703b559b5561a58b54ab803b943e289ecc6b4d0119dbaf2",
+      "closing_evidence_sha256": "e6a20f1bcc19548174867de3d68e84481cb30a4ce84cdc02f1b224970c9976d3",
+      "site_source_sha256": "8243a609492dad47eff7503057e0247a7f825c8dc684e50159ff687be11b9ca4",
+      "archive_sha256": "0e5bbe0af08e833e8b0ee32f64b2f734feea5f0f5f005c2fabaf315c3c070938",
+      "limitations": [
+        "Browser loading, consent and provider acquisition",
+        "Verified identities, usable grants and renewal",
+        "Ordinary native application launch/resume or same-process handoff",
+        "Home Manager activation/update/removal",
+        "Darwin",
+        "Public downloads, signing, store publication or website deployment",
+        "Achieved lifecycle reliability SLO or contractual SLA"
+      ]
+    },
+    {
+      "id": "ID-RELIABILITY",
+      "status": "in_progress",
+      "issues": [
+        "TIN-2057"
+      ],
+      "scope": "Durable lifecycle success/refusal/phase/end-to-end measurement without invented baselines",
+      "evidence": []
+    },
+    {
+      "id": "ID-NATIVE",
+      "status": "in_progress",
+      "issues": [
+        "TIN-5338",
+        "TIN-5421"
+      ],
+      "scope": "Separate candidate/runtime epoch and ordinary TUI/native resume with preserved custody",
+      "evidence": [
+        {
+          "kind": "document",
+          "evidence_type": "partial_test_receipt",
+          "path": "docs/tracker-updates/integrated-delivery-resume-2026-10-05.json",
+          "epoch": "56ceedbc-156d-4459-a4b4-3aa9f371a910",
+          "scope": "8 artifact-only selection predicates; installed channel/ownership and native launch/resume unproved"
+        },
+        {
+          "kind": "document",
+          "evidence_type": "partial_foundation_tuple",
+          "path": "docs/tracker-updates/integrated-delivery-foundations-2026-10-05.json",
+          "epoch": "9fcade58-0d2a-4465-9c23-a5dc4f002235",
+          "scope": "63 setup predicates include five synthetic authenticated retained-selection verifier tests. Verifier unwired; full closure, trusted producer/writer, Nix0555, live executable attribution and ordinary native resume/handoff remain unproved."
+        },
+        {
+          "kind": "document",
+          "evidence_type": "partial_native_dependency_producer",
+          "path": "docs/tracker-updates/integrated-delivery-native-dependencies-2026-10-05.json",
+          "epoch": "0ebaff4d-0225-49d7-aa4a-fc78df70db79",
+          "scope": "16 reviewed dependency objects acquired/verified;1420objects and42unresolved remain; complete SDK closure/candidate compilation/native launch-resume unproved."
+        },
+        {
+          "kind": "document",
+          "evidence_type": "verified_partial_native_CAS_union",
+          "path": "docs/tracker-updates/integrated-delivery-native-union-2026-10-05.json",
+          "epoch": "aa8e5a39-1f58-4fd6-b872-b51431581adc",
+          "scope": "Actual305unique objects verified;1410missing/42unresolved remain. Whole batch failed separate HMunit; SDKclosure/compile/nativeproof absent."
+        }
+      ]
+    },
+    {
+      "id": "ID-RECONCILIATION",
+      "status": "in_progress",
+      "issues": [
+        "TIN-2057",
+        "TIN-2050",
+        "TIN-5443"
+      ],
+      "scope": "Exact current-source evidence, tracker readbacks and ownership-safe cleanup/delivery",
+      "evidence": [
+        "docs/tracker-updates/integrated-delivery-2026-10-05.json",
+        {
+          "kind": "tracker_readback",
+          "evidence_type": "partial_tracker_readback",
+          "path": "docs/tracker-updates/integrated-delivery-resume-2026-10-05.json",
+          "scope": "resumed existing comments exact; final complete source/artifact/test tuple still pending"
+        }
+      ]
+    }
+  ],
+  "selected_source_observation": "docs/tracker-updates/integrated-delivery-source-observation-2026-10-05.json",
+  "checkpoint_15h": {
+    "review_time": "2026-10-05T19:03:36Z",
+    "outcome": "partial_incomplete_work_continues",
+    "passed_gate_count": 4,
+    "open_gate_count": 7,
+    "session_note": "docs/agent-notes/2026-10-05-sess-omux-integrated-delivery.md",
+    "latest_result": "installed_Chromium_failed_private_context_before_browser_launch; workload3_empty_descendants",
+    "next": [
+      "Exact artifact metadata/manifest inspection",
+      "Chromium precondition diagnosis and bounded rerun",
+      "Offline SPA qualification/import/checks/archive",
+      "Current-source documentation/evidence reconciliation"
+    ]
+  },
+  "yoga_toolbar_follow_on": {
+    "host": "yoga",
+    "display": "local_wayland",
+    "operator_participation": true,
+    "status": "27_runner5_socket12_coordinator_modeled_methods_passed; actual_guard_integration_live_Yoga_display_and_operator_proof_pending",
+    "contract": "delivery/yoga-toolbar-consent-proof.md",
+    "provider_access": false
+  }
+}

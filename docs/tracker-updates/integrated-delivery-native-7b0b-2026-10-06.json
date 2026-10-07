@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_installed_native_checkpoint",
+  "authority": "User-authorized provider-free native/browser continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "7b0b7a8b-3947-44fd-be83-f8fb3238d3a3",
+  "original_handle": 60980,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/7b0b7a8b-3947-44fd-be83-f8fb3238d3a3/receipt.json",
+  "raw_receipt_sha256": "7136896f27380bca1bb3d56626119c1e45d7b0b4e16520a4f54fab2d784d7f5c",
+  "graph_sha256": "7b82c2e014a6f0bd4a7f8c6831f44ea6f646dbe89a1ad8d9333d720fd503af6f",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 198063,
+    "files": 9,
+    "manifest": "test-evidence.json",
+    "sha256": "8a1c49c227d48960eefedbd64c2d629c3c1fea144992aadf5626093267781e43",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_target": "//delivery:installed_legacy_native_tui_test",
+  "elapsed_seconds": 39.7,
+  "failure_phase": "selected-detach",
+  "diagnostic": "detach-status-rpc/cli-process-failure/exit-zero-stderr/status-result/stderr-unrecognized/completion-exact",
+  "scope": "Returned status result and exact expected completion with exit0; unexpected stderr. Cold resume/paginated helper not reached. Root cause unclassified.",
+  "omux_archive": {
+    "sha256": "afab1886b60fd59cb48ae7f83aad913a519d5b9854dbcf73aa2b4fe4e15df51c",
+    "bytes": 59503020,
+    "artifact_count": 138,
+    "product_version": "0.2.0-dev",
+    "target": "x86_64-linux",
+    "source_dirty": true,
+    "source_revision": null
+  },
+  "candidate_archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+  "new_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false,
+  "next": "Source diagnosis and bounded stderr classification; preserve no-stderr success predicate and exact native state assertions"
+}

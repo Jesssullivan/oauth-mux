@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "kind": "root_selected_hm_canonical_reconstruction_attempt",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "status": "Root reviewed and selected for one fresh finite actual attempt; this pre-action record is not execution proof.",
+  "cwd": "/srv/fast-local/jess/git/oauth-mux",
+  "supersedes_recipe_for_this_attempt": {
+    "path": "docs/agent-notes/2026-10-06-hm-compact-execution-recipe.json",
+    "sha256": "d0c788634c05b37d1125c80cc487423e72a140b7df63129c1481e8bb0443d3e9",
+    "reason": "Old strict pack necessarily refuses retained 0555 files whose pinned NAR inventory has non-executable nodes. The new explicit reconstruction boundary restores authenticated modes only in private copies."
+  },
+  "source_artifact": {
+    "path": "docs/agent-notes/2026-10-06-hm-canonical-reconstruction.UNAPPLIED.patch",
+    "sha256": "5cf9e7508504cfbca31528586575522835c758973a93a7c7bfa6ddb505f4fa49",
+    "root_reported_state": "applied before a8ab modeled gate",
+    "review_state": "Independent bundle and native-selection source reviews cleared final publication, collision and interruption amendments."
+  },
+  "modeled_gate": {
+    "epoch": "a8abf23e-96a6-4a76-bf08-a857247ad309",
+    "receipt_path": "/home/jess/.local/state/omux-execution-20261005/a8abf23e-96a6-4a76-bf08-a857247ad309/receipt.json",
+    "receipt_sha256": "e03245169ada69cacbddcbd6aaaed2b648584f5d56617e02a77899a072a072f8",
+    "receipt_bytes": 14457,
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "targets": [
+      "//tools:home_manager_bundle_test",
+      "//:native_owner_removal_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "test_evidence": {
+      "bytes": 263819,
+      "files": 11,
+      "manifest": "test-evidence.json",
+      "sha256": "109a62a382b5d2a15d486c501cdabaa0ee7524ef348fcbb7217124d0f89be421",
+      "state": "preserved"
+    },
+    "graph_sha256": "b4a9d69cc004e1c2011a19c5f1c67862654b569d39c65ed3b84e963a4c90052e",
+    "cache_reuse_requested": true,
+    "cache_policy": 2,
+    "root_reported_target_result": "4/4 PASS; bundle 38 modeled methods PASS; native-owner removal PASS",
+    "claim_scope": "Modeled predicates only. This epoch ran no actual retained reconstruction producer or genuine HM consumer."
+  },
+  "applied_source_sha256": {
+    "nix/home_manager_bundle.py": "867df48d5bba3ec59a2245d6da16cf8711d1ea3346d4705fd37925f81578827b",
+    "nix/home_manager_bundle_test.py": "686c0f4ba1282374b8ee96e15bf5f87bd603a356bd55ab31373da76824bead29",
+    "tools/home_manager_retained_repository.bzl": "1e5d7ccccff3d3327edc697e31f24fa55f0e505d3f43c847d9fb425dc8e437e9",
+    "tools/BUILD.bazel": "013d74e7634bad1a62a942dce137019aa4fc3494abbe74d3965e11bedf3bd62b"
+  },
+  "base_selection": "Existing runtime_only_guard_argv, omit --reuse-owned-cache, add explicit --profile standard, and append exactly test //tools:home_manager_retained_reconstruction_producer. No other target or operator selector.",
+  "producer_argv": [
+    "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12/bin/python3",
+    "/srv/fast-local/jess/git/oauth-mux/tools/execution_guard.py",
+    "--manager",
+    "system",
+    "--become-file",
+    "/home/jess/.config/sops-nix/secrets/become/password",
+    "--python",
+    "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12/bin/python3",
+    "--systemd-run",
+    "/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemd-run",
+    "--systemctl",
+    "/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemctl",
+    "--bazel",
+    "/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel",
+    "--closure",
+    "/nix/store/12waya019j1aiimr0j91lpdfk145xi9i-omux-bazel-closure",
+    "--bootstrap-closure",
+    "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
+    "--zig-sdk",
+    "/nix/store/vv1k6176b445ln4dphbx1k29wagrin3z-zig-sdk-0.17.0",
+    "--java-home",
+    "/nix/store/siln89j8b6k5wdzw4asl69bma0k96nns-openjdk-headless-21.0.10+7",
+    "--repository-cache",
+    "/srv/fast-local/jess/state/codex/omux-bazel9-owner-coordinator-20261004/cache/repos/v1",
+    "--source-commit",
+    "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+    "--source-dirty",
+    "true",
+    "--state-dir",
+    "/home/jess/.local/state/omux-execution-20261005",
+    "--nixpkgs-source",
+    "/nix/store/75bkaivfbwq3x8cs7155hag7hs1chjcx-source",
+    "--profile",
+    "standard",
+    "--",
+    "test",
+    "//tools:home_manager_retained_reconstruction_producer"
+  ],
+  "producer_operation": {
+    "operation": "reconstruct",
+    "argv": [
+      "reconstruct",
+      "--layout",
+      "$(location @omux_retained_hm//:layout.json)",
+      "--lock",
+      "$(location @omux_lab_home_manager_inputs//:lab-lock.json)"
+    ],
+    "declared_input_scope": "Same exact retained regular aliases, authenticated inert directory/link inventory, fixed artifact manifest/payload aliases, Lab lock and locked Python/runtime closure. Original roots appear only in fixed local repository declarations; no original root argument or producer dependency.",
+    "transport_representation": "bazel-retained-readonly-0555-v1",
+    "transport_mode_admission": "Every retained declared regular input except generated layout must be exact readonly 0555, UID root/current user, nlink 1, protected physical ancestors and stable FD/named/alias witness, with complete initial/final byte commitments. The action must refuse another mode.",
+    "canonical_proof": "Materialize authenticated 0444/0555 modes and inert links in an owned private tree. Complete actual node/fact scans surround unchanged strict physical executable-bit/NAR proof. Rehash original declared bytes/custody/lock after canonical cleanup. No present physical NAR claim for the original retained tree.",
+    "publication": "Canonical tree and private staging lie under the unique output root. Final receipt appears only after canonical cleanup. All three promotions use loaded locked-process Linux libc renameat2(RENAME_NOREPLACE); candidate names registered before syscalls. Exact inode rollback independently covers both files, including partial receipt, interrupts and close faults, within the original end deadline. Replaced/unverifiable names are quarantined with a closed cleanup refusal."
+  },
+  "caps": {
+    "memory_bytes": 4294967296,
+    "swap_bytes": 0,
+    "tasks": 512,
+    "cpu_count": 2,
+    "guard_runtime_seconds": 1200,
+    "guard_stop_seconds": 10,
+    "bazel_long_seconds": 900,
+    "bundle_action_total_seconds": 900,
+    "bundle_action_cleanup_reserve_seconds": 60,
+    "private_bundle_disk_budget_bytes": 8589934592,
+    "sampled_free_floor_bytes": 2147483648,
+    "private_network": true,
+    "automatic_retry_or_budget_extension": false
+  },
+  "limit_comparison": {
+    "same_as_old_recipe": [
+      "memory/swap/tasks/CPU",
+      "standard PrivateNetwork and existing /run/daemon/become masks",
+      "guard 1200 seconds and stop 10 seconds",
+      "Bazel long/action 900 seconds",
+      "action work 840 seconds plus cleanup reserve 60 seconds",
+      "private sampled free floor 2 GiB",
+      "no retry or budget extension"
+    ],
+    "new_scope_without_larger_limit": "The existing 8 GiB bound now jointly charges conservative logical peak and actual allocated inode block high-water marks across canonical trees, private metadata and compact output. No separate 8 GiB allowance per copy.",
+    "timing_scope": "Repository declaration, analysis and output collection also consume the guard's existing runtime. A fresh action has no guaranteed 900 seconds remaining in the outer guard. Large retained declaration/copy/fsync/rehash cost remains unmeasured for this actual target."
+  },
+  "cache_and_output_decision": {
+    "reuse_owned_cache": false,
+    "warm_adoption": false,
+    "attempts": 1,
+    "profile": "standard",
+    "execution": "Root serialized only after the current recorded payload is terminal.",
+    "output_base": "Fresh actual epoch output_base from that exact guard receipt; never a8ab cache-v2 output base, 350fe output base, or a latest-directory guess.",
+    "compact_relative_root": "execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/home_manager_retained_reconstruction_producer/test.outputs",
+    "expected_files": [
+      "bundle",
+      "receipt.json"
+    ]
+  },
+  "fixed_retained_selection": {
+    "pair_root": "/home/jess/.local/state/omux-home-manager-prefetch-20261006/e3b9e0bc-f473-49f5-be46-4f23e2776a1f/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/home_manager_acquisition_producer/test.outputs/home-manager-pair",
+    "pair_receipt_sha256": "9e9c04f6768b4ba7ac4023f54c5ae98c5a585da1642a3fca9c0c153d8a1c30eb",
+    "pair_inventory_sha256": "30b2378513bd73a09ffccf3874190ea0e086c0dc3a5cf1668a761e593b5ddade",
+    "pair_lock_sha256": "050163ea4edc9a50401bb320ac12626cc2aae68318f98fe6030fe1402b10437d",
+    "artifact_root": "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/home_manager_artifact_producer/test.outputs/home-manager-artifact/artifact",
+    "artifact_receipt_sha256": "aa9c9f0c5808da597294b04d59f1e7111567145e1c3f2790fff07c5e670e2ae8",
+    "artifact_archive_sha256": "937936f3011ac4177bfa38ef808223103d6b72768a1d922e1c8982c7981fcc1c",
+    "source_wrapper": {
+      "epoch": "e3b9e0bc-f473-49f5-be46-4f23e2776a1f",
+      "controller_exit": 3,
+      "workload_exit": 3,
+      "descendants_empty": true,
+      "producer_seconds": 617.128,
+      "controller_receipt_sha256": "3356a5660fd73954d33253ec929957c4c47212036280de6c2a4de2ce6eb566f0"
+    }
+  },
+  "historical_failed_attempt": {
+    "epoch": "350fe645-5eb7-4c29-8651-459489363fbb",
+    "controller_receipt_sha256": "db1db488202909746482d8c042e1096327a7f0d08702881eae1da1f72f3df077",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "root_reported_result": "Old strict pack refused in 11.1 seconds with closed bounded-input-or-execution-refused; no bundle/receipt. Exact first private exception was not read or identified.",
+    "source_diagnosis": "Sampled actual default.nix/flake.nix and artifact manifest/checksum files were 0555 while authenticated canonical execution bits were false. This is a concrete strict-pack incompatibility; it does not establish the exact first exception or identify the mode-change actor."
+  },
+  "ordered_steps": [
+    "Retain the applied source/graph and a8ab modeled evidence. Before dispatch, root rechecks the exact frozen graph, fixed selected metadata digests, original HOME coordination lock and exclusive retained-input custody; no original file rewrite.",
+    "Execute exactly producer_argv once in a fresh standard guarded epoch. No acquisition, refetch, artifact rebuild, network/provider action, warm adoption or automatic retry is part of this recipe.",
+    "Accept only the exact producer's terminal controller/workload 0/0, descendants_empty true, controller_failure/rejection null, empty cleanup, preserved passing target evidence, privateTreesRemoved true, reconstructedCanonicalNarVerified true, retainedPhysicalNarVerified false and exact inputRepresentation. A refusal/failure ends this finite attempt and retains its evidence.",
+    "Read output_base only from that exact successful raw controller receipt. Select compact_relative_root under that base. Require exactly bundle and receipt.json, physical protected ancestors, readonly regular current-user files, nlink1 and stable inode/device/size/mtime/ctime. Receipt <=65536 bytes; bundle <=8GiB.",
+    "Independently hash the complete two output files under retained custody, recheck after reading, and freeze durable selection. Producer-reported hashes alone are not independent selection authority. Check exact compact receipt schema/kind, bundleBytes/SHA, fixed pair/artifact receipt hashes, activation unproved, evaluationExecuted false and exact historical e3 failed-wrapper sourceWrapper.",
+    "Only after that successful independent freeze, root reviews and applies the three existing BUNDLE_ROOT/BUNDLE_SHA256/BUNDLE_RECEIPT_SHA256 constants. Consumer graph remains separate; no producer edge, retained root argument or refetch fallback.",
+    "Run the separate genuine consumer once under the same existing standard guard by replacing only the recipe's last target with //tools:home_manager_acquired_evaluation. Its existing raw Nix/locked closure, lock and five Nix module inputs remain declared. Freeze its changed graph and preserve before/after NAR/custody and owned cleanup gates.",
+    "Keep original e3 3/3 failure and 350fe 3/3 failure distinct. Success establishes reconstructed byte/NAR custody and, only if consumer passes, its six module predicates. Activation, generated activation-byte realization, native continuity, current/release source binding and compiled-source binding remain unproved."
+  ],
+  "consumer_followup": {
+    "target": "//tools:home_manager_acquired_evaluation",
+    "argv_rule": "Exactly producer_argv with only final target replaced, after independent compact selection and reviewed three-constant graph update.",
+    "modules": [
+      "home-manager-qualified-evaluation.nix",
+      "consume-bazel-artifact.nix",
+      "home-manager.nix",
+      "ownership-witness.nix",
+      "service-witness.nix"
+    ],
+    "native_nix_pin": "/nix/store/fphbr6vvc2fdmx02nkagnbx0nv04f709-nix-2.34.6/bin/nix",
+    "native_nix_work_max_seconds": 60,
+    "native_nix_cleanup_reserve_seconds": 5,
+    "actual_status": "unrun"
+  },
+  "claim_scope": "Source/recipe decision plus separately identified a8ab modeled gate. Author ran no build/test/executable/SSH/provider or actual producer/consumer. No installed-browser/native-continuity/release claim follows.",
+  "selected_at": "2026-10-06T23:33:00Z",
+  "root_args_verified_against_saved_guard": true
+}

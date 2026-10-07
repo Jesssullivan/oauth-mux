@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Omux
+Comment=Manage accounts and routes in the Omux user service
+Exec=omux-control
+Icon=network-server
+Terminal=false
+Categories=Utility;Network;

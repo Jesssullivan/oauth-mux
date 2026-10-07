@@ -1,0 +1,4 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //tools:cached_site_byte_verification
+-----------------------------------------------------------------------------
+{"contentRehashed": true, "descriptorSha256": "bcaec0995561bb584d54e8319700ec0dae83b3434f874eaa312c7c74383411d3", "executionAuthority": false, "flakeMappingVerified": false, "inventorySha256": "1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931", "linkTargetsFollowed": false, "passed": true, "realized": false, "schemaVersion": 1, "verifiedNarBytes": 2081764648, "verifiedPaths": 401, "verifiedRegularInputs": 29765}

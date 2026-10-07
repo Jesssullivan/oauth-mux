@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "kind": "fixed_existing_yoga_public_host_pin_authority",
+  "authority": "User-ratified provider-free Oct6 continuation; parent-approved existing Lab/Neo public trust input join; AGENTS.md/R-N13",
+  "declared_existing_public_input": "/home/jess/.claude/agent-notes-rescue/2026-10-04/lab-yoga-known-hosts",
+  "physical_existing_public_input": "/srv/fast-local/jess/state/claude/agent-notes-rescue/2026-10-04/lab-yoga-known-hosts",
+  "sha256": "e2931feebc4e623a9e0946dab4989729c48793ca90f60ed7922df026c26b77d8",
+  "byte_count": 97,
+  "observed_custody": {
+    "uid": 1000,
+    "gid": 1000,
+    "mode": "0600",
+    "links": 1,
+    "type": "regular",
+    "owner_writable": true
+  },
+  "provenance": [
+    {
+      "path": "/srv/fast-local/jess/git/lab-neo-sting-resume-receipt-20261004/docs/agent-notes/2026-10-04-TIN-3692-neo-switch-state-and-hook-refusal.md",
+      "line": 48,
+      "claim": "Existing Neo known_hosts IPline14/FQDNline26 identical ED25519 public pin, not keyscan; relayed to Yoga inspection owner"
+    },
+    {
+      "path": "/srv/fast-local/jess/git/lab-neo-sting-resume-receipt-20261004/docs/agent-notes/2026-10-04-TIN-3692-lab-yoga-state-and-switch-route.md",
+      "line": 21,
+      "claim": "Persisted exact public pin after initial missing-key refusal; used StrictHostKeyChecking=yes in actual Oct4 read-only SSH"
+    }
+  ],
+  "current_refusal": "Root reports ec9db9f6 exit2/workload2, emptygroup/source-aftertrue; authenticated-os-qualification SSH255, host_key_rejected true, otherclosedflags false. No canonical qualification/inspect/verify/toolbar.",
+  "default_trust_input_observation": "Current unmasked owned0600 known_hosts has17rows and no Yoga/IP, hashed, CA, wildcard or revoked rows; system global known_hosts absent. Host-key rejection does not itself prove a changed remote identity.",
+  "implementation": "Fixed Bazel repository declaration watches existing public source, allthree mode targets declare it. Consumer holds canonical ancestor/leaf FDs plus logicalalias/fullleaf witnesses and digest, rechecking before and after every owned SSH call including failure. Historical HOME alias remains; its current HM .claude link resolves to the fixed physical source.",
+  "strict_options": [
+    "UserKnownHostsFile=<exact-declared-input>",
+    "GlobalKnownHostsFile=/dev/null",
+    "KnownHostsCommand=none",
+    "VerifyHostKeyDNS=no",
+    "UpdateHostKeys=no",
+    "HostKeyAlgorithms=ssh-ed25519",
+    "HostKeyAlias=100.104.152.110",
+    "StrictHostKeyChecking=yes"
+  ],
+  "source_pin_role": "Static SHA/size commit public authority; sourcegraph covers declarations and consumer sources. External bytes are independently watched/verified, not automatically proved by graph digest.",
+  "dispatch": "Same root-controlled yoga-controller-delivery guard argv and exact run labels. Existing state initialization is omitted. New sourcegraph requires fresh qualify epoch before inspect/verify.",
+  "unchanged": {
+    "d631_receipt_sha256": "f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a",
+    "controller_inventory_sha256": "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+    "controller_paths": 472,
+    "controller_nar_bytes": 2829689512,
+    "memory_bytes": 4294967296,
+    "swap_bytes": 0,
+    "tasks": 512,
+    "cpu_count": 2,
+    "original_overall_seconds": 1200
+  },
+  "remaining": "Current peer must actually authenticate against this existing pin. No present transport, OS qualification, remote Nix, destination registration/NAR, copy/containment, offline graph or human toolbar claim follows from Oct4 provenance.",
+  "execution": "Proposal-only unapplied amendment. This author performed ordinary read-only file inspection, pure-JS publicdata SHA arithmetic and patch generation only; no SSH/keyscan/build/check/project executable or tracker mutation."
+}

@@ -1,46 +1,767 @@
-"""
-Bounded Bazel surface for TIN-2105.
-
-These labels are candidates for an `oauth-mux-zig-build-test` REAPI target
-class. They deliberately use only candidate tags; GloriousFlywheel eligibility
-must wait for a forced proof artifact with nonzero remote processes, worker
-image provenance, executor/cache attachment, and no local fallback.
-"""
+load("@omux_nix//:tool_paths.bzl", "NIX_BASH", "NIX_COREUTILS_BIN", "NIX_ZIG_LINKOPTS")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("//tools:rules.bzl", "python_test", "source_archive", "stdout_capture")
+load("//tools:runtime_zig.bzl", "zig_binary", "zig_test")
+load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
 
 package(default_visibility = ["//visibility:public"])
 
+# Current declared code/build inputs; excludes docs, checkpoints and artifacts.
 filegroup(
-    name = "zig_inputs",
-    srcs = [
-        "build.zig",
-        "build.zig.zon",
-    ] + glob(["src/**/*.zig"]),
-)
-
-genrule(
-    name = "zig_build",
-    srcs = [
-        ":zig_inputs",
-        "scripts/bazel/zig-build-action.sh",
-    ],
-    outs = ["zig_build.marker"],
-    cmd = "$(location scripts/bazel/zig-build-action.sh) build $@",
-    tags = [
-        "gloriousflywheel-rbe-candidate",
-        "target-class=oauth-mux-zig-build-test",
+    name = "selected_runtime_source_inputs",
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "flake.lock", ".bazelrc", ".bazelversion", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "nix/**/*.nix", "nix/*.py"], allow_empty = True) + [
+        "//tools:source_receipt_inputs", "//delivery:source_receipt_inputs", "//extensions:source_receipt_inputs",
+        "//clients/linux:public_sources", "//clients/macos:public_sources",
+        "//integrations/codex-upstream:source_receipt_inputs",
+        "//integrations/codex-owner-runtime:source_receipt_inputs",
+        "//integrations/codex-adapter-delivery:source_receipt_inputs",
     ],
 )
 
-genrule(
-    name = "zig_build_test",
+exports_files([
+    "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
+    "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
+    "nix/home-manager-qualified-evaluation.nix", "nix/consume-bazel-artifact.nix",
+    "nix/home-manager.nix", "nix/ownership-witness.nix", "nix/service-witness.nix",
+    "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
+    "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
+    "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py",
+    "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
+    "nix/home_manager_acquired_evaluation.py", "nix/home_manager_acquired_evaluation_test.py",
+    "nix/home_manager_bundle.py", "nix/home_manager_bundle_test.py",
+    "nix/home_manager_evaluation_runner.py", "nix/home_manager_evaluation_runner_test.py",
+    "nix/home_manager_io.py", "nix/home_manager_source_probe.py", "nix/home_manager_source_probe_test.py",
+    "nix/evaluation_runner.py",
+])
+
+zig_test(
+    name = "browser_attempt_test",
+    main = "src/browser_attempt_tests.zig",
+    srcs = ["src/browser_attempt.zig", "src/reliability.zig"],
+)
+
+# Explicit public build inputs only. Host proofs never archive the checkout,
+# Git metadata, operator state, captured browser data or credential fixtures.
+source_archive(
+    name = "public_source_archive",
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + [
+        "clients/README.md", "nix/README.md", "nix/evaluation_runner.py", "nix/evaluation_runner_test.py",
+        "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
+        "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
+        "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py",
+        "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
+        "nix/home_manager_acquired_evaluation.py", "nix/home_manager_acquired_evaluation_test.py",
+        "nix/home_manager_bundle.py", "nix/home_manager_bundle_test.py",
+        "nix/home_manager_evaluation_runner.py", "nix/home_manager_evaluation_runner_test.py",
+        "nix/home_manager_io.py", "nix/home_manager_source_probe.py", "nix/home_manager_source_probe_test.py",
+        "//tools:public_sources", "//delivery:public_sources", "//extensions:public_sources",
+        "//clients/linux:public_sources", "//clients/macos:public_sources",
+        "//integrations/codex-upstream:public_sources",
+        "//integrations/codex-owner-candidate:public_sources",
+        "//integrations/codex-owner-runtime:public_sources",
+        "//integrations/codex-native-recovery-candidate:public_sources",
+        "//integrations/codex-native-recovery-runtime:public_sources",
+        "//integrations/codex-adapter-delivery:public_sources",
+    ],
+)
+
+python_test(
+    name = "docs_guard_test",
+    main = "//tools:docs_check_test.py",
+    srcs = ["//tools:docs_check.py"],
+)
+
+python_test(
+    name = "nix_evaluation_runner_test",
+    main = "nix/evaluation_runner_test.py",
+    srcs = ["nix/evaluation_runner.py"],
+)
+
+# Explicit coordinator input selection is required. The manual tag prevents a
+# broad suite from resolving an unspecified operator source; this gate is run
+# explicitly under the same guard after the source metadata probe.
+python_test(
+    name = "nix_module_evaluation_test",
+    main = "nix/evaluation_runner.py",
+    data = [
+        "nix/evaluation-tests.nix",
+        "nix/home-manager.nix",
+        "nix/ownership-witness.nix",
+        "nix/service-witness.nix",
+        "flake.lock",
+        "@omux_eval_host//:nix",
+        "@omux_eval_host//:all_tools",
+        "@omux_eval_source//:source-input.json",
+        "@omux_eval_source//:source_files",
+    ],
+    args = [
+        "--nix", "$(location @omux_eval_host//:nix)",
+        "--source-input", "$(location @omux_eval_source//:source-input.json)",
+        "--lock", "$(location :flake.lock)",
+        "--expression", "$(location :nix/evaluation-tests.nix)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "moderate",
+)
+
+python_test(
+    name = "docs_check",
+    main = "//tools:docs_check.py",
+    data = glob([
+        "docs/**/*.md",
+        "docs/authority.json",
+        "docs/tracker-updates/*.json",
+        ".goal/*.json",
+        "src/**/*.c",
+        "src/**/*.h",
+        "nix/**/*.nix",
+        "nix/**/*.md",
+    ]) + [
+        "AGENTS.md", "README.md", "CHANGELOG.md", "BUILD.bazel", "flake.nix", "flake.lock",
+        "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
+        "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
+        ":sources", "clients/README.md", "//delivery:public_sources",
+        "//extensions:README.md", "//integrations/codex-upstream:README.md",
+        "//integrations/codex-upstream:manifest.json",
+        "//integrations/codex-upstream:validation.json",
+        "//integrations/codex-owner-candidate:public_sources",
+        "//integrations/codex-owner-runtime:public_sources",
+        "//integrations/codex-native-recovery-candidate:public_sources",
+        "//integrations/codex-native-recovery-runtime:public_sources",
+        "//tools:public_sources",
+        "//integrations/codex-adapter-delivery:public_sources",
+    ],
+)
+
+ZIG_NATIVE_LINKOPTS = ["-lc"] + NIX_ZIG_LINKOPTS
+ZIG_RUNTIME_DATA = ["@omux_nix//:runtime_libraries"]
+ZIG_SOURCES = glob(["src/**/*.zig"])
+
+zig_test(
+    name = "toolchain_test",
+    main = "//tools:toolchain_test.zig",
+)
+
+zig_test(
+    name = "entropy_test",
+    main = "//tools:entropy_test.zig",
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+filegroup(
+    name = "sources",
+    srcs = ZIG_SOURCES,
+)
+
+zig_test(
+    name = "domain_test",
+    main = "src/domain.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(name = "snapshot_admission_test", main = "src/snapshot_admission.zig")
+
+zig_test(
+    name = "native_owner_test",
+    main = "src/native_owner_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_owner_request_test",
+    main = "src/native_owner_request_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_owner_setup_test",
+    main = "src/native_owner_setup_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_owner_probe_test",
+    main = "src/native_owner_probe_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_owner_removal_test",
+    main = "src/native_owner_removal_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(name = "request_authority_test", main = "src/request_authority.zig", srcs = ZIG_SOURCES, deps = [":native_api"], linkopts = ZIG_NATIVE_LINKOPTS, data = ZIG_RUNTIME_DATA)
+MUTATION_WITNESS_SOURCES = ["src/reliability_lifecycle_witness.zig", "src/reliability_lifecycle_native_removal_witness.zig", "src/snapshot_admission.zig"]
+DOMAIN_MODEL_SOURCES = ["src/domain.zig", "src/native_owner.zig", "src/platform/peer.zig", "src/paths.zig", "src/instance.zig"]
+zig_test(name = "mutation_authority_test", main = "src/mutation_authority.zig", srcs = MUTATION_WITNESS_SOURCES)
+zig_test(
+    name = "reliability_lifecycle_witness_test",
+    main = "src/reliability_lifecycle_witness_tests.zig",
+    srcs = ["src/mutation_authority.zig"] + MUTATION_WITNESS_SOURCES,
+)
+zig_test(
+    name = "reliability_lifecycle_source_actor_test",
+    main = "src/reliability_lifecycle_source_actor_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "reliability_lifecycle_native_removal_test",
+    main = "src/reliability_lifecycle_native_removal_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    # Exercise the daemon's mode without extending native or test deadlines.
+    zigopts = ["-O", "ReleaseSafe"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "terminal_removal_test",
+    main = "src/terminal_removal_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(name = "reliability_test", main = "src/reliability.zig")
+zig_test(name = "reliability_lifecycle_test", main = "src/reliability_lifecycle_tests.zig", srcs = ["src/reliability.zig"])
+zig_test(name = "onboarding_test", main = "src/onboarding_tests.zig", srcs = ["src/onboarding.zig"])
+zig_test(name = "setup_verification_test", main = "src/setup_verification.zig", srcs = ["src/onboarding.zig", "src/mutation_authority.zig", "src/reliability.zig"] + MUTATION_WITNESS_SOURCES)
+zig_test(
+    name = "application_readiness_test",
+    main = "src/application_readiness_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "application_readiness_actor_test",
+    main = "src/application_readiness_actor_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "runtime_selection_producer_test",
+    main = "src/runtime_selection_producer_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "measured_runtime_actor_test",
+    main = "src/measured_runtime_actor_tests.zig",
+    zigopts = ["-O", "ReleaseSafe"],
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "reliability_adapter_setup_test",
+    main = "src/reliability_adapter_setup_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "reliability_readiness_test",
+    main = "src/reliability_readiness_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(name = "setup_evidence_test", main = "src/setup_evidence_tests.zig", srcs = ["src/setup_evidence.zig", "src/onboarding.zig"])
+
+zig_test(
+    name = "self_image_test",
+    main = "src/self_image.zig",
+    srcs = ["src/platform/file_metadata.zig"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "service_observation_test",
+    main = "src/service_observation_tests.zig",
+    srcs = ["src/service_observation.zig", "src/setup_evidence.zig", "src/onboarding.zig", "src/paths.zig", "src/instance.zig", "src/platform/file_metadata.zig"],
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "setup_collector_test",
+    main = "src/setup_collector_tests.zig",
+    srcs = ["src/setup_collector.zig", "src/self_image.zig", "src/setup_evidence.zig", "src/onboarding.zig", "src/paths.zig", "src/instance.zig", "src/platform/file_metadata.zig"],
+    linkopts = ["-lc"],
+)
+zig_test(
+    name = "reliability_commit_test",
+    main = "src/reliability_commit.zig",
+    srcs = ["src/reliability.zig", "src/mutation_authority.zig", "src/platform/file_metadata.zig"] + MUTATION_WITNESS_SOURCES + DOMAIN_MODEL_SOURCES,
+    linkopts = ["-lc"],
+)
+zig_test(
+    name = "safety_adversarial_test",
+    main = "src/safety_adversarial_test.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+zig_test(
+    name = "recovery_test",
+    main = "src/recovery.zig",
+    srcs = ["src/envelope.zig", "src/platform/file_metadata.zig"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "browser_bridge_test",
+    main = "src/browser_bridge.zig",
+)
+
+zig_test(
+    name = "catalog_test",
+    main = "src/catalog.zig",
+)
+
+zig_test(
+    name = "envelope_test",
+    main = "src/envelope.zig",
+)
+
+zig_test(
+    name = "browser_grant_test",
+    main = "src/browser_grant.zig",
+)
+
+cc_library(
+    name = "native_api",
+    hdrs = [
+        "//tools:native.h",
+        "src/platform/vault_bridge.h",
+        "src/platform/native_peer.h",
+        "src/platform/service_observation.h",
+    ],
+    srcs = ["src/platform/vault_bridge.c", "src/platform/native_peer.c", "src/platform/service_observation.c"],
+    deps = [
+        "@omux_nix//:sqlite",
+        "@omux_nix//:curl",
+    ] + select({
+        "@platforms//os:linux": ["@omux_nix//:libsecret"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "@platforms//os:macos": [
+            "-framework",
+            "Security",
+            "-framework",
+            "CoreFoundation",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+cc_test(
+    name = "service_observation_bridge_test",
+    srcs = ["src/platform/service_observation_test.c"],
+    deps = [":native_api"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+zig_test(
+    name = "storage_test",
+    main = "src/storage.zig",
+    srcs = ["src/envelope.zig", "src/recovery.zig", "src/platform/file_metadata.zig", "src/reliability.zig", "src/reliability_commit.zig", "src/mutation_authority.zig"] + MUTATION_WITNESS_SOURCES + DOMAIN_MODEL_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_owner_storage_test",
+    main = "src/native_owner_storage_tests.zig",
+    srcs = ["src/storage.zig", "src/envelope.zig", "src/recovery.zig", "src/platform/file_metadata.zig", "src/reliability.zig", "src/reliability_commit.zig", "src/mutation_authority.zig"] + MUTATION_WITNESS_SOURCES + DOMAIN_MODEL_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_peer_test",
+    main = "src/native_peer_tests.zig",
+    srcs = ["src/platform/peer.zig"],
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+cc_test(
+    name = "native_peer_bridge_test",
+    srcs = ["src/platform/native_peer_test.c"],
+    deps = [":native_api"],
+)
+
+zig_test(
+    name = "vault_test",
+    main = "src/vault.zig",
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "transport_test",
+    main = "src/transport.zig",
+    srcs = ["src/browser_grant.zig"],
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+cc_test(
+    name = "vault_bridge_test",
+    srcs = ["src/platform/vault_bridge_test.c"],
+    deps = [":native_api"],
+)
+
+cc_binary(
+    name = "vault_realproof_driver",
+    srcs = ["src/platform/vault_realproof.c", "src/platform/vault_bridge.c", "src/platform/vault_bridge.h"],
+    local_defines = ["OMUX_VAULT_REALPROOF"],
+    deps = select({
+        "@platforms//os:linux": ["@omux_nix//:libsecret"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "@platforms//os:macos": ["-framework", "Security", "-framework", "CoreFoundation"],
+        "//conditions:default": [],
+    }),
+)
+
+python_test(
+    name = "vault_realproof",
+    main = "//tools:vault_proof_runner.py",
+    data = [":vault_realproof_driver", "src/platform/vault_realproof.sh", "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["--bash", NIX_BASH, "--coreutils", NIX_COREUTILS_BIN or "", "$(location src/platform/vault_realproof.sh)", "$(location :vault_realproof_driver)", "$(location @omux_nix//:dbus_run_session)", "$(location @omux_nix//:dbus_daemon)", "$(location @omux_nix//:gnome_keyring_daemon)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "vault_realproof_macos",
+    main = "//tools:vault_proof_runner.py",
+    data = [":vault_realproof_driver", "src/platform/vault_realproof_macos.sh"],
+    args = ["--bash", NIX_BASH, "--coreutils", NIX_COREUTILS_BIN or "", "$(location src/platform/vault_realproof_macos.sh)", "$(location :vault_realproof_driver)"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+zig_binary(
+    name = "omux",
+    main = "src/main.zig",
+    srcs = ZIG_SOURCES,
+    # Runtime collection deadlines must include real hashing cost; keep safety
+    # checks enabled while avoiding Debug scalar hashing in installed binaries.
+    # Unit targets retain the toolchain's Debug mode.
+    zigopts = ["-O", "ReleaseSafe"],
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_binary(
+    name = "omuxd",
+    main = "src/main.zig",
+    srcs = ZIG_SOURCES,
+    zigopts = ["-O", "ReleaseSafe"],
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "paths_test",
+    main = "src/paths.zig",
+    srcs = ["src/platform/file_metadata.zig", "src/instance.zig"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "instance_test",
+    main = "src/instance_tests.zig",
+    srcs = ["src/instance.zig", "src/paths.zig", "src/platform/file_metadata.zig"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "reference_test",
+    main = "src/reference.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "daemon_test",
+    main = "src/daemon.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "codex_test",
+    main = "src/integrations/codex.zig",
+)
+
+zig_test(
+    name = "git_test",
+    main = "src/integrations/git.zig",
+)
+
+zig_test(
+    name = "claude_test",
+    main = "src/integrations/claude.zig",
+)
+
+stdout_capture(
+    name = "reference_bundle",
+    executable = ":omux",
+    args = ["reference"],
+    out = "reference-bundle.json",
+)
+
+alias(
+    name = "reference",
+    actual = ":reference_bundle",
+)
+
+zig_format(
+    name = "format",
+    srcs = ZIG_SOURCES,
+)
+
+zig_format_test(
+    name = "format_test",
+    srcs = ZIG_SOURCES + ["//tools:toolchain_test.zig"],
+)
+
+zig_test(
+    name = "engine_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "browser_attempt_transaction_test",
+    main = "src/browser_attempt_transaction_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "unit_tests",
+    main = "src/tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_probe_test",
+    main = "src/native_probe_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "native_inventory_test",
+    main = "src/native_inventory_test.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "engine_acceptance_test",
+    main = "src/engine_acceptance.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "snapshot_adapter_test",
+    # Current exact-sealing saturation proof measured 299.2 seconds.
+    timeout = "long",
+    main = "src/snapshot_adapter_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "snapshot_native_test",
+    main = "src/snapshot_native_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "snapshot_import_test",
+    # Exact snapshot sealing made the measured target take 294.5 seconds;
+    # permit concurrent sandbox contention without changing runtime deadlines.
+    timeout = "long",
+    main = "src/snapshot_import_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "snapshot_forget_test",
+    main = "src/snapshot_forget_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "snapshot_restart_test",
+    main = "src/snapshot_restart_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "snapshot_migration_test",
+    main = "src/snapshot_migration_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "snapshot_repair_test",
+    main = "src/snapshot_repair_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "discovery_test",
+    main = "src/discovery.zig",
     srcs = [
-        ":zig_inputs",
-        "scripts/bazel/zig-build-action.sh",
+        "src/domain.zig",
+        "src/snapshot_admission.zig",
+        "src/paths.zig",
+        "src/instance.zig",
+        "src/platform/file_metadata.zig",
+        "src/native_owner.zig",
+        "src/platform/peer.zig",
     ],
-    outs = ["zig_build_test.marker"],
-    cmd = "$(location scripts/bazel/zig-build-action.sh) test $@",
-    tags = [
-        "gloriousflywheel-rbe-candidate",
-        "target-class=oauth-mux-zig-build-test",
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "setup_test",
+    main = "src/setup_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "file_metadata_test",
+    main = "src/platform/file_metadata.zig",
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "observer_test",
+    main = "src/observer.zig",
+    srcs = [
+        "src/domain.zig",
+        "src/snapshot_admission.zig",
+        "src/transport.zig",
+        "src/browser_grant.zig",
+        "src/native_owner.zig",
+        "src/platform/peer.zig",
+        "src/paths.zig",
+        "src/instance.zig",
+        "src/platform/file_metadata.zig",
     ],
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_binary(
+    name = "tls_probe",
+    main = "src/tls_probe.zig",
+    srcs = [
+        "src/transport.zig",
+        "src/browser_grant.zig",
+    ],
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
 )

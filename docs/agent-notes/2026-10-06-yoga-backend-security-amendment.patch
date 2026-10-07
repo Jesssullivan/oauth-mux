@@ -1,0 +1,451 @@
+# UNAPPLIED fourth artifact, after base, executable supplement, guard integration.
+# Root owns every execution. These edits have no build/test/SSH/live proof.
+diff --git a/tools/yoga_controller_delivery.py b/tools/yoga_controller_delivery.py
+--- a/tools/yoga_controller_delivery.py
++++ b/tools/yoga_controller_delivery.py
+@@ -9,1 +9,2 @@
+ import os
++import sys
+@@ -50,69 +51,106 @@
+ def owned_io(command, env, deadline, bound):
+     fence(deadline)
+     buffers = {True: bytearray(), False: bytearray()}
+     cleanup_errors = []
+     selector = None
+-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+-                            start_new_session=True, env=env)
++    proc = None
++    cancelled = False
++    previous = []
++    def cancellation(signum, frame):
++        # Set a finite flag, including during Popen/setup; cleanup never runs
++        # asynchronously against a partially initialized child or selector.
++        nonlocal cancelled
++        cancelled = True
++    def check(selected_deadline):
++        require(not cancelled, 'owned-child-cancelled')
++        fence(selected_deadline)
+     try:
++        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
++            previous.append((signum, signal.signal(signum, cancellation)))
++        check(deadline)
++        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++                                start_new_session=True, env=env)
+         # No poll/wait is permitted here: retain zombie leader as PGID anchor.
+         require(os.getpgid(proc.pid) == proc.pid, 'child-group-anchor')
++        check(deadline)
+         selector = selectors.DefaultSelector()
+         selector.register(proc.stdout, selectors.EVENT_READ, True)
+         selector.register(proc.stderr, selectors.EVENT_READ, False)
+         while selector.get_map() or os.waitid(os.P_PID, proc.pid,
+                 os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+-            fence(deadline - 5)
++            check(deadline - 5)
+             for key, _ in selector.select(min(0.25, max(0, deadline - time.monotonic() - 5))):
+                 data = os.read(key.fileobj.fileno(), 4096)
+                 if not data:
+                     selector.unregister(key.fileobj)
+                     continue
+                 buffers[key.data].extend(data)
+                 require(len(buffers[key.data]) <= (bound if key.data else 65536),
+                         'bounded-operation-output')
+     finally:
++        primary = sys.exc_info()[1]
+         # This child has not been reaped; its original group ID cannot be reused.
+-        try:
+-            require(os.getpgid(proc.pid) == proc.pid, 'child-group-anchor-lost')
+-            os.killpg(proc.pid, signal.SIGKILL)
+-        except ProcessLookupError:
+-            cleanup_errors.append('child-group-anchor-unavailable')
+-        except BaseException:
+-            cleanup_errors.append('child-group-cleanup-failed')
+-        try:
+-            proc.wait(timeout=max(0.001, deadline - time.monotonic()))
+-        except BaseException:
+-            cleanup_errors.append('child-reap-unproved')
+-        for resource in (selector, proc.stdout, proc.stderr):
++        if proc is not None:
++            try:
++                require(os.getpgid(proc.pid) == proc.pid, 'child-group-anchor-lost')
++                os.killpg(proc.pid, signal.SIGKILL)
++            except ProcessLookupError:
++                cleanup_errors.append('child-group-anchor-unavailable')
++            except BaseException:
++                cleanup_errors.append('child-group-cleanup-failed')
++            try:
++                remaining = deadline - time.monotonic()
++                require(remaining > 0, 'child-reap-deadline-exhausted')
++                proc.wait(timeout=min(5, remaining))
++            except BaseException:
++                cleanup_errors.append('child-reap-unproved')
++        resources = (selector,) + ((proc.stdout, proc.stderr) if proc is not None else ())
++        for resource in resources:
+             if resource is not None:
+                 try:
+                     resource.close()
+                 except BaseException:
+                     cleanup_errors.append('child-resource-release-failed')
+-        require(not cleanup_errors, ','.join(cleanup_errors))
+-    fence(deadline)
++        for signum, handler in reversed(previous):
++            try:
++                signal.signal(signum, handler)
++            except BaseException:
++                cleanup_errors.append('child-signal-restore-failed')
++        if cleanup_errors:
++            category = ','.join(sorted(set(cleanup_errors)))
++            if primary is not None:
++                primary.add_note('owned-child-cleanup:' + category)
++            else:
++                failure = GateError(category)
++                failure.cleanup_incomplete = True
++                raise failure
++    check(deadline)
+     return proc.returncode, bytes(buffers[True]), bytes(buffers[False])
+@@ -127,1 +128,3 @@
+                 and type(item.get('references')) is list
++                and all(type(reference) is str and qualification.STORE_ROOT.fullmatch(reference)
++                        for reference in item['references'])
+@@ -320,1 +359,1 @@
+-    except (ValueError, OSError, UnicodeError, KeyError) as error:
++    except (ValueError, OSError, UnicodeError, KeyError, TypeError, KeyboardInterrupt) as error:
+@@ -321,1 +360,2 @@
+         result['gate'] = str(error) if isinstance(error, GateError) else 'destination-input-or-operation-unavailable'
++        result['localCleanup'] = 'incomplete' if getattr(error, 'cleanup_incomplete', False) or getattr(error, '__notes__', ()) else 'completed-or-not-started'
+diff --git a/tools/yoga_executable_qualification.py b/tools/yoga_executable_qualification.py
+--- a/tools/yoga_executable_qualification.py
++++ b/tools/yoga_executable_qualification.py
+@@ -7,1 +7,2 @@
+ import stat
++import sys
+@@ -34,1 +35,15 @@
++def release(descriptors):
++    primary = sys.exc_info()[1]
++    failed = False
++    for descriptor in descriptors:
++        try:
++            os.close(descriptor)
++        except BaseException:
++            failed = True
++    if failed:
++        if primary is not None:
++            primary.add_note('executable-custody-release-incomplete')
++        else:
++            failure = ValueError('executable-custody-release-incomplete')
++            failure.add_note('executable-custody-release-incomplete')
++            raise failure
++
+ def executable_hash(path, deadline_ns, expected=None):
+@@ -41,13 +56,13 @@
+-    directory = os.open('/nix/store', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++    descriptors = [os.open('/nix/store', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+     try:
+-        initial = os.fstat(directory)
++        initial = os.fstat(descriptors[-1])
+         require(initial.st_uid == 0 and stat.S_IMODE(initial.st_mode) in (0o755, 0o1775), 'ssh-store-custody')
+         for component in (Path(root).name, 'bin'):
+             budget(deadline_ns)
+-            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+-            os.close(directory)
+-            directory = child
+-            info = os.fstat(directory)
++            descriptors.append(os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
++                                       dir_fd=descriptors[-1]))
++            info = os.fstat(descriptors[-1])
+             require(info.st_uid == 0 and not info.st_mode & 0o222, 'ssh-ancestor-custody')
++        directory = descriptors[-1]
+         descriptor = os.open('ssh', os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
+@@ -71,4 +86,4 @@
+         finally:
+-            os.close(descriptor)
++            release([descriptor])
+     finally:
+-        os.close(directory)
++        release(reversed(descriptors))
+@@ -116,1 +145,14 @@
+ def check(value):
+     if not value: raise ValueError('remote-bootstrap-qualification-refused')
++def release(descriptors):
++    primary = sys.exc_info()[1]
++    failed = False
++    for descriptor in descriptors:
++        try: os.close(descriptor)
++        except BaseException: failed = True
++    if failed:
++        if primary is not None: primary.add_note('remote-custody-release-incomplete')
++        else: raise ValueError('remote-custody-release-incomplete')
+@@ -153,1 +195,1 @@
+-finally: os.close(marker_fd)
++finally: release([marker_fd])
+@@ -160,10 +203,11 @@
+-directory = os.open('/nix/store',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++directories = [os.open('/nix/store',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)]
+ try:
+-    check(os.fstat(directory).st_uid == 0)
++    check(os.fstat(directories[-1]).st_uid == 0)
+     for part in Path(nix).parts[3:-1]:
+-        child = os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory)
+-        os.close(directory); directory = child
+-        info = os.fstat(directory)
++        directories.append(os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directories[-1]))
++        info = os.fstat(directories[-1])
+         check(info.st_uid == 0 and not info.st_mode & 0o222)
++    directory = directories[-1]
+@@ -182,2 +226,2 @@
+-    finally: os.close(descriptor)
+-finally: os.close(directory)
++    finally: release([descriptor])
++finally: release(reversed(directories))
+@@ -202,1 +217,11 @@
+-    os.execv(nix,[nix]+arguments)
++    absent = '/.omux-yoga-qualification-unavailable'
++    check(not os.path.lexists(absent))
++    # Nix configuration and plugin loading are executable input, independently
++    # scoped from OS-bootstrap trust and the remote Nix byte witness.
++    environment = {'HOME':absent,'NIX_CONF_DIR':absent,'NIX_USER_CONF_FILES':'',
++                   'NIX_CONFIG':'','NIX_PATH':'','PATH':'','LANG':'C','LC_ALL':'C',
++                   'XDG_CONFIG_HOME':absent,'XDG_DATA_HOME':absent,'XDG_STATE_HOME':absent,
++                   'XDG_CACHE_HOME':absent,'XDG_RUNTIME_DIR':absent}
++    os.execve(nix,[nix,'--option','plugin-files','']+arguments,environment)
+diff --git a/tools/yoga_controller_delivery.py b/tools/yoga_controller_delivery.py
+--- a/tools/yoga_controller_delivery.py
++++ b/tools/yoga_controller_delivery.py
+@@ -237,6 +276,9 @@
+ def read_public(path, maximum, deadline):
+     fence(deadline)
+-    resolved = Path(path).resolve(strict=True)
+-    descriptor = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
++    logical = Path(path)
++    resolved = logical.resolve(strict=True)
++    parents = [os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
++    descriptor = None
++    identities = []
+     try:
++        for component in resolved.parts[1:-1]:
++            fence(deadline)
++            parents.append(os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
++                                   dir_fd=parents[-1]))
++            info = os.fstat(parents[-1])
++            sticky = str(Path(*resolved.parts[:len(parents)])) == '/nix/store' and stat.S_IMODE(info.st_mode) == 0o1775
++            require(info.st_uid in (0, os.getuid()) and (not info.st_mode & 0o022 or sticky and info.st_uid == 0),
++                    'public-input-ancestor-custody')
++            identities.append((info.st_dev, info.st_ino, info.st_uid, info.st_mode))
++        descriptor = os.open(resolved.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parents[-1])
+         before = os.fstat(descriptor)
+@@ -255,5 +309,13 @@
+-        fields = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+-        require(fields(before) == fields(os.fstat(descriptor)) == fields(os.lstat(resolved)),
++        fields = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mode, info.st_uid,
++                               info.st_nlink, info.st_mtime_ns, info.st_ctime_ns)
++        require(len(pieces) == before.st_size and logical.resolve(strict=True) == resolved and fields(before) == fields(os.fstat(descriptor))
++                == fields(os.stat(resolved.name, dir_fd=parents[-1], follow_symlinks=False)) == fields(os.lstat(resolved)),
+                 'public-input-changed')
++        for index, identity in enumerate(identities, 1):
++            current = os.stat(resolved.parts[index], dir_fd=parents[index - 1], follow_symlinks=False)
++            require((current.st_dev, current.st_ino, current.st_uid, current.st_mode) == identity,
++                    'public-input-ancestor-rebound')
+         return bytes(pieces)
+     finally:
+-        os.close(descriptor)
++        qualification.release(([descriptor] if descriptor is not None else []) + list(reversed(parents)))
+diff --git a/tools/yoga_controller_delivery_test.py b/tools/yoga_controller_delivery_test.py
+--- a/tools/yoga_controller_delivery_test.py
++++ b/tools/yoga_controller_delivery_test.py
+@@ -108,1 +108,64 @@
++    def test_child_primary_failure_survives_independent_cleanup_failures(self):
++        child = Mock(pid=321,returncode=0)
++        child.stdout.close.side_effect = OSError('pipe')
++        with patch.object(delivery.subprocess,'Popen',return_value=child), \
++                patch.object(delivery.os,'getpgid',return_value=321), \
++                patch.object(delivery.os,'killpg',side_effect=OSError('signal')) as kill, \
++                patch.object(delivery.selectors,'DefaultSelector',side_effect=ValueError('primary-output')), \
++                patch.object(delivery.time,'monotonic',return_value=0), \
++                patch.object(delivery.signal,'signal',return_value=delivery.signal.SIG_DFL):
++            with self.assertRaisesRegex(ValueError,'primary-output') as captured:
++                delivery.owned_io(['fixed'],{},20,10)
++        child.wait.assert_called_once(); child.stderr.close.assert_called_once()
++        self.assertEqual(len(captured.exception.__notes__),1)
++        self.assertIn('child-group-cleanup-failed',captured.exception.__notes__[0])
++        self.assertIn('child-resource-release-failed',captured.exception.__notes__[0])
++
++    def test_cancellation_during_setup_still_signals_original_unreaped_group(self):
++        child = Mock(pid=321,returncode=0)
++        handlers,restored = {},[]
++        def signal_handler(signum,handler):
++            if callable(handler): handlers[signum] = handler
++            else: restored.append(signum)
++            return delivery.signal.SIG_DFL
++        def created(*args,**kwargs):
++            handlers[delivery.signal.SIGTERM](delivery.signal.SIGTERM,None)
++            return child
++        with patch.object(delivery.subprocess,'Popen',side_effect=created), \
++                patch.object(delivery.os,'getpgid',return_value=321), \
++                patch.object(delivery.os,'killpg') as kill, \
++                patch.object(delivery.time,'monotonic',return_value=0), \
++                patch.object(delivery.signal,'signal',side_effect=signal_handler):
++            with self.assertRaisesRegex(ValueError,'cancelled'):
++                delivery.owned_io(['fixed'],{},20,10)
++        kill.assert_called_once_with(321,delivery.signal.SIGKILL)
++        child.wait.assert_called_once(); child.poll.assert_not_called()
++        self.assertEqual(set(restored),{delivery.signal.SIGINT,delivery.signal.SIGTERM,delivery.signal.SIGHUP})
++
++    def test_declared_public_alias_rebinding_is_refused(self):
++        import tempfile
++        from pathlib import Path
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary); original = root/'original'; other = root/'other'; alias = root/'alias'
++            original.write_bytes(b'original'); other.write_bytes(b'other'); alias.symlink_to(original.name)
++            # The fixture uses physical temp paths without admitting /tmp custody.
++            actual_resolve = Path.resolve
++            def resolve(path,*args,**kwargs):
++                if path == alias:
++                    resolve.calls += 1
++                    if resolve.calls == 2: return other
++                return actual_resolve(path,*args,**kwargs)
++            resolve.calls = 0
++            actual_fstat = delivery.os.fstat
++            def public_fixture(descriptor):
++                info = actual_fstat(descriptor)
++                if delivery.stat.S_ISDIR(info.st_mode):
++                    values = {name:getattr(info,name) for name in ('st_dev','st_ino','st_uid','st_mode')}
++                    values.update(st_uid=0,st_mode=delivery.stat.S_IFDIR|0o555)
++                    return SimpleNamespace(**values)
++                return info
++            with patch.object(Path,'resolve',resolve),patch.object(delivery.time,'monotonic',return_value=0), \
++                    patch.object(delivery.os,'fstat',side_effect=public_fixture):
++                with self.assertRaisesRegex(ValueError,'public-input-changed'): delivery.read_public(alias,4096,20)
++            self.assertEqual(resolve.calls,2)
++
++    def test_expired_original_deadline_never_restarts_child_reap_wait(self):
++        child = Mock(pid=321,returncode=0)
++        selector = Mock(); selector.get_map.return_value = {}
++        with patch.object(delivery.subprocess,'Popen',return_value=child), \
++                patch.object(delivery.os,'getpgid',return_value=321), \
++                patch.object(delivery.os,'waitid',return_value=object()), \
++                patch.object(delivery.os,'killpg') as kill, \
++                patch.object(delivery.selectors,'DefaultSelector',return_value=selector), \
++                patch.object(delivery.time,'monotonic',side_effect=[0,0,0,20]), \
++                patch.object(delivery.signal,'signal',return_value=delivery.signal.SIG_DFL):
++            with self.assertRaisesRegex(ValueError,'child-reap-unproved'): delivery.owned_io(['fixed'],{},20,10)
++        child.wait.assert_not_called(); kill.assert_called_once_with(321,delivery.signal.SIGKILL)
++        selector.close.assert_called_once(); child.stdout.close.assert_called_once(); child.stderr.close.assert_called_once()
++
++    def test_cleanup_only_failure_marks_incomplete_after_successful_read(self):
++        child = Mock(pid=321,returncode=0); child.stdout.close.side_effect = OSError('release')
++        selector = Mock(); selector.get_map.return_value = {}
++        with patch.object(delivery.subprocess,'Popen',return_value=child), \
++                patch.object(delivery.os,'getpgid',return_value=321), \
++                patch.object(delivery.os,'waitid',return_value=object()), \
++                patch.object(delivery.os,'killpg'), \
++                patch.object(delivery.selectors,'DefaultSelector',return_value=selector), \
++                patch.object(delivery.time,'monotonic',return_value=0), \
++                patch.object(delivery.signal,'signal',return_value=delivery.signal.SIG_DFL):
++            with self.assertRaisesRegex(ValueError,'child-resource-release-failed') as captured:
++                delivery.owned_io(['fixed'],{},20,10)
++        self.assertTrue(captured.exception.cleanup_incomplete)
++        child.wait.assert_called_once(); child.stderr.close.assert_called_once(); selector.close.assert_called_once()
++
++    def test_remote_reference_types_refuse_before_set_sort(self):
++        row = {'path':'/nix/store/'+'a'*32+'-input','narSize':1,'narHash':'sha256:'+'0'*64,'references':[]}
++        for references in ([{}],[[]],[False],['/tmp/reference'],[42,'/nix/store/'+'b'*32+'-input']):
++            actual = dict(row,references=references)
++            with self.assertRaisesRegex(ValueError,'registration-content'): delivery.registry({row['path']:actual},[row])
++
+ if __name__ == '__main__':
+diff --git a/tools/yoga_executable_qualification_test.py b/tools/yoga_executable_qualification_test.py
+--- a/tools/yoga_executable_qualification_test.py
++++ b/tools/yoga_executable_qualification_test.py
+@@ -33,1 +33,6 @@
+-        self.assertLess(command[5].index('check(expected is None or result == expected)'),command[5].index('os.execv'))
++        self.assertLess(command[5].index('check(expected is None or result == expected)'),command[5].index('os.execve'))
++        self.assertIn("'NIX_USER_CONF_FILES':''",command[5])
++        self.assertIn("'NIX_CONFIG':''",command[5])
++        self.assertIn("'NIX_CONF_DIR':absent",command[5])
++        self.assertIn("[nix,'--option','plugin-files','']",command[5])
++        self.assertIn("check(not os.path.lexists(absent))",command[5])
+@@ -86,1 +91,84 @@
++    def remote_fixture(self,expected,arguments):
++        import builtins
++        import io
++        import pathlib
++        import platform
++        import signal
++        import sys
++        from contextlib import ExitStack
++        from types import SimpleNamespace
++        generation = '/nix/store/'+'c'*32+'-home-manager-generation'
++        nix = '/nix/store/'+'d'*32+'-nix/bin/nix'
++        marker_path = '/nix/store/'+'f'*32+'-source-marker'
++        marker = b'schema=2\nsource_rev='+b'f'*40+b'\ndeployment_id=fixture'+b'@'+b'yoga\n'
++        resolved = {'/fixture/.local/state/nix/profiles/home-manager':generation,
++                    '/fixture/.local/state/home-manager/gcroots/current-home':generation,
++                    generation+'/home-path/bin/nix':nix,
++                    generation+'/home-files/.config/tinyland/home-manager-control-revision':marker_path}
++        class FakePath:
++            def __init__(self,value): self.value = str(value)
++            def __str__(self): return self.value
++            def __truediv__(self,name): return FakePath(self.value+'/'+name)
++            @classmethod
++            def home(cls): return cls('/fixture')
++            @property
++            def parts(self): return pathlib.PurePosixPath(self.value).parts
++            def resolve(self,**kwargs): return FakePath(resolved.get(self.value,self.value))
++            def lstat(self): return SimpleNamespace(st_mode=qualification.stat.S_IFLNK|0o777,st_uid=1000)
++        files = {marker_path:marker,nix:b'NIX'}
++        descriptors,positions = {},{}
++        def information(path):
++            regular = path in files
++            return SimpleNamespace(st_dev=1,st_ino=1 if path == nix else 2,
++                st_mode=(qualification.stat.S_IFREG if regular else qualification.stat.S_IFDIR)|0o555,
++                st_uid=0,st_size=len(files[path]) if regular else 0,st_mtime_ns=1,st_ctime_ns=1)
++        def opened(path,flags,dir_fd=None):
++            if dir_fd is not None: path = descriptors[dir_fd]+'/'+path
++            descriptor = len(descriptors)+100; descriptors[descriptor] = str(path); positions[descriptor] = 0
++            return descriptor
++        def read(descriptor,size):
++            data = files[descriptors[descriptor]]
++            position = positions[descriptor]; positions[descriptor] += size
++            return data[position:position+size]
++        def public(path,*args,**kwargs): return io.BytesIO(b'MACHINE' if path == '/etc/machine-id' else b'BOOT')
++        actual = self.remote()
++        actual.update(remoteNixSha256=hashlib.sha256(b'NIX').hexdigest(),remoteNixBytes=3,
++                      machineIdSha256=hashlib.sha256(b'MACHINE').hexdigest(),bootIdSha256=hashlib.sha256(b'BOOT').hexdigest(),
++                      labGenerationMarkerSha256=hashlib.sha256(marker).hexdigest(),
++                      labDeploymentIdSha256=hashlib.sha256(b'fixture'+b'@'+b'yoga').hexdigest())
++        selected = actual if expected is True else expected
++        with ExitStack() as stack:
++            stack.enter_context(patch.object(pathlib,'Path',FakePath))
++            stack.enter_context(patch.object(platform,'system',return_value='Linux'))
++            stack.enter_context(patch.object(platform,'machine',return_value='x86_64'))
++            stack.enter_context(patch.object(signal,'alarm'))
++            stack.enter_context(patch.object(sys,'argv',['fixture','75',json.dumps(selected),json.dumps(arguments)]))
++            stack.enter_context(patch.object(qualification.os,'getuid',return_value=1000))
++            stack.enter_context(patch.object(qualification.os,'open',side_effect=opened))
++            stack.enter_context(patch.object(qualification.os,'read',side_effect=read))
++            stack.enter_context(patch.object(qualification.os,'fstat',side_effect=lambda fd:information(descriptors[fd])))
++            stack.enter_context(patch.object(qualification.os,'lstat',side_effect=information))
++            stack.enter_context(patch.object(qualification.os,'stat',side_effect=lambda path,**kwargs:information(nix)))
++            stack.enter_context(patch.object(qualification.os,'close'))
++            stack.enter_context(patch.object(qualification.os.path,'lexists',return_value=False))
++            stack.enter_context(patch.object(builtins,'open',side_effect=public))
++            execute = stack.enter_context(patch.object(qualification.os,'execve',side_effect=RuntimeError('remote-exec-observed')))
++            try:
++                exec(qualification.REMOTE_CODE,{})
++            except (ValueError,RuntimeError) as error:
++                return execute,error,actual
++            raise AssertionError('fixture must terminate at refusal or mocked exec')
++
++    def test_remote_os_fixture_checks_complete_tuple_before_isolated_nix_exec(self):
++        execute,error,actual = self.remote_fixture(True,['store','info','--json','--store','daemon'])
++        self.assertEqual(str(error),'remote-exec-observed')
++        path,arguments,environment = execute.call_args.args
++        self.assertEqual(path,actual['remoteNixPath']); self.assertEqual(arguments[1:4],['--option','plugin-files',''])
++        self.assertEqual(environment['NIX_CONFIG'],''); self.assertEqual(environment['NIX_USER_CONF_FILES'],'')
++        self.assertEqual(environment['HOME'],environment['NIX_CONF_DIR']); self.assertEqual(environment['PATH'],'')
++        self.assertNotIn('LD_PRELOAD',environment); self.assertNotIn('SSH_AUTH_SOCK',environment)
++
++    def test_remote_os_fixture_refuses_bad_hash_before_any_nix_exec(self):
++        execute,error,actual = self.remote_fixture(self.remote(),['store','info'])
++        self.assertIsInstance(error,ValueError); execute.assert_not_called()
++
+ if __name__ == '__main__': unittest.main()

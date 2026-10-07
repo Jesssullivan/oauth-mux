@@ -1,0 +1,321 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_sprint_checkpoint",
+  "authority": "docs/plans/omux-native-owner-sprint-2026-10-04.md",
+  "start": "2026-10-04T08:28:06Z",
+  "due": "2026-10-04T13:28:06Z",
+  "duration_hours": 5,
+  "timezone": "America/New_York",
+  "status": "passed",
+  "execution_state": "bounded_acceptance_passed",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "claim": "experimental_unshipped_live_continuity_unavailable",
+  "workers_maximum": 12,
+  "predecessor_checkpoint": ".goal/omux-native-admission-2026-10-04.json",
+  "predecessor_outcome": "passed source-bound admission foundation; new owner code requires fresh proof",
+  "predecessor_source_sha256": "2af1f8868ac63a759e31ea145d8e210c4f7a2551cdedfe7104dc46ada530c73c",
+  "predecessor_source_bytes": 3984317,
+  "predecessor_source_members": 271,
+  "current_evidence": "docs/implementation/native-owner-evidence-2026-10-04.md",
+  "session_note": "docs/agent-notes/2026-10-04-sess-omux-native-owner-sprint.md",
+  "ruling_id": "R-N13",
+  "lab_board": {
+    "id": "0a3cc50f-fdde-458b-9e63-2ae7eb2fcc69",
+    "ruling": "R-C227",
+    "updated_at": "2026-10-04T01:16:34.056Z",
+    "latest_complete_document_list_verified": true
+  },
+  "provider_evaluation_authorized": false,
+  "personal_vault_access_authorized": false,
+  "service_activation_authorized": false,
+  "publication_authorized": false,
+  "process_signals_authorized": false,
+  "pzm_gf_worker_state": "held; October4lab Nix database corruption/storage reports attributed, no Omux host action",
+  "acceptance": [
+    {
+      "id": "NO-PEER",
+      "status": "passed",
+      "issues": [
+        "TIN-1798",
+        "TIN-5340"
+      ],
+      "scope": "Actual Linux bidirectional current-writer and incarnation proof",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "31cc04ad-2825-4d3f-95fb-7433b7f3c405",
+            "2e9809d2-3c39-4c4f-bb92-210743421adc"
+          ],
+          "scope": "Actual Linux bidirectional current-writer and incarnation proof; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-ISOLATION",
+      "status": "passed",
+      "issues": [
+        "TIN-5338",
+        "TIN-1798"
+      ],
+      "scope": "Owner-isolated native authority with original global work keys",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "d66ee9a3-5f0f-4e36-83fb-15b50c5a526e",
+            "137f883b-c389-4960-b49b-7093a6f557e8"
+          ],
+          "scope": "Owner-isolated native authority with original global work keys; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-EARLY",
+      "status": "passed",
+      "issues": [
+        "TIN-5338",
+        "TIN-2057"
+      ],
+      "scope": "Actual same-process ordinary startup and late attach registration producer",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "2e9809d2-3c39-4c4f-bb92-210743421adc"
+          ],
+          "scope": "Actual same-process ordinary startup and late attach registration producer; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-ACK",
+      "status": "passed",
+      "issues": [
+        "TIN-1798",
+        "TIN-5338"
+      ],
+      "scope": "Versioned complete matching ACK and lossless generations",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "31cc04ad-2825-4d3f-95fb-7433b7f3c405",
+            "2e9809d2-3c39-4c4f-bb92-210743421adc"
+          ],
+          "scope": "Versioned complete matching ACK and lossless generations; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-REMOVE",
+      "status": "passed",
+      "issues": [
+        "TIN-2723",
+        "TIN-2830"
+      ],
+      "scope": "Never-acquired and partial/unreachable owner removal custody",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "d66ee9a3-5f0f-4e36-83fb-15b50c5a526e",
+            "31cc04ad-2825-4d3f-95fb-7433b7f3c405"
+          ],
+          "scope": "Never-acquired and partial/unreachable owner removal custody; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-CRASH",
+      "status": "passed",
+      "issues": [
+        "TIN-5336",
+        "TIN-5340"
+      ],
+      "scope": "Authenticated original metadata and actual crash gaps",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "31cc04ad-2825-4d3f-95fb-7433b7f3c405"
+          ],
+          "scope": "Authenticated original metadata and actual crash gaps; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-WORK",
+      "status": "passed",
+      "issues": [
+        "TIN-5338",
+        "TIN-5337"
+      ],
+      "scope": "Bounded actor/native continuations without replay or callback deadlock",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "d66ee9a3-5f0f-4e36-83fb-15b50c5a526e",
+            "2e9809d2-3c39-4c4f-bb92-210743421adc"
+          ],
+          "scope": "Bounded actor/native continuations without replay or callback deadlock; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-CAPACITY",
+      "status": "passed",
+      "issues": [
+        "TIN-5337",
+        "TIN-5342"
+      ],
+      "scope": "Actual whole snapshot and permanent retirement reservations",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "d66ee9a3-5f0f-4e36-83fb-15b50c5a526e",
+            "31cc04ad-2825-4d3f-95fb-7433b7f3c405"
+          ],
+          "scope": "Actual whole snapshot and permanent retirement reservations; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-MIGRATION",
+      "status": "passed",
+      "issues": [
+        "TIN-5336",
+        "TIN-5340"
+      ],
+      "scope": "Explicit byte-preserving legacy refusal",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "31cc04ad-2825-4d3f-95fb-7433b7f3c405"
+          ],
+          "scope": "Explicit byte-preserving legacy refusal; exact selected local predicates only, no installed/native/provider continuity promotion"
+        }
+      ]
+    },
+    {
+      "id": "NO-RECONCILIATION",
+      "status": "passed",
+      "issues": [
+        "TIN-2050",
+        "TIN-2057",
+        "TIN-2830"
+      ],
+      "scope": "Current-source native protocol and isolated installed Linux proof",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+          "invocation_ids": [
+            "7f4c37cc-d5fb-4b32-ae02-e0289c5471a3",
+            "185ffba7-9b08-450f-ab29-1d405810892a",
+            "2e9809d2-3c39-4c4f-bb92-210743421adc",
+            "c8a06e09-b044-40a5-a15d-c88a28d016fa",
+            "1f4baea4-6d73-4a75-9647-47c2f7d648b2",
+            "76f2f45e-7438-41a8-bc8d-4e80f89e90d2",
+            "1eefcc6f-1b4c-4dda-b7b2-0d335dfc0d1e",
+            "4d9d4cf0-9d5a-4130-a898-c0ba1eb0ae61"
+          ],
+          "scope": "Exact selected native protocol predicates, eight production labels, real schemas, frozen-source isolated Omux installed custody, final static SPA and durable private source/Git context. Installed candidate interoperation and live continuity remain unavailable."
+        },
+        {
+          "kind": "document",
+          "path": "docs/tracker-updates/native-owner-sprint-2026-10-04.md",
+          "scope": "Four dated comment creates and full exact readbacks at2026-10-04T12:04:46Z; no issue/project/milestone edits."
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "kind": "document",
+      "path": "docs/implementation/native-owner-evidence-2026-10-04.md",
+      "scope": "All ten bounded native owner acceptance gates passed; no release or seamless continuity promotion."
+    },
+    {
+      "kind": "document",
+      "path": "docs/tracker-updates/native-owner-sprint-2026-10-04.md",
+      "scope": "Exact dated tracker reconciliation and full preserved readbacks."
+    }
+  ],
+  "native_support": false,
+  "live_continuity": "unavailable",
+  "remaining": [],
+  "completed_at": "2026-10-04T12:29:35.702446Z",
+  "proof_source": {
+    "sha256": "4af51426654a100a7e3c5981506d16ffd336527ffa60ec717cd97003409b2641",
+    "bytes": 6493385,
+    "members": 317,
+    "scope": "Installed-proof prehost/pretracker H1. Later closing context has different bytes and no inherited installed claim."
+  },
+  "runtime": {
+    "sha256": "7d80531a35d841f894ec1cb06d50eafa618368be1b4cd3063e0ab2969a083705",
+    "bytes": 60248573,
+    "installed_proof_id": "c8a06e09-b044-40a5-a15d-c88a28d016fa",
+    "cleanup": "removed"
+  },
+  "durable_working_tree_checkpoint": {
+    "ruling_id": "R-N13",
+    "invocation_id": "4d9d4cf0-9d5a-4130-a898-c0ba1eb0ae61",
+    "captured_at": "2026-10-04T12:28:02.640457+00:00",
+    "omux_tree": "d37ce695e4ed5a0ce3be946aa75bff49274a5531",
+    "spa_tree": "b6a0718f8eae7612d090564b7fc8c59efce00076",
+    "original_head_branch_index_unchanged": true,
+    "private_refs_only": true,
+    "closing_ledger_and_notes": "Separately included in the final declared public source/context capture; no mutable self-hash."
+  },
+  "tracker_comments": {
+    "count": 4,
+    "readback_at": "2026-10-04T12:04:46Z",
+    "receipt": "docs/tracker-updates/native-owner-sprint-2026-10-04.json",
+    "issue_metadata_edits": 0
+  },
+  "next_priorities": [
+    {
+      "priority": 1,
+      "scope": "Real installed patched-Codex and resident-daemon interoperation with explicit endpoint setup",
+      "state": "unperformed",
+      "boundary": "Needs actual supported Linux native peer profile and dedicated isolated processes; packaged Omux installed proof is independent."
+    },
+    {
+      "priority": 2,
+      "scope": "Verified automatic native endpoint discovery/advertisement",
+      "state": "unimplemented"
+    },
+    {
+      "priority": 3,
+      "scope": "Real producer daemon-replacement and original uncertain-effect reconciliation",
+      "state": "unimplemented",
+      "boundary": "No retransmission or fresh work key may manufacture completion."
+    },
+    {
+      "priority": 4,
+      "scope": "Ordinary CLI/TUI launch, native resume, accepted streams and provider quota handoff",
+      "state": "unperformed",
+      "boundary": "Dedicated version-bound live resources and provider authorization required."
+    },
+    {
+      "priority": 5,
+      "scope": "Darwin native owner profile, Apple SDK and installed runtime",
+      "state": "held",
+      "boundary": "PZM REAPI lane remains GF's under TIN-2998/GF#1717; Neo is not the compiler."
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "pre_action_factual_tracker_reconciliation",
+  "authority": "User-authorized factual Linear reconciliation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "evidence": "docs/tracker-updates/integrated-delivery-6ddd-2026-10-06.json",
+  "issues": [
+    {
+      "issue": "TIN-2063",
+      "before_status": "In Progress",
+      "body": "2026-10-06 18:09 UTC factual checkpoint. Contained epoch 6dddd386-818b-47f0-93ee-3a729f618c74 completed with controller/workload 3/3, empty descendants, no controller failure: docs_check, storage_test, native_owner_storage_test and reliability_commit_test passed; the installed retained Codex fixture failed resumed-preservation. The missing JSON docs input and transitive domain/storage declarations are verified repaired. Prior f10 foundation run passed 13/14; this epoch passed its repaired docs gate. Actual HM600 acquisition remains failed/no pair; the unit-passed event-wait optimization still needs the same 600/1200 actual measurement. Review of the separate acquired evaluator found shared-cleanup deadline and exception-unwind gaps; source corrections are underway before testing. No activation, fleet support, achieved SLO or issue completion. Exact durable receipt: docs/tracker-updates/integrated-delivery-6ddd-2026-10-06.json. Original 15-hour goal remains active/incomplete, five historical scoped gates passed/six open. No issue scope/state change."
+    },
+    {
+      "issue": "TIN-5338",
+      "before_status": "In Progress",
+      "body": "2026-10-06 18:09 UTC factual retained-candidate checkpoint. In contained epoch 6dddd386-818b-47f0-93ee-3a729f618c74 the installed fixture completed first detach/status/replay and seed preservation/clean exit, then reached the original native thread in a new process with a new owner/reference and authenticated process witness. It subsequently FAILED at resumed-preservation (unclassified), so the whole ordinary-resume/native gate remains unpassed; one invocation's earlier edges are scoped evidence only. The reviewed fixture-only follow-on classifies unchanged history/checkpoint/configuration predicates; no deadline, append cardinality or preservation assertion is weakened. Fresh Omux archive SHA256 6fef4a4611ca622db75a37b1fb22df8538f792084d6fa3d8ef267375fd243383 reports experimental dirty provenance and null sourceRevision; caller-selected HEAD does not replace that missing archive provenance. Retained Codex candidate scope only: fresh SDK compilation, accepted-history/live handoff, unmodified Codex and Darwin remain unproved. Receipt: docs/tracker-updates/integrated-delivery-6ddd-2026-10-06.json. No new gate, support promotion or issue state/scope change."
+    },
+    {
+      "issue": "TIN-5442",
+      "before_status": "Todo",
+      "body": "2026-10-06 factual Yoga foundation checkpoint. Actual contained f10a6f07-14d1-4b7c-96d9-86f70df980a8 ran 14 fresh local targets:13 passed, including wrapper FD/SHA/registry custody, selected-envelope joins, session qualification, coordinator/launcher, toolbar consent logic and payload/staging. Docs failed only on undeclared linked JSON; subsequent 6dddd386 passed its repaired docs gate. These are unit/modeled fixture predicates, not Yoga destination or human consent proof. Both epochs are terminal with empty descendants; no stop was requested and fresh cleanup ownership remains unproved. Destination authenticated inspect/copy/registration/content verification, declared offline graph, local Wayland/isolated browser and operator deny/approve remain unrun. The network/store transport profile is still a separate implementation gap; no SSH/trust/fleet/PZM changes were made. Exact scoped receipts: docs/tracker-updates/integrated-delivery-6ddd-2026-10-06.json and docs/agent-notes/2026-10-06-sess-omux-home-yoga-native.md. No browser/live gate closed and no issue state/scope change."
+    }
+  ],
+  "writes_completed": true,
+  "new_acceptance_gate_closed": false,
+  "readbacks": [
+    {
+      "issue": "TIN-2063",
+      "comment_id": "1bdb7ce6-a8a3-4b48-a1aa-eb3d86012e13",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    },
+    {
+      "issue": "TIN-5338",
+      "comment_id": "2ffd582a-3363-4eed-9a9a-bd6a93416107",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    },
+    {
+      "issue": "TIN-5442",
+      "comment_id": "dbfe9bbf-060a-41a7-99b3-b39360ba12dc",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    }
+  ],
+  "readbacks_at": "2026-10-06 18:19:16 UTC"
+}

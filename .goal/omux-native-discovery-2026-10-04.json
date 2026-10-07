@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_sprint_checkpoint",
+  "authority": "docs/plans/omux-native-discovery-resume-sprint-2026-10-04.md",
+  "start": "2026-10-04T20:06:11Z",
+  "due": "2026-10-05T01:06:11Z",
+  "duration_hours": 5,
+  "timezone": "America/New_York",
+  "clock_semantics": "Exact active root goal creation clock; rounded objective checkpoint text is approximate",
+  "session_note": "docs/agent-notes/2026-10-04-sess-omux-native-discovery.md",
+  "status": "blocked",
+  "execution_state": "held_after_sting_execution_incident",
+  "execution_hold_receipt": "docs/agent-notes/2026-10-04-sess-omux-execution-incident.md",
+  "status_semantics": "The five-hour window elapsed with all eight gates unpassed. The goal remains incomplete and blocked on verified safe execution after the Sting incident; source-only repairs and factual reconciliation do not close installed acceptance. The unchanged ten-hour checkpoint does not authorize automatic dispatch, extend this window or complete acceptance. Prior checkpoints remain unchanged.",
+  "blocked_audit": {
+    "observed_at": "2026-10-05T02:55:18Z",
+    "same_condition_repeated_at_least_three_goal_turns": true,
+    "condition": "No selected dedicated, recovered execution context with verified aggregate memory/process/time/cleanup containment for the remaining native SDK/package/installed proof",
+    "shared_context_limits": {"memory_max_bytes": 30064771072, "swap_max": "max", "memory_oom_group": 0, "pids_max": 356224, "cpu_max": "max 100000"},
+    "next_required_change": "Establish the verified safe execution lane, then produce and verify the separate status candidate/runtime epoch and execute the original installed discovery/TUI/resume gates",
+    "scope_preserved": true
+  },
+  "checkpoint_outcome": "partial",
+  "observed_clock": "2026-10-05T01:33:06Z",
+  "timely_capture": false,
+  "capture_note": "The exact 01:06:11Z checkpoint elapsed during a multi-hour tool-result gap. Subsequent user/operator evidence reports recursive Bash chains in the Omux coordinator lane, over40GB memory and cluster-wide SSH impact; the exact recursion mechanism remains unresolved. Date passage does not complete acceptance.",
+  "unpassed_gate_count": 8,
+  "coordinated_followon_due": "2026-10-05T06:06:11Z",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "claim": "experimental_unshipped_live_continuity_unavailable",
+  "ruling_id": "R-N13",
+  "hook_authority": "R-HOOK-CONVERGENCE-20261004",
+  "user_authority": "October 4 authorized wide five-hour/ten-hour sprint; delayed resource details, no live calls",
+  "predecessor_checkpoint": ".goal/omux-native-owner-2026-10-04.json",
+  "predecessor_outcome": "Completed bounded owner checkpoint plus separately passing configured provider-free installed interoperation; no discovery, ordinary TUI or resume inheritance",
+  "predecessor_runtime_proof": "4b0fcf36-1af9-41a9-b17f-ac305cac7cce",
+  "predecessor_evidence": "docs/implementation/native-interop-evidence-2026-10-04.md",
+  "predecessor_source_sha256": "d13f3713b3778807b61ee1ebbc734a5bc17ba2c60beb7c591378a9c0c8ee3450",
+  "predecessor_source_bytes": 126716964,
+  "predecessor_source_scope": "Closing T2 documentation/custody epoch; source archive does not widen prior runtime proof",
+  "followon_checkpoint": ".goal/omux-native-discovery-followon-2026-10-04.json",
+  "provider_evaluation_authorized": false,
+  "personal_vault_access_authorized": false,
+  "service_activation_authorized": false,
+  "publication_authorized": false,
+  "process_signals_authorized": false,
+  "native_support": false,
+  "live_continuity": "unavailable",
+  "pzm_gf_worker_state": "held; GF coordinator owns activation; no selected worker or remote execution claim",
+  "tracker_child": "TIN-5421 under TIN-5338; original tracker owner's user-authorized creation records planned scope only, not implementation proof",
+  "tracker_child_id": "c5945e4e-9247-4a36-bb1b-e0230dadb97c",
+  "tracker_planning_comment_id": "22fa3b62-74af-4419-8f4b-ad29a46e50a0",
+  "tracker_receipt": "docs/tracker-updates/native-discovery-sprint-2026-10-04.json",
+  "tracker_result_receipt": "docs/tracker-updates/native-discovery-incident-2026-10-05.json",
+  "tracker_result_comment_ids": ["5cab95f8-0cd1-4296-b57f-8796638eb3ec", "6ceb5d5b-b151-4eb1-92af-907289cb6a12"],
+  "acceptance": [
+    {
+      "id": "ND-DISCOVERY",
+      "status": "planned",
+      "issues": ["TIN-5421", "TIN-5338", "TIN-1798"],
+      "scope": "Bounded selected-context authenticated endpoint publication/discovery with stale, foreign, replaced, malformed and oversized refusal before authority",
+      "evidence": []
+    },
+    {
+      "id": "ND-SELECTION",
+      "status": "planned",
+      "issues": ["TIN-5338", "TIN-1798"],
+      "scope": "Owner-qualified selection and concurrent isolation preserve original request namespace, old refs and two-attempt fences",
+      "evidence": []
+    },
+    {
+      "id": "ND-STATUS",
+      "status": "planned",
+      "issues": ["TIN-2723", "TIN-5338"],
+      "scope": "Separately identified candidate/SDK epoch provides read-only exact attachment status for selected detach/cold resume without inferring completion or releasing uncertainty",
+      "evidence": []
+    },
+    {
+      "id": "ND-TUI",
+      "status": "planned",
+      "issues": ["TIN-1798", "TIN-2057"],
+      "scope": "Genuine installed ordinary candidate TUI idle/metadata startup and native registration without Omux launcher, seeded native state or live calls",
+      "evidence": []
+    },
+    {
+      "id": "ND-RESUME",
+      "status": "planned",
+      "issues": ["TIN-1798", "TIN-2057"],
+      "scope": "Genuine provider-free native resume with exact session/history custody and fresh incarnation authority; safe refusal alone cannot close success",
+      "evidence": []
+    },
+    {
+      "id": "ND-ZEROOWNER",
+      "status": "planned",
+      "issues": ["TIN-2723", "TIN-2057"],
+      "scope": "Zero-running-owner installation is independently proved; no-owner discovery cannot establish attachment, retirement or borrow running-owner proof",
+      "evidence": []
+    },
+    {
+      "id": "ND-CUSTODY",
+      "status": "planned",
+      "issues": ["TIN-5338", "TIN-2723"],
+      "scope": "Exact sealed native authority, complete16MiB/slot reservations and original work fences survive discovery/status/selection and genuine acknowledged removal",
+      "evidence": []
+    },
+    {
+      "id": "ND-RECONCILIATION",
+      "status": "planned",
+      "issues": ["TIN-2057", "TIN-2050"],
+      "scope": "New current-source proofs, immutable candidate/SDK/package tuples, generated facts, docs and durable checkpoint reconcile with explicit missing gates",
+      "evidence": []
+    }
+  ],
+  "checkpoint_observations": [
+    {
+      "invocation": "923c6f5e-189c-479b-af3b-46823463bd07",
+      "classification": "partial_source_test_results",
+      "result": "Inventory23, engine209, native-request217 predicates and Qt transport passed; CLI failed before fixture peers. These stated predicates do not close an installed discovery gate."
+    },
+    {
+      "invocation": "adee3ea5-7b56-4d3c-a370-beb0273c50fc",
+      "classification": "mixed_target_results",
+      "result": "CLI9 cases passed; installed native discovery failed at the second native thread/resume before its discovery query. The failed installed epoch remains failed."
+    },
+    {
+      "invocation": "cd8c87d7-85f4-4c41-836c-18d8a6f7585c",
+      "classification": "local_sdk_unit_protocol",
+      "result": "Exactly two actual local Rust attachment-status predicates passed; this is not installed native or fully sandboxed proof."
+    },
+    {
+      "invocation": "aee5c690-ed23-41eb-8344-3a5bc1fe65dc",
+      "classification": "failed_installed_execution_timeout",
+      "bazel_result": "TIMEOUT",
+      "fixture_marker": "OMUX_INSTALLED_NATIVE_DISCOVERY_OK",
+      "test_seconds": 15600.3,
+      "elapsed_seconds": 15628.662,
+      "critical_path_seconds": 15610.64,
+      "result": "The completion marker does not override the failed Bazel execution and closes no ND gate."
+    },
+    {
+      "invocation": "2b4f062d-b216-4d31-a8d6-0cda7b9524cd",
+      "classification": "cancelled_sdk_build",
+      "selected_labels": 8,
+      "observed_action_seconds_lower_bound": 15737,
+      "exit_code": 8,
+      "elapsed_seconds": 17623.963,
+      "critical_path_seconds": 17572.35,
+      "result": "Root interrupted the exactly identified owned SDK client; Bazel reported cancellation. The remaining owned SDK server was terminated after ownership and live-child checks. No passing batch, selected SDK/runtime package, ordinary TUI or resume pass exists."
+    },
+    {
+      "invocation": "6d994597-f522-45cb-aa74-ff0ee1041875",
+      "classification": "failed_server_terminated_two_fixture_tests",
+      "exit_code": 37,
+      "result": "SERVER TERMINATED ABRUPTLY / Socket closed. No installed discovery or ordinary Git passing gate is inferred."
+    }
+  ],
+  "evidence": [],
+  "remaining": [
+    "Execution held after recursive Bash/resource incident; preserve unresolved cause, verify host recovery and enforce aggregate memory/process/time/cancellation bounds before resumed workload",
+    "All new discovery, selection, attachment-status, ordinary TUI and native resume success predicates are unproved",
+    "Zero-running-owner installation requires its separate exact success receipt",
+    "Stock native hook, Darwin, accepted nonempty history, live provider continuity and daemon-replacement reconciliation remain separate gates"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "canonical_reconstruction_model_and_native_removal_regression",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "a8abf23e-96a6-4a76-bf08-a857247ad309",
+  "original_handle": 62695,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/a8abf23e-96a6-4a76-bf08-a857247ad309/receipt.json",
+  "raw_receipt_sha256": "e03245169ada69cacbddcbd6aaaed2b648584f5d56617e02a77899a072a072f8",
+  "graph_sha256": "b4a9d69cc004e1c2011a19c5f1c67862654b569d39c65ed3b84e963a4c90052e",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "test_evidence": {
+    "bytes": 263819,
+    "files": 11,
+    "manifest": "test-evidence.json",
+    "sha256": "109a62a382b5d2a15d486c501cdabaa0ee7524ef348fcbb7217124d0f89be421",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//tools:home_manager_bundle_test",
+    "//:native_owner_removal_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "home_manager_modeled_methods": 38,
+  "scope": "Complete modeled retained representation, canonical NAR/inventory, joint budget, original-input drift, cleanup/publication faults and conflicting/interrupted promotions; surrounding genuine native-owner removal regression. No actual compact bundle or genuine Home Manager evaluation yet.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

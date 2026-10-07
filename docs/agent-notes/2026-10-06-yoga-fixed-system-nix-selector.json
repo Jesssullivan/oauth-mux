@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "declared_yoga_system_nix_selector_qualification_proposal",
+  "authority": "Root authorized source-only proposal after exact7c4880c0-e3aa-439c-bedd-a8cdee3233c9 missing-input/nix-resolution; user provider-free Oct6 continuation; AGENTS.md/R-N13",
+  "actual_observation": {
+    "epoch": "7c4880c0-e3aa-439c-bedd-a8cdee3233c9",
+    "terminal_exit": 2,
+    "workload_exit": 2,
+    "owned_descendants": "empty",
+    "controller_failure": null,
+    "source_after": "root still inspecting raw receipt when task assigned",
+    "ssh_status": 1,
+    "operation_stage": "authenticated-os-qualification",
+    "osBootstrapFailure": {
+      "category": "missing-input",
+      "step": "nix-resolution"
+    },
+    "qualification": null
+  },
+  "meaning": "Exact marker locates refusal at the assumed HM generation/home-path/bin/nix resolution. It does not prove system bootstrap selector exists, any root profile custody, Nix registration or destination readiness.",
+  "lab_source_carriers": [
+    {
+      "path": "/srv/fast-local/jess/git/lab-neo-sting-resume-receipt-20261004/roles/nix-bootstrap/tasks/main.yml",
+      "line": 59,
+      "authority": "System installation presence checks fixed /nix/var/nix/profiles/default/bin/nix."
+    },
+    {
+      "path": "/srv/fast-local/jess/git/lab-neo-sting-resume-receipt-20261004/roles/nix-bootstrap/tasks/verify.yml",
+      "line": 7,
+      "authority": "System installation verification declares the same required binary."
+    },
+    {
+      "path": "/srv/fast-local/jess/git/lab-neo-sting-resume-receipt-20261004/roles/nix-bootstrap/defaults/main.yml",
+      "line": 13,
+      "authority": "Determinate installer and multi-user configuration are system bootstrap declarations."
+    },
+    {
+      "path": "/srv/fast-local/jess/git/lab-neo-sting-resume-receipt-20261004/nix/home-manager/nix.nix",
+      "line": 80,
+      "authority": "Selects pkgs.nix for generated user nix.conf; no source guarantee found here that Yoga HM home-path/bin/nix is present."
+    },
+    {
+      "path": "/srv/fast-local/jess/git/lab-neo-sting-resume-receipt-20261004/nix/home-manager/generation-authority.nix",
+      "line": 46,
+      "authority": "Schema2 marker deployment identity derives from configured home username and host; nonzero source revision derives from exact clean source."
+    }
+  ],
+  "proposed_binding": "Replace the disproved location assumption with ONE source-fixed Lab system installation selector. Never a fallback, PATH search, dynamically selected system binary or symlink repair.",
+  "selector": "/nix/var/nix/profiles/default/bin/nix",
+  "custody": "Resolve only bounded root-owned nofollow components and symlinks within /nix, rejecting parent-traversal link targets before lexical normalization and retaining each FD/named/full-stat/link-target witness. Bound128 total owned descriptors (reserve one readable leaf slot)/32 pending components/16 links and finite path lengths under unchanged alarm. Directories must be root-owned non-group/other writable, except existing root-owned1775 /nix/store convention. Resolved executable must match canonical store/bin/nix shape, root-owned readonly executable metadata and complete bounded SHA256 readback. Legitimate store hardlinks are permitted; nlink remains witnessed, not forced to1.",
+  "recheck": "Keep selector and binary descriptors through independent HM/marker/host IDs and exact expected tuple comparison. Require the full kernel-followed fixed selector stat to equal the retained leaf before hashing, after readback and after the expected tuple. Recheck all held/named/target witnesses and leaf metadata, attempt every release preserving any primary, then print qualification or execute isolated qualified Nix. Every readonly command independently recaptures the same sole selector and compares resolved path/SHA/bytes before Nix.",
+  "os_user": "OS passwd lookup must identify the declared Yoga user and HOME must match that native account entry. Schema2 marker must bind the same OS username and Yoga. Username/home are not new emitted fields.",
+  "schema": "Remote closed schema remains identical: remoteNixPath/SHA/bytes keep resolved-byte meaning. Fixed selector and custody policy are source/graph-bound; source change requires fresh qualify epoch. Canonical prior qualification and expected full tuple comparison remain mandatory.",
+  "proof_limit": "Root-owned readonly store-shaped bytes and OS SHA do not prove Nix registration. Any registration claim requires subsequent qualified readonly Nix inspection. No current remote existence/custody/hash or toolbar claim is made.",
+  "unchanged": [
+    "Strict existing public host-pin and fixed interpreter/OS bootstrap trust",
+    "User-owned matching HM profile/gcroot and immutable nonzero schema2 marker",
+    "d631 source receipt and exact472/2829689512 inventory",
+    "4GiB/0swap/512tasks/CPU2 and original1200 guard deadline/75sec remote alarm",
+    "Ambient Nix configuration/plugin isolation and no credentials in argv/logs",
+    "No copy/realization/fleet install/profile repair/provider request; remote cleanup unknown"
+  ],
+  "fixture_coverage": "Four new fixture methods plus strengthened exact-code fixture: eleven selector custody/rebinding/cycle/escape/parent-traversal/full-selector/read-witness refusals; all-release primary cleanup failure; valid default chain with absent HM Nix and legitimate hardlinked leaf; OS account/HOME and marker-user/zero-revision refusals. Existing six missing-step diagnostics are adjusted to the fixed selector. All modeled OS operations are mocked; no execution by author.",
+  "next": "Independent source review, parent-owned application after source freeze ends, finite contained regression gates, then new strict-pinned qualify only. Existing failed or old-graph epochs do not authorize inspect/verify.",
+  "execution": "UNAPPLIED amendment only; source and declaration reads plus JavaScript diff generation. No SSH/project executable/build/test/check/tracker/index or actual source/fleet mutation."
+}

@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "kind": "corrected_retained_selection_predicate_receipt",
+  "authority": "AGENTS.md; user-resumed 15-hour sprint; R-N13",
+  "epoch": "d4fb100c-152c-41bd-9c55-52c41a958c14",
+  "receipt_locator": "/home/jess/.local/state/omux-execution-20261005/d4fb100c-152c-41bd-9c55-52c41a958c14/receipt.json",
+  "graph_sha256": "e1a0c0ee02965569d5a697976e56ea44509d2cd301f75daba4da6438e70933b0",
+  "exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "test_evidence_sha256": "a96435d7b922994f26e720f98eb836dcc41f69cffaed5f810b97636002d3e68c",
+  "test_evidence": [
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 300,
+          "file": "1bc73d1712b9bb72525cc40f947fb58bcc493d3c40196eba266debef64b8506f.evidence",
+          "sha256": "7b09d3e1f211af4728ed385dfe471d9a58e874604aa7331df14bcafbbd487d20",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 697,
+          "file": "8f60559bdde59a76cffb3c7b6b568f3f7057c9b68731a586f73f78ed873266d0.evidence",
+          "sha256": "400d8192f5ac0f8e62ec892612fe479ae3ba39b436754c821d7596ea7c5f1f7f",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//delivery:dev_generation_test"
+    },
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 258,
+          "file": "42d208981f2e81dd58e675df61cd554dca061ca33f31622b9e75233b0035af62.evidence",
+          "sha256": "8105296e343f7e55e6b342c609c2ee2bb6f4e56d57732fd48920f8df1031f16a",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 655,
+          "file": "68b98df691aa2f538c70bce479df6143bc7b43804cf7ba4634d87aa2664e0cd1.evidence",
+          "sha256": "85d0a078ad884ccb7d92f53bbd072ed9b4d0914da33eedb8bff4bb7400e0dcfb",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 126,
+          "file": "d8cd9f403571cfeeda563f5fe248aee4183d9c080164e9bd13f5ee21432ec27e.evidence",
+          "sha256": "699d954d1de722f36e21331d38421218db27b4ee80f115ffc5492da81784c062",
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//tools:runtime_source_receipt"
+    }
+  ],
+  "predicates": {
+    "target": "//delivery:dev_generation_test",
+    "methods": 27,
+    "result": "passed",
+    "correction": "Valid ZIP metadata admitted before a recorded private regular file one byte beyond the bound exercises exact file-byte-bound refusal; no production change."
+  },
+  "source_observation": {
+    "target": "//tools:runtime_source_receipt",
+    "file_count": 341,
+    "total_bytes": 5355585,
+    "aggregate_sha256": "42e75460fd6014fe196e3edd6d0e08b1b2b4cd1550cc4ba003b99b8d0ffee318",
+    "receipt": {
+      "authentication_performed": false,
+      "caller_arguments": {
+        "--dirty": "true",
+        "--parent-commit": "f5f83c1ad99c2920de6759791b327a99a02a2ec5"
+      },
+      "caller_git_metadata_verified": false,
+      "claim": "source_inventory_only",
+      "limitations": [
+        "No application execution or continuity proof",
+        "No source contents retained",
+        "No full repository, toolchain or artifact closure claim",
+        "Freeze covers observed capture interval only"
+      ],
+      "payload_output": false,
+      "schema": "omux.runtime-source-receipt.v1",
+      "scope": "finite explicitly declared selected code inputs",
+      "source_aggregate_sha256": "42e75460fd6014fe196e3edd6d0e08b1b2b4cd1550cc4ba003b99b8d0ffee318",
+      "source_inventory": "source-inventory.json"
+    },
+    "selected_files": [
+      {
+        "executable": false,
+        "path": "delivery/dev_generation.py",
+        "sha256": "91158a7cf63efe3a79f1bb3f3370d956a230fc4968583b7f27d1b4ee51fda930",
+        "size": 17901
+      },
+      {
+        "executable": false,
+        "path": "delivery/dev_stage.py",
+        "sha256": "e6219093e7b873f3b1de6c281c959880c003125e25d002f465dd14e56871ac0d",
+        "size": 17788
+      },
+      {
+        "executable": false,
+        "path": "delivery/dev_stage_selected.py",
+        "sha256": "97edfbe4de7aacb6a019d2495d24c3c3e7608ed28b9f5131aa8d37e1bcf904e2",
+        "size": 4707
+      },
+      {
+        "executable": false,
+        "path": "delivery/test_dev_generation.py",
+        "sha256": "92c440329582248e9fc9c4dfa02042409e7e27dc3078412150d38931a85bec8e",
+        "size": 23508
+      }
+    ]
+  },
+  "preserved_failed_batch": "9fcade58-0d2a-4465-9c23-a5dc4f002235",
+  "scope": "Corrected selector predicates and finite source inventory only; prior actual retained-stage facts preserve their exact original epoch.",
+  "not_proved": [
+    "daemon restart or Chromium reload of this generation",
+    "atomic execution witness/live executable attribution",
+    "native resume or same-process handoff",
+    "Home Manager activation",
+    "provider acquisition or achieved SLO"
+  ]
+}

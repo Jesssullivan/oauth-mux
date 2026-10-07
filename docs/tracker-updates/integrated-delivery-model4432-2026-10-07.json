@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "history_yoga_models_and_native_snapshot_regression",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "44329b36-b528-4621-ab99-1b3462312038",
+  "original_handle": 15006,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/44329b36-b528-4621-ab99-1b3462312038/receipt.json",
+  "raw_receipt_sha256": "49651f81e1ea4a524da9ed63d3b378adb8199c9559e961907a1454bf080b2d42",
+  "graph_sha256": "7364a12afc36c4948bca49acdd311bdf4c58eba944038be6d2f8191264df50ab",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 270062,
+    "files": 17,
+    "manifest": "test-evidence.json",
+    "sha256": "cb62d4474477bb145a1196d552586d5359eda4f66388ad3c0216cc078eb488d1",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//delivery:native_history_diagnostic_test",
+    "//tools:yoga_executable_qualification_test",
+    "//tools:yoga_controller_delivery_test",
+    "//:snapshot_native_test",
+    "//:docs_check",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "targets_passed": 7,
+  "targets_total": 7,
+  "native_snapshot_cases": 247,
+  "scope": "Reviewed finite history-failure classification, fixed-step Yoga bootstrap diagnostics and native snapshot retained-path refusal followed by genuine matching-path removal. Installed Codex resume, actual Yoga qualification/toolbar consent and genuine Home Manager evaluation remain separate.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "kind": "factual_tracker_reconciliation_readback",
+  "authority": "User-authorized continuing Linear reconciliation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-06T23:25:31Z",
+  "comments": [
+    {"issue": "TIN-5338", "id": "527a2fbc-cd81-4be1-8fa1-8ad2b57f25eb", "exact_body_readback_verified": true},
+    {"issue": "TIN-2063", "id": "b58d2934-2fd9-491f-8923-d598f7c25043", "exact_body_readback_verified": true}
+  ],
+  "durable_fact_receipts": ["docs/tracker-updates/integrated-delivery-modeldc52-2026-10-06.json", "docs/tracker-updates/integrated-delivery-docscc66-2026-10-06.json", "docs/tracker-updates/integrated-delivery-hma8ab-2026-10-06.json", "docs/tracker-updates/integrated-delivery-actor0407-2026-10-06.json", "docs/tracker-updates/integrated-delivery-yoga2daa-2026-10-06.json"],
+  "issue_scope_or_completion_changed": false,
+  "new_parent_gate_closed": false,
+  "provider_calls": false,
+  "note": "Comments record source/model status and unproved installed gates at their observation time; the later native9b46 failure is separate."
+}

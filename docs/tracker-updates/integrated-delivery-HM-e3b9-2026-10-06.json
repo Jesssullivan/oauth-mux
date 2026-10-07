@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "kind": "integrated_delivery_actual_HM_pair_checkpoint",
+  "authority": "User-authorized implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "e3b9e0bc-f473-49f5-be46-4f23e2776a1f",
+  "original_handle": 75672,
+  "handle_terminal": true,
+  "raw_controller_receipt": "/home/jess/.local/state/omux-home-manager-prefetch-20261006/e3b9e0bc-f473-49f5-be46-4f23e2776a1f/receipt.json",
+  "raw_controller_receipt_sha256": "3356a5660fd73954d33253ec929957c4c47212036280de6c2a4de2ce6eb566f0",
+  "graph_sha256": "bf67be11f938430c2cb62496f4bf6e0a2f1a49bb2da5d5096bae593f7c886640",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 1138938,
+    "files": 3,
+    "manifest": "test-evidence.json",
+    "sha256": "7c5ea71975f05f6b0d7d2e8b306e9dca77bd30a5d7c622826b6bbeead630a2f6",
+    "state": "preserved"
+  },
+  "target": "//tools:home_manager_acquisition_producer",
+  "bazel_result": "TIMEOUT",
+  "bazel_timeout_seconds": 900,
+  "producer_observation": {
+    "emitted_success": true,
+    "elapsed_ms": 617128,
+    "source_pair_receipt_sha256": "9e9c04f6768b4ba7ac4023f54c5ae98c5a585da1642a3fca9c0c153d8a1c30eb",
+    "regular_payload_bytes": 195510848,
+    "nodes": 94974,
+    "scope": "finite-paired-source-acquisition",
+    "evaluation_executed": false,
+    "activation": "unproved",
+    "retained_root": "/home/jess/.local/state/omux-home-manager-prefetch-20261006/e3b9e0bc-f473-49f5-be46-4f23e2776a1f/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/home_manager_acquisition_producer/test.outputs/home-manager-pair"
+  },
+  "observed_timeout_phase": {
+    "phase": "Bazel undeclared-output collection after producer completion",
+    "evidence": "Original producer log emitted completed inputs and receipt; test-setup.sh318-334 enumerates regular output files and spawns per-file stat/file; exact owned test-setup shell remained active through821seconds",
+    "root_cause_scope": "Observed wrapper work explains this acquisition run timeout; this does not establish earlier incident RCA"
+  },
+  "new_acceptance_gate_closed": false,
+  "success_inherited_from_failed_test": false,
+  "next": "Fresh declared compact pack of retained pair with independent full content verification; genuine offline module evaluation remains separate"
+}
