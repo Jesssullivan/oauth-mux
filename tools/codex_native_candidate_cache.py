@@ -39,6 +39,7 @@ def bindings(args, tools, controller_graph, locked_path, manager):
         'patch_sha256': args.native_patch_sha256, 'export_root': str(args.native_export_root),
         'export_receipt_sha256': args.native_export_sha256, 'export_inventory_sha256': export['inventory_sha256'],
         'mapping_sha256': export['mapping_sha256'], 'locked_path': locked_path,
+        'bazel_dispatcher_environment': {'USE_BAZEL_VERSION': native.BAZEL_VERSION},
         'modes': native.MODES, 'platform': '//codex-rs/core:owner-linux',
         'toolchain': '//codex-rs/core:owner-local-test-toolchain', 'batch': True,
         'limits': {'memory': 4294967296, 'tasks': 512, 'cpu_percent': 200,

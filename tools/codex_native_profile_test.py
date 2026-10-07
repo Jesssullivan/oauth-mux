@@ -6,11 +6,61 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
+import codex_native_candidate_cache as candidate_cache
 import codex_native_profile as native
 import codex_retained_sdk_export as sdk_export
 from codex_retained_sdk_export import SCHEMA, canonical, digest, inventory, Budget, validate_export
 
 class SourceMutationTests(unittest.TestCase):
+    def test_locked_dispatcher_selection_overrides_ambient_without_source_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'sealed-source'
+            source.mkdir(mode=0o700)
+            version = source / '.bazelversion'
+            version.write_bytes(b'9.0.0\n')
+            version.chmod(0o444)
+            run = root / 'run'
+            run.mkdir(mode=0o700)
+            args = SimpleNamespace(native_source_root=root/'input',
+                native_export_root=root/'export', native_deadline=None,
+                native_mode='analysis')
+            retained = {'inventory_sha256':'1'*64}
+            exported = {'registry_cache':str(args.native_export_root/'registry-cache'),
+                'inventory_sha256':'2'*64,'mapping_sha256':'3'*64,
+                'repositories':{},'module_overrides':{}}
+            candidate = SimpleNamespace(source=source, root=root/'candidate',
+                lease=SimpleNamespace(output_base=root/'output-base'))
+            with patch.object(native, 'verify_inputs', return_value=(retained,exported)), \
+                    patch.dict(os.environ, {'USE_BAZEL_VERSION':'9.0.0','BAZEL_REAL':'/foreign/bazel'}):
+                plan = native.command(args,run,'/nix/store/locked-tool/bin',
+                    '/nix/store/i27rhb3nr65rkrwz36bchkwmav6ggsmn-bash-5.3p9/bin/bash',candidate)
+            self.assertEqual(plan['environment']['USE_BAZEL_VERSION'],'9.0.1')
+            self.assertNotIn('BAZEL_REAL',plan['environment'])
+            self.assertEqual(plan['argv'][0],native.BAZEL)
+            self.assertIn('--repository_disable_download',plan['argv'])
+            self.assertIn('--sandbox_default_allow_network=false',plan['argv'])
+            self.assertEqual(version.read_bytes(),b'9.0.0\n')
+            self.assertEqual(version.stat().st_mode & 0o777,0o444)
+
+    def test_dispatcher_selection_is_explicit_candidate_provenance(self):
+        args = SimpleNamespace(state_dir=candidate_cache.native.STATE,native_cache_attempt=1,
+            native_source_root=Path('/public/source'),native_source_sha256='1'*64,
+            native_patch_sha256=['2'*64,'3'*64,'4'*64],native_export_root=Path('/public/export'),
+            native_export_sha256='5'*64)
+        source = {'inventory_sha256':'6'*64,'graph_files':{}}
+        export = {'inventory_sha256':'7'*64,'mapping_sha256':'8'*64}
+        with patch.object(native,'verify_inputs',return_value=(source,export)):
+            selected = candidate_cache.bindings(args,{'bazel':native.BAZEL},
+                ('9'*64,[]),'/nix/store/locked-tool/bin','system')
+            with patch.object(native,'BAZEL_VERSION','9.0.0'):
+                changed = candidate_cache.bindings(args,{'bazel':native.BAZEL},
+                    ('9'*64,[]),'/nix/store/locked-tool/bin','system')
+        self.assertEqual(selected['bazel_dispatcher_environment'],{'USE_BAZEL_VERSION':'9.0.1'})
+        self.assertNotEqual(hashlib.sha256(candidate_cache.canonical(selected)).hexdigest(),
+            hashlib.sha256(candidate_cache.canonical(changed)).hexdigest())
+
     def test_grouped_exact_gates_reject_equal_count_substitution_and_zero(self):
         for target, names in native.QUALIFICATION_GATES.items():
             def log(selected):

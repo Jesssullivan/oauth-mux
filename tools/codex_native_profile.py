@@ -14,6 +14,7 @@ from codex_retained_sdk_export import validate_export
 from codex_live_source import BASE_RECEIPT_SHA, BASE_INVENTORY, COMMIT, GRAPH, write_source, read
 
 BAZEL = '/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel'
+BAZEL_VERSION = '9.0.1'
 STATE = Path('/srv/fast-local/jess/state/codex/omux-native-candidate-20261007')
 CORE = '//codex-rs/core:core-unit-tests'
 CONFIG = '//codex-rs/config:config-unit-tests'
@@ -164,7 +165,8 @@ def command(args, run, locked_path, bash, candidate=None):
         'candidate_cache_root': str(candidate.root) if candidate is not None else None,
         'candidate_output_base': str(candidate.lease.output_base) if candidate is not None else None,
         'export_inventory_sha256': exported['inventory_sha256'], 'mapping_sha256': exported['mapping_sha256'],
-        'environment': {'PATH': locked_path, 'HOME': str(run / 'home'), 'XDG_CACHE_HOME': str(run / 'home/cache'),
+        'environment': {'PATH': locked_path, 'USE_BAZEL_VERSION': BAZEL_VERSION,
+            'HOME': str(run / 'home'), 'XDG_CACHE_HOME': str(run / 'home/cache'),
             'XDG_CONFIG_HOME': str(run / 'home/config'), 'XDG_STATE_HOME': str(run / 'home/state')}}
 
 def runtime(args):

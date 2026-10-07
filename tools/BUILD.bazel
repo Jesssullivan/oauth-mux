@@ -65,7 +65,7 @@ python_test(
 python_test(
     name = "codex_native_profile_test",
     main = "codex_native_profile_test.py",
-    srcs = _CODEX_SDK_SOURCES,
+    srcs = _CODEX_SDK_SOURCES + ["guard_cache.py"],
 )
 python_test(
     name = "codex_owner_runtime_input_test",
