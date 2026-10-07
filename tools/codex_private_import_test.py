@@ -10,6 +10,7 @@ import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
     def test_actual_utf8_path_bytes_inventory_without_name_transformation(self):
+        self.assertEqual(sdk.sys.flags.utf8_mode,1)
         sdk.require_utf8_filesystem()
         name = '\U0001f385\U0001f384.js'
         raw_name = name.encode('utf-8')
