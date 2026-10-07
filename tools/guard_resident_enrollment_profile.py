@@ -1,5 +1,6 @@
 """Exact persistent enrollment lane with a complementary resident reservation."""
 import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,16 @@ def canonical(value):
         and not any(c.isspace() or c in ":\\\0" for c in value)
         and not any(p in ("",".","..") for p in value.split("/")[1:]))
     return Path(value)
+
+def runtime_child(state):
+    # Match src/paths.zig: hash exact state bytes, render the first16 bytes.
+    state = canonical(str(state))
+    return "omux-" + hashlib.sha256(str(state).encode("utf-8")).digest()[:16].hex()
+
+def runtime_binding(state,uid):
+    require(type(uid) is int and uid >= 0)
+    child = runtime_child(state)
+    return str(Path("/run/user")/str(uid)/child)+":"+str(Path(DESTINATION)/child)
 
 def unique(pairs):
     result = {}
@@ -219,14 +230,33 @@ def socket_witness(path,connect=True):
             return stable(info)
         require(False)
 
-def normalize_binds(value):
+def regular_mountpoint(path):
+    descriptor = os.open(path,os.O_RDONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+    try:
+        os.fchmod(descriptor,0o600)
+        placeholder = os.fdopen(descriptor,"rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return placeholder
+
+def regular_mountpoint_witness(path,descriptor):
+    info = os.fstat(descriptor)
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+        and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and info.st_size == 0
+        and stable(info) == stable(path.stat(follow_symlinks=False)))
+    return stable(info)
+
+def normalize_binds(value,leaf_bindings=()):
     result = []
+    leaf_bindings = set(leaf_bindings)
     for item in value.split():
         parts = item.split(":")
-        if len(parts) == 3 and parts[-1] == "rbind":
-            parts.pop()
+        option = parts.pop() if len(parts) == 3 else None
         require(len(parts) == 2)
-        result.append(":".join(parts))
+        binding = ":".join(parts)
+        require(option == "norbind" if binding in leaf_bindings else option in (None,"rbind"))
+        result.append(binding)
     return result
 
 class Admission:
@@ -238,6 +268,7 @@ class Admission:
         self.held = []
         self.created_sockets = []
         self.created_manager = False
+        self.created_control = None
         try:
             self.directory = open_directory(self.root,private=True)
             self.held.append(self.directory)
@@ -245,25 +276,19 @@ class Admission:
             os.mkdir("systemd",0o700,dir_fd=self.directory)
             self.created_manager = True
             self.created_manager_identity = stable((self.root/"systemd").stat(follow_symlinks=False))
-            previous_umask = os.umask(0o077)
-            try:
-                for path in (self.root/"bus",self.root/"systemd/private"):
-                    placeholder = socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
-                    try:
-                        placeholder.bind(str(path))
-                        self.created_sockets.append((placeholder,path,stable(path.stat(follow_symlinks=False))))
-                    except BaseException:
-                        placeholder.close()
-                        raise
-            finally:
-                os.umask(previous_umask)
+            # Leaf mountpoints are held empty regular files, never live sockets.
+            # The mounted sources remain exact peer-checked AF_UNIX endpoints.
+            for path in (self.root/"bus",self.root/"systemd/private"):
+                placeholder = regular_mountpoint(path)
+                self.created_sockets.append((placeholder,path,stable(os.fstat(placeholder.fileno()))))
+                regular_mountpoint_witness(path,placeholder.fileno())
             self.manager_directory = open_directory(self.root/"systemd",private=True)
             self.held.append(self.manager_directory)
             require(os.listdir(self.manager_directory) == ["private"])
             self.root_identity = stable(os.fstat(self.directory))
             self.manager_identity = stable(os.fstat(self.manager_directory))
-            self.placeholder = {path:socket_witness(path,False) for path in
-                (self.root/"bus",self.root/"systemd/private")}
+            self.placeholder = {path:(placeholder.fileno(),witness)
+                for placeholder,path,witness in self.created_sockets}
             self.sources = {self.root/"bus":Path("/run/user/"+str(os.getuid())+"/bus"),
                 self.root/"systemd/private":Path("/run/user/"+str(os.getuid())+"/systemd/private")}
             self.source_parents = []
@@ -286,6 +311,19 @@ class Admission:
             self.raw = os.pread(self.file,65537,0)
             require(len(self.raw) == info.st_size)
             self.selected = manifest_schema(json.loads(self.raw,object_pairs_hook=unique),home)
+            self.control_child = runtime_child(self.selected["runtime_state"])
+            self.control_source = runtime/self.control_child
+            control_source_fd = open_directory(self.control_source,private=True)
+            self.held.append(control_source_fd)
+            self.source_parents.append((self.control_source,control_source_fd,stable(os.fstat(control_source_fd))))
+            if self.selected["action"] == "install-and-enroll":
+                require(not os.listdir(control_source_fd))
+            os.mkdir(self.control_child,0o700,dir_fd=self.directory)
+            control_placeholder = self.root/self.control_child
+            self.created_control = (control_placeholder,stable(control_placeholder.stat(follow_symlinks=False)))
+            control_placeholder_fd = open_directory(control_placeholder,private=True)
+            self.held.append(control_placeholder_fd)
+            self.source_parents.append((control_placeholder,control_placeholder_fd,self.created_control[1]))
             self.product_directories = []
             for name in ("records","runtime_state")+ (("prefix",) if self.selected["ownership"] == "omux-installation" else ()):
                 path = canonical(self.selected[name])
@@ -304,15 +342,16 @@ class Admission:
         require(stable(os.fstat(self.directory)) == self.root_identity == stable(self.root.stat(follow_symlinks=False))
             and stable(os.fstat(self.manager_directory)) == self.manager_identity
             == stable((self.root/"systemd").stat(follow_symlinks=False))
-            and set(os.listdir(self.directory)) == {"input.json","bus","systemd"}
+            and set(os.listdir(self.directory)) == {"input.json","bus","systemd",self.control_child}
             and os.listdir(self.manager_directory) == ["private"])
+        require(not os.listdir(self.root/self.control_child))
         info = os.fstat(self.file)
         identity = tuple(getattr(info,n) for n in ("st_dev","st_ino","st_uid","st_mode","st_nlink","st_size","st_mtime_ns","st_ctime_ns"))
         require(identity == self.file_identity and os.pread(self.file,65537,0) == self.raw)
         named = os.stat("input.json",dir_fd=self.directory,follow_symlinks=False)
         require(tuple(getattr(named,n) for n in ("st_dev","st_ino","st_uid","st_mode","st_nlink","st_size","st_mtime_ns","st_ctime_ns")) == identity)
-        for path,witness in self.placeholder.items():
-            require(stable(path.stat(follow_symlinks=False)) == witness)
+        for path,(descriptor,witness) in self.placeholder.items():
+            require(regular_mountpoint_witness(path,descriptor) == witness)
         for path,witness in self.socket_identities.items():
             require(socket_witness(path) == witness)
         for path,fd,witness in self.source_parents+self.product_directories:
@@ -323,8 +362,8 @@ class Admission:
 
     def bindings(self):
         return [str(self.root)+":"+DESTINATION]+[
-            str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))
-            for target,source in self.sources.items()]
+            str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))+":norbind"
+            for target,source in self.sources.items()] + [runtime_binding(self.selected["runtime_state"],os.getuid())]
 
     def writable_binding(self):
         return " ".join(str(path)+":"+str(path) for path,_,_ in self.product_directories)
@@ -333,8 +372,11 @@ class Admission:
         expected_rw = normalize_binds(self.writable_binding())
         if run is not None:
             expected_rw.append(str(run)+":"+str(run))
-        ro,rw = normalize_binds(actual.get("BindReadOnlyPaths","")),normalize_binds(actual.get("BindPaths",""))
-        require(len(ro) == len(self.bindings()) and set(ro) == set(self.bindings())
+        leaves = [str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))
+            for target,source in self.sources.items()]
+        expected_ro = normalize_binds(" ".join(self.bindings()),leaves)
+        ro,rw = normalize_binds(actual.get("BindReadOnlyPaths",""),leaves),normalize_binds(actual.get("BindPaths",""))
+        require(len(ro) == len(expected_ro) and set(ro) == set(expected_ro)
             and len(rw) == len(expected_rw) and set(rw) == set(expected_rw))
 
     def service_observation(self,systemctl,starting=False):
@@ -409,6 +451,11 @@ class Admission:
             if path.exists() and stable(path.stat(follow_symlinks=False)) == witness:
                 path.unlink()
         self.created_sockets = []
+        if getattr(self,"created_control",None) is not None:
+            path,witness = self.created_control
+            if path.is_dir() and not path.is_symlink() and stable(path.stat(follow_symlinks=False)) == witness and not any(path.iterdir()):
+                path.rmdir()
+            self.created_control = None
         if getattr(self,"created_manager",False):
             path = self.root/"systemd"
             if path.is_dir() and not path.is_symlink() and stable(path.stat(follow_symlinks=False)) == self.created_manager_identity and not any(path.iterdir()):

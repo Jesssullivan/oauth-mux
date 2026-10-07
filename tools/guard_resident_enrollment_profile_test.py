@@ -1,7 +1,10 @@
 """Provider-free resident admission and complementary reservation predicates."""
 import copy
+import hashlib
 import json
 import os
+import stat
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -102,11 +105,12 @@ class ResidentModels(unittest.TestCase):
     def test_exact_namespace_binds_deny_extra_duplicates_writable_injection(self):
         admission = resident.Admission.__new__(resident.Admission)
         admission.root = Path("/private/input")
+        admission.selected = manifest()
         admission.sources = {admission.root/"bus":Path("/run/user/1000/bus"),
             admission.root/"systemd/private":Path("/run/user/1000/systemd/private")}
         admission.product_directories = [(Path("/private/product"),None,None)]
         run = Path("/private/run")
-        actual = {"BindReadOnlyPaths":" ".join(v+":rbind" for v in admission.bindings()),
+        actual = {"BindReadOnlyPaths":" ".join(v if v.endswith(":norbind") else v+":rbind" for v in admission.bindings()),
             "BindPaths":admission.writable_binding()+" "+str(run)+":"+str(run)}
         admission.verify_bindings(actual,run)
         for role in ("BindReadOnlyPaths","BindPaths"):
@@ -153,6 +157,113 @@ class ResidentModels(unittest.TestCase):
                 resident.observe_existing_session_services(env,10000000001,Path("/declared/probe"))
         with self.assertRaises(ValueError):
             resident.observe_existing_session_services({"DBUS_SESSION_BUS_ADDRESS":"unix:path=/foreign"},10000000001,"probe")
+
+class ResidentControlTransportModels(unittest.TestCase):
+    def test_state_hash_selects_same_daemon_and_client_runtime_child(self):
+        state = "/home/owned/.local/state/omux"
+        expected = "omux-" + hashlib.sha256(state.encode()).hexdigest()[:32]
+        self.assertEqual(resident.runtime_child(state), expected)
+        self.assertEqual(resident.runtime_binding(state, 1000),
+                         "/run/user/1000/" + expected + ":/omux-resident-inputs/" + expected)
+        self.assertNotEqual(resident.runtime_child(state), resident.runtime_child(state + "-dev"))
+        for bad in ("relative", "/state//omux", "/state/../omux", "/state/omux/"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                resident.runtime_child(bad)
+
+    def test_control_placeholder_cleanup_retains_real_runtime_and_replacements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root/"actual-runtime"
+            source.mkdir(mode=0o700)
+            placeholder = root/"namespace-child"
+            placeholder.mkdir(mode=0o700)
+            admission = resident.Admission.__new__(resident.Admission)
+            admission.held = []
+            admission.created_sockets = []
+            admission.created_manager = False
+            admission.created_control = (placeholder,resident.stable(placeholder.stat(follow_symlinks=False)))
+            admission.close()
+            self.assertTrue(source.is_dir())
+            self.assertFalse(placeholder.exists())
+            placeholder.mkdir(mode=0o700)
+            admission.created_control = (placeholder,resident.stable(placeholder.stat(follow_symlinks=False)))
+            placeholder.rename(root/"original-placeholder")
+            placeholder.mkdir(mode=0o700)
+            admission.close()
+            self.assertTrue(placeholder.is_dir())
+            self.assertTrue(source.is_dir())
+
+class ResidentLeafMountModels(unittest.TestCase):
+    def test_empty_regular_mountpoint_is_held_private_and_exclusive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/"bus"
+            placeholder = resident.regular_mountpoint(path)
+            try:
+                witness = resident.regular_mountpoint_witness(path,placeholder.fileno())
+                info = os.fstat(placeholder.fileno())
+                self.assertTrue(stat.S_ISREG(info.st_mode))
+                self.assertEqual(stat.S_IMODE(info.st_mode),0o600)
+                self.assertEqual(info.st_size,0)
+                self.assertEqual(info.st_nlink,1)
+                self.assertEqual(witness,resident.stable(info))
+                with self.assertRaises(FileExistsError):
+                    resident.regular_mountpoint(path)
+            finally:
+                placeholder.close()
+
+    def test_regular_mountpoint_rejects_replacement_symlink_hardlink_data_and_socket(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for change in ("replacement","symlink","hardlink","data","socket"):
+                path = root/change
+                placeholder = resident.regular_mountpoint(path)
+                try:
+                    if change == "replacement":
+                        path.rename(root/"original")
+                        path.touch(mode=0o600)
+                    elif change == "symlink":
+                        path.rename(root/"symlink-original")
+                        path.symlink_to(root/"symlink-original")
+                    elif change == "hardlink":
+                        os.link(path,root/"link")
+                    elif change == "data":
+                        path.write_bytes(b"unexpected metadata")
+                    else:
+                        path.unlink()
+                        fake = resident.socket.socket(resident.socket.AF_UNIX,resident.socket.SOCK_STREAM)
+                        try:
+                            fake.bind(str(path))
+                        finally:
+                            fake.close()
+                    with self.subTest(change=change),self.assertRaises(ValueError):
+                        resident.regular_mountpoint_witness(path,placeholder.fileno())
+                finally:
+                    placeholder.close()
+
+    def test_socket_leaf_readback_requires_exact_nonrecursive_binding(self):
+        leaf = "/run/user/1000/bus:/omux-resident-inputs/bus"
+        root = "/private/input:/omux-resident-inputs"
+        self.assertEqual(resident.normalize_binds(root+":rbind "+leaf+":norbind",[leaf]),[root,leaf])
+        for actual in (leaf,leaf+":rbind",root+":norbind",leaf+":unknown",leaf+":norbind:rbind"):
+            with self.subTest(actual=actual),self.assertRaises(ValueError):
+                resident.normalize_binds(actual,[leaf])
+
+    def test_leaf_cleanup_closes_only_owned_mountpoint_and_retains_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root/"bus"
+            placeholder = resident.regular_mountpoint(path)
+            witness = resident.regular_mountpoint_witness(path,placeholder.fileno())
+            admission = resident.Admission.__new__(resident.Admission)
+            admission.held = []
+            admission.created_manager = False
+            admission.created_sockets = [(placeholder,path,witness)]
+            path.rename(root/"held-original")
+            path.touch(mode=0o600)
+            admission.close()
+            self.assertTrue(placeholder.closed)
+            self.assertTrue(path.exists())
+            self.assertTrue((root/"held-original").exists())
 
 class MissingUnitModels(unittest.TestCase):
     def admission(self,action="install-and-enroll",ownership="omux-installation"):
