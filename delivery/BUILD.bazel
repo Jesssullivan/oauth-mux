@@ -1145,10 +1145,11 @@ cc_binary(
     deps = ["@omux_nix//:glib"],
     tags = ["manual"],
 )
+exports_files(["resident_enrollment.py", "resident_owned_start.py"])
 python_binary(
     name = "resident_codex_enrollment",
     main = "resident_enrollment.py",
-    srcs = ["install.py","pack.py","portable.py","resident_owned_update.py",
+    srcs = ["install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
         "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
     data = [":default_instance_archive","@omux_nix//:systemctl",":resident_session_services"],
     args = ["$(location :default_instance_archive)","$(location @omux_nix//:systemctl)",
@@ -1159,6 +1160,6 @@ python_binary(
 python_test(
     name = "resident_enrollment_contract_test",
     main = "test_resident_enrollment.py",
-    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py",
+    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
         "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
 )

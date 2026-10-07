@@ -97,3 +97,39 @@ Zero accounts are durably retained. Actual owned inactive package replacement
 remains the existing installed proof. Ordinary native resume, accepted live
 history, two-account same-process handoff, browser consent, Darwin, unmodified
 Codex support and achieved reliability targets remain unproved.
+
+## Actual standard-path outcomes and owned first-start source
+
+Exact signed standard source `a948203789b9bff1d5726591bcf86dc4ce161916`
+passed all eight declared new/regression checks in
+`e4f651ce-b033-4433-92f5-b1243018ae5e`; receipt SHA256
+`aebbe300e26471563f858a2a999739874e9d09a81af09566a4a89caf0c1caa33`.
+Exits zero, descendants empty, controller failure null and evidence preserved.
+These checks include the compiled prompt models and docs classification.
+
+Actual standard metadata `02de29b9-2e6e-4532-8299-cc4155d880b6` passed;
+receipt SHA256 `836955af4583a7b46a11cc705725975f18537a333c7270b125ac23170838a281`.
+Stable bus/service identities and existing default collection were observed;
+Locked was true. Collection path stayed in private metadata. No item/secret,
+factor, provider, daemon or enrollment action was performed.
+
+Authorized standard Unlock/Prompt `8f2bc14d-3ebb-40cb-8175-1491955a0f42`
+refused with `unlock / cancelled`; exits125/125, empty descendants,
+controller failure null. Receipt SHA256
+`e384a1c9c4a50baefde7e7dd55f4dc7b64cc6d3d0c3be9de59fe255ed607f7c5`.
+Cancellation does not identify human interaction or show that a prompt was
+visible. Post-helper Locked state and resident usable custody remain unproved.
+No retry or factor read followed. The user was asked for normal OS unlock or
+the Neo operator's nonsecret declared factor binding; no password was requested.
+
+Root now applied independently reviewed owned-first-start proposal SHA256
+`24a2e5294ec125fae1d8742b25675dc38e6654f54774abb3e29339191121fa2a`
+to the existing carrier/profile. It permits only the actual qualified installed
+archive and owned enabled inactive unit with its sole private zero-byte lock.
+It holds lock metadata without flock, starts only that unit, and reports control
+readiness separately from usable custody. Preexisting database/unknown state,
+modified payload/unit/alias, active process, stale qualification and wrong socket
+mode/peer refuse. Normal post-start authority lock is admitted by metadata only.
+No enable/reload/reinstall/source/provider/factor/vault-helper action is added.
+The ten new models and actual first start are unrun at this source checkpoint;
+the earlier eight-target result cannot qualify this changed graph.

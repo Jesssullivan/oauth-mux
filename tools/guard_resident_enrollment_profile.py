@@ -79,11 +79,12 @@ def fixed_paths(home,instance="default"):
 
 def manifest_schema(value,home):
     updating = type(value) is dict and value.get("action") == "update-existing"
+    starting = type(value) is dict and value.get("action") == "start-existing"
     require(type(value) is dict and set(value) == {"schema_version","ownership","action","instance",
-        "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else set())
+        "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else {"start"} if starting else set())
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
-        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing")
+        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing")
         and value["instance"] == "default")
     expected = fixed_paths(home)
     for key in ("records","runtime_state"):
@@ -98,7 +99,12 @@ def manifest_schema(value,home):
     permissions = value["permissions"]
     require(type(permissions) is dict and set(permissions) == {"connect_source","activate_service","restart_daemon"}
         and all(type(v) is bool for v in permissions.values()))
-    if updating:
+    if starting:
+        require(value["ownership"] == "omux-installation" and value["native_context"] is None
+            and permissions == {"connect_source":False,"activate_service":True,"restart_daemon":False})
+        import guard_resident_owned_update as update
+        update.start_pins(value["start"],home)
+    elif updating:
         require(value["ownership"] == "omux-installation" and value["native_context"] is None
             and not any(permissions.values()))
         import guard_resident_owned_update as update
@@ -445,6 +451,7 @@ class Admission:
         self.owned_unit = None
         self.recovery_empty = []
         self.installation_update = None
+        self.owned_start = None
         try:
             self.directory = open_directory(self.root,private=True)
             self.held.append(self.directory)
@@ -492,7 +499,7 @@ class Admission:
             control_source_fd = open_directory(self.control_source,private=True)
             self.held.append(control_source_fd)
             self.source_parents.append((self.control_source,control_source_fd,stable(os.fstat(control_source_fd))))
-            if self.selected["action"] in ("install-and-enroll","activate-existing-and-enroll"):
+            if self.selected["action"] in ("install-and-enroll","activate-existing-and-enroll","start-existing"):
                 require(not os.listdir(control_source_fd))
             if self.selected["action"] == "activate-existing-and-enroll":
                 self.recovery_empty.append(control_source_fd)
@@ -520,6 +527,9 @@ class Admission:
             if self.selected["action"] == "update-existing":
                 import guard_resident_owned_update as update
                 self.installation_update = update.InstallationUpdate(self.selected,home,deadline_ns)
+            if self.selected["action"] == "start-existing":
+                import guard_resident_owned_update as update
+                self.owned_start = update.OwnedFirstStart(self.selected,home,deadline_ns)
             self.facts = self.recheck()
         except BaseException:
             self.close()
@@ -546,6 +556,8 @@ class Admission:
             require(stable(os.fstat(fd)) == witness == stable(path.stat(follow_symlinks=False)))
         if getattr(self,"installation_update",None) is not None:
             self.installation_update.recheck()
+        if getattr(self,"owned_start",None) is not None:
+            self.owned_start.recheck()
         if self.owned_unit is not None:
             self.owned_unit.recheck()
         facts = {"scope":"resident-enrollment","source_contents_read":False,
@@ -560,7 +572,10 @@ class Admission:
         return facts
 
     def bindings(self):
-        return list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[
+        starting = getattr(self,"owned_start",None)
+        extra = ([str(path)+":"+str(path) for path,_,_ in self.product_directories]+[
+            str(public.path)+":"+str(public.path)+":norbind" for public in starting.files[:2]]) if starting is not None else []
+        return extra+list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[
             str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))+":norbind"
             for target,source in self.sources.items()] + [runtime_binding(self.selected["runtime_state"],os.getuid())] + (
             [self.selected["runtime_state"]+":"+self.selected["runtime_state"]]+[
@@ -569,6 +584,8 @@ class Admission:
             if getattr(self,"installation_update",None) is not None else [])
 
     def writable_binding(self):
+        if getattr(self,"owned_start",None) is not None:
+            return ""
         return " ".join(str(path)+":"+str(path) for path,_,_ in self.product_directories
             if getattr(self,"installation_update",None) is None or str(path) != self.selected["runtime_state"])
 
@@ -578,6 +595,8 @@ class Admission:
             expected_rw.append(str(run)+":"+str(run))
         leaves = [str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))
             for target,source in self.sources.items()]
+        if getattr(self,"owned_start",None) is not None:
+            leaves += [str(public.path)+":"+str(public.path) for public in self.owned_start.files[:2]]
         if getattr(self,"installation_update",None) is not None:
             leaves += [str(file.path)+":"+str(file.path) for file in
                 (self.installation_update.archive,self.installation_update.previous_archive,self.installation_update.qualification)]
@@ -592,11 +611,11 @@ class Admission:
             "DBUS_SESSION_BUS_ADDRESS":"unix:path=/run/user/"+str(os.getuid())+"/bus"}
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
-        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing")
+        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing")
         properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
         if recovering_action:
             properties += ",UnitFileState"
-        if self.selected["action"] == "update-existing":
+        if self.selected["action"] in ("update-existing","start-existing"):
             import guard_resident_owned_update as update
             properties = ",".join(sorted(update.IDLE_PROPERTIES))
         result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
@@ -610,7 +629,27 @@ class Admission:
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
             "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set())
-            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] == "update-existing" else set()))
+            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing") else set()))
+        if self.selected["action"] == "start-existing":
+            require(self.owned_start is not None)
+            self.owned_start.recheck()
+            if starting:
+                self.owned_start.pristine()
+                update.inactive_installation(values,self.selected)
+                update.inactive_cgroup(self.deadline_ns)
+                return {"active":False,"owned_first_start_admitted":True,"bounded":True}
+            pid,group = update.active_start_properties(values,self.selected)
+            # Reuse the declared public process/cgroup projection, never raw state.
+            from resident_enrollment import process_identity,cgroup_observation
+            identity = process_identity(pid)
+            caps,cgroup = cgroup_observation(group,pid)
+            check_resident_bounds(values,caps)
+            require(process_identity(pid) == identity)
+            path = Path("/run/user")/str(os.getuid())/self.control_child/"control.sock"
+            peer = socket_witness(path)
+            update.start_control_peer(peer,pid)
+            return {"active":True,"owned_first_start_observed":True,"bounded":True,
+                "control_plane_health_requires_controller_success":True,"custody_claim_requires_controller_success":True}
         if starting_new:
             require(values["LoadState"] == "not-found" and values["ActiveState"] == "inactive"
                 and values["SubState"] == "dead" and values["MainPID"] == "0"
@@ -687,6 +726,9 @@ class Admission:
         return int(remaining)
 
     def close(self):
+        if getattr(self,"owned_start",None) is not None:
+            self.owned_start.close()
+            self.owned_start = None
         if getattr(self,"installation_update",None) is not None:
             self.installation_update.close()
             self.installation_update = None

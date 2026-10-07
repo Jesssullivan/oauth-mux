@@ -30,6 +30,89 @@ class ModelSelector:
 
 
 class ResidentContract(unittest.TestCase):
+    def test_first_start_refuses_already_active_before_start_or_other_manager_mutation(self):
+        import resident_owned_start as start
+        payload,manifest_raw=b"public archive",b"public manifest"
+        selection={"archive_bytes":len(payload),"archive_sha256":resident.hashlib.sha256(payload).hexdigest(),
+            "manifest_sha256":resident.hashlib.sha256(manifest_raw).hexdigest()}
+        value=self.manifest()
+        value.update(action="start-existing",native_context=None,start=selection)
+        properties={name:"" for name in start.owned.IDLE_PROPERTIES}
+        properties.update(LoadState="loaded",ActiveState="active",SubState="running",MainPID="10")
+        raw="\n".join(key+"="+field for key,field in properties.items()).encode()
+        bounded=mock.Mock(return_value=raw)
+        witness=mock.Mock()
+        with mock.patch.object(start.owned,"start_pins",return_value=selection), \
+                mock.patch.object(start.pack,"read_bundle",return_value=payload), \
+                mock.patch.object(start.pack,"verify_bundle",return_value=({}, {"release-manifest.json":manifest_raw})), \
+                mock.patch.object(start.owned,"OwnedFirstStart",return_value=witness):
+            with self.assertRaises(ValueError):
+                start.execute_start(resident.Path("/public/archive"),resident.Path("/public/systemctl"),value,
+                    {"HOME":"/home/jess"},bounded,lambda maximum=20:maximum,resident.time.monotonic_ns()+120*10**9)
+        self.assertEqual(len(bounded.call_args_list),1)
+        self.assertIn("show",bounded.call_args.args[0])
+        witness.close.assert_called_once_with()
+
+    def test_first_start_locked_readiness_uses_only_named_start_show_and_health(self):
+        import resident_owned_start as start
+        payload,manifest_raw=b"public archive",b"public manifest"
+        selection={"archive_bytes":len(payload),"archive_sha256":resident.hashlib.sha256(payload).hexdigest(),
+            "manifest_sha256":resident.hashlib.sha256(manifest_raw).hexdigest()}
+        value=self.manifest()
+        value.update(action="start-existing",native_context=None,start=selection)
+        group="/user.slice/user-"+str(start.os.getuid())+".slice/user@"+str(start.os.getuid())+".service/app.slice/ai.xoxd.omux.service"
+        health={"protocol_version":1,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
+            "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
+        started=False
+        commands=[]
+        def bounded(command,environment,data=None):
+            nonlocal started
+            commands.append(command)
+            if "start" in command:
+                self.assertEqual(command[-2:],["start","ai.xoxd.omux.service"])
+                started=True
+                return b""
+            if "show" in command:
+                return b""
+            self.assertEqual(command[-3:],["rpc","system.health","-"])
+            self.assertEqual(data,b"{}")
+            return json.dumps({"jsonrpc":"2.0","id":"opaque","result":health}).encode()
+        witness=mock.Mock()
+        with mock.patch.object(start.owned,"start_pins",return_value=selection), \
+                mock.patch.object(start.pack,"read_bundle",return_value=payload), \
+                mock.patch.object(start.pack,"verify_bundle",return_value=({}, {"release-manifest.json":manifest_raw})), \
+                mock.patch.object(start.owned,"OwnedFirstStart",return_value=witness), \
+                mock.patch.object(start.owned,"inactive_installation"), \
+                mock.patch.object(start.owned,"inactive_cgroup"), \
+                mock.patch.object(start.owned,"active_start_properties",return_value=(10,group)), \
+                mock.patch.object(start.resident,"process_identity",return_value=(10,20,30,40)), \
+                mock.patch.object(start.resident,"cgroup_observation",return_value=({},(50,60))), \
+                mock.patch.object(start.guard,"check_resident_bounds"), \
+                mock.patch.object(start.guard,"socket_witness",return_value=((1,2,resident.stat.S_IFSOCK|0o600,start.os.getuid(),start.os.getgid()),10,20)), \
+                mock.patch.object(start.guard,"start_ticks",return_value=20):
+            result=start.execute_start(resident.Path("/public/archive"),resident.Path("/public/systemctl"),value,
+                {"HOME":"/home/jess","XDG_RUNTIME_DIR":"/omux-resident-inputs"},bounded,
+                lambda maximum=20:maximum,resident.time.monotonic_ns()+120*10**9)
+        self.assertTrue(started and result["control_plane_ready"] and result["vault_locked"])
+        self.assertFalse(result["custody_available"] or result["enrollment_verified"] or result["source_connected"])
+        self.assertEqual(sum("start" in command for command in commands),1)
+        self.assertTrue(all("show" in command or "start" in command or "rpc" in command for command in commands))
+        witness.pristine.assert_called_once_with()
+        witness.close.assert_called_once_with()
+
+    def test_first_start_dispatch_never_reads_source_or_observes_os_vault(self):
+        value=self.manifest()
+        value.update(action="start-existing",native_context=None,start={})
+        value["permissions"]={"connect_source":False,"activate_service":True,"restart_daemon":False}
+        with mock.patch.object(resident,"original_deadline",return_value=resident.time.monotonic_ns()+120*10**9), \
+                mock.patch.object(resident,"validate_manifest",return_value=value), \
+                mock.patch.object(resident,"hold_source_metadata",side_effect=AssertionError("no source")), \
+                mock.patch.object(resident.resident_guard,"observe_existing_session_services",side_effect=AssertionError("no vault")):
+            import resident_owned_start
+            with mock.patch.object(resident_owned_start,"execute_start",return_value={"control_plane_ready":True}) as start:
+                self.assertEqual(resident.execute(resident.Path("/declared/archive"),resident.Path("/declared/systemctl"),
+                    resident.Path("/declared/probe"),value),{"control_plane_ready":True})
+                start.assert_called_once()
     def test_update_dispatch_never_reads_native_source_or_observes_vault(self):
         value = self.manifest()
         value.update(action="update-existing",native_context=None,update={})
