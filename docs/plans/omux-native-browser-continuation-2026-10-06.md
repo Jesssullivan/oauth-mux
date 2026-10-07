@@ -120,14 +120,17 @@ refusals. Lifecycle measurements do not establish achieved SLOs, staffed support
 or contractual SLA; the [reliability contract](../reliability/service-objectives.md)
 remains authoritative.
 
-Main's eight legacy CI requirements conflict with local-only validation.
-A protection transition removes only status-check requirements after fresh
-authenticated snapshots, preserving existing administrator enforcement, linear
-history, conversation resolution and push safeguards. Use an isolated signed
-integration branch rooted at134e460, preserve ancestry/retired probe deletion,
-and review the exact final-source manifest. Mixed staging and empty
-intent-to-add entries must never be committed blindly. Historical evidence
-and closed unmerged PRs remain preserved.
+The local-only protection transition completed with PR527: eight legacy status
+requirements were removed after authenticated snapshots. Administrator
+enforcement, linear history, conversation resolution and push safeguards remain
+preserved. PR528 and PR529 subsequently merged reviewed source with exact tree
+and signature readbacks; their local proof scopes do not close native/browser
+acceptance. Current evidence is in
+[the portable/native checkpoint](../tracker-updates/portable-exec-2026-10-07.json).
+Signed source branches continue from reviewed main, retaining134e460 ancestry
+and retired probe deletion. Review the exact final-source manifest. Mixed
+staging and empty intent-to-add entries must never be committed blindly.
+Historical evidence and closed unmerged PRs remain preserved.
 
 The ten-hour follow-on prioritizes fresh candidate packaging and
 identity/usable-authority/one-writer renewal readiness. Live evaluation needs

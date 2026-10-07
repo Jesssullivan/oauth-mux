@@ -17,14 +17,14 @@
   "latest_hm_model_receipt": "docs/tracker-updates/integrated-delivery-hma8ab-2026-10-06.json",
   "latest_surrounding_regression_receipt": "docs/tracker-updates/integrated-delivery-actor0407-2026-10-06.json",
   "latest_restart_regression_receipt": "docs/tracker-updates/integrated-delivery-restartdc4f-2026-10-07.json",
-  "new_source_pending_verification": "Native initial TUI startup marker applied and source-cleared; execution unrun",
+  "new_source_pending_verification": "Marker fixture tested in overall failed native action; full preservation unpassed; source-only future diagnostic proposals remain unapplied",
   "latest_yoga_fixture_receipt": "docs/tracker-updates/integrated-delivery-model35d5-2026-10-07.json",
   "native_test_profile": "Retained009 bootstrap_and_cold_resume_TOKIO_WORKER_THREADS2;async_workers_only;total_threads_and_prior_EAGAIN_cause_unmeasured",
   "latest_refined_observer_model_receipt": "docs/tracker-updates/integrated-delivery-modelec8b-2026-10-07.json",
   "latest_diagnostic_model_receipt": "docs/tracker-updates/integrated-delivery-stderr5197-2026-10-06.json",
   "latest_semantic_receipt": "docs/tracker-updates/integrated-delivery-be799-2026-10-06.json",
-  "latest_installed_native_receipt": "/home/jess/.local/state/omux-execution-20261005/9f286027-f277-4f91-9097-468574b76d4a/receipt.json",
-  "latest_installed_native_result": "FAILED: resumed-preservation/resume-retained-config-predicate/resume-retained-config-changed; strict checkpoint passed, overall native gate open",
+  "latest_installed_native_receipt": "/home/jess/.local/state/omux-execution-20261005/ac14f5fa-d87c-446a-823d-12ef6b022153/receipt.json",
+  "latest_installed_native_result": "FAILED cold-native-resume/resume-owner-endpoint/resume-endpoint-deadline; docs/source passed, no config-comparison result",
   "latest_retained_input_qualification": "docs/tracker-updates/integrated-delivery-47d9-2026-10-06.json",
   "latest_semantic_result": "be799_terminal0_0_empty;6of6_targetsPASS;removal250_including_real_optional_OOMPASS;retained_copy119923125_exact009_and_helper10PASS;actual_B_admission47d9PASS;installed_native_unproved",
   "latest_yoga_receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json",
@@ -35,7 +35,7 @@
   "latest_installed_native_diagnostic_result": "6616_controller3_workload3_empty_controller_failure_null_rejection_null_retained_aftertrue;docs_source2of3passed;selected_detach_status_rpc_process_failure;FD2_observer_launch_fork_busy;whole_workload_max_event_increase_observed_peak456_no_sample512;no_rootcause_or_cold_resume",
   "scope": "Provider-free partial candidate resume and installed Chromium consent; parent objective/eleven gates preserved",
   "executor": "root",
-  "latest_factual_linear_receipt": "docs/tracker-updates/integrated-delivery-source-2026-10-07.json",
+  "latest_factual_linear_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json#marker_linear_reconciliation",
   "resource_limits": {
     "memory_bytes": 4294967296,
     "swap_bytes": 0,
@@ -171,7 +171,7 @@
   "latest_portable_exec_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
   "current_owned_execution": {
     "state": "none",
-    "last_epoch": "9f286027-f277-4f91-9097-468574b76d4a",
+    "last_epoch": "ac14f5fa-d87c-446a-823d-12ef6b022153",
     "descendants_empty": true
   },
   "latest_portable_exec_source_delivery": {
@@ -200,5 +200,20 @@
     "protection_unchanged": true,
     "scope": "Reviewed source-only packaging/model delivery; failed native9f286 result disclosed; no gate closes"
   },
-  "next_source_implementation": "Fresh bounded native checkpoint on signedclean startup-marker fixture; all preservation predicates unchanged"
+  "next_source_implementation": "Fresh bounded native checkpoint on signedclean startup-marker fixture; all preservation predicates unchanged",
+  "latest_native_startup_fixture": {
+    "source": {
+      "head": "2bd9942f34450ec1cf245674aaafecf32425abbb",
+      "tree": "c1a44da7176a2feed993afd241465f3bae62f031",
+      "parent": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+      "signature": "G",
+      "git_verify_exit": 0,
+      "worktree_clean": true,
+      "pushed": true,
+      "branch": "codex/omux-native-startup-fixture-20261007"
+    },
+    "receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
+    "proof": "FAILED_owner_endpoint_before_config_predicate",
+    "pr": 530
+  }
 }
