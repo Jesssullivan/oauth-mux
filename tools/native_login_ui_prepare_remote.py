@@ -243,6 +243,7 @@ class ElfClosure:
         # Reuse the validated segment bounds to preserve RPATH inheritance rules.
         header = struct.unpack_from("<HHIQQQIHHHHHH",payload,16)
         kinds = set()
+        search_tag_count = 0
         for index in range(header[9]):
             record = struct.unpack_from("<IIQQQQQQ",payload,header[4]+index*header[8])
             if record[0] == 2:
@@ -252,8 +253,13 @@ class ElfClosure:
                         break
                     if tag in (15,29):
                         kinds.add(tag)
+                        search_tag_count += 1
         require(len(kinds) <= 1,"dialog_elf_conflicting_search_tags")
         result["runpath"] = 29 in kinds
+        # Whole-empty tags are ignored by glibc; nonempty empty colon components
+        # select CWD. RUNPATH presence still blocks ancestor RPATH inheritance.
+        if search_tag_count == 1 and result["rpath"] == [""]:
+            result["rpath"] = []
         return result
 
     def directory(self,value,origin,control):

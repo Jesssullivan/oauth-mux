@@ -113,11 +113,12 @@ class Preparation(unittest.TestCase):
                 os.close(directory)
 
 
-def elf_model(needed=(),interpreter=None,rpath=(),path_tag=29):
+def elf_model(needed=(),interpreter=None,rpath=(),path_tag=29,padding=b""):
     strings,references = bytearray(b"\0"),[]
     for tag,value in [(1,name) for name in needed]+([(path_tag,":".join(rpath))] if rpath else []):
         references.append((tag,len(strings)))
         strings.extend(value.encode()+b"\0")
+    strings.extend(padding)
     count = 2+(interpreter is not None)
     dyn = 64+56*count
     size = 16*(len(references)+3)
@@ -208,7 +209,7 @@ class ElfClosureModels(unittest.TestCase):
                 local.elf_parser_source(data.replace(marker,b"_MAX_FILE = "+expression))
 
     def graph(self,*,control_rpath=None,transitive_needed=("libc.so.6",),ambiguous=False,
-            child_rpath=True,path_tag=29):
+            child_rpath=True,path_tag=29,child_empty_tag=None):
         rows = local.subset(Path(Preparation.inventory).read_bytes())
         roots = {row["path"] for row in rows}
         qt = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
@@ -218,7 +219,9 @@ class ElfClosureModels(unittest.TestCase):
         files = {control:elf_model(("libQt6Core.so.6",),loader,
                 (qt,glibc) if control_rpath is None else control_rpath,path_tag),
             loader:elf_model(),glibc+"/libc.so.6":elf_model(("ld-linux-x86-64.so.2",),rpath=(glibc,)),
-            qt+"/libQt6Core.so.6":elf_model(transitive_needed,rpath=(glibc,) if child_rpath else ()),
+            qt+"/libQt6Core.so.6":elf_model(transitive_needed,
+                rpath=((glibc,) if child_rpath else ()) if child_empty_tag is None else ("",),
+                path_tag=29 if child_empty_tag is None else child_empty_tag),
             remote.PLUGIN:elf_model(("libQt6Core.so.6",),rpath=(qt,))}
         if ambiguous:
             files[glibc+"/libQt6Core.so.6"] = elf_model()
@@ -258,7 +261,8 @@ class ElfClosureModels(unittest.TestCase):
         self.graph()
 
     def test_ambient_or_bazel_relative_control_search_refuses(self):
-        for paths in (("/usr/lib",),("$ORIGIN/../../_solib_k8",),("",)):
+        qt = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
+        for paths in (("/usr/lib",),("$ORIGIN/../../_solib_k8",),("",""),("",qt),(qt,""),(qt,"",qt)):
             with self.subTest(paths=paths),self.assertRaisesRegex(ValueError,"dialog_elf_"):
                 self.graph(control_rpath=paths)
 
@@ -275,6 +279,20 @@ class ElfClosureModels(unittest.TestCase):
         self.graph(child_rpath=False,path_tag=15)
         with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved_or_ambiguous"):
             self.graph(child_rpath=False,path_tag=29)
+
+    def test_whole_empty_search_tag_ignores_nul_terminated_padding(self):
+        inspector = object.__new__(remote.ElfClosure)
+        for tag in (15,29):
+            with self.subTest(tag=tag):
+                metadata = inspector.metadata(elf_model(rpath=("",),path_tag=tag,padding=b"XXXXXXXX"))
+                self.assertEqual(metadata["rpath"],[])
+                self.assertEqual(metadata["runpath"],tag == 29)
+                self.graph(control_rpath=("",),path_tag=tag)
+
+    def test_whole_empty_runpath_still_blocks_ancestor_rpath(self):
+        self.graph(path_tag=15,child_empty_tag=15)
+        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved_or_ambiguous"):
+            self.graph(path_tag=15,child_empty_tag=29)
 
 
 if __name__ == "__main__":
