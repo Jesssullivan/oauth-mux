@@ -1,0 +1,451 @@
+{
+  "schema_version": 1,
+  "kind": "live_account_proof_checkpoint",
+  "authority": [
+    "User real-account five-hour sprint and uncapped model IO",
+    "AGENTS.md",
+    "R-HOOK-CONVERGENCE-20261004/R-N13"
+  ],
+  "goal": ".goal/omux-live-account-proof-2026-10-07.json",
+  "note": "docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md",
+  "start": "2026-10-07T05:48:41Z",
+  "due": "2026-10-07T10:48:41Z",
+  "prior_receipt": "docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json",
+  "reviewed_source_delivery": {
+    "pr": 531,
+    "merge": "d829b3cdd91696a375a076970214fbf0621a5f6c",
+    "tree": "91b543ef711d7069aa75cfa72ef6ad9f4d7d98fd",
+    "scope": "Bounded diagnostics and source; no live proof"
+  },
+  "prior_native_checkpoint": {
+    "epoch": "e761fae3-bbf4-4c68-af4c-23075c43bab7",
+    "result": "failed",
+    "boundary": "cold-native-resume/resume-owner-endpoint/resume-terminal-exited",
+    "accepted_history_proven": false,
+    "live_handoff_proven": false
+  },
+  "current_execution": {
+    "state": "running",
+    "epoch": "c556012e-bf08-4f14-8355-32bee408f4c6",
+    "session_id": 88301,
+    "source_commit": "9bba6ccc97f800146ef23e9b847adb312a327c66",
+    "targets": [
+      "//delivery:installed_legacy_native_tui_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ]
+  },
+  "account_discovery": {
+    "scope": "Selected conventional native source metadata only; no credential content read",
+    "file_regular": true,
+    "file_mode": "0600",
+    "directory_mode": "0700",
+    "owned_by_current_user": true,
+    "provider_identity_verified": false,
+    "durable_real_enrollment_established": false,
+    "second_source": "one-time native OAuth enrollment or authorized extant source; no location prerequisite imposed on user"
+  },
+  "workstreams": [
+    "Native cold-resume boundary",
+    "Real source enrollment/custody",
+    "Live request auth and completion ordering",
+    "Native text portability",
+    "Declared live fixture and redacted ledger audit",
+    "Contained live execution",
+    "Qualified maintained-candidate build",
+    "Independent safety review"
+  ],
+  "claim": "Experimental unshipped; real account enrollment/resume/handoff unpassed",
+  "model_pre_action": {
+    "source_base": "d829b3cdd91696a375a076970214fbf0621a5f6c",
+    "targets": [
+      "//delivery:native_terminal_failure_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "reviews": [
+      "native_resume_fix",
+      "live_security_review"
+    ],
+    "source_scope": "Failure-only closed exit/message recognition; actual privacy/liveness/cleanup models; five-hour checkpoint",
+    "resource_limits": {
+      "memory_bytes": 4294967296,
+      "swap_bytes": 0,
+      "tasks": 512,
+      "cpu": 2,
+      "runtime_seconds": 1200
+    },
+    "native_acceptance_changed": false
+  },
+  "model_result": {
+    "epoch": "c2d4df18-3747-43bf-ac39-55b283e6d620",
+    "source_commit": "9bba6ccc97f800146ef23e9b847adb312a327c66",
+    "source_dirty": "false",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "1b6513053fb9c0acb3078390d0cfce55ffdeac5cc090fda05dc677759adb2889",
+    "test_evidence": {
+      "bytes": 218719,
+      "files": 9,
+      "manifest": "test-evidence.json",
+      "sha256": "7b78040cf5da1f76984e8bca3f4637869d7b16400333b9e99bb660460bcf5f8e",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:native_terminal_failure_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "classifier_models": 9,
+    "scope": "Privacy/closed-classifier/liveness/cleanup models and source/docs; no native/live proof"
+  },
+  "native_pre_action": {
+    "source_commit": "9bba6ccc97f800146ef23e9b847adb312a327c66",
+    "source_dirty": false,
+    "targets": [
+      "//delivery:installed_legacy_native_tui_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "runtime_input": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+    "scope": "Original preservation checkpoint unchanged; closed exit/message classification on failure; no provider calls"
+  },
+  "native_admission_correction": {
+    "result": "Three argument/profile refusals before any payload admission",
+    "scope": "First command omitted verb; subsequent construction retained unrelated nixpkgs input; corrected to exact retained profile without cap change",
+    "current_epoch": "c556012e-bf08-4f14-8355-32bee408f4c6"
+  },
+  "linear_pre_action": {
+    "recorded_at": "2026-10-07T06:11:01Z",
+    "issue": {
+      "id": "TIN-5338",
+      "title": "Omux-owned Codex adapter + ordinary launch/resume proof",
+      "status": "In Progress",
+      "description_before": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nImplement and qualify the Omux-owned Codex adapter and its explicit delivery method. Reversible setup then ordinary CLI/TUI launch and native resume; attach existing processes only through independently proved native capability. Safe request-boundary authorization substitution preserves native process/session/history/tools/approvals and accepted-work fences.\n\nAcceptance NAC-001/003/010/018, RR-01, SC-04–06: exact candidate installed launch/resume/attachment/handoff evidence. Paths: integrations/codex-upstream/, codex-owner-candidate/, codex-owner-runtime/, codex-native-recovery-runtime/ and src/native_owner.zig. TIN-5421 owns bounded discovery; TIN-1798 custody; TIN-1818 provider seams; TIN-2057 complete product acceptance.\n\nCurrent bounded evidence: retained source verification and fresh source producer passed their exact predicates; independent offline home/owner cache inventories are nonadditive. 1,596 unfetched descriptors and unresolved Git/dynamic/archive gaps do not establish complete native closure, offline analysis or compilation. Native runtime, ordinary application resume and live continuity remain unproved; native_support=false.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-5338>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence.",
+      "description_after": "## Current architecture and delivery\n\nOmux owns each adapted application's authentication contract and implementation. Use sufficient native extension mechanisms or an Omux-maintained adapter delivered through plugin/configuration, upstream contribution or explicitly maintained application modification. There is no vendor-provided Omux/Codex hook prerequisite. Experimental candidate proof does not establish unmodified Codex support.\n\nDelivery order: install/activate → Chromium source connection → verified identity and usable authority → renewal → ordinary application integration → same-process handoff. Home Manager owns fleet packages/services/exact-ID host registration; Omux owns custody/enrollment. Development and release identities and namespaces remain isolated.\n\n## This carrier\n\nImplement and qualify the Omux-owned Codex adapter and its explicit delivery method. Reversible setup then ordinary CLI/TUI launch and native resume; attach existing processes only through independently proved native capability. Safe request-boundary authorization substitution preserves native process/session/history/tools/approvals and accepted-work fences.\n\nAcceptance NAC-001/003/010/018, RR-01, SC-04–06: exact candidate installed launch/resume/attachment/handoff evidence. Paths: integrations/codex-upstream/, codex-owner-candidate/, codex-owner-runtime/, codex-native-recovery-runtime/ and src/native_owner.zig. TIN-5421 owns bounded discovery; TIN-1798 custody; TIN-1818 provider seams; TIN-2057 complete product acceptance.\n\nCurrent bounded evidence (October7): the exact retained owner candidate runtime009 is available and byte/custody-qualified; its recorded native compilation does not qualify a successor candidate. PR531 merged reviewed diagnostic source as d829b3cdd91696a375a076970214fbf0621a5f6c. Latest installed native checkpoint e761fae3 failed when the cold resumed terminal exited before its owner endpoint; ordinary resume acceptance and live continuity remain unproved, native_support=false. The earlier 1,596-descriptor SDK inventory is a separate historical incomplete lane and is not the current retained-runtime availability statement. User-selected next five-hour work targets actual account enrollment, native startup and same-process real account substitution; Omux owns discovery/enrollment rather than requiring profile-path knowledge. Browser source acquisition is optional where an authorized native source exists; installed browser acceptance remains independently open.\n\n## Evidence and retained history\n\nRequire exact source/artifact/platform/application/provider tuple and declared locked Nix/Bazel action. Browser execution, service activation, native launch/resume, handoff and measured SLO achievement are separate gates. Builds/tests/refusals prove only stated predicates. Targets create no contractual SLA or staffed support promise. This description changes no issue state, date, assignee or dependency.\n\nAuthority: [AGENTS.md](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/AGENTS.md>), [architecture SSOT](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md>), [delivery plan](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/plans/omux-integrated-delivery-sprint-2026-10-05.md>), product/user-stories.md, spec/native-adapter-contract.md and reliability/service-objectives.md.\n\nComplete predecessor description and exact readbacks remain in [durable before snapshots](<https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-native-reset/docs/tracker-updates/integrated-delivery-2026-10-05.json>) and [this issue's retained history/comments](<https://linear.app/tinyland/issue/TIN-5338>). Dated historical measurements/releases retain their original candidate/date scope. Current scope supersedes old operational dictates without erasing historical evidence."
+    },
+    "comment": {
+      "id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+      "body_before": "Provider-free checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged the independently reviewed diagnostic source. Signed head `04120ea64f8d160fff561fec22b86e8f1df75b92` became server-verified squash `e4e644cd97343d53d3dc08664f5c0914ab173b99`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`, exact tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`. Head retained; protection unchanged. Source/model delivery, not a release or completion.\n\nClean-head installed diagnostic `66162c74-9ab0-4dea-9f45-7e031d1eb8b0` FAILED: controller/workload3, empty descendants, no controller failure/rejection, retained009 reverified after cleanup. Docs/source passed (2/3). The original detach CLI passed exit0/empty-stderr/JSON-result and exact original ACK. The subsequent status observer wrapper failed its fork with EAGAIN before any status CLI exec. No failure-only detach record was expected from a successful call.\n\nWhole-workload PID observations: baseline1/limit512, sampled peak456, exposed max-event increase, absent terminal cgroup/unknown samples. No process attribution or root cause; sampled peak is not continuous maximum. Completion readback, replay, retirement, post-detach preservation and cold resume remain unproved. No mutation retry or cap change.\n\nLater evidence is preserved separately from frozen C at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`; raw receipt SHA256 `c70c7b7aaa47af586fc13345fc2d405c3e10659d800043d73a23d0be80efc869`. Parent remains five scoped passes/six open. No provider calls, stock-support claim, live handoff or Darwin proof.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.\n\n2026-10-07T03:07:24Z provider-free follow-on (R-HOOK-CONVERGENCE-20261004/R-N13).\n\n[PR #529](https://github.com/Jesssullivan/oauth-mux/pull/529) merged as server-verified `e49acf2e0521dbd739f57d35d4a64ea6e403d4c7`: parent E4, exact signed C2 `f3684f1` tree `21b45255f28bc1d4933242cd6bd602670166c021`, source branch retained and protection unchanged. Scoped launcher/package checks passed; failed77e9 (6/7) and9b69 (8/11) retain their scopes, correctedbb7c passed5/5. This is source delivery, not release or acceptance.\n\nFresh clean-C2 native `9f286027-f277-4f91-9097-468574b76d4a` FAILED3/3, empty descendants, retained009 reverified. Docs/source passed. Native reached original detach/state preservation, clean exit, fresh-process resume and the strict settings checkpoint; exact retained config/capability comparison refused at `resumed-preservation/resume-retained-config-predicate/resume-retained-config-changed`. Resumed detach/durable inspection were not reached; whole native gate remains open. Aggregate sampled512/exposed max-event increase has no cause attribution. Limits and predicates unchanged.\n\nNext: qualify exact candidate-native configuration-write behavior before any fresh invocation. No private data read, fixture relaxation or sealed runtime mutation.\n\nDurable current receipt: `docs/tracker-updates/portable-exec-2026-10-07.json`; [reviewed source note](https://github.com/Jesssullivan/oauth-mux/blob/f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c/docs/agent-notes/2026-10-07-sess-omux-portable-exec.md). Provider-free; stock Codex, live handoff, accepted-history, Darwin and achieved SLA/SLO remain unproved. Issue scope/state unchanged.\n\n2026-10-07T03:26:11Z native startup-fixture checkpoint: [PR #530](https://github.com/Jesssullivan/oauth-mux/pull/530) contains signed clean `2bd9942f34450ec1cf245674aaafecf32425abbb` with the source-qualified initial TUI marker; all preservation predicates and runtime009 remain unchanged. Fresh `ac14f5fa-d87c-446a-823d-12ef6b022153` FAILED3/3, empty descendants, retained input reverified, docs/source passed. Native failed at `cold-native-resume/resume-owner-endpoint/resume-endpoint-deadline`, before the config comparison; the marker correction is not runtime-verified. The original empty thread is created through native app-server, followed by ordinary TUI resume; initial ordinary TUI launch and accepted-history remain separate. No cause attribution or automatic rerun. Current receipt/note retains both9f286 andac14 failures. Parent still five scoped passes/six open; no issue-field changes.\n\n### October7 bounded diagnostic checkpoint\n\nPR530 is now source-only merged as verified0b0df5d6afbe25fd596944636571c63cae5ab72f, exact signed524febc tree5a0a97a6. Final clean docs/source f84a5b2e passed2/2, empty. Its native ac14 failure remains unchanged.\n\nDraft [PR531](https://github.com/Jesssullivan/oauth-mux/pull/531), signed clean sourcee54257e8887e4d9921b87e311242f01a5f56e9c7/tree5d8629b5, adds bounded failure-only role thread records and raw Yoga registry shapes; independent source review is clear. Initial3710749b batch passed4/6 and failed both census targets on an expired-deadline bypass. The reviewed one-line upfront check preserved assertions; correcteda92d4563 passed both census suites/actual-owned-child teardown plus docs/source4/4. All aggregates ended empty.\n\nFresh native81e76dcd ended3/3, empty, null controller failure/rejection and sealed009 reverified. Docs/source passed; native FAILED at native-seed-history/seed-history-attachment before detach or cold resume. Held failure-time counts: self4, Omux24, keyring5, native-bootstrap27; native-resume not created. These snapshots neither identify pools nor sum to an aggregate peak. Whole-workload sampledpeak389/exposed max-event increase is not a cause or attribution. Existing environment, caps and preservation assertions remain unchanged; no automatic native rerun.\n\n[Durable receipt](https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-bounded-proof-diagnostics-20261007/docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json) records the original source pre-proof snapshot; current local continuation note/receipt also records81e76 and subsequent source-only leads. Paths: docs/agent-notes/2026-10-07-sess-omux-portable-exec.md and docs/plans/omux-native-browser-continuation-2026-10-06.md. Next reviews separate discovery RPC/validation/reference failure and qualify explicitly reduced Bazel9 controller pools; no speculative native pool control or copy/import authority.\n\nParent remains five scoped historical passes/six open. Native resume, installed Yoga consent, genuine Home Manager evaluation, accepted history, stock Codex, live handoff and Darwin remain unproved. Issue state/scope/acceptance are unchanged; provider-free only; no achieved SLO/SLA or publication claim.",
+      "body_after": "Provider-free checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged the independently reviewed diagnostic source. Signed head `04120ea64f8d160fff561fec22b86e8f1df75b92` became server-verified squash `e4e644cd97343d53d3dc08664f5c0914ab173b99`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`, exact tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`. Head retained; protection unchanged. Source/model delivery, not a release or completion.\n\nClean-head installed diagnostic `66162c74-9ab0-4dea-9f45-7e031d1eb8b0` FAILED: controller/workload3, empty descendants, no controller failure/rejection, retained009 reverified after cleanup. Docs/source passed (2/3). The original detach CLI passed exit0/empty-stderr/JSON-result and exact original ACK. The subsequent status observer wrapper failed its fork with EAGAIN before any status CLI exec. No failure-only detach record was expected from a successful call.\n\nWhole-workload PID observations: baseline1/limit512, sampled peak456, exposed max-event increase, absent terminal cgroup/unknown samples. No process attribution or root cause; sampled peak is not continuous maximum. Completion readback, replay, retirement, post-detach preservation and cold resume remain unproved. No mutation retry or cap change.\n\nLater evidence is preserved separately from frozen C at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`; raw receipt SHA256 `c70c7b7aaa47af586fc13345fc2d405c3e10659d800043d73a23d0be80efc869`. Parent remains five scoped passes/six open. No provider calls, stock-support claim, live handoff or Darwin proof.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.\n\n2026-10-07T03:07:24Z provider-free follow-on (R-HOOK-CONVERGENCE-20261004/R-N13).\n\n[PR #529](https://github.com/Jesssullivan/oauth-mux/pull/529) merged as server-verified `e49acf2e0521dbd739f57d35d4a64ea6e403d4c7`: parent E4, exact signed C2 `f3684f1` tree `21b45255f28bc1d4933242cd6bd602670166c021`, source branch retained and protection unchanged. Scoped launcher/package checks passed; failed77e9 (6/7) and9b69 (8/11) retain their scopes, correctedbb7c passed5/5. This is source delivery, not release or acceptance.\n\nFresh clean-C2 native `9f286027-f277-4f91-9097-468574b76d4a` FAILED3/3, empty descendants, retained009 reverified. Docs/source passed. Native reached original detach/state preservation, clean exit, fresh-process resume and the strict settings checkpoint; exact retained config/capability comparison refused at `resumed-preservation/resume-retained-config-predicate/resume-retained-config-changed`. Resumed detach/durable inspection were not reached; whole native gate remains open. Aggregate sampled512/exposed max-event increase has no cause attribution. Limits and predicates unchanged.\n\nNext: qualify exact candidate-native configuration-write behavior before any fresh invocation. No private data read, fixture relaxation or sealed runtime mutation.\n\nDurable current receipt: `docs/tracker-updates/portable-exec-2026-10-07.json`; [reviewed source note](https://github.com/Jesssullivan/oauth-mux/blob/f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c/docs/agent-notes/2026-10-07-sess-omux-portable-exec.md). Provider-free; stock Codex, live handoff, accepted-history, Darwin and achieved SLA/SLO remain unproved. Issue scope/state unchanged.\n\n2026-10-07T03:26:11Z native startup-fixture checkpoint: [PR #530](https://github.com/Jesssullivan/oauth-mux/pull/530) contains signed clean `2bd9942f34450ec1cf245674aaafecf32425abbb` with the source-qualified initial TUI marker; all preservation predicates and runtime009 remain unchanged. Fresh `ac14f5fa-d87c-446a-823d-12ef6b022153` FAILED3/3, empty descendants, retained input reverified, docs/source passed. Native failed at `cold-native-resume/resume-owner-endpoint/resume-endpoint-deadline`, before the config comparison; the marker correction is not runtime-verified. The original empty thread is created through native app-server, followed by ordinary TUI resume; initial ordinary TUI launch and accepted-history remain separate. No cause attribution or automatic rerun. Current receipt/note retains both9f286 andac14 failures. Parent still five scoped passes/six open; no issue-field changes.\n\n### October7 bounded diagnostic checkpoint\n\nPR530 is now source-only merged as verified0b0df5d6afbe25fd596944636571c63cae5ab72f, exact signed524febc tree5a0a97a6. Final clean docs/source f84a5b2e passed2/2, empty. Its native ac14 failure remains unchanged.\n\nDraft [PR531](https://github.com/Jesssullivan/oauth-mux/pull/531), signed clean sourcee54257e8887e4d9921b87e311242f01a5f56e9c7/tree5d8629b5, adds bounded failure-only role thread records and raw Yoga registry shapes; independent source review is clear. Initial3710749b batch passed4/6 and failed both census targets on an expired-deadline bypass. The reviewed one-line upfront check preserved assertions; correcteda92d4563 passed both census suites/actual-owned-child teardown plus docs/source4/4. All aggregates ended empty.\n\nFresh native81e76dcd ended3/3, empty, null controller failure/rejection and sealed009 reverified. Docs/source passed; native FAILED at native-seed-history/seed-history-attachment before detach or cold resume. Held failure-time counts: self4, Omux24, keyring5, native-bootstrap27; native-resume not created. These snapshots neither identify pools nor sum to an aggregate peak. Whole-workload sampledpeak389/exposed max-event increase is not a cause or attribution. Existing environment, caps and preservation assertions remain unchanged; no automatic native rerun.\n\n[Durable receipt](https://github.com/Jesssullivan/oauth-mux/blob/codex/omux-bounded-proof-diagnostics-20261007/docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json) records the original source pre-proof snapshot; current local continuation note/receipt also records81e76 and subsequent source-only leads. Paths: docs/agent-notes/2026-10-07-sess-omux-portable-exec.md and docs/plans/omux-native-browser-continuation-2026-10-06.md. Next reviews separate discovery RPC/validation/reference failure and qualify explicitly reduced Bazel9 controller pools; no speculative native pool control or copy/import authority.\n\nParent remains five scoped historical passes/six open. Native resume, installed Yoga consent, genuine Home Manager evaluation, accepted history, stock Codex, live handoff and Darwin remain unproved. Issue state/scope/acceptance are unchanged; provider-free only; no achieved SLO/SLA or publication claim.\n\n### 2026-10-07 06:11 UTC — real-account critical path\n\nPR531 is verified merged as `d829b3cdd91696a375a076970214fbf0621a5f6c`, exact signed C7 tree `91b543ef711d7069aa75cfa72ef6ad9f4d7d98fd`, sole parent PR530; source branch retained, protection unchanged. Follow-on models72c5 passed7/7. C6 nativee761 failed at cold-native-resume/resume-owner-endpoint/resume-terminal-exited; descendants empty, sealed009 reverified. Yoga qualification/inspection passed their read-only predicates but verify234a refused row-object on null registry metadata before content rehash (3objects/469null of472); neither physical absence nor import/browser proof follows.\n\nUser now leads a five-hour real-account implementation/proof checkpoint,05:48:41–10:48:41 UTC, superseding the earlier provider-free boundary. Model IO is authorized without token-spend cap; initial engineering scenario uses short text turns. Omux discovers explicitly authorized source context rather than requiring user-supplied paths. No durable real enrollment or real handoff is yet established.\n\nSigned source9bba6cc adds closed terminal exit/message classification with unchanged preservation predicates. Fresh c2d4df18 passed all3targets (nine actual classification/privacy models plus docs/source); empty descendants, null controller failure/rejection. Original retained native checkpoint c556012e is currently running; no result claim.\n\nConcrete leads: first real provider-verified source/encrypted custody/restart; fresh second native sign-in without revoking active auth; native completion ACK ordering; explicit text-only history portability with account-bound artifacts refused; bounded selected-owner request audit; opt-in contained live action. First real switch is completed-turn operator_drain A→B samePID/thread/history; it does not close provider-originated automatic fallback/concurrency/renewal. Proposals remain unapplied/unrun until source qualification. Local paths: `.goal/omux-live-account-proof-2026-10-07.json`, `docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md`, `docs/tracker-updates/live-account-proof-2026-10-07.json`. Parent five scoped passes/six open; native_support=false/live_continuity=false; issue state/scope unchanged."
+    },
+    "authority": "User-authorized factual tracker reconciliation; R-N13; no issue state/assignment/date/dependency or scope promotion"
+  },
+  "linear_readback": {
+    "issue": "TIN-5338",
+    "description_exact": true,
+    "status_preserved": true,
+    "comment_id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+    "comment_exact": true
+  },
+  "linear_timestamp_correction": {
+    "authority": "Factual clock correction",
+    "observed_utc": "2026-10-07T06:11:01Z",
+    "prior_label": "06:18 UTC",
+    "corrected_label": "06:11 UTC",
+    "scope": "Comment label and receipt recorded-at corrected; substantive before/after facts preserved"
+  },
+  "native_checkpoint_c1": {
+    "epoch": "c556012e-bf08-4f14-8355-32bee408f4c6",
+    "source_commit": "9bba6ccc97f800146ef23e9b847adb312a327c66",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "input_verified_after_cleanup": true,
+    "graph_sha256": "1b6513053fb9c0acb3078390d0cfce55ffdeac5cc090fda05dc677759adb2889",
+    "test_evidence": {
+      "bytes": 219695,
+      "files": 9,
+      "manifest": "test-evidence.json",
+      "sha256": "27e5a773c402fc2b9571858ab156981cac944e7ba2376ad4310cab5c1eedab2c",
+      "state": "preserved"
+    },
+    "targets": [
+      "//delivery:installed_legacy_native_tui_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "failed_gate": "cold-native-resume/resume-owner-discovery/resume-os-failure",
+    "held_native_threads": 22,
+    "pids_scope": "whole-owned-workload",
+    "sampled_peak": 479,
+    "pids_max_event_increased": true,
+    "attribution": "none",
+    "provider_calls": false,
+    "scope": "Native resume remains failed; no cause attribution, caps or acceptance changes."
+  },
+  "linear_c1_terminal_pre_action": {
+    "issue": "TIN-5338",
+    "comment_id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+    "authority": "User-authorized factual reconciliation; R-N13; issue status/scope unchanged",
+    "appended_text": "\n\n2026-10-07 06:25 UTC — terminal C1 native result: `c556012e-bf08-4f14-8355-32bee408f4c6` FAILED at cold-native-resume/resume-owner-discovery/resume-os-failure. Controller/workload3, descendants empty, controller failure/rejection null, sealed009 reverified after cleanup. Docs/source passed. Resumed native was alive (22 held threads); aggregate sampled479/512 and exposed max-event increase do not identify a cause. Native resume remains unproved; no unchanged automatic rerun.\n\nSigned C2 `036bef69dc28d7e39be9b6b8b72f3500a15227ec` applies reviewed first-account provider identity/encrypted custody/restart and opt-in exact live admission, preserving offline network denial and resource caps. Its seven-target privacy/admission/source batch is running; real enrollment not yet attempted. This proof deliberately cleans its isolated custody and cannot claim resident deployment or handoff. Native discovery fork removal is a separate proposed source fix; fresh candidate and second-account consent remain independently gated.",
+    "before_prefix_preserved": true,
+    "readback_pending": false
+  },
+  "c2_models": {
+    "epoch": "079efa57-5fdd-4cab-8e1c-e3875c54063f",
+    "source_commit": "036bef69dc28d7e39be9b6b8b72f3500a15227ec",
+    "exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "targets": [
+      "//delivery:codex_live_enrollment_contract_test",
+      "//tools:guard_codex_live_profile_test",
+      "//tools:execution_guard_test",
+      "//tools:guard_dependency_profile_test",
+      "//tools:guard_owner_runtime_input_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "test_evidence": {
+      "bytes": 224822,
+      "files": 17,
+      "manifest": "test-evidence.json",
+      "sha256": "fd741109f4a5388cf10e44be575bc2e85d24b5af49ab9bdabd9a7acab2319998",
+      "state": "preserved"
+    },
+    "passed_targets": 7,
+    "scope": "Offline privacy/admission contracts; no provider calls."
+  },
+  "first_live_admission": {
+    "epoch": "44894013-0717-4d59-b023-2bc683a46110",
+    "source_commit": "036bef69dc28d7e39be9b6b8b72f3500a15227ec",
+    "exit": 125,
+    "workload_exit": 125,
+    "descendants_empty": false,
+    "cleanup": {
+      "ownership": "refused",
+      "readback_attempts": 1,
+      "state": "deadline-exhausted",
+      "stop": "not-requested"
+    },
+    "test_evidence": {
+      "state": "not-admitted"
+    },
+    "provider_calls": false,
+    "source_contents_read": false,
+    "payload_started": false,
+    "namespace_exit": 226,
+    "closed_reason": "destination-file-mountpoint-create-denied",
+    "current_unit_readback": {
+      "ActiveState": "failed",
+      "MainPID": 0,
+      "ControlGroup": ""
+    },
+    "scope": "Failed before worker/Bazel. Conservative original cleanup receipt retained; current readback does not retroactively rewrite it."
+  },
+  "linear_c1_terminal_readback": {
+    "comment_exact": true,
+    "issue_state_scope_unchanged": true
+  },
+  "c3_source": {
+    "scope": "Private-directory readonly live-input mount; bounded peer-checked cold discovery eliminates polling CLI fork; explicit loading2 policy.",
+    "provider_access": "User authorization unchanged",
+    "models": "unrun at source checkpoint",
+    "live": "unrun on repaired namespace"
+  },
+  "c3_models": {
+    "epoch": "588a4d73-a878-41d0-9147-8572fe9a07a4",
+    "source_commit": "2865cd974e4060ce1f352546ab40e5fd96b46d21",
+    "exit": 0,
+    "descendants_empty": true,
+    "targets": [
+      "//delivery:native_terminal_failure_test",
+      "//tools:guard_codex_live_profile_test",
+      "//tools:execution_guard_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "test_evidence": {
+      "bytes": 223308,
+      "files": 13,
+      "manifest": "test-evidence.json",
+      "sha256": "aeb7224e2da80ccd6d54ab7744c6bf17f25f593664f2feb4533ce3e0f395f0d5",
+      "state": "preserved"
+    },
+    "scope": "Five changed-path model/docs/source checks; no provider access."
+  },
+  "c3_live_admission": {
+    "epoch": "532339df-1b17-4c6a-afca-050a0f3cb75b",
+    "exit": 125,
+    "workload_exit": 125,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "verified",
+      "readback_attempts": 1,
+      "state": "empty",
+      "stop": "succeeded"
+    },
+    "controller_failure": null,
+    "test_evidence": {
+      "state": "not-admitted"
+    },
+    "live_input": {
+      "selected_sources": 1,
+      "source_content_read_by_guard": false,
+      "verified_after_cleanup": true
+    },
+    "epoch_start_ns": null,
+    "provider_calls": false,
+    "scope": "Service namespace now started; exact readback refused before workload gate. Owned stop/empty verified. Actual bind normalization unobserved because immediate evidence redaction and transient properties cleared on stop."
+  },
+  "c4_source": {
+    "commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "scope": "Accept only exact readonly directory source/destination with optional literal rbind normalization, emit closed shape predicates; no cap or credential-policy changes.",
+    "model_state": "running",
+    "live_state": "not_attempted"
+  },
+  "git_delivery_pre_action": {
+    "authority": "User-authorized signed fork source delivery/admin merge workflow; R-N12/R-N13. Per-command hooks advisory bypass only; passing C2/C3 checks and current C4 review/readbacks supply alternative.",
+    "source_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "branch": "codex/omux-real-account-continuity-20261007",
+    "repo": "Jesssullivan/oauth-mux",
+    "action": "Push signed source to fork branch and create draft reviewable PR; no release/store/site/provider capability claim.",
+    "main_base": "d829b3cdd91696a375a076970214fbf0621a5f6c",
+    "history_protected": true
+  },
+  "c4_live_terminal_0701": {
+    "authority": "User-authorized live account proof; AGENTS.md; R-N11/R-N12/R-N13",
+    "recorded_at": "2026-10-07T07:05:20Z",
+    "source_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "epoch": "75c67e38-005d-4582-911c-a970f92508f2",
+    "target": "//delivery:installed_codex_live_enrollment_test",
+    "exit": 3,
+    "workload_exit": 3,
+    "controller_failure": null,
+    "descendants_empty": true,
+    "actual_binding": {
+      "entry_count": 1,
+      "source_matches": true,
+      "destination_matches": true,
+      "option": "rbind",
+      "writable_bind_present": false
+    },
+    "result": "failed_at_sealed_custody_after_verified_enrollment",
+    "full_enrollment_receipt_emitted": false,
+    "source_contents_read_by_controller": false,
+    "evidence": {
+      "sha256": "1bcae701ae6fb8041f555d1aa0df3e32bb15842891b27ceff64b6534db8048b0",
+      "files": 2,
+      "bytes": 965
+    },
+    "actual_scope": "One authenticated source reached verified enrolled authority assertions; sealed custody/restart acceptance remains unpassed. Isolated state was removed by fixture.",
+    "next": "Fix restrictive SQLite metadata creation and add precise sealed predicate phases; fresh native source/SDK model qualification in parallel source work."
+  },
+  "c4_models_terminal": {
+    "epoch": "a642701e-2d61-4505-8359-d708e32538a7",
+    "source_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "passed": [
+      "//tools:guard_codex_live_profile_test",
+      "//tools:execution_guard_test"
+    ],
+    "exit": 0,
+    "descendants_empty": true
+  },
+  "fresh_native_source_checkpoint": {
+    "authority": "User-authorized implementation; root sole source/execution writer; R-N13",
+    "status": "applied_unverified",
+    "source_producer": "//tools:codex_live_source_producer",
+    "sdk_qualifier": "//tools:codex_retained_sdk_qualify",
+    "profile": "codex-native",
+    "candidate_cache": "new_owned_finite_six_attempt_continuation",
+    "unchanged_limits": true,
+    "retained_native_source_not_modified": true
+  },
+  "source_push_result": {
+    "branch": "codex/omux-real-account-continuity-20261007",
+    "remote_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "verified": true,
+    "pr_created": false,
+    "pr_connector_result": "403 Resource not accessible by integration",
+    "publication": false
+  },
+  "linear_c4_terminal_pre_action": {
+    "authority": "User-authorized factual tracker reconciliation; R-N13",
+    "issue": "TIN-5338",
+    "comment_id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+    "status_scope_preserved": true,
+    "source": "c6c05224637c52f4826278bc52a036521fdfec54",
+    "result_readback_pending": false
+  },
+  "linear_c4_terminal_readback": {
+    "issue": "TIN-5338",
+    "comment_id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+    "body_exact": true,
+    "timestamp_correction": "07:12 prematurely supplied; corrected to actual observed 07:08 UTC and independently read back",
+    "status_scope_preserved": true
+  },
+  "c5_models_terminal": {
+    "authority": "AGENTS.md; R-N13",
+    "source_commit": "c6c05224637c52f4826278bc52a036521fdfec54",
+    "epoch": "ce68dbc9-edf6-4102-a11b-44722100a1e2",
+    "exit": 3,
+    "descendants_empty": true,
+    "passed": 6,
+    "failed": 2,
+    "failed_labels": [
+      "//tools:codex_live_source_test",
+      "//tools:codex_native_candidate_cache_test"
+    ],
+    "correction": "Root patch path rebasing incorrectly changed test fixture literals; restored relative names. Candidate fixture substitutes shared temporary ancestor only while retaining actual marker checks; production custody unchanged.",
+    "acceptance_closed": false
+  },
+  "c6_source_pre_action": {
+    "authority": "User-authorized implementation; AGENTS.md; R-N13",
+    "state": "applied_unverified",
+    "runtime": "src/storage.zig explicit private SQLite creation and existing-file refusal",
+    "proof": "delivery/test_installed_codex_live_enrollment.py precise custody phases; actual offline metadata models",
+    "audit": "integrations.nativeRequestAudit exact owner/ref/thread bounded six records",
+    "live_fixture": "13 models; explicit native text policy and no post-history detach claim",
+    "sdk": "Finite actual baseline-locked BCR metadata export; readonly selected fresh cache; no ambient cache or network fallback",
+    "formatter": {
+      "epoch": "0e4cd7a2-1b79-4915-a870-4947711365c6",
+      "source_commit": "c6c05224637c52f4826278bc52a036521fdfec54",
+      "source_dirty": true,
+      "target": "//:format",
+      "selection": "src",
+      "exit": 0,
+      "descendants_empty": true
+    },
+    "unchanged_limits": true
+  },
+  "c6_models_terminal": {
+    "authority": "AGENTS.md; R-N13",
+    "source_commit": "7d8c3469b551dcf8bc5ec9ff9cb4159908f7e7b9",
+    "epoch": "837b191f-f077-4c97-a9db-c2b0cd57d15c",
+    "exit": 1,
+    "workload_exit": 1,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "passed": 11,
+    "failed_to_build": [
+      "//:engine_test",
+      "//:storage_test"
+    ],
+    "passed_scope": "Source/SDK/cache/guard/live/enrollment/privacy/request-authority/format/docs models; runtime engine/storage unpassed",
+    "correction": "Add required Zig blocks around nested assignment/defer; no semantic predicate changes.",
+    "acceptance_closed": false
+  },
+  "c7_producer_terminal": {
+    "authority": "AGENTS.md; R-N13",
+    "source_commit": "cc0e6d57b90ffc98166cd550dcc6f957b091e923",
+    "epoch": "307bcedd-d8c9-4cbf-a623-6fc2d6f3cfb7",
+    "exit": 125,
+    "workload_exit": 125,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "stage": "Bazel analysis failed on hierarchical public native input labels",
+    "native_source_produced": false,
+    "sdk_qualified": false,
+    "runtime_checks_executed": false,
+    "correction": "Flat finite source aliases plus explicit exports prevent upstream BUILD files from introducing nested package boundaries.",
+    "limit_raise": false
+  }
+}

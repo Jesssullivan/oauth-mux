@@ -5,8 +5,13 @@ load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
 load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
 load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA256")
 load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
+load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_manifest")
+load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
+load(":codex_fresh_native_receipt_scope_test.bzl", "codex_fresh_native_receipt_scope_test")
 
 _CODEX_SDK_SOURCES = [
+    "codex_native_candidate_cache.py",
+    "codex_native_profile.py", "codex_live_source.py", "codex_retained_sdk_export.py",
     "codex_sdk_profile.py", "codex_fresh_source.py", "codex_recovery_delta.py",
     "fetch_codex_archives.py", "restore_pristine_inputs.py",
     "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py",
@@ -29,6 +34,8 @@ _YOGA_GUARD_SOURCES = [
 
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch", "*.json", "*.zig", "*.h"], allow_empty = True), visibility = ["//visibility:public"])
 
+codex_fresh_native_receipt_scope_test(name = "codex_fresh_native_receipt_scope_test")
+
 # Finite copy of the existing declared retained proof input; no execution claim.
 python_test(
     name = "codex_owner_runtime_input_copy",
@@ -47,6 +54,18 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "codex_native_candidate_cache_test",
+    main = "codex_native_candidate_cache_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["guard_cache.py"],
+)
+
+python_test(
+    name = "codex_native_profile_test",
+    main = "codex_native_profile_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["guard_cache.py"],
 )
 python_test(
     name = "codex_owner_runtime_input_test",
@@ -78,7 +97,7 @@ python_test(
 python_test(
     name = "guard_owner_runtime_input_test",
     main = "guard_owner_runtime_input_test.py",
-    srcs = ["guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
+    srcs = ["guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py"],
     target_compatible_with = ["@platforms//os:linux"],
 )
 
@@ -1003,9 +1022,9 @@ python_binary(
     name = "execution_guard",
     main = "execution_guard.py",
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"],
     visibility = ["//visibility:public"],
 )
 
@@ -1013,7 +1032,7 @@ python_test(
     name = "execution_guard_test",
     main = "execution_guard_test.py",
     srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
 )
@@ -1021,7 +1040,7 @@ python_test(
 python_test(
     name = "guard_dependency_profile_test",
     main = "guard_dependency_profile_test.py",
-    srcs = ["guard_dependency_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
+    srcs = ["guard_dependency_profile.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
 )
 python_test(
     name = "yoga_delivery_settings_test",
@@ -1374,4 +1393,134 @@ toolchain(
         "@platforms//os:linux",
         "@platforms//cpu:aarch64",
     ],
+)
+
+python_test(
+    name = "guard_codex_live_profile_test",
+    main = "guard_codex_live_profile_test.py",
+    srcs = ["guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_dependency_profile.py",
+            "guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
+)
+
+# Root first copies the exact reviewed UNAPPLIED.source.py bytes to the main
+# filename below. Patch digests are declared target arguments selected by
+# root after final native review, in text/completion/enrollment order.
+python_test(
+    name = "codex_live_source_producer",
+    main = "codex_live_source.py",
+    data = ["@omux_codex_live_source_inputs//:inputs"],
+    args = [
+        "--patch-sha256", "5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6",
+        "--patch-sha256", "3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53",
+        "--patch-sha256", "84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5",
+    ],
+    tags = ["manual"],
+    timeout = "long",
+)
+
+python_test(
+    name = "codex_live_source_test",
+    main = "codex_live_source_test.py",
+    srcs = ["codex_live_source.py"],
+)
+# Finite public read-only retained SDK producer. Manual, local, never remote.
+# Arguments come from the root-selected finite metadata repository.
+python_test(
+    name = "codex_retained_sdk_qualify",
+    main = "codex_retained_sdk_export.py",
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+python_test(
+    name = "codex_retained_sdk_export_producer",
+    main = "codex_retained_sdk_export.py",
+    data = ["@omux_sdk_selection//:sdk-selection.json", "@omux_sdk_selection//:sdk-selection.sha256"],
+    args = ["--phase", "export", "--selection", "$(location @omux_sdk_selection//:sdk-selection.json)",
+            "--selection-sha-file", "$(location @omux_sdk_selection//:sdk-selection.sha256)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+exports_files([
+    "codex_retained_sdk_export.py",
+    "codex_sdk_selection_repository.bzl",
+])
+
+python_binary(
+    name = "codex_retained_sdk_export_run",
+    main = "codex_retained_sdk_export.py",
+    data = ["@omux_sdk_selection//:sdk-selection.json", "@omux_sdk_selection//:sdk-selection.sha256"],
+    args = ["--phase", "export", "--selection", "$(location @omux_sdk_selection//:sdk-selection.json)",
+            "--selection-sha-file", "$(location @omux_sdk_selection//:sdk-selection.sha256)"],
+    tags = ["manual", "no-remote", "no-cache"],
+)
+
+
+alias(name = "codex_retained_sdk_export", actual = ":codex_retained_sdk_export_producer")
+# Fresh experimental maintained-native carrier; fixed declared inputs/tools only.
+runtime_inputs_manifest(name = "fresh_native_runtime_files", srcs = "@omux_nix//:runtime_libraries")
+python_test(
+    name = "codex_fresh_native_runtime_package",
+    main = "codex_fresh_native_runtime.py",
+    srcs = [
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//delivery:portable.py",
+    ] + _CODEX_SDK_SOURCES,
+    data = [
+        "@omux_fresh_native_package_data//:inputs",
+        ":fresh_native_runtime_files",
+        "@omux_nix//:ca_bundle",
+        "@omux_nix//:tool_wrappers/strip",
+        "@omux_nix//:patchelf",
+    ],
+    args = [
+        "--selection", "$(location @omux_fresh_native_package_data//:package-selection.json)",
+        "--selection-sha-file", "$(location @omux_fresh_native_package_data//:package-selection.sha256)",
+        "--input-aliases", "$(location @omux_fresh_native_package_data//:input-aliases.json)",
+        "--strip", "$(location @omux_nix//:tool_wrappers/strip)",
+        "--patchelf", "$(location @omux_nix//:patchelf)",
+        "--ca-bundle", "$(location @omux_nix//:ca_bundle)",
+        "--runtime-files-manifest", "$(location :fresh_native_runtime_files)",
+        "--tool-path", NIX_COREUTILS_BIN,
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+exports_files(["codex_fresh_native_package_inputs.bzl", "codex_fresh_native_runtime.py"])
+python_test(
+    name = "codex_fresh_native_runtime_test",
+    main = "codex_fresh_native_runtime_test.py",
+    srcs = [
+        "codex_fresh_native_runtime.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//delivery:portable.py",
+    ] + _CODEX_SDK_SOURCES,
+)
+python_test(
+    name = "codex_private_import_test",
+    main = "codex_private_import_test.py",
+    srcs = ["codex_retained_sdk_export.py"],
+    tags = ["no-remote"],
+)
+
+# Pure shared fresh validators; the packaging action remains separate and manual.
+filegroup(
+    name = "codex_fresh_live_support",
+    srcs = ["codex_fresh_native_runtime.py","guard_fresh_native_runtime_input.py",
+        "//integrations/codex-owner-runtime:runtime_package.py","//delivery:portable.py"] + _CODEX_SDK_SOURCES,
+    visibility = ["//visibility:public"],
+)
+exports_files(["codex_live_fresh_runtime_repository.bzl","codex_live_fresh_runtime_repository_input.py"])
+python_test(
+    name = "guard_fresh_native_runtime_input_test",
+    main = "guard_fresh_native_runtime_input_test.py",
+    srcs = [":codex_fresh_live_support", "//delivery:portable.py"],
+)
+python_test(
+    name = "guard_codex_fresh_live_profile_test",
+    main = "guard_codex_fresh_live_profile_test.py",
+    srcs = ["guard_codex_fresh_live_profile.py","guard_codex_live_profile.py","codex_live_fresh_runtime_repository_input.py",
+        "execution_guard.py","guard_cache.py","guard_test_evidence.py","guard_dependency_profile.py","system_mask_policy.py",
+        "guard_owner_runtime_input.py","codex_owner_runtime_input.py"],
 )

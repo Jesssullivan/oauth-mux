@@ -19,8 +19,10 @@ import os
 from pathlib import Path
 import re
 import selectors
+import socket
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -55,6 +57,58 @@ CLI_OBSERVATION = None
 DETACH_CLI_FAILURE_RECORD = None
 CLI_EXITS = ("exit-zero-stderr", "exit-one", "exit-two", "exit-positive-other",
              "exit-signal", "unclassified")
+TERMINAL_EXITS = ("exit-zero", "exit-one", "exit-two", "exit-101",
+                  "exit-positive-other", "exit-signal", "exit-core", "exit-unavailable")
+TERMINAL_MESSAGES = (
+    ("runtime-thread-spawn", (b"failed to spawn thread", b"failed to spawn scoped thread",
+                              b"OS can't spawn worker thread")),
+    ("os-resource-unavailable", (b"Resource temporarily unavailable (os error 11)",)),
+    ("config-load", (b"Error loading configuration:", b"Error parsing -c overrides:",
+                     b"Error finding codex home:")),
+    ("terminal-not-tty", (b"stdin is not a terminal", b"stdout is not a terminal")),
+    ("resume-session-missing", (b"No saved session found with ID ",)),
+    ("daemon-startup", (b"To work without the background server, rerun the same command",)),
+    ("rust-panic", (b"panicked at ",)),
+    ("python-bootstrap", (b"Traceback (most recent call last):",)),
+)
+TERMINAL_CATEGORIES = tuple(value[0] for value in TERMINAL_MESSAGES) + ("unrecognized",)
+TERMINAL_MARKER = "installed legacy native terminal exit "
+
+
+class TerminalFailureObservation:
+    """Private literal recognition; no native bytes or interpolated text emitted.
+
+    Rank recognition only as a diagnostic, never as native error authority or
+    evidence of continuity. Keep a bounded suffix to recognize split packets.
+    The original terminal output bound, liveness and cleanup remain mandatory.
+    """
+
+    def __init__(self):
+        self.suffix = b""
+        self.seen = set()
+
+    def observe(self, packet):
+        observed = self.suffix + packet
+        for category, literals in TERMINAL_MESSAGES:
+            if any(literal in observed for literal in literals):
+                self.seen.add(category)
+        self.suffix = observed[-127:]
+
+    def record(self, terminal):
+        self.suffix = b""
+        info = terminal.exited()  # WNOWAIT preserves the owned cleanup anchor.
+        category = next((value for value, _ in TERMINAL_MESSAGES if value in self.seen), "unrecognized")
+        exit_category = "exit-unavailable"
+        if info is not None:
+            if info.si_code == os.CLD_EXITED:
+                exit_category = {0: "exit-zero", 1: "exit-one", 2: "exit-two",
+                                 101: "exit-101"}.get(info.si_status, "exit-positive-other")
+            elif info.si_code == os.CLD_KILLED:
+                exit_category = "exit-signal"
+            elif info.si_code == os.CLD_DUMPED:
+                exit_category = "exit-core"
+        return TERMINAL_MARKER + exit_category + "/" + category + "\n"
+
 STATUS_REFUSALS = {
     (-32000, "CustodyUnavailable"): "status-custody-unavailable",
     (-32000, "UnknownOperation"): "status-unknown-operation",
@@ -114,6 +168,7 @@ RESUME_FAILURES = (*RESUME_FAILURE_MESSAGES.values(), "resume-json", "resume-mis
                    "resume-permission", "resume-os-failure", "resume-process-deadline",
                    "resume-database-busy", "resume-database-query", "resume-database-error",
                    "resume-other-predicate", "resume-shape", "resume-type", "resume-unrecognized")
+RESUME_FAILURES += tuple("resume-" + value for value in native_run_cli_failure.FAILURES if value.startswith("os-"))
 CLI_FAILURE_MESSAGES = {
     "installed CLI deadline exceeded": "cli-stream-deadline",
     "installed CLI output exceeded its bound": "cli-output-bound",
@@ -430,7 +485,7 @@ def classify_resume_failure(error):
     if isinstance(error, PermissionError):
         return "resume-permission"
     if isinstance(error, OSError):
-        return "resume-os-failure"
+        return "resume-" + native_run_cli_failure.failure_kind(error)
     if isinstance(error, subprocess.TimeoutExpired):
         return "resume-process-deadline"
     if isinstance(error, ValueError):
@@ -440,6 +495,58 @@ def classify_resume_failure(error):
     if isinstance(error, TypeError):
         return "resume-type"
     return "resume-unrecognized"
+
+
+def cold_discovery(socket_path, daemon_pid, params):
+    """Read actual daemon discovery without a short-lived CLI process per poll.
+
+    Install, seed discovery, detach and preservation still exercise installed
+    CLI boundaries. Only cold attachment polling uses this bounded control
+    client; it never substitutes an owner response or guessed attachment.
+    """
+    deadline = time.monotonic() + 20
+
+    def exchange(method, supplied):
+        information = socket_path.lstat()
+        parent = socket_path.parent.lstat()
+        require(stat.S_ISSOCK(information.st_mode) and information.st_uid == os.getuid()
+                and stat.S_IMODE(information.st_mode) == 0o600
+                and stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.getuid()
+                and stat.S_IMODE(parent.st_mode) == 0o700,
+                "cold discovery control socket custody changed")
+        packet = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
+                             "params": supplied}, separators=(",", ":")).encode() + b"\n"
+        require(len(packet) <= 8192, "cold discovery request exceeded bound")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "cold discovery control deadline exceeded")
+            channel.settimeout(remaining)
+            channel.connect(str(socket_path))
+            peer = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            require(peer[0] == daemon_pid and peer[1] == os.getuid(),
+                    "cold discovery control peer changed")
+            channel.sendall(packet)
+            response = bytearray()
+            while b"\n" not in response:
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "cold discovery control deadline exceeded")
+                channel.settimeout(remaining)
+                chunk = channel.recv(8192)
+                require(chunk and len(response) + len(chunk) <= tui.FRAME_LIMIT,
+                        "cold discovery control frame exceeded bound")
+                response.extend(chunk)
+        require(response.endswith(b"\n") and response.count(b"\n") == 1,
+                "cold discovery control frame changed")
+        value = json.loads(response, object_pairs_hook=tui.strict_object)
+        require(isinstance(value, dict) and set(value) == {"jsonrpc", "id", "result"}
+                and value["jsonrpc"] == "2.0" and type(value["id"]) is int and value["id"] == 1
+                and isinstance(value["result"], dict), "cold discovery control response rejected")
+        return value["result"]
+
+    hello = exchange("system.handshake", {"protocol_version": 2, "client": "omux-tui-fixture"})
+    require(type(hello.get("protocol_version")) is int and hello["protocol_version"] == 2,
+            "cold discovery control handshake rejected")
+    return exchange("integrations.discover", params)
 
 
 def wait_attached(cli, home, native, *, resume_diagnostics=False):
@@ -719,6 +826,7 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
     socket_path = Path(environment["XDG_RUNTIME_DIR"]) / ("omux-" + hashlib.sha256(str(state).encode()).hexdigest()[:32]) / "control.sock"
     require(len(os.fsencode(socket_path)) <= 107, "installed control path too long")
     keyring_process = daemon = bootstrap_native = terminal = None
+    terminal_failure = TerminalFailureObservation()
     drains = []
     try:
         census = native_threads.Census(census_deadline_ns)
@@ -728,6 +836,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
     def cli(method, params=None, *, expected_completion=None):
         for drain in drains:
             drain.check()
+        if method == "integrations.discover" and PHASE == "cold-native-resume":
+            return cold_discovery(socket_path, daemon.pid, params or {})
         command = [str(prefix / "bin/omux"), "--state-dir", str(state), "rpc", method, "-"]
         if method == "operation.status" and DIAGNOSTIC == "detach-status-rpc":
             return status_cli(command, environment, params or {}, expected_completion=expected_completion)
@@ -854,7 +964,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
         PHASE = "cold-native-resume"
         DIAGNOSTIC = "resume-terminal-spawn"
         terminal = tui.TerminalProcess(binary, environment, work, resume=thread,
-                                       popen_factory=native_threads.factory(census, "native-resume"))
+                                       popen_factory=native_threads.factory(census, "native-resume"),
+                                       failure_observer=terminal_failure)
         native_threads.checkpoint(census)
         DIAGNOSTIC = "resume-new-process-predicate"
         require(terminal.process.pid != first_pid, "legacy cold resume reused original process")
@@ -900,6 +1011,13 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
     except BaseException:
         # This hook runs once before the original cleanup. Diagnostic failures,
         # cancellation or exit never replace the primary exception or predicates.
+        if terminal is not None:
+            try:
+                # No extra read, drain or deadline extension. The original alive()
+                # call already pumped output; inspect only its finite recognition.
+                sys.stderr.write(terminal_failure.record(terminal))
+            except BaseException:
+                pass
         try:
             native_threads.emit_failure(census, lambda value: sys.stderr.write(value.decode("ascii")))
         except BaseException:
@@ -978,6 +1096,14 @@ def main():
             require(output == expected_marker, "legacy ordinary TUI proof marker missing")
             print(expected_marker.decode("ascii"), end="")
         else:
+            for line in diagnostics.splitlines():
+                if not line.startswith(TERMINAL_MARKER.encode("ascii")):
+                    continue
+                parts = line[len(TERMINAL_MARKER):].split(b"/")
+                if (len(parts) == 2 and parts[0] in tuple(value.encode("ascii") for value in TERMINAL_EXITS)
+                        and parts[1] in tuple(value.encode("ascii") for value in TERMINAL_CATEGORIES)):
+                    print(line.decode("ascii"), file=sys.stderr)
+                    break
             seen_thread_roles = set()
             for line in diagnostics.splitlines():
                 try:

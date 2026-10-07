@@ -2214,6 +2214,9 @@ pub const Engine = struct {
         };
         var request = control.parse(allocator, payload) catch |err| return control.failure(allocator, .null, -32600, @errorName(err));
         defer request.deinit();
+        // Audit refusals do not restore or rewrite the actor's committed state.
+        // Production control ingress already verifies the socket's peer user.
+        if (eql(request.method, "integrations.nativeRequestAudit")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -2971,6 +2974,20 @@ pub const Engine = struct {
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);
+        if (eql(method, "integrations.nativeRequestAudit")) {
+            if (params != .object or params.object.count() != 2) return error.InvalidParams;
+            const reference_value = control.get(params, "native_ref") orelse return error.NativeOwnerRequired;
+            if (reference_value != .object or reference_value.object.count() != 5) return error.InvalidNativeRef;
+            const reference = try parseNativeRef(params);
+            const thread_id = try control.string(params, "thread_id");
+            var arena: std.heap.ArenaAllocator = .init(allocator);
+            defer arena.deinit();
+            const result = try nativeRequestAuditResult(arena.allocator(), &self.state, &self.requests, &self.native_owners, self.outcome_intents.items, self.revision, reference, thread_id);
+            _ = snapshot_admission.countJson(.{ .jsonrpc = "2.0", .id = request.id, .result = result }, 32 * 1024) catch |err| switch (err) {
+                error.SnapshotTooLarge => return error.NativeResultTooLarge,
+            };
+            return control.success(allocator, request.id, result);
+        }
         if (eql(method, "sources.catalog")) return control.success(allocator, request.id, .{
             .providers = .{
                 .{ .provider = "codex", .native_store = true, .explicit_import = true, .browser_import = "needs_provider_adapter_proof", .identity_verification_required = true, .live_handoff_proven = false },
@@ -4770,6 +4787,192 @@ const NativeRefWire = struct {
     thread_instance_generation: []const u8,
     attachment_generation: []const u8,
 };
+const NativeAuditAttempt = struct {
+    account_handle: []const u8,
+    issued_sequence: u64,
+    state: request_authority.Status,
+    accepted_report: ?request_authority.Report,
+    terminal_report: ?request_authority.Report,
+    // A current binding is not historical route authority. Lease retirement
+    // leaves this null; do not infer a completed request's route from a binding.
+    route_generation: ?u64,
+};
+const NativeAuditRecord = struct { request_id: []const u8, first: NativeAuditAttempt, alternate: ?NativeAuditAttempt };
+const NativeAuditBinding = struct { account_handle: []const u8, route_generation: u64 };
+const NativeRequestAuditResult = struct {
+    schema_version: u32 = 1,
+    native_ref: NativeRefWire,
+    thread_id: []const u8,
+    revision: u64,
+    records: []NativeAuditRecord,
+    binding: ?NativeAuditBinding = null,
+    pending_requests: bool = false,
+    pending_outcomes: bool = false,
+};
+
+// Enrollment creates random daemon-local identifiers, already used as opaque
+// control handles by accounts.list and account.drain. Refuse noncanonical
+// legacy identifiers instead of exposing a label or provider account ID.
+fn nativeAuditAccountHandle(id: []const u8) ![]const u8 {
+    if (id.len != 64) return error.InvalidNativeAuditAccountHandle;
+    for (id) |byte| if (!std.ascii.isDigit(byte) and (byte < 'a' or byte > 'f')) return error.InvalidNativeAuditAccountHandle;
+    return id;
+}
+
+fn nativeAuditAttempt(state: *const domain.State, reference: native_owner.NativeRef, record: *const request_authority.Record, attempt: request_authority.Attempt) !NativeAuditAttempt {
+    var result: NativeAuditAttempt = .{
+        .account_handle = try nativeAuditAccountHandle(attempt.account_id),
+        .issued_sequence = attempt.issued_sequence,
+        .state = attempt.state,
+        .accepted_report = attempt.accepted_report,
+        .terminal_report = attempt.terminal_report,
+        .route_generation = null,
+    };
+    for (state.leases.items) |lease| {
+        if (!eql(lease.id, attempt.lease_handle)) continue;
+        const original = lease.native_ref orelse return error.InvalidNativeAttribution;
+        if (!original.same(reference) or !eql(lease.binding_id, record.intent.binding_id) or !eql(lease.account_id, attempt.account_id) or lease.purpose != .request) return error.InvalidNativeAttribution;
+        result.route_generation = lease.route_generation;
+    }
+    return result;
+}
+
+fn nativeRequestAuditResult(allocator: std.mem.Allocator, state: *const domain.State, requests: *const request_authority.Ledger, owners: *const native_owner.Ledger, outcomes: []const OutcomeIntent, revision: u64, reference: native_owner.NativeRef, thread_id: []const u8) !NativeRequestAuditResult {
+    try reference.validate();
+    if (thread_id.len == 0 or thread_id.len > native_owner.maximum_thread_bytes) return error.InvalidNativeAttachment;
+    const owner = owners.lookupOwnerForRef(reference) orelse return error.UnknownNativeOwner;
+    if (!eql(owner.application, "codex")) return error.WrongPurpose;
+    const attachment = owners.lookupAttachment(reference) orelse return error.UnknownNativeAttachment;
+    if (!eql(attachment.thread_id, thread_id)) return error.NativeOwnerMismatch;
+    // Terminal/retired attribution remains readable. This does not authorize
+    // attachment, native access, renewal, routing, or a new request attempt.
+    const selected = try requests.nativeAuditRecords(allocator, "codex", reference, thread_id);
+    defer allocator.free(selected);
+    const records = try allocator.alloc(NativeAuditRecord, selected.len);
+    var result: NativeRequestAuditResult = .{ .native_ref = try nativeRefWire(allocator, reference), .thread_id = thread_id, .revision = revision, .records = records };
+    for (selected, records) |record, *output| {
+        output.* = .{
+            .request_id = record.intent.key.request_id,
+            .first = try nativeAuditAttempt(state, reference, record, record.first),
+            .alternate = if (record.alternate) |alternate| try nativeAuditAttempt(state, reference, record, alternate) else null,
+        };
+        if (unresolvedAttempt(record.first)) result.pending_requests = true;
+        if (record.alternate) |alternate| {
+            if (unresolvedAttempt(alternate)) result.pending_requests = true;
+        }
+    }
+    for (state.leases.items) |lease| if (lease.native_ref) |original| {
+        if (original.same(reference)) result.pending_requests = true;
+    };
+    for (state.bindings.items) |binding| {
+        const original = binding.native_ref orelse continue;
+        if (!original.same(reference) or !eql(binding.application, "codex") or !eql(binding.session_id, thread_id)) continue;
+        if (result.binding != null) return error.NativeAuditBindingAmbiguous;
+        result.binding = .{ .account_handle = try nativeAuditAccountHandle(binding.account_id), .route_generation = binding.route_generation };
+    }
+    for (outcomes) |outcome| {
+        if (outcome.native_ref) |original| if (original.same(reference)) {
+            result.pending_outcomes = true;
+            continue;
+        };
+        if (outcome.key.kind != .request) continue;
+        const intent = requests.intentForHandle("codex", outcome.owner_id) orelse continue;
+        const original = intent.native_ref orelse continue;
+        if (original.same(reference) and eql(intent.key.session_id, thread_id)) result.pending_outcomes = true;
+    }
+    return result;
+}
+
+test "native request audit preserves terminal truth and redacts unselected custody and internal request fields" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const reference: native_owner.NativeRef = .{ .owner_id = @splat(7), .adapter_epoch = 1, .endpoint_generation = 1, .thread_instance_generation = 1, .attachment_generation = 1 };
+    var owners = native_owner.Ledger.init(allocator);
+    try owners.owners.append(allocator, .{ .id = reference.owner_id, .application = "codex", .adapter_epoch = 1, .endpoint_generation = 1, .witness = undefined, .native_nonce = @splat(9), .endpoint_path = "/generated-private-owner-path" });
+    try owners.attachments.append(allocator, .{ .reference = reference, .thread_id = "selected-thread", .registration_operation = @splat('1'), .phase = .attached });
+    var requests = request_authority.Ledger.init(allocator, 8);
+    const account: [64]u8 = @splat('b');
+    const handle: [64]u8 = @splat('a');
+    const fingerprint: [64]u8 = @splat('f');
+    const intent: request_authority.Intent = .{ .key = .{ .application = "codex", .session_id = "selected-thread", .request_id = "selected-request" }, .binding_id = "private-binding", .demand_fingerprint = &fingerprint, .native_ref = reference };
+    _ = try requests.issue(intent, &handle, &account, 10);
+    _ = try requests.reportForOwner("codex", &handle, reference, .{ .event = .accepted, .status = 200 });
+    _ = try requests.reportForOwner("codex", &handle, reference, .{ .event = .completed });
+    var foreign = intent;
+    foreign.native_ref.?.attachment_generation += 1;
+    foreign.key.request_id = "foreign-private-request";
+    const foreign_handle: [64]u8 = @splat('c');
+    _ = try requests.issue(foreign, &foreign_handle, &account, 10);
+    var state = domain.State.init(allocator);
+    try state.bindings.append(allocator, .{ .id = "private-binding", .application = "codex", .session_id = "selected-thread", .native_ref = reference, .account_id = &account, .grant_id = "private-grant", .grant_generation = 1, .route_generation = 2 });
+    const before = try std.json.Stringify.valueAlloc(allocator, requests.snapshot(), .{});
+    const result = try nativeRequestAuditResult(allocator, &state, &requests, &owners, &.{}, 12, reference, "selected-thread");
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqualStrings("selected-request", result.records[0].request_id);
+    try std.testing.expectEqualStrings(&account, result.records[0].first.account_handle);
+    try std.testing.expectEqual(request_authority.Status.completed, result.records[0].first.state);
+    try std.testing.expectEqual(request_authority.Event.accepted, result.records[0].first.accepted_report.?.event);
+    try std.testing.expectEqual(request_authority.Event.completed, result.records[0].first.terminal_report.?.event);
+    try std.testing.expect(result.records[0].first.route_generation == null);
+    try std.testing.expectEqual(@as(u64, 2), result.binding.?.route_generation);
+    try std.testing.expect(!result.pending_requests and !result.pending_outcomes);
+    const encoded = try std.json.Stringify.valueAlloc(allocator, result, .{});
+    for ([_][]const u8{ "lease_handle", "account_id", "binding_id", "demand_fingerprint", "native_nonce", "endpoint_path", "private-binding", "private-grant", "generated-private-owner-path", "foreign-private-request" }) |private_field| try std.testing.expect(std.mem.indexOf(u8, encoded, private_field) == null);
+    const after = try std.json.Stringify.valueAlloc(allocator, requests.snapshot(), .{});
+    try std.testing.expectEqualStrings(before, after);
+    try std.testing.expectError(error.NativeOwnerMismatch, nativeRequestAuditResult(allocator, &state, &requests, &owners, &.{}, 12, reference, "different-thread"));
+    var changed = reference;
+    changed.endpoint_generation += 1;
+    try std.testing.expectError(error.UnknownNativeOwner, nativeRequestAuditResult(allocator, &state, &requests, &owners, &.{}, 12, changed, "selected-thread"));
+    try std.testing.expectError(error.InvalidNativeAuditAccountHandle, nativeAuditAccountHandle("generated-label"));
+}
+
+test "native request audit exposes unknown and outstanding request credit without fabricating terminal completion" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const reference: native_owner.NativeRef = .{ .owner_id = @splat(7), .adapter_epoch = 1, .endpoint_generation = 1, .thread_instance_generation = 1, .attachment_generation = 1 };
+    var owners = native_owner.Ledger.init(allocator);
+    try owners.owners.append(allocator, .{ .id = reference.owner_id, .application = "codex", .adapter_epoch = 1, .endpoint_generation = 1, .witness = undefined, .native_nonce = @splat(9), .endpoint_path = "/generated-private-owner-path" });
+    try owners.attachments.append(allocator, .{ .reference = reference, .thread_id = "selected-thread", .registration_operation = @splat('1'), .phase = .attached });
+    var requests = request_authority.Ledger.init(allocator, 8);
+    const account: [64]u8 = @splat('b');
+    const handle: [64]u8 = @splat('a');
+    const fingerprint: [64]u8 = @splat('f');
+    const intent: request_authority.Intent = .{ .key = .{ .application = "codex", .session_id = "selected-thread", .request_id = "selected-request" }, .binding_id = "private-binding", .demand_fingerprint = &fingerprint, .native_ref = reference };
+    _ = try requests.issue(intent, &handle, &account, 10);
+    _ = try requests.reportForOwner("codex", &handle, reference, .{ .event = .accepted });
+    requests.recoverAfterRestart();
+    const state = domain.State.init(allocator);
+    const outcomes = [_]OutcomeIntent{.{ .key = creditKey(.request, &handle, 1), .owner_id = &handle, .plan_bytes = 1 }};
+    const result = try nativeRequestAuditResult(allocator, &state, &requests, &owners, &outcomes, 12, reference, "selected-thread");
+    try std.testing.expect(result.pending_requests and result.pending_outcomes);
+    try std.testing.expectEqual(request_authority.Status.unknown, result.records[0].first.state);
+    try std.testing.expect(result.records[0].first.accepted_report != null);
+    try std.testing.expect(result.records[0].first.terminal_report == null);
+    try std.testing.expect(result.binding == null);
+    try std.testing.expectError(error.AttemptBudgetExhausted, requests.checkIssue(intent));
+}
+
+test "native audit RPC rejects adapter purpose, unknown selectors and poisoned custody without restore or mutation" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var current: Engine = undefined;
+    current.poisoned = false;
+    // Wrong channel and malformed selectors must refuse before reading any
+    // uninitialized custody fields, including a database restore path.
+    var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeRequestAudit\",\"params\":{\"cursor\":\"unbounded\"}}");
+    defer request.deinit();
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .adapter));
+    const refused = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeRequestAudit\",\"params\":{\"cursor\":\"unbounded\"}}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "InvalidParams") != null);
+    current.poisoned = true;
+    const poisoned = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeRequestAudit\",\"params\":{}}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, poisoned, "CustodyUnavailable") != null);
+}
+
 const NativeDiscoveryThread = struct {
     thread_id: []const u8,
     thread_instance_generation: []const u8,
