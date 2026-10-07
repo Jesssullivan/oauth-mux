@@ -125,6 +125,60 @@ class UpdateModels(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     update.start_control_peer(bad,10)
 
+    def test_lifecycle_roles_refuse_implicit_stop_start_source_or_factor(self):
+        for action in ("observe-existing","stop-idle-owned"):
+            value=self.start_manifest()
+            value["action"]=action
+            value["permissions"]["activate_service"]=False
+            if action == "stop-idle-owned":
+                value["permissions"]["stop_service"]=True
+            self.assertEqual(resident.manifest_schema(value,HOME),value)
+            for key in ("connect_source","activate_service","restart_daemon"):
+                bad=copy.deepcopy(value)
+                bad["permissions"][key]=True
+                with self.assertRaises(ValueError):
+                    resident.manifest_schema(bad,HOME)
+            bad=copy.deepcopy(value)
+            bad["factor"]="/private/factor"
+            with self.assertRaises(ValueError):
+                resident.manifest_schema(bad,HOME)
+            bad=copy.deepcopy(value)
+            if action == "stop-idle-owned":
+                bad["permissions"]["stop_service"]=False
+            else:
+                bad["permissions"]["stop_service"]=True
+            with self.assertRaises(ValueError):
+                resident.manifest_schema(bad,HOME)
+
+    def test_lifecycle_carrier_action_join_preserves_old_target_and_refuses_mixed_purposes(self):
+        for action in ("observe-existing","stop-idle-owned"):
+            resident.carrier_purpose(resident.LIFECYCLE_LABEL,action)
+            with self.assertRaises(ValueError):
+                resident.carrier_purpose(resident.LABEL,action)
+        for action in ("start-existing","update-existing","enroll-existing","install-and-enroll"):
+            resident.carrier_purpose(resident.LABEL,action)
+            with self.assertRaises(ValueError):
+                resident.carrier_purpose(resident.LIFECYCLE_LABEL,action)
+        with self.assertRaises(ValueError):
+            resident.carrier_purpose("//delivery:arbitrary","stop-idle-owned")
+
+    def test_idle_stop_requires_unloaded_locked_actor_and_disabled_native_admission(self):
+        health={"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
+            "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
+        handshake={"protocol_version":2,"service":"omuxd","channel":"control","custody_available":False,
+            "capabilities":{"credential_free_control":True,"native_launch":False,"live_handoff_proven":False}}
+        self.assertTrue(update.locked_idle_metadata(health,handshake)["vault_locked"])
+        for key in ("custody_available","metadata_loaded","provider_access"):
+            with self.assertRaises(ValueError):
+                update.locked_idle_metadata(dict(health,**{key:True}),handshake)
+        for key in ("native_launch","live_handoff_proven"):
+            bad=copy.deepcopy(handshake)
+            bad["capabilities"][key]=True
+            with self.assertRaises(ValueError):
+                update.locked_idle_metadata(health,bad)
+        with self.assertRaises(ValueError):
+            update.locked_idle_metadata({"protocol_version":2,"status":"ready","custody_available":True,"revision":0,"live_handoff_proven":False},handshake)
+
     def test_locked_control_plane_truth_never_claims_usable_custody(self):
         value = {"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
             "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}

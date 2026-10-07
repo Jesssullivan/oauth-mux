@@ -1146,6 +1146,24 @@ cc_binary(
     tags = ["manual"],
 )
 exports_files(["resident_enrollment.py", "resident_owned_start.py"])
+# Consume independently qualified installed software; never rebuild its archive/UI.
+python_binary(
+    name = "resident_owned_lifecycle",
+    main = "resident_owned_lifecycle.py",
+    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    data = ["@omux_nix//:systemctl"],
+    args = ["$(location @omux_nix//:systemctl)"],
+    tags = ["manual","no-remote","no-cache"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "resident_owned_lifecycle_contract_test",
+    main = "test_resident_owned_lifecycle.py",
+    srcs = ["resident_owned_lifecycle.py","resident_enrollment.py","install.py","pack.py","portable.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
 python_binary(
     name = "resident_codex_enrollment",
     main = "resident_enrollment.py",

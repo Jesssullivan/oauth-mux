@@ -144,7 +144,8 @@ signed `14a6664d01f4131cfd1f7f08c01d05897fba9756` commit. The file was present
 throughout those checks and the actual start action; its exact SHA256 is
 `a06854cc0daf166bd31b6fae6745b7aea29f62397e94970f49757df1c5e9dba6`.
 Independent source readback matched the reviewed `24a2e529` patch payload.
-Those receipts bind their declared graph including this file, but their
+The declared Bazel action inputs included this file; the controller graph digest
+does not itself hash delivery Python bodies. Those receipts' recorded
 `source_dirty=false` does not describe a fully committed source tree. No clean
 signed-source qualification is inherited. This amendment includes the file.
 
@@ -165,3 +166,28 @@ This does not attribute every possible predicate in the generic activation refus
 Corrected checks and actual health inspection remain unrun at this amendment.
 The Neo operator will identify the unlock binding; no factor value was requested
 or read. Usable custody and durable enrollment remain unproved.
+
+## Narrow installed lifecycle carrier
+
+Root applied independently reviewed proposal SHA256
+`2ac853f7b4091534d4bcb144bc7e1cbc72a6c4fa81b5f2f7b5b71ee3974e3447`.
+`//delivery:resident_owned_lifecycle` consumes the existing qualified installed
+archive and controller/tool inputs. It does not depend on the archive producer,
+runtime compiler, native UI build or OS-vault probe. The existing first-start
+carrier keeps its original role.
+
+The new carrier admits only `observe-existing` or explicit `stop-idle-owned`.
+Observation performs no service mutation. Stop requires the exact owned active
+process/cgroup/socket and unchanged installed files, protocol2 Locked health,
+disabled native admission and pristine zero-lock/no-database custody. It does
+not stop a Ready actor, enumerate accounts or fabricate account counts.
+It stops only the named owned unit, then requires inactive unit, empty owned
+cgroup/control directory, exited original process and preserved custody/software.
+Finite phase diagnostics contain no manager output, paths or exception text.
+
+The actual action is queued under the existing complementary reservation and
+original deadline. Static review qualifies this narrow low-impact owned stop
+within user authorization; it does not replace required tests. Six new
+lifecycle models, protocol regressions and actual stopped disposition are unrun
+at this source checkpoint. After successful idle stop, root must run the
+changed standard and native suites before any new native admission.

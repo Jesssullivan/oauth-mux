@@ -1585,7 +1585,7 @@ def _main(argv, admission_resources):
         if args.resident_vault_manifest is not None:
             login_input = login.Admission(resident_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns,label=arguments[1])
         else:
-            login_input = login.Admission(resident_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns)
+            login_input = login.Admission(resident_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns,label=arguments[1])
         admission_resources.callback(login_input.close)
         login_input.offline_repository_bindings = resident_repositories.repository_inputs(args.repository_cache,args.nixpkgs_source)
         login_input.service_observation(control,starting=True)

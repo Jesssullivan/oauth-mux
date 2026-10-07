@@ -135,6 +135,27 @@ def start_health(value):
         and type(value.get("revision")) is int and value["revision"] >= 0)
     return {"control_plane_ready":True,"custody_available":True,"vault_locked":False}
 
+def locked_idle_metadata(health,handshake):
+    result=start_health(health)
+    resident.require(result["vault_locked"] and type(handshake) is dict
+        and type(handshake.get("protocol_version")) is int and handshake["protocol_version"] == 2
+        and handshake.get("service") == "omuxd" and handshake.get("channel") == "control"
+        and handshake.get("custody_available") is False
+        and type(handshake.get("capabilities")) is dict
+        and handshake["capabilities"].get("credential_free_control") is True
+        and handshake["capabilities"].get("native_launch") is False
+        and handshake["capabilities"].get("live_handoff_proven") is False)
+    return result
+
+def original_process_exited(identity):
+    from resident_enrollment import process_identity
+    try:
+        current=process_identity(identity[0])
+    except FileNotFoundError:
+        return True
+    resident.require(current != identity)
+    return True
+
 class OwnedFirstStart:
     """Qualified first start with only the existing zero-byte lock; no DB recovery."""
     def __init__(self,selected,home,deadline):

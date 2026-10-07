@@ -13,6 +13,7 @@ import subprocess
 import time
 
 LABEL = "//delivery:resident_codex_enrollment"
+LIFECYCLE_LABEL = "//delivery:resident_owned_lifecycle"
 PROFILE = "resident-enrollment"
 DESTINATION = "/omux-resident-inputs"
 VARIABLE = "OMUX_RESIDENT_ENROLLMENT_MANIFEST"
@@ -29,7 +30,7 @@ def require(value):
         raise ValueError("resident-enrollment-admission-refused")
 
 def finite(arguments,manager,manifest,reuse,unrelated=()):
-    require(arguments == ["run",LABEL] and manager == "system" and manifest is not None
+    require(arguments in (["run",LABEL],["run",LIFECYCLE_LABEL]) and manager == "system" and manifest is not None
         and not reuse and not any(unrelated))
     return {"PrivateNetwork":"yes","ProtectSystem":"strict","PrivateTmp":"yes"}
 
@@ -45,6 +46,10 @@ def repository_inputs(repository_cache,nixpkgs_source):
     require(isinstance(repository_cache,Path) and isinstance(nixpkgs_source,Path)
         and repository_cache == REPOSITORY_CACHE and nixpkgs_source == NIXPKGS_SOURCE)
     return [str(REPOSITORY_CACHE)+":"+str(REPOSITORY_CACHE)]
+
+def carrier_purpose(label,action):
+    require(label in (LABEL,LIFECYCLE_LABEL)
+        and (action in ("observe-existing","stop-idle-owned")) == (label == LIFECYCLE_LABEL))
 
 def canonical(value):
     require(type(value) is str and value.startswith("/") and len(value) <= 4096
@@ -79,12 +84,13 @@ def fixed_paths(home,instance="default"):
 
 def manifest_schema(value,home):
     updating = type(value) is dict and value.get("action") == "update-existing"
-    starting = type(value) is dict and value.get("action") == "start-existing"
+    starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","stop-idle-owned")
+    stopping = type(value) is dict and value.get("action") == "stop-idle-owned"
     require(type(value) is dict and set(value) == {"schema_version","ownership","action","instance",
         "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else {"start"} if starting else set())
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
-        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing")
+        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing","observe-existing","stop-idle-owned")
         and value["instance"] == "default")
     expected = fixed_paths(home)
     for key in ("records","runtime_state"):
@@ -97,11 +103,14 @@ def manifest_schema(value,home):
             and len(prefix.parts) == 4 and re.fullmatch(r"[a-z0-9]{32}[-][A-Za-z0-9+._-]+",prefix.name)
             and unit == canonical(str(home/".config/systemd/user/ai.xoxd.omux.service")))
     permissions = value["permissions"]
-    require(type(permissions) is dict and set(permissions) == {"connect_source","activate_service","restart_daemon"}
+    require(type(permissions) is dict and set(permissions) == {"connect_source","activate_service","restart_daemon"} | ({"stop_service"} if stopping else set())
         and all(type(v) is bool for v in permissions.values()))
     if starting:
+        expected_permissions={"connect_source":False,"activate_service":value["action"] == "start-existing","restart_daemon":False}
+        if stopping:
+            expected_permissions["stop_service"]=True
         require(value["ownership"] == "omux-installation" and value["native_context"] is None
-            and permissions == {"connect_source":False,"activate_service":True,"restart_daemon":False})
+            and permissions == expected_permissions)
         import guard_resident_owned_update as update
         update.start_pins(value["start"],home)
     elif updating:
@@ -439,8 +448,12 @@ def recovery_loaded_properties(values):
         and values["TasksMax"] == str(RESIDENT_TASKS) and quota_us(values["CPUQuotaPerSecUSec"]) == 100000)
 
 class Admission:
-    def __init__(self,manifest,home,deadline_ns):
+    def __init__(self,manifest,home,deadline_ns,*,label=LABEL):
         self.deadline_ns = deadline_ns
+        require(label in (LABEL,LIFECYCLE_LABEL))
+        self.label=label
+        self.lifecycle_identity=None
+        self.lifecycle_peer=None
         self.manifest = canonical(str(manifest))
         require(self.manifest.name == "input.json")
         self.root = self.manifest.parent
@@ -494,6 +507,7 @@ class Admission:
             self.raw = os.pread(self.file,65537,0)
             require(len(self.raw) == info.st_size)
             self.selected = manifest_schema(json.loads(self.raw,object_pairs_hook=unique),home)
+            carrier_purpose(label,self.selected["action"])
             self.control_child = runtime_child(self.selected["runtime_state"])
             self.control_source = runtime/self.control_child
             control_source_fd = open_directory(self.control_source,private=True)
@@ -527,7 +541,7 @@ class Admission:
             if self.selected["action"] == "update-existing":
                 import guard_resident_owned_update as update
                 self.installation_update = update.InstallationUpdate(self.selected,home,deadline_ns)
-            if self.selected["action"] == "start-existing":
+            if self.selected["action"] in ("start-existing","observe-existing","stop-idle-owned"):
                 import guard_resident_owned_update as update
                 self.owned_start = update.OwnedFirstStart(self.selected,home,deadline_ns)
             self.facts = self.recheck()
@@ -611,11 +625,11 @@ class Admission:
             "DBUS_SESSION_BUS_ADDRESS":"unix:path=/run/user/"+str(os.getuid())+"/bus"}
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
-        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing")
+        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","stop-idle-owned")
         properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
         if recovering_action:
             properties += ",UnitFileState"
-        if self.selected["action"] in ("update-existing","start-existing"):
+        if self.selected["action"] in ("update-existing","start-existing","observe-existing","stop-idle-owned"):
             import guard_resident_owned_update as update
             properties = ",".join(sorted(update.IDLE_PROPERTIES))
         result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
@@ -629,15 +643,26 @@ class Admission:
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
             "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set())
-            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing") else set()))
-        if self.selected["action"] == "start-existing":
+            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","stop-idle-owned") else set()))
+        if self.selected["action"] in ("start-existing","observe-existing","stop-idle-owned"):
             require(self.owned_start is not None)
             self.owned_start.recheck()
-            if starting:
+            action=self.selected["action"]
+            if starting and action == "start-existing":
                 self.owned_start.pristine()
                 update.inactive_installation(values,self.selected)
                 update.inactive_cgroup(self.deadline_ns)
                 return {"active":False,"owned_first_start_admitted":True,"bounded":True}
+            if action == "stop-idle-owned" and not starting:
+                require(self.lifecycle_identity is not None)
+                update.inactive_installation(values,self.selected)
+                update.inactive_cgroup(self.deadline_ns)
+                self.owned_start.pristine()
+                require(not os.listdir(self.control_source))
+                update.original_process_exited(self.lifecycle_identity[0])
+                return {"active":False,"owned_idle_stop_observed":True,"bounded":True,
+                    "resident_service_disposition":"stopped_explicitly_custody_retained",
+                    "custody_claim_requires_controller_success":True}
             pid,group = update.active_start_properties(values,self.selected)
             # Reuse the declared public process/cgroup projection, never raw state.
             from resident_enrollment import process_identity,cgroup_observation
@@ -648,6 +673,17 @@ class Admission:
             path = Path("/run/user")/str(os.getuid())/self.control_child/"control.sock"
             peer = socket_witness(path)
             update.start_control_peer(peer,pid)
+            if action in ("observe-existing","stop-idle-owned"):
+                self.owned_start.pristine()
+                current=(identity,cgroup)
+                if starting:
+                    self.lifecycle_identity=current
+                    self.lifecycle_peer=peer
+                else:
+                    require(current == self.lifecycle_identity and peer == self.lifecycle_peer)
+                return {"active":True,"owned_existing_observation_verified":True,"bounded":True,
+                    "service_mutation_requested":action == "stop-idle-owned",
+                    "control_plane_health_requires_controller_success":True,"custody_claim_requires_controller_success":True}
             return {"active":True,"owned_first_start_observed":True,"bounded":True,
                 "control_plane_health_requires_controller_success":True,"custody_claim_requires_controller_success":True}
         if starting_new:
