@@ -163,6 +163,88 @@ class FreshRuntimeModels(unittest.TestCase):
 
 
 class CombinedActionChainModels(unittest.TestCase):
+    def fresh_fixture(self):
+        from codex_native_fresh_completion import consumed_dispatches
+        from codex_native_profile import core_codegen_policy
+        import codex_native_profile as native
+        selection,values,source,exported = self.fixture()
+        key = '9'*64
+        base = fresh.STATE/('cache-v2-'+key)/'output-base'
+        history = consumed_dispatches()
+        exported['mapping_sha256'] = '8'*64
+        for role,attempt in (('qualification_run',9),('schema_run',10)):
+            value = fresh.parse(values[role])
+            candidate = {'kind':'omux-native-fresh-core-completion-v1','key':key,'provenance_sha256':key,
+                'workspace':str(base.parent/'native-input/source'),'output_base':str(base),
+                'global_attempt':attempt,'max_global_attempts':10,'verified_before_launch':True,
+                'source_commit':'7'*40,'selector_sha256':'6'*64,
+                'verified_after_cleanup':True,'core_codegen':core_codegen_policy(),
+                'previous_dispatches':copy.deepcopy(history)}
+            if attempt == 10:
+                prior = fresh.parse(values['qualification_run'])
+                candidate['previous_dispatches'].append({'id':prior['id'],
+                    'sha256':selection['files']['qualification_run']['sha256'],'cache_key':key,'attempt':9})
+            value.update(native_candidate_cache=None,native_fresh_completion=candidate,
+                test_evidence={'state':'preserved' if attempt == 9 else 'not-applicable'},
+                manager='system',source_dirty='false',source_commit='7'*40,output_base=str(base),
+                unit='omux-execution-'+value['id']+'.service')
+            value['native_sdk'].update(aggregate_seconds=3600,original_entry_monotonic_ns=100*10**9,
+                original_deadline_monotonic_ns=3700*10**9)
+            value['native_sdk']['plan'].update(candidate_output_base=str(base),core_codegen=core_codegen_policy())
+            value['native_sdk']['plan'].update(cwd=candidate['workspace'],mapping_sha256=exported['mapping_sha256'],
+                environment={'USE_BAZEL_VERSION':native.BAZEL_VERSION},
+                argv=[fresh.BAZEL,*native.core_codegen_arguments(),'--lockfile_mode=error',
+                    '--repository_disable_download','--sandbox_default_allow_network=false','--jobs=1',
+                    '--host_jvm_args=-Xmx768m','--repo_contents_cache=','--disk_cache=',
+                    '--remote_executor=','--remote_cache=','--local_test_jobs=1'])
+            raw = fresh.encoded(value)
+            values[role] = raw
+            selection['files'][role].update(sha256=fresh.digest(raw),bytes=len(raw))
+            if attempt == 9:
+                selection['files']['compile'] = dict(selection['files'][role])
+                values['compile'] = raw
+        return selection,values,source,exported
+
+    def test_dedicated_fresh_completion_joins_real_nine_and_ten(self):
+        selection,values,source,exported = self.fresh_fixture()
+        receipts,key,combined = fresh.validate_action_receipts(selection,values,source,exported)
+        self.assertTrue(combined)
+        self.assertIsNone(receipts['compile']['native_candidate_cache'])
+        self.assertEqual(receipts['compile'],receipts['qualification_run'])
+        self.assertEqual(receipts['schema_run']['native_fresh_completion']['global_attempt'],10)
+
+    def test_fresh_completion_refuses_false_null_oom_history_policy_or_namespace(self):
+        mutations = (
+            ('qualification_run',lambda r:r.update(manager='user')),
+            ('qualification_run',lambda r:r.update(source_dirty='true')),
+            ('schema_run',lambda r:r.update(source_commit='0'*40)),
+            ('schema_run',lambda r:r['native_fresh_completion'].update(selector_sha256='0'*64)),
+            ('qualification_run',lambda r:r.update(unit='other.service')),
+            ('qualification_run',lambda r:r.update(output_base='/old/output-base')),
+            ('qualification_run',lambda r:r['native_sdk'].update(original_entry_monotonic_ns=True)),
+            ('schema_run',lambda r:r['native_sdk'].update(original_deadline_monotonic_ns=True)),
+            ('qualification_run',lambda r:r['native_sdk']['plan']['argv'].remove('--disk_cache=')),
+            ('qualification_run',lambda r:r.update(exit=False)),
+            ('qualification_run',lambda r:r.update(workload_exit=None)),
+            ('qualification_run',lambda r:r.update(exit=137,workload_exit=137)),
+            ('qualification_run',lambda r:r.update(native_candidate_cache={'key':'9'*64})),
+            ('qualification_run',lambda r:r['native_fresh_completion'].update(verified_before_launch=None)),
+            ('schema_run',lambda r:r['native_fresh_completion'].update(verified_after_cleanup=False)),
+            ('schema_run',lambda r:r['native_fresh_completion'].update(global_attempt=11)),
+            ('qualification_run',lambda r:r['native_fresh_completion']['previous_dispatches'].pop()),
+            ('schema_run',lambda r:r['native_fresh_completion']['previous_dispatches'][-1].update(sha256='0'*64)),
+            ('qualification_run',lambda r:r['native_fresh_completion'].update(workspace='/old/source')),
+            ('qualification_run',lambda r:r['native_sdk']['plan']['core_codegen']['policy']['options'].append('-Clto=fat')),
+            ('schema_run',lambda r:r['native_sdk'].update(original_deadline_monotonic_ns=7300*10**9)),
+            ('schema_run',lambda r:r.update(test_evidence={'state':'preserved'})),
+            ('qualification_run',lambda r:r.update(test_evidence={'state':'not-applicable'})),
+            ('schema_run',lambda r:r.update(test_evidence={'state':'preservation-incomplete'})))
+        for role,mutate in mutations:
+            selection,values,source,exported = self.fresh_fixture()
+            self.change(selection,values,role,mutate)
+            with self.subTest(role=role),self.assertRaises(ValueError):
+                fresh.validate_action_receipts(selection,values,source,exported)
+
     def fixture(self, combined=True, phase2=False):
         origin=fresh.PHASE2_PRIOR_TRANSITION['from_provenance_sha256'] if phase2 else 'a'*64
         provenance='b'*64 if combined else origin; graph='c'*64

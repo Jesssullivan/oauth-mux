@@ -467,6 +467,45 @@ class FixedCoreCodegenModels(unittest.TestCase):
             if value.startswith('--'+self.SETTING+'=')], native.core_codegen_arguments())
 
 
+class FreshCompletionDeadlineModels(unittest.TestCase):
+    def request(self, mode=native.COMBINED_MODE, attempt=9):
+        return SimpleNamespace(profile='codex-native', manager='system',
+            native_owned_candidate_cache=False, native_mode=mode,
+            native_global_attempt=attempt, native_cache_attempt=None,
+            native_fresh_completion=native.STATE/'native-fresh-completion.json',
+            native_fresh_completion_sha256='a'*64,
+            native_cache_phase2=None, native_cache_phase2_sha256=None,
+            native_cache_transition=None, native_cache_transition_sha256=None,
+            native_aggregate_seconds=3600)
+
+    def test_verified_fresh_roles_keep_consumed_setup_inside_original3600_and_reserve(self):
+        for mode, attempt in ((native.COMBINED_MODE,9),('schema',10)):
+            args=self.request(mode,attempt)
+            args.native_deadline=native.completion_deadline(args,100*10**9,
+                SimpleNamespace(fresh_verified_before_launch=True))
+            with patch.object(native.time,'monotonic',return_value=1000):
+                self.assertEqual(native.runtime(args),2580)
+            with patch.object(native.time,'monotonic',return_value=3581):
+                with self.assertRaises(ValueError):native.runtime(args)
+
+    def test_fresh_budget_refuses_unverified_selector_oldcache_and_extra_role(self):
+        for field,value in (('native_global_attempt',1),('native_global_attempt',11),
+                ('native_mode','cli-opt'),('native_owned_candidate_cache',True),
+                ('native_cache_attempt',1),('native_aggregate_seconds',7200),
+                ('native_fresh_completion_sha256',None),
+                ('native_fresh_completion',Path('/private/native-fresh-completion.json')),
+                ('native_cache_phase2',Path('/public/phase2.json')),
+                ('native_cache_phase2_sha256','b'*64)):
+            args=self.request(); setattr(args,field,value)
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                native.completion_deadline(args,100*10**9,
+                    SimpleNamespace(fresh_verified_before_launch=True))
+        for ready in (None,False):
+            with self.assertRaises(ValueError):
+                native.completion_deadline(self.request(),100*10**9,
+                    SimpleNamespace(fresh_verified_before_launch=ready))
+
+
 class NativeCompletionBudgetModels(unittest.TestCase):
     def request(self, phase2=True):
         return SimpleNamespace(profile='codex-native', manager='system',

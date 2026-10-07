@@ -11,6 +11,7 @@ load(":codex_fresh_native_receipt_scope_test.bzl", "codex_fresh_native_receipt_s
 
 _CODEX_SDK_SOURCES = [
     "codex_native_candidate_cache.py",
+    "codex_native_fresh_completion.py",
     "codex_native_profile.py", "codex_live_source.py", "codex_retained_sdk_export.py",
     "codex_sdk_profile.py", "codex_fresh_source.py", "codex_recovery_delta.py",
     "fetch_codex_archives.py", "restore_pristine_inputs.py",
@@ -59,6 +60,12 @@ python_test(
 python_test(
     name = "codex_native_candidate_cache_test",
     main = "codex_native_candidate_cache_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["guard_cache.py"],
+)
+
+python_test(
+    name = "codex_native_fresh_completion_test",
+    main = "codex_native_fresh_completion_test.py",
     srcs = _CODEX_SDK_SOURCES + ["guard_cache.py"],
 )
 

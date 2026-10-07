@@ -50,3 +50,31 @@ permit one new combined action, and permit schemas only after successful actual
 qualification, CLI and preservation. Existing phase-two admission cannot do so.
 Package consumers must explicitly join the new provenance before any proof use.
 The original goal remains incomplete; no clock reset or release claim.
+
+## Separate fresh completion admission
+
+Root applied the independently reviewed producer/controller proposal SHA256
+`fd0e2b7b70ebcf0b852a0bb0fc576a8a4c3e7bcd7baa273176d6b8fea1306c4f`
+and consumer proposal SHA256
+`401c9f3634a1c6a62f7be66d5e13844fe8caa7f589fad1d71c2c00d25e4a0137`
+after the fixed-core source. The declared implementation lives in
+`tools/codex_native_fresh_completion.py`, its models, native profile,
+execution guard and fresh-runtime consumer. All new files must be tracked in the
+signed amendment; a working-copy-only helper cannot qualify a clean source claim.
+
+One new combined qualification/CLI action, global9, requires an independently
+pinned complete source/tool/SDK/compiler declaration and an absent new output root.
+It never adopts or repairs the exhausted physical output base. All eight exact
+failed receipts remain consumed, including actual OOM and failed preservation.
+Global10 permits schemas only after actual successful9, full cleanup verification,
+all fourteen named tests, rehashed logs/XML and the actual CLI artifact. A terminal
+qualification rejection forces guard125 and closes admission. No retry exists.
+
+The consumer joins those exact new receipts and provenance explicitly; legacy
+claims retain their historical branch. Both producer and consumer preserve the
+original-entry3600-second native deadline, cleanup reserve, memory/tasks/CPU,
+offline inputs and one executor. This source amendment supplies no operator
+declaration, admission, artifact or live proof. New admission, deadline and
+consumer models and existing regressions remain queued. The running owned
+resident reserves256MiB/32tasks/ten-percent CPU, so a full native four-GiB action
+cannot run until its separate owned idle disposition is verified.

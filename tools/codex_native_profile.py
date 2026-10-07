@@ -228,7 +228,25 @@ def completion_deadline(args, original_entry_ns, candidate=None):
     require((path is None) == (pin is None), 'native phase2 complete selector required')
     seconds = getattr(args, 'native_aggregate_seconds', 1200)
     require(type(seconds) is int, 'native aggregate seconds must be exact integer')
-    if path is None:
+    fresh_path = getattr(args, 'native_fresh_completion', None)
+    fresh_pin = getattr(args, 'native_fresh_completion_sha256', None)
+    require((fresh_path is None) == (fresh_pin is None), 'fresh completion exact selector pair required')
+    if fresh_path is not None:
+        require(args.profile == 'codex-native' and args.manager == 'system'
+            and args.native_owned_candidate_cache is False
+            and Path(fresh_path) == STATE / 'native-fresh-completion.json'
+            and str(fresh_path) == str(STATE / 'native-fresh-completion.json')
+            and (args.native_mode, getattr(args, 'native_global_attempt', None))
+                in ((COMBINED_MODE, 9), ('schema', 10))
+            and path is None and pin is None
+            and getattr(args, 'native_cache_transition', None) is None
+            and getattr(args, 'native_cache_transition_sha256', None) is None
+            and getattr(args, 'native_cache_attempt', None) is None
+            and seconds == 3600 and isinstance(fresh_pin, str)
+            and re.fullmatch(r'[0-9a-f]{64}', fresh_pin)
+            and candidate is not None and candidate.fresh_verified_before_launch is True,
+            'fresh completion deadline requires independently verified new admission')
+    elif path is None:
         require(seconds == 1200, 'ordinary native budget must remain unchanged')
     else:
         require(args.profile == 'codex-native' and args.manager == 'system'
