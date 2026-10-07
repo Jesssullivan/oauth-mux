@@ -123,7 +123,7 @@ class TerminalProcess:
     No poll/wait may reap the child before exact owned process-group cleanup.
     """
 
-    def __init__(self, candidate, environment, cwd, resume=None):
+    def __init__(self, candidate, environment, cwd, resume=None, *, popen_factory=None):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         bootstrap = ("import os,runpy,sys;p=sys.argv.pop(1);sys.path.insert(0,os.path.dirname(p));"
@@ -139,7 +139,8 @@ class TerminalProcess:
         try:
             os.set_blocking(self.master, False)
             self.selector.register(self.master, selectors.EVENT_READ)
-            self.process = subprocess.Popen(command, env=environment, cwd=cwd, stdin=slave,
+            launch = subprocess.Popen if popen_factory is None else popen_factory
+            self.process = launch(command, env=environment, cwd=cwd, stdin=slave,
                                             stdout=slave, stderr=slave, start_new_session=True, umask=0o077)
         except BaseException:
             self.selector.close()

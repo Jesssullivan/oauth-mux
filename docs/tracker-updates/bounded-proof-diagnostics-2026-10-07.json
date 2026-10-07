@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "kind": "bounded_provider_free_proof_diagnostics",
+  "authority": "User-ratified provider-free continuation; Omux AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-07T03:46:33Z",
+  "parent_goal": ".goal/omux-integrated-delivery-2026-10-05.json",
+  "continuation": ".goal/omux-native-browser-2026-10-06.json",
+  "plan": "docs/plans/omux-native-browser-continuation-2026-10-06.md",
+  "note": "docs/agent-notes/2026-10-07-sess-omux-portable-exec.md",
+  "issues": [
+    "TIN-5338",
+    "TIN-5421",
+    "TIN-2057",
+    "TIN-2063",
+    "TIN-5442",
+    "TIN-2720"
+  ],
+  "source": {
+    "base": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+    "branch": "codex/omux-bounded-proof-diagnostics-20261007",
+    "worktree": "/srv/fast-local/jess/git/oauth-mux-detach-20261007",
+    "source_application": "root_only_serialized; original mixed index preserved"
+  },
+  "prior_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
+  "prior_source_delivery": {
+    "pr": 530,
+    "merge": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+    "parent": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+    "tree": "5a0a97a60f3ba4219beca7eab9a32dcbf747c56d",
+    "verified_server_signature": true,
+    "signed_source": "524febc15ad66b106dbaf3c9a45e86569df67b0b",
+    "docs_source_epoch": "f84a5b2e-6638-4c52-9a2a-b76f9b9bd5c6",
+    "docs_source": "2of2PASS_0_0_empty",
+    "native_epoch": "ac14f5fa-d87c-446a-823d-12ef6b022153",
+    "native_result": "FAILED_owner_endpoint_deadline_before_retained_configuration_comparison",
+    "scope": "source_only_no_native_gate"
+  },
+  "proposals": {
+    "native": {
+      "state": "corrected_model_and_owned_process_targets_passed",
+      "file": "delivery/native_thread_census.py",
+      "roles": [
+        "self",
+        "daemon",
+        "keyring",
+        "native-bootstrap",
+        "native-resume"
+      ],
+      "caps": {
+        "owned_fds": 11,
+        "status_bytes": 16384,
+        "numeric_line_bytes": 256,
+        "record_bytes": 128,
+        "sample_nanoseconds": 100000000
+      },
+      "output": "failure_only_closed_role_state_and_bounded_threads; no processIDs/names/paths/output/config/history",
+      "custody": "held genuine procfs directory + pidfd; single matching NSpid; created Popen parent/UID/witness; no executable admission",
+      "cancellation": "defer first control until original assignment checkpoint; preserve same object and existing primary/cleanup",
+      "review": "native_registry_authority and portable_exec_tests exact8497 source_clear; real teardown/deadline/drift/deferred-control test coverage unrun",
+      "sha256": "8497fd38c0f36928de31f8372eb47e59e666bedd1e4405732ae8750699c69927"
+    },
+    "yoga": {
+      "sha256": "69d79d4b03e4fc4a1e37d69ad127f88e32d993bcc38bc21eb51524f64c32af61",
+      "base": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+      "review": "native_selection_review_source_clear",
+      "state": "models_passed_3710_no_destination_proof",
+      "files": [
+        "tools/yoga_controller_delivery.py",
+        "tools/yoga_controller_delivery_test.py"
+      ],
+      "output": "closed registryKind/rowKind; requested raw shape counts <=472 and capped extras; no paths/values",
+      "preserved": "registration set/value/reference equality; independent NAR rehash; qualification/SSH/commands/caps",
+      "meaning": "null/missing/nonobject raw shape never asserts physical absence/corruption/import authority"
+    }
+  },
+  "current_execution": {
+    "state": "none",
+    "last_epoch": "a92d4563-8465-4122-b208-681a8ddd599f",
+    "descendants_empty": true
+  },
+  "resource_limits": {
+    "memory_bytes": 4294967296,
+    "swap_bytes": 0,
+    "tasks": 512,
+    "cpu": 2,
+    "aggregate_seconds": 1200,
+    "stop_seconds": 10
+  },
+  "planned_model_targets": [
+    "//delivery:native_thread_census_test",
+    "//delivery:native_thread_census_owned_process_test",
+    "//delivery:native_run_cli_failure_test",
+    "//tools:yoga_controller_delivery_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "planned_native_targets": [
+    "//delivery:installed_legacy_native_tui_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "order": "independent final source review; root apply; one contained model/owned-child batch; freeze signed clean source; one fresh provider-free retained009 native checkpoint",
+  "product_gates": {
+    "parent_scoped_passes": 5,
+    "parent_open": 6,
+    "native_resume": "open",
+    "yoga_toolbar": "open",
+    "home_manager_offline_evaluation": "open",
+    "stock_codex": "unproved",
+    "live_handoff": "unproved",
+    "darwin": "held_unproved"
+  },
+  "limits": [
+    "Provider-free; no account/provider access",
+    "No accepted-history/tool/approval proof",
+    "No resource cap increase or assertion weakening",
+    "Diagnostic counts do not establish cause or process admission",
+    "No destination store import/activation authority",
+    "No publication or achieved SLA claim"
+  ],
+  "next": "Signed independently verified clean source snapshot; one fresh provider-free retained009 native checkpoint with unchanged environment/caps/assertions",
+  "model_pre_action": {
+    "source_commit": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+    "source_dirty": true,
+    "targets": [
+      "//delivery:native_thread_census_test",
+      "//delivery:native_thread_census_owned_process_test",
+      "//delivery:native_run_cli_failure_test",
+      "//tools:yoga_controller_delivery_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "one_serialized_execution": true,
+    "limits_unchanged": true
+  },
+  "model_result": {
+    "epoch": "3710749b-b415-4225-9763-dc701653007b",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "receipt_sha256": "4397366cf6da0c9da48abe9a0dcf6f3350bae850ec7d18af2a476910cd75f42b",
+    "graph_sha256": "0ea033df8c5fdb5e3f7c62bf963100fa592a12cc8c66f3c7e59e0a7269b357b1",
+    "evidence": {
+      "bytes": 224729,
+      "files": 15,
+      "manifest": "test-evidence.json",
+      "sha256": "1ade025706cdd57541723a6ee9cd183baddc40f61065c96a6c54987ee7ffd63d",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:native_run_cli_failure_test",
+      "//tools:yoga_controller_delivery_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "failed_targets": [
+      "//delivery:native_thread_census_test",
+      "//delivery:native_thread_census_owned_process_test"
+    ],
+    "failure": "Both20-case census suites fail test_deadline_profile_and_close_failure_remain_unavailable: already expired valid deadline bypasses upfront check when no enrolled roles exist",
+    "actual_owned_child_cases": "two actual owned-child tests passed within failed aggregate; neither full target passed",
+    "pids": {
+      "sampled_peak": 302,
+      "observed_max_event_increase": false,
+      "observed_at_limit": false,
+      "terminal": "unavailable",
+      "attribution": "none"
+    }
+  },
+  "deadline_correction": {
+    "file": "delivery/native_thread_census.py",
+    "method": "failure_records",
+    "change": "self._check(deadline) immediately after self._budget() inside existing fixed deadline fallback",
+    "reason": "valid expired deadline with no enrolled entries previously bypassed per-role checks",
+    "assertions_unchanged": true,
+    "source_review": "portable_exec_tests and native_registry_authority source_clear exact one-line applied correction",
+    "targets": [
+      "//delivery:native_thread_census_test",
+      "//delivery:native_thread_census_owned_process_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ]
+  },
+  "correction_pre_action": {
+    "source_commit": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+    "source_dirty": true,
+    "targets": [
+      "//delivery:native_thread_census_test",
+      "//delivery:native_thread_census_owned_process_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "reason": "new one-line source correction to demonstrated expired deadline failure",
+    "unaffected_targets_not_repeated": true,
+    "limits_unchanged": true
+  },
+  "correction_result": {
+    "epoch": "a92d4563-8465-4122-b208-681a8ddd599f",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "receipt_sha256": "d33696828ab66c1acabe67dd95f565c4216027e9ca5922f33d55e2a5c98f95b0",
+    "graph_sha256": "0ea033df8c5fdb5e3f7c62bf963100fa592a12cc8c66f3c7e59e0a7269b357b1",
+    "evidence": {
+      "bytes": 218807,
+      "files": 11,
+      "manifest": "test-evidence.json",
+      "sha256": "d3d75e0860e2bbb7bfa1a1ce54317950fcf2d6e7fcce4886534dbba2eea4fe48",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:native_thread_census_test",
+      "//delivery:native_thread_census_owned_process_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "pids": {
+      "peak": 324,
+      "eventIncrease": false,
+      "atLimit": false,
+      "attribution": "none",
+      "terminal": "unavailable"
+    },
+    "scope": "bounded diagnostics/parser/ownership/cancellation/deadline/actual-owned-child source predicates only; no native or Yoga gate"
+  }
+}

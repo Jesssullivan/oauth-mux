@@ -63,10 +63,8 @@
     "resource_caps_unchanged": true
   },
   "current_execution": {
-    "state": "terminal",
-    "epoch": "ac14f5fa-d87c-446a-823d-12ef6b022153",
-    "controller_exit": 3,
-    "workload_exit": 3,
+    "state": "none",
+    "last_epoch": "f84a5b2e-6638-4c52-9a2a-b76f9b9bd5c6",
     "descendants_empty": true
   },
   "resource_limits": {
@@ -99,9 +97,9 @@
     "No cap increase or assertion relaxation"
   ],
   "next": [
-    "Reviewed fixture-only PR530 delivery with failed ac14 result disclosed",
-    "Source-only bounded already-owned native process observation and Yoga registry-shape diagnostics; no cap changes or blind rerun",
-    "Separate Yoga import qualification before actual installation/consent"
+    "Review and test bounded native census and Yoga registry shape diagnostic proposals",
+    "One justified native failure-observation action only after census models/source review; no caps or predicates relaxed",
+    "Separate Yoga import prerequisites/materialization before visible operator proof"
   ],
   "publication": {
     "source_pr_pushed": true,
@@ -379,7 +377,7 @@
     "prior_state": "inspected Home Manager advisory hook wrappers",
     "result": "per-invocation core.hooksPath=/dev/null only; global config unchanged; signed commit and independent Git validation required"
   },
-  "latest_observed_at": "2026-10-07T03:23:14Z",
+  "latest_observed_at": "2026-10-07T03:41:09Z",
   "source_delivery": {
     "pr": 529,
     "url": "https://github.com/Jesssullivan/oauth-mux/pull/529",
@@ -663,6 +661,103 @@
         "window": "admitted-before-go-through-pre-cleanup"
       },
       "operator_process_census": "Attempt after terminal cleanup found cgroup absent; no native or individual-process thread counts captured."
+    },
+    "final_source": {
+      "head": "524febc15ad66b106dbaf3c9a45e86569df67b0b",
+      "tree": "5a0a97a60f3ba4219beca7eab9a32dcbf747c56d",
+      "parent": "2bd9942f34450ec1cf245674aaafecf32425abbb",
+      "sig": "G"
+    },
+    "final_source_docs": {
+      "epoch": "f84a5b2e-6638-4c52-9a2a-b76f9b9bd5c6",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "raw_receipt_sha256": "e03a4996a57bbd42c58741318f39f96c13e963b38f7b97ec990216c9dcb24023",
+      "test_evidence": {
+        "bytes": 215741,
+        "files": 7,
+        "manifest": "test-evidence.json",
+        "sha256": "c9414e027683730b66d7d8f01f535a37a03466cfc7f67a594f0019b341a9f94c",
+        "state": "preserved"
+      },
+      "graph_sha256": "134494b7d93bc63a904cf835877b7a8bf13a29cdc02334f6bdb7a27ebbbbf9bb",
+      "scope": "Docs/source only2of2; no native rerun or acceptance",
+      "whole_workload_process_observation": {
+        "attribution": "none",
+        "baseline": {
+          "current": 1,
+          "custody": "same",
+          "limit": 512,
+          "max_event_delta": 0,
+          "max_events": 0,
+          "pids_limit": "verified512",
+          "pids_max_event_delta": "unchanged",
+          "pids_sample": "below",
+          "sample_timing": "baseline"
+        },
+        "counter_semantics": "pids.events:max-as-exposed; mount-semantics-unqualified",
+        "last_monitor": {
+          "current": null,
+          "custody": "absent",
+          "limit": null,
+          "max_event_delta": null,
+          "max_events": null,
+          "pids_limit": "unavailable",
+          "pids_max_event_delta": "unavailable",
+          "pids_sample": "unavailable",
+          "sample_timing": "monitor"
+        },
+        "monitor_samples": 209,
+        "observed_at_or_over_verified_limit": false,
+        "observed_max_event_decrease": false,
+        "observed_max_event_increase": false,
+        "observed_unknown": true,
+        "pre_cleanup": {
+          "current": null,
+          "custody": "absent",
+          "limit": null,
+          "max_event_delta": null,
+          "max_events": null,
+          "pids_limit": "unavailable",
+          "pids_max_event_delta": "unavailable",
+          "pids_sample": "unavailable",
+          "sample_timing": "pre-cleanup"
+        },
+        "pre_cleanup_control_flow_deferred": false,
+        "read_semantics": "bounded-sequential-fields; sampled-not-continuous",
+        "sample_count_saturated": false,
+        "sampled_peak_current": 175,
+        "schema_version": 1,
+        "scope": "whole-owned-workload-cgroup",
+        "window": "admitted-before-go-through-pre-cleanup"
+      }
+    },
+    "premerge": {
+      "recorded_at": "2026-10-07T03:34:34Z",
+      "pr": 530,
+      "head": "524febc15ad66b106dbaf3c9a45e86569df67b0b",
+      "base": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+      "tree": "5a0a97a60f3ba4219beca7eab9a32dcbf747c56d",
+      "draft": false,
+      "reviews": [],
+      "review_threads": [],
+      "mergeable_state": "clean",
+      "body_equal": true,
+      "independent_review": "/root/review_prs_oct6 final7files source-clear afterdocs2of2; nativefailuredisclosed",
+      "protection_unchanged": true
+    },
+    "final_source_delivery": {
+      "pr": 530,
+      "head": "524febc15ad66b106dbaf3c9a45e86569df67b0b",
+      "tree": "5a0a97a60f3ba4219beca7eab9a32dcbf747c56d",
+      "merged": true,
+      "merge_commit": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+      "merge_parent": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+      "merge_verified": true,
+      "main_exact_readback": true,
+      "source_branch_retained": true,
+      "scope": "Source-only fixture/doc delivery; nativeac14 failed and config comparison untested; no gate closes"
     }
   },
   "marker_linear_reconciliation": {

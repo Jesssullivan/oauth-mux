@@ -280,8 +280,14 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(delivery.GateError) as captured:
                 delivery.registry({row['path']:actual},[row])
             self.assertEqual(str(captured.exception),'destination-registration-content')
-            self.assertEqual(captured.exception.hints,
-                {'schemaVersion':1,'stage':'destination-registry','predicate':name})
+            expected = {'schemaVersion':1,'stage':'destination-registry','predicate':name,
+                'registryShape': {'registryKind':'object','requestedCount':1,
+                    'objectCount':0 if actual is None else 1,'nullCount':1 if actual is None else 0,
+                    'missingCount':0,'unsupportedCount':0,'uninspectedCount':0,
+                    'extraCount':0,'extraCountCapped':False}}
+            if actual is None:
+                expected['rowKind'] = 'null'
+            self.assertEqual(captured.exception.hints, expected)
             self.assertNotIn('/nix/store/',json.dumps(captured.exception.hints))
         with self.assertRaisesRegex(ValueError,'nar-hash'):
             delivery.registry({row['path']:dict(valid,narHash='private-invalid-hash')},[row])
@@ -291,6 +297,113 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(delivery.GateError):
                 backend.verify([row])
         self.assertEqual(called.call_count,1)
+
+    def test_registry_shape_counts_requested_rows_without_interpreting_null_or_missing(self):
+        rows = [{'path':'/nix/store/'+str(index)*32+'-fixture'} for index in range(5)]
+        actual = {rows[0]['path']:{}, rows[1]['path']:None, rows[2]['path']:'private-row',
+                  rows[4]['path']:[], '/nix/store/'+'f'*32+'-extra':None}
+        with self.assertRaises(delivery.GateError) as captured:
+            delivery.registry(actual, rows)
+        self.assertEqual(str(captured.exception), 'destination-registration-set')
+        self.assertEqual(captured.exception.hints, {
+            'schemaVersion':1,'stage':'destination-registry','predicate':'registration-set',
+            'registryShape': {'registryKind':'object','requestedCount':5,'objectCount':1,
+                'nullCount':1,'missingCount':1,'unsupportedCount':2,'uninspectedCount':0,
+                'extraCount':1,'extraCountCapped':False}})
+        text = json.dumps(captured.exception.hints)
+        for private in ('/nix/store/', 'private-row', 'physical', 'corrupt', 'version'):
+            self.assertNotIn(private, text)
+
+    def test_registry_row_refusal_reports_only_closed_kind_and_full_summary(self):
+        row = {'path':'/nix/store/'+'a'*32+'-fixture'}
+        cases = [(None,'null'), ([], 'array'), (False, 'boolean'), (42, 'number'),
+                 (1.5, 'number'), ('private-value', 'string'), (object(), 'unsupported')]
+        for value, kind in cases:
+            with self.subTest(kind=kind), self.assertRaises(delivery.GateError) as captured:
+                delivery.registry({row['path']:value}, [row])
+            hints = captured.exception.hints
+            self.assertEqual(set(hints), {'schemaVersion','stage','predicate','registryShape','rowKind'})
+            self.assertEqual(hints['predicate'], 'row-object')
+            self.assertEqual(hints['rowKind'], kind)
+            self.assertEqual(hints['registryShape']['requestedCount'], 1)
+            self.assertEqual(hints['registryShape']['nullCount'], 1 if value is None else 0)
+            self.assertEqual(hints['registryShape']['unsupportedCount'], 0 if value is None else 1)
+            for private in ('private-value', '/nix/store/', 'object at'):
+                self.assertNotIn(private, json.dumps(hints))
+
+    def test_nonobject_registry_counts_no_unobserved_rows_as_missing(self):
+        rows = [{'path':'/nix/store/'+'a'*32+'-fixture'}]
+        for actual, kind in [(None,'null'), ([], 'array'), (True, 'boolean'), (42, 'number'),
+                             ('private-result', 'string'), (object(), 'unsupported')]:
+            with self.subTest(kind=kind), self.assertRaises(delivery.GateError) as captured:
+                delivery.registry(actual, rows)
+            self.assertEqual(str(captured.exception), 'destination-registration-set')
+            shape = captured.exception.hints['registryShape']
+            self.assertEqual(shape, {'registryKind':kind,'requestedCount':1,'objectCount':0,
+                'nullCount':0,'missingCount':0,'unsupportedCount':0,'uninspectedCount':1,
+                'extraCount':0,'extraCountCapped':False})
+            self.assertNotIn('private-result', json.dumps(captured.exception.hints))
+
+    def test_registry_diagnostics_bound_counts_and_refuse_extra_duplicate_json_or_oversized_inputs(self):
+        row = {'path':'/nix/store/'+'a'*32+'-fixture'}
+        extra = {str(index):None for index in range(473)}
+        extra[row['path']] = {}
+        with self.assertRaises(delivery.GateError) as captured:
+            delivery.registry(extra, [row])
+        self.assertEqual(str(captured.exception), 'destination-registration-set')
+        self.assertEqual(captured.exception.hints['registryShape']['extraCount'], 472)
+        self.assertIs(captured.exception.hints['registryShape']['extraCountCapped'], True)
+        with self.assertRaisesRegex(delivery.GateError, 'diagnostic-bound'):
+            delivery.registry({}, [row] * 473)
+        encoded = json.dumps(row['path']).encode()
+        with self.assertRaisesRegex(delivery.GateError, 'duplicate-json-field'):
+            delivery.strict_json(b'{' + encoded + b':null,' + encoded + b':{}}')
+
+    def test_duplicate_requested_rows_count_raw_occurrences_and_distinct_extra_keys(self):
+        row = {'path':'/nix/store/'+'a'*32+'-fixture','narSize':1,
+               'narHash':'sha256:'+'0'*64,'references':[]}
+        actual = {row['path']:dict(row)}
+        self.assertIsNone(delivery.registry(actual, [row, row]))
+        self.assertEqual(delivery.registry_shape(actual, [row, row]), {
+            'registryKind':'object','requestedCount':2,'objectCount':2,'nullCount':0,
+            'missingCount':0,'unsupportedCount':0,'uninspectedCount':0,
+            'extraCount':0,'extraCountCapped':False})
+        # The local helper preserves raw requested occurrences. Production
+        # parse_inventory separately rejects duplicate requested paths.
+        actual['unused-extra-key'] = None
+        with self.assertRaises(delivery.GateError) as captured:
+            delivery.registry(actual, [row, row])
+        shape = captured.exception.hints['registryShape']
+        self.assertEqual(shape['requestedCount'], 2)
+        self.assertEqual(shape['objectCount'], 2)
+        self.assertEqual(shape['extraCount'], 1)
+        self.assertIs(shape['extraCountCapped'], False)
+
+    def test_exact_extra_count_boundary_is_uncapped(self):
+        row = {'path':'/nix/store/'+'a'*32+'-fixture'}
+        actual = {str(index):None for index in range(472)}
+        actual[row['path']] = {}
+        with self.assertRaises(delivery.GateError) as captured:
+            delivery.registry(actual, [row])
+        self.assertEqual(str(captured.exception), 'destination-registration-set')
+        shape = captured.exception.hints['registryShape']
+        self.assertEqual(shape['requestedCount'], 1)
+        self.assertEqual(shape['objectCount'], 1)
+        self.assertEqual(shape['extraCount'], 472)
+        self.assertIs(shape['extraCountCapped'], False)
+
+    def test_correct_registry_keeps_full_byte_rehash_and_unknown_metadata_behavior(self):
+        row = {'path':'/nix/store/'+'a'*32+'-fixture','narSize':1,
+               'narHash':'sha256:'+'0'*64,'references':[]}
+        actual = dict(row, unrelated='private-unused-metadata')
+        self.assertIsNone(delivery.registry({row['path']:actual}, [row]))
+        backend = delivery.Backend.__new__(delivery.Backend)
+        with patch.object(backend, 'nix_call', side_effect=[
+                json.dumps({row['path']:actual}).encode(), row['narHash'].encode()]) as called:
+            backend.verify([row])
+        self.assertEqual(called.call_count, 2)
+        self.assertIn('path-info --offline --json', called.call_args_list[0].args[0])
+        self.assertIn('hash path --type sha256 --sri', called.call_args_list[1].args[0])
 
     def test_registry_is_not_content_proof(self):
         row = {'path': '/nix/store/' + 'a'*32 + '-input', 'narSize': 1,
