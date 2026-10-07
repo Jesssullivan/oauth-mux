@@ -142,6 +142,14 @@ apple_repository(name = "omux_apple")
 codex_live_inputs = use_repo_rule("//tools:codex_live_source_inputs.bzl", "codex_live_source_inputs")
 codex_live_inputs(name = "omux_codex_live_source_inputs")
 
+# Exact successful, independently selected public SDK qualification output.
+sdk_selection = use_repo_rule("//tools:codex_sdk_selection_repository.bzl", "codex_sdk_selection_repository")
+sdk_selection(
+    name = "omux_sdk_selection",
+    selection = "/home/jess/.local/state/omux-execution-20261005/cache-v2-4689a690587ec00080acae0eb6ba13df894a284b47e0ce7a6ee828bed0cb8d9d/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_retained_sdk_qualify/test.outputs/sdk-private/sdk-selection.json",
+    sha256 = "705aac1d52a96a866a5635f30e70a82702a9214dc94673504a01c7319b603bb3",
+)
+
 # The operator instance is added only after independently qualified native outputs.
 fresh_native_package = use_repo_rule("//tools:codex_fresh_native_package_inputs.bzl", "codex_fresh_native_package_inputs")
 

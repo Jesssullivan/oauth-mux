@@ -9,6 +9,23 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def test_export_pass_counts_accumulate_without_resetting_shared_bytes(self):
+        budget = self.budget(); budget.files = 3; budget.check(7)
+        budget.authorize_export_passes(); budget.export_pass('copy'); budget.files += 4
+        budget.export_pass('sealed_readback'); budget.files += 5
+        budget.export_pass('copy'); budget.files += 2
+        self.assertEqual(budget.entry_counts(),{'qualification':3,'copy':6,'sealed_readback':5})
+        self.assertEqual(budget.bytes,7)
+        with self.assertRaises(ValueError): budget.export_pass('fourth')
+        with self.assertRaises(ValueError): budget.authorize_export_passes()
+    def test_export_pass_entry_and_shared_byte_bounds_still_refuse(self):
+        budget = self.budget(); budget.authorize_export_passes(); budget.export_pass('copy')
+        budget.files = sdk.MAX_FILES+1
+        with self.assertRaisesRegex(ValueError,'entry bound'): budget.entry_counts()
+        budget = self.budget(); budget.authorize_export_passes(); budget.export_pass('copy')
+        budget.bytes = sdk.MAX_BYTES; budget.export_pass('sealed_readback')
+        with self.assertRaisesRegex(ValueError,'byte bound'): budget.check(1)
+
     def test_public_missing_links_preserve_raw_bytes_and_record_absence(self):
         rows = [{'path':'first','kind':'symlink','target':'second'},
                 {'path':'second','kind':'symlink','target':'tools/downloader.cfg'}]

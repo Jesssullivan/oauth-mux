@@ -53,6 +53,22 @@ class Budget:
         need(0 < remaining <= 1200, 'expired or excessive deadline')
         self.deadline, self.callback = time.monotonic()+remaining, callback
         self.files, self.bytes = 0, 0
+        self.inventory_phase = 'qualification'
+        self.inventory_counts = {'qualification':0}
+    def authorize_export_passes(self):
+        need(set(self.inventory_counts)=={'qualification'},'export passes already authorized')
+        need(self.files<=MAX_FILES,'qualification entry bound')
+        self.inventory_counts.update(copy=0,sealed_readback=0)
+    def export_pass(self, name):
+        self.check()
+        need(name in ('copy','sealed_readback') and name in self.inventory_counts,'undeclared export inventory pass')
+        self.inventory_counts[self.inventory_phase] = self.files
+        self.inventory_phase, self.files = name,self.inventory_counts[name]
+    def entry_counts(self):
+        self.inventory_counts[self.inventory_phase] = self.files
+        need(all(0<=count<=MAX_FILES for count in self.inventory_counts.values()),'inventory pass entry bound')
+        need(len(self.inventory_counts)<=3,'inventory pass count bound')
+        return dict(self.inventory_counts)
     def check(self, count=0):
         need(time.monotonic() < self.deadline, 'absolute export deadline reached')
         self.bytes += count
@@ -711,6 +727,7 @@ def main():
         need(args.selection and args.selection_sha256,'export requires frozen explicit selection')
         selection = load(args.selection,args.selection_sha256,budget)
         need(selection == qualify(budget),'retained selection changed or has unreviewed fields')
+        budget.authorize_export_passes()
         os.mkdir('sdk-export',0o700,dir_fd=fd)
         root = parent/'sdk-export'
         (root/'repositories').mkdir(mode=0o700)
@@ -728,6 +745,7 @@ def main():
             finally:
                 os.close(parentfd)
         for repo in selection['repositories']:
+            budget.export_pass('copy')
             destination = root/'repositories'/repo['canonical_name']
             destination.mkdir(mode=0o700)
             rows = inventory(Path(repo['source_root']),budget,output=destination)
@@ -740,6 +758,7 @@ def main():
                 if item['kind']=='directory':
                     os.chmod(destination/item['path'],0o555)
             os.chmod(destination,0o555)
+            budget.export_pass('sealed_readback')
             need(inventory(destination,budget,sealed=True)==repo['files'],'copy readback mismatch')
         copy_registry_metadata(selection['registry_metadata'],root/'registry-cache',budget)
         need(registry_metadata(root/'graph'/'MODULE.bazel.lock',
@@ -748,7 +767,9 @@ def main():
         selection['qualification_only'] = False
         selection['selection_sha256'] = args.selection_sha256
         selection['producer'] = '//tools:codex_retained_sdk_export_producer'
-        selection['counts'] = {'entries_read':budget.files,'bytes_read':budget.bytes}
+        passes = budget.entry_counts()
+        selection['counts'] = {'entries_read':sum(passes.values()),'bytes_read':budget.bytes,
+                               'inventory_passes':passes,'max_entries_per_pass':MAX_FILES,'max_inventory_passes':3}
         raw = canonical(selection)
         out = os.open(root/'receipt.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
         with os.fdopen(out,'wb') as stream:
