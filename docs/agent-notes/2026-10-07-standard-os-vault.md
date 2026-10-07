@@ -133,3 +133,35 @@ mode/peer refuse. Normal post-start authority lock is admitted by metadata only.
 No enable/reload/reinstall/source/provider/factor/vault-helper action is added.
 The ten new models and actual first start are unrun at this source checkpoint;
 the earlier eight-target result cannot qualify this changed graph.
+
+## First-start outcome and source-record correction — 19:35 UTC
+
+The seven declared checks completed in `635b6aea-b1c2-4fa7-b945-2e31afd8fe41`
+with exits zero, empty descendants and preserved evidence. Receipt SHA256
+`6a640a3c7b2619a170230f0db5c9f442e0cec32a1c0cda0008ea6dd87408dbfb`.
+Root omitted the reviewed Add File `delivery/resident_owned_start.py` from the
+signed `14a6664d01f4131cfd1f7f08c01d05897fba9756` commit. The file was present
+throughout those checks and the actual start action; its exact SHA256 is
+`a06854cc0daf166bd31b6fae6745b7aea29f62397e94970f49757df1c5e9dba6`.
+Independent source readback matched the reviewed `24a2e529` patch payload.
+Those receipts bind their declared graph including this file, but their
+`source_dirty=false` does not describe a fully committed source tree. No clean
+signed-source qualification is inherited. This amendment includes the file.
+
+Actual action `74ca7bab-abb9-4aeb-a14e-0a636024e5d4` built the archive successfully,
+then ended exits1/1 with empty workload descendants and no controller failure.
+Receipt SHA256 `e40a5c7fe972aad00169401bff6dafdb6367b8ecf650e91dd6bace2e757f9b65`.
+Its resident readback verified an owned active bounded first start after cleanup;
+control-plane health and custody require controller success and did not pass.
+Exact user-manager metadata independently shows the installed unit active under
+256 MiB, zero swap, 32 tasks and ten percent CPU. No stop/restart followed.
+The resident is outside the completed workload cgroup and is intentionally retained.
+
+Source review found a concrete fixture defect: `start_health` required protocol1,
+while current `src/control.zig` and both engine health variants emit protocol2.
+Root applies reviewed correction `27f4334e15c0e49f27f898e72060aaf33a5d36e5676e1b2d86eb11d0d681eec8`,
+including runtime-shaped Ready/Locked cases and invalid-version refusals.
+This does not attribute every possible predicate in the generic activation refusal.
+Corrected checks and actual health inspection remain unrun at this amendment.
+The Neo operator will identify the unlock binding; no factor value was requested
+or read. Usable custody and durable enrollment remain unproved.

@@ -61,7 +61,7 @@ class ResidentContract(unittest.TestCase):
         value=self.manifest()
         value.update(action="start-existing",native_context=None,start=selection)
         group="/user.slice/user-"+str(start.os.getuid())+".slice/user@"+str(start.os.getuid())+".service/app.slice/ai.xoxd.omux.service"
-        health={"protocol_version":1,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
+        health={"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
             "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
         started=False
         commands=[]

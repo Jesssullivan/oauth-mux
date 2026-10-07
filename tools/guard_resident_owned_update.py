@@ -123,7 +123,8 @@ def start_control_peer(peer,pid):
         and peer[2] == resident.start_ticks(pid))
 
 def start_health(value):
-    resident.require(type(value) is dict and value.get("protocol_version") == 1
+    # Version-bound control metadata, matching src/control.zig protocol_version.
+    resident.require(type(value) is dict and value.get("protocol_version") == 2
         and type(value.get("protocol_version")) is int and value.get("live_handoff_proven") is False)
     if value.get("status") == "vault_locked":
         resident.require(value.get("custody_available") is False and value.get("metadata_loaded") is False

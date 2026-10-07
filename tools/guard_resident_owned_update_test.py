@@ -126,7 +126,7 @@ class UpdateModels(unittest.TestCase):
                     update.start_control_peer(bad,10)
 
     def test_locked_control_plane_truth_never_claims_usable_custody(self):
-        value = {"protocol_version":1,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
+        value = {"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
             "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
         self.assertEqual(update.start_health(value),{"control_plane_ready":True,"custody_available":False,"vault_locked":True})
         for key in ("custody_available","metadata_loaded","provider_access","live_handoff_proven"):
@@ -135,7 +135,28 @@ class UpdateModels(unittest.TestCase):
             with self.assertRaises(ValueError):
                 update.start_health(bad)
         with self.assertRaises(ValueError):
-            update.start_health({"protocol_version":1,"status":"repair_required","custody_available":False,"live_handoff_proven":False})
+            update.start_health({"protocol_version":2,"status":"repair_required","custody_available":False,"live_handoff_proven":False})
+
+    def test_public_control_protocol_two_health_accepts_actual_source_shapes_only(self):
+        # Public src/control.zig declares version2; Engine health projects it in
+        # both credential-free Locked and ordinary Ready paths. This is source
+        # contract coverage, never a live custody or account fixture claim.
+        ready={"protocol_version":2,"status":"ready","revision":0,"custody_available":True,
+            "metrics_available":True,"live_handoff_proven":False}
+        locked={"protocol_version":2,"status":"vault_locked","custody_available":False,
+            "metadata_loaded":False,"provider_access":False,"live_handoff_proven":False,
+            "recovery_action":"unlock_platform_vault_then_restart_daemon"}
+        self.assertTrue(update.start_health(ready)["custody_available"])
+        self.assertFalse(update.start_health(locked)["custody_available"])
+        for shape in (ready,locked):
+            for version in (1,True,"2",None):
+                bad=dict(shape,protocol_version=version)
+                with self.assertRaises(ValueError):
+                    update.start_health(bad)
+            bad=dict(shape)
+            del bad["protocol_version"]
+            with self.assertRaises(ValueError):
+                update.start_health(bad)
 
     def test_first_start_recheck_refuses_actual_modified_owned_unit(self):
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
