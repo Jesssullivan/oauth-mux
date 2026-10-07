@@ -95,3 +95,19 @@ remain unchanged. Added a fixed source overlay declaring actual config-schema
 generation; building only the generator binary cannot prove generated output.
 Both changes require models, full source regeneration and native execution.
 Root remains the sole executor; Original receipts preserve prior scopes.
+
+## Finite SDK import and fresh runtime carrier
+
+Authority remains the user-authorized real-account implementation and R-N13.
+Selected public cache/generated SDK inputs may now normalize exact grouped
+modes only below their held, rechecked, owned0700 directory boundary. Generic,
+sealed and Nix readers remain strict; originals are never chmodded. Twelve
+focused models cover actual copied bytes/modes and custody refusals. Actual
+SDK qualification must still establish the complete selected graph.
+
+The fresh runtime package carrier has its own declared target and version-bound
+source/export/compile/14-test/schema chain. It verifies every portable ELF edge,
+complete JSON schema subtrees and sealed output membership; retained009 cannot
+inherit this capability. Its operator input instance is deliberately absent
+until actual native outputs qualify. Neither the carrier nor its three focused
+models have run. Source delivery remains experimental and unshipped.

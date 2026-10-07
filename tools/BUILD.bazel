@@ -5,6 +5,8 @@ load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
 load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
 load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA256")
 load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
+load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_manifest")
+load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
 
 _CODEX_SDK_SOURCES = [
     "codex_native_candidate_cache.py",
@@ -1443,3 +1445,48 @@ exports_files([
 ])
 
 alias(name = "codex_retained_sdk_export", actual = ":codex_retained_sdk_export_producer")
+# Fresh experimental maintained-native carrier; fixed declared inputs/tools only.
+runtime_inputs_manifest(name = "fresh_native_runtime_files", srcs = "@omux_nix//:runtime_libraries")
+python_test(
+    name = "codex_fresh_native_runtime_package",
+    main = "codex_fresh_native_runtime.py",
+    srcs = [
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//delivery:portable.py",
+    ] + _CODEX_SDK_SOURCES,
+    data = [
+        "@omux_fresh_native_package_data//:inputs",
+        ":fresh_native_runtime_files",
+        "@omux_nix//:ca_bundle",
+        "@omux_nix//:tool_wrappers/strip",
+        "@omux_nix//:patchelf",
+    ],
+    args = [
+        "--selection", "$(location @omux_fresh_native_package_data//:package-selection.json)",
+        "--selection-sha-file", "$(location @omux_fresh_native_package_data//:package-selection.sha256)",
+        "--input-aliases", "$(location @omux_fresh_native_package_data//:input-aliases.json)",
+        "--strip", "$(location @omux_nix//:tool_wrappers/strip)",
+        "--patchelf", "$(location @omux_nix//:patchelf)",
+        "--ca-bundle", "$(location @omux_nix//:ca_bundle)",
+        "--runtime-files-manifest", "$(location :fresh_native_runtime_files)",
+        "--tool-path", NIX_COREUTILS_BIN,
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+exports_files(["codex_fresh_native_package_inputs.bzl", "codex_fresh_native_runtime.py"])
+python_test(
+    name = "codex_fresh_native_runtime_test",
+    main = "codex_fresh_native_runtime_test.py",
+    srcs = [
+        "codex_fresh_native_runtime.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//delivery:portable.py",
+    ] + _CODEX_SDK_SOURCES,
+)
+python_test(
+    name = "codex_private_import_test",
+    main = "codex_private_import_test.py",
+    srcs = ["codex_retained_sdk_export.py"],
+    tags = ["no-remote"],
+)

@@ -81,12 +81,82 @@ def open_dir(path, private=False):
         os.close(fd)
         raise
 
-def read_file(fd, name, budget, output=None, capture=False):
+CACHE_PRIVATE_PARENT = Path('/home/jess/.cache')
+GENERATED_PRIVATE_PARENT = Path('/srv/fast-local/jess/state/codex')
+
+class PrivatePublicImport:
+    """Lease exact selected public input ancestry; never applies to output/Nix."""
+    def __init__(self, path):
+        path = Path(path)
+        if path.is_relative_to(CACHE):
+            relative = path.relative_to(CACHE).parts
+            need(len(relative)==2 and re.fullmatch(r'[0-9a-f]{64}',relative[0]) and
+                 re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',relative[1]),
+                 'unselected public cache import root')
+            boundary = CACHE_PRIVATE_PARENT
+        elif path.is_relative_to(BASE/'external'):
+            relative = path.relative_to(BASE/'external').parts
+            need(len(relative)==1 and re.fullmatch(r'[A-Za-z0-9_+.~-]+',relative[0]) and
+                 relative[0] not in ('_main','bazel_tools'),'unselected generated public import root')
+            boundary = GENERATED_PRIVATE_PARENT
+        else:
+            raise ValueError('public normalization outside exact selected input namespaces')
+        need(path.is_absolute() and '..' not in path.parts,'noncanonical public import root')
+        self.chain, self.private = [], False
+        fd = os.open('/',os.O_RDONLY|os.O_DIRECTORY)
+        self.chain.append((None,fd,os.fstat(fd)))
+        current = Path('/')
+        try:
+            for component in path.parts[1:]:
+                current = current/component
+                fd = os.open(component,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=self.chain[-1][1])
+                info = os.fstat(fd)
+                self.chain.append((component,fd,info))
+                if current==boundary:
+                    need(info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o700,
+                         'exact public input boundary must be owned0700')
+                    self.private = True
+                sticky_ancestor = not self.private and current!=path and info.st_mode & stat.S_ISVTX
+                need(info.st_uid in (0,os.getuid()) and
+                     (not info.st_mode & 0o022 or self.directory(info) or sticky_ancestor), 'public ancestor custody')
+            need(self.private,'missing exact held private input boundary')
+            self.recheck()
+        except BaseException:
+            self.close()
+            raise
+    @staticmethod
+    def identity(info):
+        return (info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode,info.st_ctime_ns)
+    def recheck(self):
+        for index,(name,fd,before) in enumerate(self.chain):
+            need(self.identity(os.fstat(fd))==self.identity(before),'held public ancestry changed')
+            if index:
+                current = os.stat(name,dir_fd=self.chain[index-1][1],follow_symlinks=False)
+                need(self.identity(current)==self.identity(before),'named public ancestry changed')
+    def directory(self, info):
+        return self.private and info.st_uid==os.getuid() and stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode)==0o775
+    def regular(self, info):
+        return self.private and info.st_uid==os.getuid() and stat.S_ISREG(info.st_mode) and info.st_nlink==1 and stat.S_IMODE(info.st_mode) in (0o664,0o775)
+    def close(self):
+        for _,fd,_ in reversed(self.chain):
+            os.close(fd)
+        self.chain = []
+
+def public_import(path, sealed):
+    path = Path(path)
+    if not sealed and (path.is_relative_to(CACHE) or path.is_relative_to(BASE/'external')):
+        return PrivatePublicImport(path)
+    return None
+
+def read_file(fd, name, budget, output=None, capture=False, private_import=None):
+    if private_import:
+        private_import.recheck()
     budget.check()
     inp = os.open(name, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK, dir_fd=fd)
     try:
         before = os.fstat(inp)
-        need(stat.S_ISREG(before.st_mode) and before.st_uid in (0, os.getuid()) and not before.st_mode & 0o022
+        need(stat.S_ISREG(before.st_mode) and before.st_uid in (0, os.getuid()) and
+             (not before.st_mode & 0o022 or private_import is not None and private_import.regular(before))
              and before.st_size <= MAX_FILE, 'unsafe file custody/type/size')
         h, count, parts, tail = hashlib.sha256(), 0, [], b''
         textual = Path(name).suffix in ('.bzl','.bazel','.sh','.py','.json') or name in ('BUILD','WORKSPACE')
@@ -108,15 +178,18 @@ def read_file(fd, name, budget, output=None, capture=False):
             elif capture:
                 parts.append(block)
         after = os.fstat(inp)
-        need((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns) ==
-             (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns) and count == before.st_size,
+        if private_import:
+            private_import.recheck()
+        need((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns,before.st_mode,before.st_uid,before.st_gid,before.st_nlink) ==
+             (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_mode,after.st_uid,after.st_gid,after.st_nlink) and count == before.st_size,
              'input mutated during read')
         return h.hexdigest(), count, b''.join(parts)
     finally:
         os.close(inp)
 
 def inventory(path, budget, output=None, sealed=False):
-    root = open_dir(path)
+    lease = public_import(path,sealed)
+    root = os.dup(lease.chain[-1][1]) if lease else open_dir(path)
     rows, nix = [], set()
     def walk(fd, prefix):
         budget.check()
@@ -127,7 +200,9 @@ def inventory(path, budget, output=None, sealed=False):
                  and '\n' not in name and '\x00' not in name, 'forbidden or excessive repository entry')
             rel = prefix + name
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-            need(info.st_uid in (0,os.getuid()) and (stat.S_ISLNK(info.st_mode) or not info.st_mode & 0o022), 'entry custody')
+            need(info.st_uid in (0,os.getuid()) and (stat.S_ISLNK(info.st_mode) or not info.st_mode & 0o022
+                 or lease is not None and (lease.regular(info) or lease.directory(info))),
+                 'public entry custody: path='+repr(rel)+' uid='+str(info.st_uid)+' mode='+oct(stat.S_IMODE(info.st_mode)))
             if stat.S_ISDIR(info.st_mode):
                 if output:
                     (output / rel).mkdir(mode=0o700)
@@ -146,11 +221,11 @@ def inventory(path, budget, output=None, sealed=False):
                 if output:
                     out = os.open(output/rel,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
                     with os.fdopen(out,'wb') as stream:
-                        sha,size,_ = read_file(fd,name,budget,stream)
+                        sha,size,_ = read_file(fd,name,budget,stream,private_import=lease)
                         stream.flush(); os.fsync(stream.fileno())
                     os.chmod(output/rel,mode)
                 else:
-                    sha,size,_ = read_file(fd,name,budget)
+                    sha,size,_ = read_file(fd,name,budget,private_import=lease)
                 rows.append({'path':rel,'kind':'file','sha256':sha,'size':size,'mode':mode})
             elif stat.S_ISLNK(info.st_mode):
                 target = os.readlink(name,dir_fd=fd)
@@ -165,8 +240,12 @@ def inventory(path, budget, output=None, sealed=False):
         need((before.st_mtime_ns,before.st_ctime_ns) == (after.st_mtime_ns,after.st_ctime_ns),'directory changed')
     try:
         walk(root,'')
+        if lease:
+            lease.recheck()
     finally:
         os.close(root)
+        if lease:
+            lease.close()
     return sorted(rows,key=lambda row:row['path'])
 
 def relocate_links(repositories):
@@ -376,12 +455,15 @@ def qualify(budget):
             rows = inventory(root,budget)
             module_file = next((item for item in rows if item['path']=='MODULE.bazel' and item['kind']=='file'),None)
             if module_file and (name.endswith('+') and '+' not in name[:-1] or name=='platforms'):
-                parent = open_dir(root)
+                lease = public_import(root,False)
+                parent = os.dup(lease.chain[-1][1]) if lease else open_dir(root)
                 try:
-                    sha,size,raw = read_file(parent,'MODULE.bazel',budget,capture=True)
+                    sha,size,raw = read_file(parent,'MODULE.bazel',budget,capture=True,private_import=lease)
                     need(size <= 8*1024*1024 and sha==module_file['sha256'],'module metadata pin')
                 finally:
                     os.close(parent)
+                    if lease:
+                        lease.close()
                 parsed = ast.parse(raw.decode('utf-8'))
                 calls = [node.value for node in parsed.body if isinstance(node,ast.Expr) and
                          isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and
