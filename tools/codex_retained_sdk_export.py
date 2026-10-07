@@ -620,6 +620,34 @@ def load(path, sha, budget):
     finally:
         os.close(fd)
 
+def selection_drift(expected, actual):
+    """Closed public-name/hash diagnostic; never emit receipt values or paths."""
+    allowed = ('schema','baseline_receipt_sha256','baseline_inventory_sha256','graph_files',
+               'repositories','inventory_sha256','mapping_sha256','excluded','qualification_only',
+               'nix_store_roots','modules','nix_inventory','registry_metadata')
+    need(isinstance(expected,dict) and isinstance(actual,dict),'invalid selection diagnostic shape')
+    fields = [name for name in allowed if expected.get(name)!=actual.get(name) or (name in expected)!=(name in actual)]
+    unknown = len((set(expected)|set(actual))-set(allowed))
+    indexes = []
+    orders = []
+    for receipt in (expected,actual):
+        rows = receipt.get('repositories',[])
+        need(isinstance(rows,list) and len(rows)<=MAX_REPOS,'invalid selection diagnostic repository bound')
+        index, order = {}, []
+        for row in rows:
+            need(isinstance(row,dict) and isinstance(row.get('canonical_name'),str),'invalid selection diagnostic repository')
+            name = row['canonical_name']
+            need(re.fullmatch(r'[A-Za-z0-9_+.~-]+',name) and name not in index,'invalid selection diagnostic public name')
+            index[name] = row; order.append(name)
+        indexes.append(index); orders.append(order)
+    changed = sorted(name for name in set(indexes[0])|set(indexes[1]) if indexes[0].get(name)!=indexes[1].get(name))
+    pins = [{'name':name,'expected_sha256':digest(canonical(indexes[0].get(name))),
+             'actual_sha256':digest(canonical(indexes[1].get(name)))} for name in changed[:16]]
+    field_pins = {name:{'expected_sha256':digest(canonical(expected.get(name))),
+                        'actual_sha256':digest(canonical(actual.get(name)))} for name in fields}
+    return ' fields='+repr(fields)+' unknown_field_count='+str(unknown)+' changed_repository_count='+str(len(changed))+\
+           ' repository_order_changed='+str(orders[0]!=orders[1])+' public_repository_pins='+canonical(pins).decode('ascii')+' field_pins='+canonical(field_pins).decode('ascii')
+
 def validate_export(root, receipt_sha256, source_inventory_sha256, graph_files, *, on_read=None):
     budget = Budget(time.time()+1200,on_read)
     root = Path(root)
@@ -747,7 +775,9 @@ def main():
             need(selected.stat().st_size <= 256*1024*1024,'selection metadata bound')
         need(args.selection and args.selection_sha256,'export requires frozen explicit selection')
         selection = load(args.selection,args.selection_sha256,budget)
-        need(selection == qualify(budget),'retained selection changed or has unreviewed fields')
+        current_selection = qualify(budget)
+        if selection != current_selection:
+            raise ValueError('retained selection changed or has unreviewed fields'+selection_drift(selection,current_selection))
         budget.authorize_export_passes()
         os.mkdir('sdk-export',0o700,dir_fd=fd)
         root = parent/'sdk-export'

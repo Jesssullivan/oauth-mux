@@ -9,6 +9,22 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def test_selection_drift_diagnostic_is_closed_and_keeps_real_public_pins(self):
+        expected = {'repositories':[{'canonical_name':'tar.bzl+','files':[{'path':'public','sha256':'a'*64}]}]}
+        actual = {'repositories':[{'canonical_name':'tar.bzl+','files':[{'path':'public','sha256':'b'*64}]}],
+                  'untrusted-private-field':'never-render-this-value'}
+        message = sdk.selection_drift(expected,actual)
+        self.assertIn('tar.bzl+',message); self.assertIn('changed_repository_count=1',message)
+        self.assertIn(sdk.digest(sdk.canonical(expected['repositories'][0])),message)
+        self.assertIn('unknown_field_count=1',message)
+        self.assertNotIn('untrusted-private-field',message); self.assertNotIn('never-render-this-value',message)
+        with self.assertRaises(ValueError):
+            sdk.selection_drift(expected,{'repositories':[{'canonical_name':'unsafe/name'}]})
+    def test_selection_drift_detects_order_without_inventing_changed_repository(self):
+        rows = [{'canonical_name':'a'},{'canonical_name':'b'}]
+        message = sdk.selection_drift({'repositories':rows},{'repositories':list(reversed(rows))})
+        self.assertIn('repository_order_changed=True',message); self.assertIn('changed_repository_count=0',message)
+
     def test_readlink_access_time_change_preserves_public_link_identity(self):
         from types import SimpleNamespace
         link = self.root/'public-link'; os.symlink('missing-public-target',link)
