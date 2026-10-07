@@ -6,8 +6,11 @@ filegroup(name = "public_sources", srcs = glob(["*.cpp", "*.h", "*.bazel", "*.de
 
 cc_binary(
     name = "control",
-    srcs = ["main.cpp", "tray.cpp", "tray.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h"],
+    srcs = ["main.cpp", "tray.cpp", "tray.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h",
+            "device_code_dialog.cpp", "device_code_dialog.h"],
     copts = ["-std=c++20", "-fPIC"],
+    features = ["-runtime_library_search_directories"],
+    linkopts = ["-Wl,-rpath,/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"],
     deps = ["@omux_nix//:qt"],
     target_compatible_with = ["@platforms//os:linux"],
 )
@@ -29,6 +32,16 @@ cc_test(
 )
 
 filegroup(name = "resources", srcs = ["omux.service", "omux-control.desktop"])
+
+cc_test(
+    name = "device_code_dialog_test",
+    srcs = ["device_code_dialog_test.cpp", "device_code_dialog.cpp", "device_code_dialog.h"],
+    copts = ["-std=c++20", "-fPIC"],
+    deps = ["@omux_nix//:qt"],
+    data = ["@omux_nix//:qt_offscreen_plugin", "setup-test-fonts.conf"],
+    args = ["$(location @omux_nix//:qt_offscreen_plugin)", "$(location setup-test-fonts.conf)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 
 cc_test(
     name = "setup_ui_test",

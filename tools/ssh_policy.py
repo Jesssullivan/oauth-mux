@@ -28,7 +28,7 @@ def rewrite_kex(line):
 
 
 @contextlib.contextmanager
-def operator_config():
+def operator_config(*, include_user=True):
     """Clone public config includes; original user config is included by path."""
     with tempfile.TemporaryDirectory(prefix="omux-ssh-policy-") as directory:
         written = {}
@@ -69,6 +69,9 @@ def operator_config():
             output = []
             for line in path.read_text().splitlines(keepends=True):
                 words = shlex.split(line, comments=True)
+                if not include_user and words and words[0].lower() in (
+                        "localforward", "remoteforward", "dynamicforward"):
+                    raise ValueError("selected public SSH policy declares unrelated forwarding")
                 if words and words[0].lower() == "include":
                     includes = []
                     for pattern in words[1:]:
@@ -87,13 +90,14 @@ def operator_config():
             return str(destination)
 
         system = clone("/etc/ssh/ssh_config")
-        if not changed:
+        if not changed and include_user:
             yield []
             return
         user = Path.home() / ".ssh/config"
         if any(character in str(user) for character in ['"', "\n", "\r"]):
             raise ValueError("user SSH config path cannot be represented safely")
         entry = Path(directory) / "operator.conf"
-        entry.write_text('Include "' + str(user) + '"\nHost *\nInclude "' + system + '"\n')
+        entry.write_text(('Include "' + str(user) + '"\n' if include_user else '')
+                        + 'Host *\nInclude "' + system + '"\n')
         entry.chmod(0o600)
         yield ["-F", str(entry)]
