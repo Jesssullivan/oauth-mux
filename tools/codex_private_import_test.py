@@ -9,6 +9,25 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def test_actual_utf8_path_bytes_inventory_without_name_transformation(self):
+        sdk.require_utf8_filesystem()
+        name = '\U0001f385\U0001f384.js'
+        raw_name = name.encode('utf-8')
+        descriptor = os.open(os.fsencode(self.root)+b'/'+raw_name,
+                             os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644)
+        payload = b'public unicode path fixture bytes\n'
+        with os.fdopen(descriptor,'wb') as stream:
+            stream.write(payload)
+        rows = sdk.inventory(self.root,self.budget())
+        row = next(item for item in rows if item['path']==name)
+        self.assertEqual(os.fsencode(row['path']),raw_name)
+        self.assertEqual(row['sha256'],hashlib.sha256(payload).hexdigest())
+        self.assertEqual(row['size'],len(payload))
+        with patch.object(sdk.sys,'getfilesystemencoding',return_value='iso8859-1'):
+            with self.assertRaisesRegex(ValueError,'startup UTF-8'):
+                sdk.require_utf8_filesystem()
+        self.assertEqual(os.listdir(os.fsencode(self.root)),[raw_name])
+
     def test_selection_drift_diagnostic_is_closed_and_keeps_real_public_pins(self):
         expected = {'repositories':[{'canonical_name':'tar.bzl+','files':[{'path':'public','sha256':'a'*64}]}]}
         actual = {'repositories':[{'canonical_name':'tar.bzl+','files':[{'path':'public','sha256':'b'*64}]}],

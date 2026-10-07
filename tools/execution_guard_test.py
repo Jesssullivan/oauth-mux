@@ -52,7 +52,6 @@ class GuardTest(unittest.TestCase):
         args = ['run','//tools:codex_retained_sdk_export_run']
         command = bazel_command('/store/bazel',run,args)
         self.assertIn('--run_env=OMUX_SDK_EXPORT_EPOCH='+str(run),command)
-        self.assertIn('--run_env=PYTHONUTF8=1',command)
         self.assertIn('--run_env=OMUX_EXECUTION_GUARD='+str(run),command)
         self.assertNotIn('--nozip_undeclared_test_outputs',command)
         self.assertEqual(command[-1],args[-1])

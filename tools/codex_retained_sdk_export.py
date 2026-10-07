@@ -12,6 +12,7 @@ import posixpath
 from pathlib import Path
 import re
 import stat
+import sys
 import time
 
 BASE = Path('/srv/fast-local/jess/state/codex/omux-bazel9-codex-owner-20261004/fb3edda211c2b41f7c6600796d3b28d1')
@@ -713,7 +714,12 @@ def validate_export(root, receipt_sha256, source_inventory_sha256, graph_files, 
                 mapping_sha256=receipt['mapping_sha256'],graph_files=receipt['graph_files'],
                 registry_cache=str(registry_cache),registry_inventory_sha256=registry['inventory_sha256'])
 
+def require_utf8_filesystem():
+    need(sys.getfilesystemencoding().lower() in ('utf-8','utf8'),
+         'SDK qualification requires interpreter startup UTF-8 filesystem encoding')
+
 def main():
+    require_utf8_filesystem()
     parser = argparse.ArgumentParser()
     parser.add_argument('--phase',choices=('qualify','export'),default='qualify')
     parser.add_argument('--deadline-unix',type=float)
