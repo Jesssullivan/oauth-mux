@@ -49,7 +49,8 @@ def repository_inputs(repository_cache,nixpkgs_source):
 
 def carrier_purpose(label,action):
     require(label in (LABEL,LIFECYCLE_LABEL)
-        and (action in ("observe-existing","stop-idle-owned")) == (label == LIFECYCLE_LABEL))
+        and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","stop-idle-owned"))
+            or (label == LABEL and action in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing"))))
 
 def canonical(value):
     require(type(value) is str and value.startswith("/") and len(value) <= 4096

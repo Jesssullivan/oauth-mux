@@ -191,3 +191,34 @@ within user authorization; it does not replace required tests. Six new
 lifecycle models, protocol regressions and actual stopped disposition are unrun
 at this source checkpoint. After successful idle stop, root must run the
 changed standard and native suites before any new native admission.
+
+## Installed lifecycle proof and regression result — 20:01 UTC
+
+On signed `6ae80bf67a3f73427ff47527baed9912b5d46f8f`, actual lifecycle
+`1b79e0df-d5cb-4d38-8f4a-42f88759d83e` passed zero exits, empty workload cleanup
+and independent after-cleanup verification. Receipt SHA256
+`d91c388dbf4d63c4400bd372e7c878a34f6eea4b1e6b94dcffae01dd99870d4c`.
+It verified actual Locked protocol2 health/handshake, unloaded custody, disabled
+native admission and the exact owned software/process/socket/unit/cgroup, then
+performed the explicit idle stop. Original process exited, owned cgroup/control
+became empty, and installed software/pristine zero-lock state were preserved.
+This establishes installed locked control and owned shutdown; account counts,
+usable custody, enrollment and continuity remain unproved. No provider or factor
+operation occurred. The resident build reservation is released.
+
+All nine changed/regression targets passed in
+`7b76fca2-aa30-4826-8a01-fa5393d6fc59` with empty cleanup and preserved evidence.
+Receipt SHA256 `c42a223376ba51deb7ee2685304c56beda3c520b37ddb336d4be18d017a7efb9`;
+evidence SHA256 `2eaedd203827eb81cb005e4d36cbedc1038c990fee013684689f3610532e1d8e`.
+This includes lifecycle sequencing, strict protocol and closed-role refusals,
+standard-vault models, enrollment/controller regressions, docs and source receipt.
+
+Root reviewed and applied lightweight first-start delegation proposal SHA256
+`a2f75059bb98f46d3a73bf43b7fa5aa9dbccd07f4f27c0c054ac71e307cd38b5`.
+The small lifecycle carrier may now use the existing `start-existing` contract
+and helper with the same explicit activation permission, qualified archive,
+inactive/pristine admission, bounded process and strict protocol2 health.
+The old carrier remains valid. Observation and Locked idle-stop policy do not
+change. This permits later restoration without rebuilding runtime/UI artifacts.
+The new delegation and changed action-join checks are queued; actual restoration
+is unrun. Earlier nine-target evidence remains bound to `6ae80bf`, not this delta.

@@ -12,6 +12,33 @@ from unittest import mock
 import resident_owned_lifecycle as lifecycle
 
 class LifecycleContract(unittest.TestCase):
+    def test_lightweight_start_delegates_exact_existing_contract_after_strict_permission_validation(self):
+        import resident_owned_start
+        home=Path("/home/jess")
+        value={"schema_version":1,"ownership":"omux-installation","action":"start-existing","instance":"default",
+            **{key:str(path) for key,path in lifecycle.guard.fixed_paths(home).items()},
+            "native_context":None,"permissions":{"connect_source":False,"activate_service":True,"restart_daemon":False},
+            "start":{"archive_path":"/public/qualified-archive"}}
+        environment={"HOME":str(home),"XDG_RUNTIME_DIR":"/omux-resident-inputs"}
+        bounded,remaining=mock.Mock(),mock.Mock()
+        deadline=time.monotonic_ns()+120*10**9
+        systemctl=Path("/declared/systemctl")
+        result={"control_plane_ready":True,"vault_locked":True,"custody_available":False}
+        with mock.patch.object(lifecycle.owned,"start_pins",return_value=value["start"]), \
+                mock.patch.object(resident_owned_start,"execute_start",return_value=result) as delegate, \
+                mock.patch.object(lifecycle.owned,"OwnedFirstStart",side_effect=AssertionError("no separate lifecycle witness")), \
+                mock.patch.object(lifecycle.pack,"read_bundle",side_effect=AssertionError("only delegate verifies archive")):
+            self.assertIs(lifecycle.execute_existing(systemctl,value,environment,bounded,remaining,deadline),result)
+            delegate.assert_called_once_with(Path(value["start"]["archive_path"]),systemctl,value,
+                environment,bounded,remaining,deadline)
+            for key,field in (("connect_source",True),("activate_service",False),("restart_daemon",True)):
+                bad=copy.deepcopy(value)
+                bad["permissions"][key]=field
+                with self.assertRaises(ValueError):
+                    lifecycle.execute_existing(systemctl,bad,environment,bounded,remaining,deadline)
+            self.assertEqual(delegate.call_count,1)
+        bounded.assert_not_called()
+
     def invoke(self,action,*,health_change=None,native_launch=False,changed_identity=False,unknown_state=False):
         home=Path("/home/jess")
         payload,manifest_raw=b"public software archive",b"public software manifest"

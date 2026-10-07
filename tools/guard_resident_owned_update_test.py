@@ -155,12 +155,17 @@ class UpdateModels(unittest.TestCase):
             resident.carrier_purpose(resident.LIFECYCLE_LABEL,action)
             with self.assertRaises(ValueError):
                 resident.carrier_purpose(resident.LABEL,action)
-        for action in ("start-existing","update-existing","enroll-existing","install-and-enroll"):
+        for label in (resident.LABEL,resident.LIFECYCLE_LABEL):
+            resident.carrier_purpose(label,"start-existing")
+        for action in ("update-existing","enroll-existing","install-and-enroll","activate-existing-and-enroll"):
             resident.carrier_purpose(resident.LABEL,action)
             with self.assertRaises(ValueError):
                 resident.carrier_purpose(resident.LIFECYCLE_LABEL,action)
         with self.assertRaises(ValueError):
             resident.carrier_purpose("//delivery:arbitrary","stop-idle-owned")
+        for label in (resident.LABEL,resident.LIFECYCLE_LABEL):
+            with self.assertRaises(ValueError):
+                resident.carrier_purpose(label,"restart-arbitrary")
 
     def test_idle_stop_requires_unloaded_locked_actor_and_disabled_native_admission(self):
         health={"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,

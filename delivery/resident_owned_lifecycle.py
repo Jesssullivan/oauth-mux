@@ -1,4 +1,4 @@
-"""Explicit observation or Locked zero-DB idle-stop of a qualified owned resident."""
+"""Explicit owned first start, observation or Locked zero-DB idle-stop."""
 import hashlib
 import json
 import os
@@ -11,7 +11,7 @@ import guard_resident_owned_update as owned
 import resident_enrollment as resident
 import pack
 
-PHASES=frozenset(("manifest","software","active-readback","health","idle-admission","stop","stopped-readback"))
+PHASES=frozenset(("manifest","software","start","active-readback","health","idle-admission","stop","stopped-readback"))
 PHASE="manifest"
 def phase(name):
     global PHASE
@@ -20,7 +20,14 @@ def phase(name):
 
 def execute_existing(systemctl,manifest,environment,bounded,remaining,deadline_ns):
     guard.manifest_schema(manifest,environment["HOME"])
-    guard.require(manifest["action"] in ("observe-existing","stop-idle-owned"))
+    guard.require(manifest["action"] in ("start-existing","observe-existing","stop-idle-owned"))
+    if manifest["action"] == "start-existing":
+        phase("start")
+        import resident_owned_start
+        # The existing start contract rechecks full software/qualification,
+        # inactive unit/cgroup/zero-lock admission and bounded active health.
+        return resident_owned_start.execute_start(Path(manifest["start"]["archive_path"]),
+            systemctl,manifest,environment,bounded,remaining,deadline_ns)
     phase("software")
     selection=owned.start_pins(manifest["start"],environment["HOME"])
     payload=pack.read_bundle(Path(selection["archive_path"]))
