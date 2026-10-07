@@ -75,7 +75,7 @@
   },
   "current_execution": {
     "state": "none",
-    "last_epoch": "72c5db5e-f94c-47d5-907f-bac7b304107a",
+    "last_epoch": "234a0467-0a25-4b17-8598-d8ad1844ba1b",
     "descendants_empty": true
   },
   "resource_limits": {
@@ -118,7 +118,7 @@
     "No destination store import/activation authority",
     "No publication or achieved SLA claim"
   ],
-  "next": "Freeze signed source with passed comparison/controller models; one fresh provider-free native checkpoint using unchanged retained009 and assertions. Fresh Yoga QUAL/INSPECT/VERIFY follows separately.",
+  "next": "Freeze terminal facts into source-only PR531 delivery; next separate source: inherited HM deadline and explicit Yoga same-daemon binding. Native exit, destination import/capacity, actual browser/operator proof and six parent gates remain open.",
   "model_pre_action": {
     "source_commit": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
     "source_dirty": true,
@@ -262,7 +262,7 @@
     "one_fresh_operation": true,
     "no_automatic_retry": true
   },
-  "latest_observed_at": "2026-10-07T04:24:49Z",
+  "latest_observed_at": "2026-10-07T04:50:44Z",
   "native_result": {
     "epoch": "81e76dcd-a457-42d6-b05a-1bd8d50ca0d6",
     "source": {
@@ -502,5 +502,209 @@
       "fsvc_threads": 2
     },
     "scope": "seven targeted source/model checks; no native or Yoga acceptance"
+  },
+  "follow_on_source_delivery": {
+    "commit": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "tree": "be2fa93fb538f62db028dd4d3baa86e7d895a07d",
+    "parent": "e54257e8887e4d9921b87e311242f01a5f56e9c7",
+    "signature": "G",
+    "signature_verification_exit": 0,
+    "clean": true,
+    "branch": "codex/omux-bounded-proof-diagnostics-20261007",
+    "pr": 531,
+    "pr_url": "https://github.com/Jesssullivan/oauth-mux/pull/531",
+    "state": "open_draft",
+    "scope": "reviewed bounded diagnostics and fixed standard controller settings; native proof pending"
+  },
+  "native_follow_on_pre_action": {
+    "source": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "source_dirty": false,
+    "retained_input": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+    "guard_controller_policy": {
+      "legacy_globbing_threads": 2,
+      "fsvc_threads": 2
+    },
+    "targets": [
+      "//delivery:installed_legacy_native_tui_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "predicate_changes": false,
+    "provider_calls": false,
+    "scope": "one fresh provider-free native operation after new reviewed source/models; no automatic retry",
+    "caps_unchanged": true,
+    "actual_epoch": "e761fae3-bbf4-4c68-af4c-23075c43bab7"
+  },
+  "native_follow_on_result": {
+    "epoch": "e761fae3-bbf4-4c68-af4c-23075c43bab7",
+    "source_commit": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "source_dirty": "false",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "retained_input_verified_after": true,
+    "receipt_sha256": "db0f8c2670223fe8cc35bde7b5ed40ce741701d6991ffbc924f731be0c9e49b7",
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "evidence": {
+      "bytes": 219075,
+      "files": 9,
+      "manifest": "test-evidence.json",
+      "sha256": "f3cf9cb731b7dca55c2a788ab8bb4359d1df01c6b866fc6bbe14464158ae967e",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "failed_target": "//delivery:installed_legacy_native_tui_test",
+    "failure_phase": "cold-native-resume",
+    "diagnostic": "resume-owner-endpoint/resume-terminal-exited",
+    "failure_time_role_snapshots": {
+      "self": {
+        "state": "observed",
+        "threads": 3
+      },
+      "daemon": {
+        "state": "observed",
+        "threads": 24
+      },
+      "keyring": {
+        "state": "observed",
+        "threads": 5
+      },
+      "native_bootstrap": {
+        "state": "retired",
+        "threads": null
+      },
+      "native_resume": {
+        "state": "retired",
+        "threads": null
+      }
+    },
+    "pids": {
+      "sampled_peak": 509,
+      "eventIncrease": true,
+      "atLimit": false,
+      "terminal": "unavailable",
+      "attribution": "none"
+    },
+    "scope": "failed provider-free empty-history resume; initial seed/attachment/detach reached, resume endpoint and subsequent acceptance unproved",
+    "replay_or_provider_calls": false
+  },
+  "yoga_follow_on_pre_action": {
+    "source_commit": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "source_dirty": false,
+    "mode": "qualify",
+    "profile": "yoga-controller-delivery",
+    "fixed_rows": 472,
+    "nar_bytes": 2829689512,
+    "inventory_sha256": "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+    "predicate_changes": false,
+    "copy_or_activation": false,
+    "operator_proof": false,
+    "scope": "fresh authenticated read-only qualification then serialized inspect and one verify after successful cleanup",
+    "caps_unchanged": true
+  },
+  "follow_on_pr_update_pre_action": {
+    "pr": 531,
+    "expected_head": "674c44bf3bca7b8776f3a98da35b82315698ea97",
+    "title": "Add bounded native diagnostics and explicit Bazel worker settings",
+    "body": "Installed native failures previously lacked enough redacted context to distinguish discovery, attachment comparison and process state. This change adds finite attachment labels and failure-time thread snapshots for exactly five fixture-created roles, while preserving every original identity, history, replay and cleanup predicate. Yoga registry diagnostics report bounded raw JSON shape counts without accepting null/missing rows or inferring store absence.\n\nStandard guarded Bazel commands explicitly set globbing parallelism and filesystem checker workers to two, with matching cache identity. Globbing permits compensation threads. Separate SDK/site constructors, caller restrictions, resource limits, original deadlines and retained runtime 009 remain unchanged.\n\nValidation: all seven follow-on targets passed in 72c5 (attachment diagnostics, census, guard/cache/dependency policy, docs and source receipt), with 0/0, empty descendants and null controller/rejection. Corrected census and actual-owned-child suites passed in a92d; earlier failed 3710 evidence is preserved. Signed clean source 674c44b is independently reviewed.\n\nFresh provider-free installed checkpoint e761fae3 failed at cold-native-resume/resume-owner-endpoint/resume-terminal-exited. Original seed, exact attachment, selected detach, preserved empty native history and clean original exit were reached; the resumed owner endpoint and subsequent complete gate were not. Docs/source passed, sealed 009 was reverified, descendants and cleanup were empty, and controller/rejection were null. The sampled peak 509/max-event increase and retired role snapshots do not establish cause. Earlier 81e seed-attachment failure remains distinct.\n\nThis is source delivery. Complete native resume, ordinary initial TUI launch, accepted-conversation history, actual Yoga toolbar consent, stock Codex, live handoff, Darwin and measured SLOs remain unproved. Fresh Yoga read-only qualification is separate and pending.\n\nEvidence and authority: [bounded diagnostic receipt](https://github.com/Jesssullivan/oauth-mux/blob/674c44bf3bca7b8776f3a98da35b82315698ea97/docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json) and [source note](https://github.com/Jesssullivan/oauth-mux/blob/674c44bf3bca7b8776f3a98da35b82315698ea97/docs/agent-notes/2026-10-07-sess-omux-portable-exec.md) freeze pre-native facts; current local receipt and this description record later e761. Linear: [TIN-5338](https://linear.app/tinyland/issue/TIN-5338), [TIN-5421](https://linear.app/tinyland/issue/TIN-5421), [TIN-2063](https://linear.app/tinyland/issue/TIN-2063), [TIN-2057](https://linear.app/tinyland/issue/TIN-2057), [TIN-5442](https://linear.app/tinyland/issue/TIN-5442), [TIN-2720](https://linear.app/tinyland/issue/TIN-2720).",
+    "scope": "source-only; failed native disclosed"
+  },
+  "native_source_policy_review": {
+    "artifact": "docs/agent-notes/2026-10-07-native-global-executor-policy.UNAPPLIED.json",
+    "sha256": "ca0426e598c301dca4292753b3825615164bcf5687acd1be31d59e438a824f09",
+    "state": "excluded source-only; no controls applied",
+    "unsupported_control": "ASYNC_GLOBAL_EXECUTOR_THREADS ruled out by frozen lock/manifests",
+    "remaining_option": "native-only BLOCKING_MAX_THREADS qualification; package/features/first-init/starvation unresolved",
+    "causal_claim": false
+  },
+  "yoga_follow_on_qualify_result": {
+    "epoch": "0deaf9e1-b646-4050-b425-eb7c080da3fc",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "receipt_sha256": "92358f5d5acc4605b2cf00b018e81ce5cbc8cc74d45ea27fbd2e7ca281c065ec",
+    "qualification_sha256": "ff84bb9205565656e2ba6abe1dbaacf943153b0f4e48129695797910d875c753",
+    "scope": "authenticated remote executable qualification only; registration/content/import/browser remain unproved"
+  },
+  "yoga_follow_on_inspect_result": {
+    "epoch": "d2b8b025-9ae0-4bc6-8882-6309b8372b25",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "receipt_sha256": "5c24160927cfd57015723aa370a1d10ef130f82bc2f71751d56c98c77783a7f2",
+    "passed": true,
+    "daemonClientTrusted": true,
+    "availableBytes": null,
+    "scope": "read-only inspection only; no capacity/registration/content/browser proof"
+  },
+  "yoga_follow_on_verify_result": {
+    "epoch": "234a0467-0a25-4b17-8598-d8ad1844ba1b",
+    "controller_exit": 2,
+    "workload_exit": 2,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "receipt_sha256": "672bd69963cecc33a41f93920fb2a07b6c23b03b742fdb1af2a1b56c65026bd0",
+    "passed": false,
+    "gate": "destination-registration-content",
+    "operationFailure": {
+      "predicate": "row-object",
+      "registryShape": {
+        "extraCount": 0,
+        "extraCountCapped": false,
+        "missingCount": 0,
+        "nullCount": 469,
+        "objectCount": 3,
+        "registryKind": "object",
+        "requestedCount": 472,
+        "uninspectedCount": 0,
+        "unsupportedCount": 0
+      },
+      "rowKind": "null",
+      "schemaVersion": 1,
+      "stage": "destination-registry"
+    },
+    "destinationContentRehashed": false,
+    "destinationRegistrationVerified": false,
+    "copyPerformed": false,
+    "remoteOwnedContainmentVerified": false,
+    "remoteCleanup": "unknown",
+    "scope": "failed registry metadata before content loop; null counts establish no physical absence/corruption/import/browser"
   }
 }
