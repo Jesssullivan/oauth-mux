@@ -9,6 +9,74 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def jdk_fixture(self):
+        root = self.boundary/'jdk-fixture'
+        root.mkdir()
+        names = ('lib','lib/openjdk','lib/openjdk/bin','lib/openjdk/include','nix-support','share')
+        for name in names: (root/name).mkdir(parents=True,exist_ok=True)
+        payload = root/'lib/openjdk/bin/java'
+        payload.write_bytes(b'public immutable JDK fixture bytes\n'); os.chmod(payload,0o444)
+        os.symlink('lib/openjdk/bin',root/'bin')
+        os.symlink('lib/openjdk/include',root/'include')
+        for name in reversed(names): os.chmod(root/name,0o555)
+        os.chmod(root,0o555)
+        return root,sdk.inventory(root,self.budget(),sealed=True)
+    def test_fixed_jdk_aliases_and_directories_preserve_pointer_semantics(self):
+        root,rows = self.jdk_fixture()
+        with patch.object(sdk,'JDK',str(root)), patch.object(sdk,'NIX_OWNER_UID',os.getuid()):
+            for alias in ('bin','include','lib','nix-support','share'):
+                sdk.check_jdk_directory(alias,rows,self.budget())
+        self.assertEqual(os.readlink(root/'bin'),'lib/openjdk/bin')
+        self.assertEqual(os.readlink(root/'include'),'lib/openjdk/include')
+        self.assertEqual((root/'lib/openjdk/bin/java').read_bytes(),b'public immutable JDK fixture bytes\n')
+    def test_jdk_alias_escape_and_cycle_refuse_without_following(self):
+        for target in ('../outside','bin'):
+            with self.subTest(target=target):
+                root,rows = self.jdk_fixture()
+                os.chmod(root,0o700); (root/'bin').unlink(); os.symlink(target,root/'bin'); os.chmod(root,0o555)
+                rows = sdk.inventory(root,self.budget(),sealed=True)
+                with patch.object(sdk,'JDK',str(root)), patch.object(sdk,'NIX_OWNER_UID',os.getuid()):
+                    with self.assertRaisesRegex(ValueError,'independent inventory'):
+                        sdk.check_jdk_directory('bin',rows,self.budget())
+                for path,dirs,files in os.walk(root): os.chmod(path,0o700)
+                import shutil
+                shutil.rmtree(root)
+    def test_jdk_target_component_symlink_refuses(self):
+        root,rows = self.jdk_fixture()
+        target = root/'lib/openjdk/bin'
+        os.chmod(target,0o700); (target/'java').unlink()
+        os.chmod(target.parent,0o700); target.rmdir(); os.symlink('../include',target); os.chmod(target.parent,0o555)
+        rows = sdk.inventory(root,self.budget(),sealed=True)
+        with patch.object(sdk,'JDK',str(root)), patch.object(sdk,'NIX_OWNER_UID',os.getuid()):
+            with self.assertRaisesRegex(ValueError,'component missing'):
+                sdk.check_jdk_directory('bin',rows,self.budget())
+    def test_jdk_mutable_target_and_foreign_owner_refuse(self):
+        root,rows = self.jdk_fixture()
+        with patch.object(sdk,'JDK',str(root)), patch.object(sdk,'NIX_OWNER_UID',os.getuid()+1):
+            with self.assertRaisesRegex(ValueError,'mutable immutable-JDK'):
+                sdk.check_jdk_directory('bin',rows,self.budget())
+        os.chmod(root/'lib/openjdk/bin',0o775)
+        with patch.object(sdk,'JDK',str(root)), patch.object(sdk,'NIX_OWNER_UID',os.getuid()):
+            with self.assertRaisesRegex(ValueError,'mutable immutable-JDK'):
+                sdk.check_jdk_directory('bin',rows,self.budget())
+    def test_jdk_alias_mutation_during_resolution_refuses(self):
+        root,rows = self.jdk_fixture(); original = os.readlink
+        def changing(name,*args,**kwargs):
+            result = original(name,*args,**kwargs)
+            if name=='bin':
+                os.chmod(root,0o700); (root/'bin').unlink(); os.symlink('lib/openjdk/include',root/'bin'); os.chmod(root,0o555)
+            return result
+        with patch.object(sdk,'JDK',str(root)), patch.object(sdk,'NIX_OWNER_UID',os.getuid()), patch.object(sdk.os,'readlink',side_effect=changing):
+            with self.assertRaisesRegex(ValueError,'changed'):
+                sdk.check_jdk_directory('bin',rows,self.budget())
+    def test_unselected_jdk_alias_and_duplicate_inventory_refuse(self):
+        root,rows = self.jdk_fixture()
+        with patch.object(sdk,'JDK',str(root)), patch.object(sdk,'NIX_OWNER_UID',os.getuid()):
+            with self.assertRaisesRegex(ValueError,'unselected'):
+                sdk.check_jdk_directory('tools',rows,self.budget())
+            with self.assertRaisesRegex(ValueError,'duplicate'):
+                sdk.check_jdk_directory('bin',rows+[rows[0]],self.budget())
+
     def test_selected_public_server_directory_copy_retains_actual_bytes(self):
         source = self.root/'server'
         source.mkdir()

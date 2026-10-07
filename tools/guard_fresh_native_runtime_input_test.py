@@ -1,11 +1,35 @@
 """Declared Bazel refusal model for nested selector pre-read admission."""
 import unittest
+import builtins
+import importlib
+import sys
 from pathlib import Path
 from unittest.mock import patch
 import guard_fresh_native_runtime_input as guard
 
 
 class AdmissionModel(unittest.TestCase):
+    def test_controller_verifiers_import_without_package_template(self):
+        original = builtins.__import__
+        def without_template(name, *args, **kwargs):
+            if name == "portable_launcher_template":
+                raise ModuleNotFoundError("declared package template unavailable")
+            return original(name, *args, **kwargs)
+        # Force the actual source imports again; no fake template/module is provided.
+        with patch.dict(sys.modules):
+            for name in ("portable_launcher_template", "portable", "runtime_package",
+                    "codex_fresh_native_runtime", "guard_fresh_native_runtime_input"):
+                sys.modules.pop(name, None)
+            with patch.object(builtins, "__import__", side_effect=without_template):
+                loaded = importlib.import_module("guard_fresh_native_runtime_input")
+                self.assertNotIn("portable_launcher_template", sys.modules)
+                self.assertTrue(callable(loaded.fresh.verify_runtime_files))
+                with self.assertRaises(ValueError):
+                    loaded.fresh.portable.elf_metadata(b"invalid ELF")
+                # Actual launcher generation keeps the mandatory declared input.
+                with self.assertRaises(ModuleNotFoundError):
+                    loaded.fresh.portable._trusted_launcher(None)
+
     def test_foreign_nested_role_refused_before_open(self):
         calls = []
         selected = {'kind':guard.KIND,'package_selection':{'path':'/public/package.json'},

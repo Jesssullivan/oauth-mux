@@ -257,7 +257,62 @@ def inventory(path, budget, output=None, sealed=False):
             lease.close()
     return sorted(rows,key=lambda row:row['path'])
 
-def relocate_links(repositories):
+NIX_OWNER_UID = 0
+JDK_DIRECTORY_ALIASES = {'bin':'lib/openjdk/bin','include':'lib/openjdk/include'}
+
+def check_jdk_directory(alias, nix_inventory, budget):
+    """Resolve only the two recorded immutable aliases; never follow a component."""
+    need(alias in ('bin','include','lib','nix-support','share'),'unselected JDK directory')
+    objects = {item['path']:item for item in nix_inventory}
+    need(len(objects)==len(nix_inventory),'duplicate immutable JDK inventory entry')
+    expected = JDK_DIRECTORY_ALIASES.get(alias,alias)
+    if alias in JDK_DIRECTORY_ALIASES:
+        need(objects.get(alias)=={'path':alias,'kind':'symlink','target':expected},'JDK alias differs from independent inventory')
+    else:
+        need(objects.get(alias)=={'path':alias,'kind':'directory','mode':0o555},'JDK directory inventory binding')
+    held = []
+    def identity(info):
+        return (info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode,info.st_ctime_ns)
+    def immutable(info):
+        need(info.st_uid==NIX_OWNER_UID and stat.S_ISDIR(info.st_mode) and not info.st_mode & 0o222,
+             'mutable immutable-JDK directory target')
+    root = open_dir(Path(JDK))
+    held.append((None,root,os.fstat(root)))
+    try:
+        immutable(held[0][2])
+        before_link = os.stat(alias,dir_fd=root,follow_symlinks=False)
+        need(before_link.st_uid==NIX_OWNER_UID,'foreign JDK alias ownership')
+        if alias in JDK_DIRECTORY_ALIASES:
+            need(stat.S_ISLNK(before_link.st_mode) and os.readlink(alias,dir_fd=root)==expected,
+                 'JDK alias differs from fixed selected relative target')
+        else:
+            immutable(before_link)
+        prefix = ''
+        for component in expected.split('/'):
+            budget.check()
+            prefix = prefix+'/'+component if prefix else component
+            need(objects.get(prefix)=={'path':prefix,'kind':'directory','mode':0o555},
+                 'JDK resolved component missing from independent inventory')
+            parent = held[-1][1]
+            fd = os.open(component,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent)
+            info = os.fstat(fd)
+            held.append((component,fd,info))
+            immutable(info)
+        budget.check()
+        need(identity(os.stat(alias,dir_fd=root,follow_symlinks=False))==identity(before_link),
+             'JDK alias metadata changed during resolution')
+        if alias in JDK_DIRECTORY_ALIASES:
+            need(os.readlink(alias,dir_fd=root)==expected,'JDK alias target changed during resolution')
+        need(identity(os.stat(Path(JDK),follow_symlinks=False))==identity(held[0][2]),'named JDK root changed')
+        for index,(name,fd,before) in enumerate(held):
+            need(identity(os.fstat(fd))==identity(before),'held immutable JDK component changed')
+            if index:
+                need(identity(os.stat(name,dir_fd=held[index-1][1],follow_symlinks=False))==identity(before),
+                     'named immutable JDK component changed')
+    finally:
+        for _,fd,_ in reversed(held): os.close(fd)
+
+def relocate_links(repositories, nix_inventory, budget):
     """Resolve a finite public object graph without following source symlinks."""
     aliases, objects = {}, {}
     for repo in repositories:
@@ -278,12 +333,7 @@ def relocate_links(repositories):
             need(repo['canonical_name']=='rules_java++toolchains+local_jdk' and
                  item['path'] in ('bin','include','lib','nix-support','share') and
                  absolute == JDK+'/'+item['path'],'unselected immutable store link')
-            fd = open_dir(absolute)
-            try:
-                info = os.fstat(fd)
-                need(info.st_uid==0 and not info.st_mode & 0o222,'mutable store target')
-            finally:
-                os.close(fd)
+            check_jdk_directory(item['path'],nix_inventory,budget)
             return absolute
         for alias in sorted(aliases,key=len,reverse=True):
             if absolute == alias or absolute.startswith(alias+'/'):
@@ -493,13 +543,14 @@ def qualify(budget):
             need(len(repositories)<=MAX_REPOS,'repository count bound')
     finally:
         os.close(fd)
-    relocate_links(repositories)
+    nix_inventory = inventory(Path(JDK),budget)
+    relocate_links(repositories,nix_inventory,budget)
     return {'schema':SCHEMA,'baseline_receipt_sha256':BASELINE_SHA,
             'baseline_inventory_sha256':BASELINE_INVENTORY,'graph_files':graph,
             'repositories':repositories,'inventory_sha256':digest(canonical(repositories)),
             'mapping_sha256':graph['MODULE.bazel.lock']['sha256'],'excluded':['_main','bazel_tools','*.marker'],
             'qualification_only':True,'nix_store_roots':[JDK],'modules':modules,
-            'nix_inventory':inventory(Path(JDK),budget),
+            'nix_inventory':nix_inventory,
             'registry_metadata':registry_metadata(SOURCE/'MODULE.bazel.lock',
                 graph['MODULE.bazel.lock']['sha256'],REGISTRY,budget)}
 

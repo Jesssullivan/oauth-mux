@@ -1502,7 +1502,7 @@ exports_files(["codex_live_fresh_runtime_repository.bzl","codex_live_fresh_runti
 python_test(
     name = "guard_fresh_native_runtime_input_test",
     main = "guard_fresh_native_runtime_input_test.py",
-    srcs = [":codex_fresh_live_support"],
+    srcs = [":codex_fresh_live_support", "//delivery:portable.py"],
 )
 python_test(
     name = "guard_codex_fresh_live_profile_test",
