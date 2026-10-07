@@ -132,6 +132,13 @@ METADATA_DIAGNOSTICS = {
     "native session metadata is absent or ambiguous": "rollout-session-cardinality",
     "native JSON contains duplicate keys": "rollout-duplicate-key",
 }
+SEED_ATTACHMENT_DIAGNOSTICS = (
+    "seed-history-discovery-rpc", "seed-history-discovery-validation",
+    "seed-history-attachment-comparison", "seed-history-attachment-absent",
+    "seed-history-attachment-identity", "seed-history-attachment-reference",
+    "seed-history-attachment-other",
+)
+
 DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
                "metadata-database-busy", "metadata-database-query", "metadata-database-error",
                "rollout-file-absent", "rollout-json", "metadata-other-predicate",
@@ -142,6 +149,7 @@ DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
                *native_history_diagnostic.CATEGORIES,
                "seed-history-metadata", "seed-history-sql-match",
                "seed-history-liveness", "seed-history-process", "seed-history-attachment",
+               *SEED_ATTACHMENT_DIAGNOSTICS,
                *RESUME_DIAGNOSTICS,
                *support.FAILURES)
 MARKER = b"OMUX_INSTALLED_LEGACY_NATIVE_TUI_OK\n"
@@ -472,11 +480,43 @@ def diagnostic_history_witness(home, thread, *, phase_prefix):
     return observed
 
 
-def seed_history_attachment(cli, endpoint):
+def seed_history_attachment_difference(observed, expected):
+    # Private projection only after the original complete equality was false.
+    # Values, IDs, endpoints and exception text never become diagnostic output.
+    if observed is None:
+        return "seed-history-attachment-absent"
+    if observed["thread_id"] != expected["thread_id"] or any(
+            observed["owner"][field] != expected["owner"][field]
+            for field in ("owner_id", "process_nonce", "owner_endpoint")):
+        return "seed-history-attachment-identity"
+    if observed["reference"] != expected["reference"]:
+        return "seed-history-attachment-reference"
+    return "seed-history-attachment-other"
+
+
+def seed_history_attachment(cli, endpoint, expected):
     # Called only through the original process-identity short circuit.
     global DIAGNOSTIC
-    DIAGNOSTIC = "seed-history-attachment"
-    return discovered_attachment(cli, endpoint)
+
+    def discovery_cli(*arguments, **options):
+        global DIAGNOSTIC
+        DIAGNOSTIC = "seed-history-discovery-rpc"
+        found = cli(*arguments, **options)
+        DIAGNOSTIC = "seed-history-discovery-validation"
+        return found
+
+    observed = discovered_attachment(discovery_cli, endpoint)
+    DIAGNOSTIC = "seed-history-attachment-comparison"
+    # Keep the original complete dictionary equality, exactly once.
+    matches = observed == expected
+    if matches is False:
+        DIAGNOSTIC = "seed-history-attachment-other"
+        try:
+            DIAGNOSTIC = seed_history_attachment_difference(observed, expected)
+        except Exception:
+            pass  # Ordinary diagnostic faults cannot admit a false comparison.
+        # Control exceptions propagate through the original fixture cleanup.
+    return matches
 
 
 def wait_metadata(home, thread, terminal, *, expected_name=tui.FIXTURE_NAME):
@@ -786,7 +826,7 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
         DIAGNOSTIC = "seed-history-liveness"
         bootstrap_native.alive()
         DIAGNOSTIC = "seed-history-process"
-        require(bootstrap_native.process.pid == first_pid and seed_history_attachment(cli, endpoint) == first,
+        require(bootstrap_native.process.pid == first_pid and seed_history_attachment(cli, endpoint, first),
                 "legacy seed initialization changed process or attachment")
         DIAGNOSTIC = "unclassified"
         PHASE = "selected-detach"

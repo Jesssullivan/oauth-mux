@@ -322,6 +322,7 @@ class GuardTest(unittest.TestCase):
         self.assertIn('--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256=',command)
         self.assertIn('--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=',command)
         for flag in ('--batch','--nosystem_rc','--nohome_rc','--noworkspace_rc','--jobs=2',
+                     '--legacy_globbing_threads=2', '--experimental_fsvc_threads=2',
                      '--remote_executor=','--remote_cache=','--disk_cache=','--lockfile_mode=error'):
             self.assertIn(flag,command)
         prior = {'path':'/home/jess/.local/state/omux-yoga-delivery-20261006/prior/qualification.json','sha256':'a'*64}
@@ -1224,6 +1225,67 @@ class GuardTest(unittest.TestCase):
                      ['test', '--config=remote'], ['run', '//:delegate']):
             with self.assertRaises(ValueError):
                 bazel_command('/store/bazel', Path('/private/uuid'), args)
+
+    def test_controller_worker_policy_covers_owned_verbs_and_rejects_overrides(self):
+        from execution_guard import controller_thread_profile
+        policy = controller_thread_profile()
+        flags = {'legacy_globbing_threads': '--legacy_globbing_threads=',
+                 'fsvc_threads': '--experimental_fsvc_threads='}
+        cases = (
+            ('standard', ['build', '//:omux']),
+            ('standard', ['test', '//:docs_check']),
+            ('dependency-prefetch', ['test', '//tools:fetch_codex_archives_bundle']),
+            ('installed-browser', ['test', '//delivery:installed_chromium_test']),
+            ('standard', ['run', '//delivery:linux_launcher_format', '--',
+                          'delivery/linux_launcher.zig']),
+        )
+        for profile, arguments in cases:
+            with self.subTest(profile=profile, verb=arguments[0]):
+                command = bazel_command('/store/bazel', Path('/owned/epoch'), arguments,
+                                        profile=profile)
+                for field, prefix in flags.items():
+                    self.assertEqual([item for item in command if item.startswith(prefix)],
+                                     [prefix + str(policy[field])])
+                    self.assertGreater(command.index(prefix + str(policy[field])),
+                                       command.index(arguments[0]))
+                    self.assertLess(command.index(prefix + str(policy[field])),
+                                    command.index(arguments[1]))
+                self.assertEqual(command.count('--jobs=2'), 1)
+                self.assertEqual(command.count('--host_jvm_args=-XX:ActiveProcessorCount=2'), 1)
+                self.assertFalse(any(item.startswith('--loading_phase_threads=') for item in command))
+        for flag in ('--legacy_globbing_threads=100', '--experimental_fsvc_threads=200',
+                     '--loading_phase_threads=100', '--config=unbounded',
+                     '--host_jvm_args=-XX:ActiveProcessorCount=100'):
+            for arguments in (['test', '//:docs_check', flag],
+                              ['build', flag, '//:omux'],
+                              ['run', '//delivery:linux_launcher_format', '--', flag]):
+                with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                    bazel_command('/store/bazel', Path('/owned/epoch'), arguments)
+        policy['fsvc_threads'] = 200
+        self.assertEqual(controller_thread_profile(),
+                         {'legacy_globbing_threads': 2, 'fsvc_threads': 2})
+
+    def test_controller_worker_policy_partitions_cache_without_changing_limits(self):
+        from execution_guard import controller_thread_profile
+        from guard_cache import stable_fingerprint
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = {'bazel': '/nix/store/fixed-bazel/bin/bazel', 'java': '/nix/store/fixed-jdk'}
+            execution = {'batch': True, 'jvm_heap_mib': 1536, 'active_processors': 2,
+                         'jobs': 2, **controller_thread_profile()}
+            def key(selected):
+                return stable_fingerprint(directory, inputs, 1000, 1000, 'user',
+                                          {'limits': PROPERTIES, 'execution': selected})
+            current = key(execution)
+            old = {name: value for name, value in execution.items()
+                   if name not in controller_thread_profile()}
+            self.assertNotEqual(current, key(old))
+            for field in controller_thread_profile():
+                self.assertNotEqual(current, key({**execution, field: 100}))
+            self.assertEqual(PROPERTIES['TasksMax'], '512')
+            self.assertEqual(CGROUP['pids.max'], '512')
+            self.assertEqual(PROPERTIES['MemoryMax'], '4294967296')
+            self.assertEqual(PROPERTIES['CPUQuotaPerSecUSec'], '2s')
+            self.assertEqual(PROPERTIES['RuntimeMaxUSec'], '20min')
 
     def test_fake_show_response(self):
         self.assertEqual(properties('MemoryMax=4294967296\nignored\nKillMode=control-group\n'),

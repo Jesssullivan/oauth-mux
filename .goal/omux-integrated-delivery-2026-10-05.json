@@ -166,7 +166,7 @@
   "latest_checkin": "2026-10-07T01:52:58Z_native_diagnostic_failed_at_status_query_after_detach_ack;fresh_readonly_Yoga_qualify_started;5_passed_6_open",
   "current_owned_execution": {
     "state": "none",
-    "last_epoch": "a92d4563-8465-4122-b208-681a8ddd599f",
+    "last_epoch": "72c5db5e-f94c-47d5-907f-bac7b304107a",
     "descendants_empty": true
   },
   "claim": "experimental_unshipped_live_continuity_unavailable",
@@ -718,9 +718,9 @@
     "commit": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
     "receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json"
   },
-  "next_source_implementation": "Independently reviewed bounded failure-only native thread census and Yoga raw registry-shape diagnostics; targeted models before one fresh provider-free native checkpoint",
+  "next_source_implementation": "Passed finite attachment/controller models; freeze signed source, then one fresh provider-free native operation without cap, environment or predicate changes. Yoga qualification and human consent remain separate.",
   "latest_portable_exec_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
-  "new_source_pending_verification": "a92d correction census/ownedchild/docs/source4of4PASS empty; unchangedYogaCLI3710PASS; native continuation pending one fresh clean-source operation",
+  "new_source_pending_verification": false,
   "latest_portable_exec_source_delivery": {
     "pr": 529,
     "url": "https://github.com/Jesssullivan/oauth-mux/pull/529",
@@ -747,8 +747,8 @@
     "protection_unchanged": true,
     "scope": "Reviewed source-only packaging/model delivery; failed native9f286 result disclosed; no gate closes"
   },
-  "latest_installed_native_receipt": "/home/jess/.local/state/omux-execution-20261005/ac14f5fa-d87c-446a-823d-12ef6b022153/receipt.json",
-  "latest_installed_native_result": "FAILED cold-native-resume/resume-owner-endpoint/resume-endpoint-deadline; docs/source passed, no config-comparison result",
+  "latest_installed_native_receipt": "/home/jess/.local/state/omux-execution-20261005/81e76dcd-a457-42d6-b05a-1bd8d50ca0d6/receipt.json",
+  "latest_installed_native_result": "FAILED_native-seed-history_seed-history-attachment; docs_sourcePASS; resume_notstarted; role_snapshots_notcausal",
   "latest_native_startup_fixture": {
     "source": {
       "head": "2bd9942f34450ec1cf245674aaafecf32425abbb",
@@ -790,9 +790,70 @@
   },
   "latest_bounded_diagnostics_receipt": "docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json",
   "latest_bounded_diagnostics_model_result": {
-    "initial_failed": "3710749b-b415-4225-9763-dc701653007b",
-    "corrected_passed": "a92d4563-8465-4122-b208-681a8ddd599f",
-    "receipt": "docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json",
-    "scope": "source_diagnostic_predicates_only_no_product_gate"
+    "epoch": "72c5db5e-f94c-47d5-907f-bac7b304107a",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "rejection": null,
+    "receipt_sha256": "bab569e8ddb05ec8106021bd51a7d52eee9dbac0df5de12ae2b4e1d78462cf62",
+    "graph_sha256": "b8a7760778a20d41c1dcf2aec98a9956759ef125eba07eedf9be5b15c95c3118",
+    "evidence": {
+      "bytes": 222313,
+      "files": 17,
+      "manifest": "test-evidence.json",
+      "sha256": "7eec9be61cbba1d9acb1fec103eee232c24a859b8d8ac44f3f206a5e59ecba40",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:native_seed_attachment_diagnostic_test",
+      "//delivery:native_thread_census_test",
+      "//tools:execution_guard_test",
+      "//tools:guard_cache_test",
+      "//tools:guard_dependency_profile_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "pids": {
+      "sampled_peak": 251,
+      "eventIncrease": false,
+      "atLimit": false,
+      "terminal": "unavailable",
+      "attribution": "none"
+    },
+    "cache_controller_policy": {
+      "legacy_globbing_threads": 2,
+      "fsvc_threads": 2
+    },
+    "scope": "seven targeted source/model checks; no native or Yoga acceptance"
+  },
+  "latest_bounded_diagnostics_source_delivery": {
+    "head": "e54257e8887e4d9921b87e311242f01a5f56e9c7",
+    "tree": "5d8629b5b9acbc2d27fedab7298c64a0bb05b7f9",
+    "parent": "0b0df5d6afbe25fd596944636571c63cae5ab72f",
+    "signature": "G",
+    "verify_exit": 0,
+    "branch": "codex/omux-bounded-proof-diagnostics-20261007",
+    "worktree_clean": true,
+    "pushed": true,
+    "pr": 531,
+    "url": "https://github.com/Jesssullivan/oauth-mux/pull/531",
+    "draft": true,
+    "scope": "reviewed bounded diagnostic source only; native/Yoga gates remain open",
+    "hook_alternative": "R-N12 advisory hooks; per-invocation core.hooksPath=/dev/null only for root-owned commit/push; pinned contained checks and independent signature/head/tree/clean readbacks; global hooks/remotes unchanged",
+    "independent_final_review": "review_prs_oct6 exact14head/tree/parent/clean/privacy/originalindex source_clear"
+  },
+  "latest_bounded_diagnostics_native_result": {
+    "epoch": "81e76dcd-a457-42d6-b05a-1bd8d50ca0d6",
+    "phase": "native-seed-history",
+    "diagnostic": "seed-history-attachment",
+    "result": "FAILED_open",
+    "receipt": "docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json"
   }
 }
