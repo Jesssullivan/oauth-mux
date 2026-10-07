@@ -93,6 +93,33 @@ evidence and empty descendants. The source correction spells each range as
 two comparisons joined by `and`, preserving the finite 1–20 decimal suffix
 and 12–4120 input-member bounds. Corrected execution is still pending.
 
+## Qualified source checkpoint — 2026-10-07 23:01 UTC
+
+The corrected eleven-target suite passed on signed, clean source
+`977078523fbc1d60361c35a8fb45f914835215fa`, controller graph
+`a70467cc0de5d40cca754addd7e4e4cf131bed76ffccd3e89bd7db816f31ecff`.
+Invocation `0068a109-06c1-475b-8398-415419b3d173` ended exit/workload 0,
+with preserved evidence, no controller failure and verified empty descendants.
+Its receipt SHA256 is
+`0094fad77111bad74c41d18f488ece3fd6a1d80cf336b37528e85c330edba3d2`;
+the test-evidence SHA256 is
+`cdb8c4636db03d57dd629a16291d59b9ecf2ca4ac4b55bcba9b2421ba94b82e3`.
+
+Passing targets: staged producer, staged package consumer, native profile,
+execution guard, historical candidate cache, fresh completion, fresh runtime,
+fresh runtime-input admission, fresh live-profile admission, docs and runtime
+source receipt. The new producer's twelve and consumer's nine models exercise
+held temporary custody, journal/history, actual hash/parser logic and artifact
+changes. Their external sealed-input/platform witnesses remain explicitly
+mocked. Neither earlier failed run is promoted.
+
+Actual native A–D builds, the manual genuine-input visibility test, runtime
+packaging, ordinary native launch/resume and same-process handoff remain unrun.
+No private staged selector or chain reservation was created for this checkpoint.
+The maintained application candidate remains experimental; no unmodified Codex
+or Darwin support is established. No account is durably enrolled, and no provider
+call or vault-factor operation ran. The original full product goal is incomplete.
+
 No new native invocation or private selector is created. Phase feasibility,
 storage allocation and native completion remain unproved. Sting user-manager
 IPC and the declared OS-vault unlock binding remain independent prerequisites
