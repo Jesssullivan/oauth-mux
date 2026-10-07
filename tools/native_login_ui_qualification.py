@@ -30,6 +30,78 @@ ROOTS = frozenset((
     "/nix/store/l1nqjg1yx6q6vx6zwsnd3ky0s7a0kfk8-qtwayland-6.11.0"))
 
 
+LOCAL_PHASES = frozenset(("entry","arguments","guard","input_namespace","output_namespace","manifest",
+    "os_authority","control_input","inventory_input","worker_input","remote_worker_input","elf_input",
+    "bootstrap_encode","host_authority","backend_constructor","os_before","remote_prepare","os_after",
+    "receipt_validate","receipt_publish","complete","ssh_encode","ssh_environment","ssh_spawn",
+    "ssh_pidfd","ssh_send","ssh_receive","ssh_wait","remote_result"))
+REMOTE_PHASES = frozenset(("entry","config","seat","nix_authority","registry_content","stage",
+    "input_pins","elf_closure","dialog_ready","portal_authority","dialog_eof","seat_recheck","complete"))
+REFUSAL_CATEGORIES = frozenset(("bootstrap_bound","os_changed","agent_custody","binding_refused",
+    "ssh_authentication","ssh_host_key","ssh_transport","backend_authority","deadline","missing_input",
+    "access_refused","os_operation_refused","input_refused","predicate_refused","unclassified"))
+ACTIVE_PHASE = "entry"
+
+
+def set_phase(value):
+    global ACTIVE_PHASE
+    require(value in LOCAL_PHASES,"diagnostic_phase_invalid")
+    ACTIVE_PHASE = value
+
+
+class RemoteRefusal(ValueError):
+    def __init__(self,record):
+        require(type(record) is dict and set(record) == {"scope","phase","category"}
+            and record["scope"] == "omux-native-ui-prepare-remote-refused-v1"
+            and record["phase"] in REMOTE_PHASES and record["category"] in REFUSAL_CATEGORIES,
+            "remote_refusal_frame_invalid")
+        self.record = {"remote_phase":record["phase"],"remote_category":record["category"]}
+        super().__init__("remote_prepare_refused")
+
+
+def refusal_record(error):
+    name = error.args[0] if len(error.args) == 1 and type(error.args[0]) is str else None
+    selected = {"declared_bootstrap_source_bound":"bootstrap_bound","remote_command_bound":"bootstrap_bound",
+        "actual_os_qualification_changed":"os_changed","agent_custody":"agent_custody","agent_peer":"agent_custody",
+        "fixed_host_pin_required":"binding_refused","selected_control_digest":"binding_refused",
+        "fixed_inventory_required":"binding_refused","fixed-qualification-binding-required":"binding_refused"}
+    category = selected.get(name)
+    if category is None and isinstance(error,delivery.GateError):
+        flags = error.hints.get("stderrFlags",{}) if type(error.hints) is dict else {}
+        if type(flags) is not dict:
+            flags = {}
+        category = ("ssh_authentication" if flags.get("ssh_auth_rejected") is True else
+            "ssh_host_key" if flags.get("host_key_rejected") is True else
+            "ssh_transport" if any(flags.get(key) is True for key in
+                ("connection_refused","connection_timed_out","connection_reset","host_unresolved")) else
+            "backend_authority")
+    if category is None:
+        category = ("deadline" if isinstance(error,(TimeoutError,subprocess.TimeoutExpired)) else
+            "missing_input" if isinstance(error,FileNotFoundError) else
+            "access_refused" if isinstance(error,PermissionError) else
+            "os_operation_refused" if isinstance(error,OSError) else
+            "input_refused" if isinstance(error,(json.JSONDecodeError,UnicodeError)) else
+            "predicate_refused" if isinstance(error,(ValueError,KeyError,TypeError)) else "unclassified")
+    result = {"scope":"omux-native-login-ui-prepare-refused-v1",
+        "reason":"provider_free_preparation_refused",
+        "phase":ACTIVE_PHASE if ACTIVE_PHASE in LOCAL_PHASES else "entry","category":category}
+    if isinstance(error,RemoteRefusal):
+        result.update(error.record)
+    return result
+
+
+def bootstrap(worker_source,remote_source,elf_source):
+    code = ("import json,sys,types\n"
+        "w=types.ModuleType('omux_qualified_ui_worker')\nexec(compile("+repr(worker_source)+",'<declared-ui-worker>','exec'),w.__dict__)\n"
+        "r=types.ModuleType('omux_ui_prepare_worker')\nexec(compile("+repr(remote_source)+",'<declared-ui-prepare>','exec'),r.__dict__)\n"
+        "e=types.ModuleType('omux_pure_elf_parser')\nexec(compile("+repr(elf_source)+",'<declared-elf-parser>','exec'),e.__dict__)\nr.elf=e\n"
+        "try:\n c=json.loads(w.read_line(0,w.time.monotonic()+30,262144),object_pairs_hook=w.unique)\n"
+        " result=r.prepare(w,c)\n print(r.canonical(result).decode('ascii'),flush=True)\n"
+        "except BaseException as error:\n print(r.canonical(r.refusal_record(error)).decode('ascii'),flush=True)\n sys.exit(1)\n")
+    require(len(code.encode()) <= 96*1024,"declared_bootstrap_source_bound")
+    return code
+
+
 def canonical(value):
     return json.dumps(value,sort_keys=True,separators=(",",":")).encode("ascii")
 
@@ -141,19 +213,33 @@ def ssh_environment(ui):
 def remote_prepare(ui,options,hosts,code,payload,until):
     process = pidfd = None
     try:
+        set_phase("ssh_encode")
         command = carrier.remote_command("/usr/bin/python3",code)
         require(len(command.encode()) <= 120*1024,"remote_command_bound")
         arguments = carrier.ssh_arguments(ui,options,hosts.options(),command)
+        set_phase("ssh_environment")
+        environment = ssh_environment(ui)
+        set_phase("ssh_spawn")
         process = subprocess.Popen(arguments,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,env=ssh_environment(ui),umask=0o077)
+            stderr=subprocess.DEVNULL,env=environment,umask=0o077)
         print(json.dumps({"scope":"omux-native-ui-prepare-owned-ssh-v1","owned_ssh_pid":process.pid}),flush=True)
+        set_phase("ssh_pidfd")
         pidfd = os.pidfd_open(process.pid)
+        set_phase("ssh_send")
         carrier.write_fd(process.stdin.fileno(),payload,until)
         process.stdin.close()
+        set_phase("ssh_receive")
         result = worker.read_line(process.stdout.fileno(),until,256*1024)
         require(worker.read_line(process.stdout.fileno(),until,16,allow_eof=True) is None,"remote_output_extra")
-        require(process.wait(timeout=max(.01,min(5,until-time.monotonic()))) == 0,"remote_prepare_refused")
-        return json.loads(result,object_pairs_hook=worker.unique)
+        set_phase("ssh_wait")
+        status = process.wait(timeout=max(.01,min(5,until-time.monotonic())))
+        set_phase("remote_result")
+        observed = json.loads(result,object_pairs_hook=worker.unique)
+        if status != 0:
+            raise RemoteRefusal(observed)
+        require(not(type(observed) is dict and observed.get("scope") ==
+            "omux-native-ui-prepare-remote-refused-v1"),"remote_refusal_with_zero_status")
+        return observed
     finally:
         if process is not None:
             if not process.stdin.closed:
@@ -204,15 +290,20 @@ def publish(directory,files):
 
 
 def main():
+    set_phase("arguments")
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("control","inventory","source-receipt","known-hosts","worker","remote-worker","elf-parser"):
         parser.add_argument("--"+name,required=True)
     arguments = parser.parse_args()
+    set_phase("guard")
     require(os.environ.get("OMUX_NATIVE_LOGIN_UI_PREPARE_INPUT_MANIFEST") == INPUT,"guard_manifest_required")
     require(hasattr(os,"pidfd_open") and hasattr(signal,"pidfd_send_signal"),"pidfd_required")
+    set_phase("input_namespace")
     directory,input_identity = namespace(str(Path(INPUT).parent),"OMUX_NATIVE_LOGIN_UI_NAMESPACE_ID")
+    set_phase("output_namespace")
     output,output_identity = namespace(OUTPUT,"OMUX_NATIVE_LOGIN_UI_OUTPUT_ID")
     try:
+        set_phase("manifest")
         config = json.loads(private_metadata(directory,"input.json",16384),object_pairs_hook=worker.unique)
         require(type(config) is dict and set(config) == {"schema_version","scope","os_qualification_sha256",
             "control_sha256","known_hosts_path","ssh_auth_socket","output_parent","deadline_seconds"}
@@ -222,42 +313,48 @@ def main():
         original = int(os.environ["OMUX_NATIVE_LOGIN_UI_ORIGINAL_DEADLINE_NS"])/10**9
         until = min(original-30,time.monotonic()+config["deadline_seconds"])
         require(until-time.monotonic() > 30,"original_deadline_required")
+        set_phase("os_authority")
         raw = private_metadata(directory,"os-qualification.json",16384)
         require(hashlib.sha256(raw).hexdigest() == config["os_qualification_sha256"],"os_qualification_digest")
         qualified = settings.qualification(json.loads(raw,object_pairs_hook=worker.unique))
+        set_phase("control_input")
         control = delivery.read_public(arguments.control,128*1024*1024,until)
         require(hashlib.sha256(control).hexdigest() == config["control_sha256"] and control.startswith(b"\x7fELF"),"selected_control_digest")
+        set_phase("inventory_input")
         inventory_bytes = delivery.read_public(arguments.inventory,8*1024*1024,until)
         delivery.selected(inventory_bytes,delivery.read_public(arguments.source_receipt,8*1024*1024,until))
         rows = subset(inventory_bytes)
+        set_phase("worker_input")
         worker_source = delivery.read_public(arguments.worker,65536,until).decode("utf8")
+        set_phase("remote_worker_input")
         remote_source = delivery.read_public(arguments.remote_worker,65536,until).decode("utf8")
+        set_phase("elf_input")
         elf_source = elf_parser_source(delivery.read_public(arguments.elf_parser,128*1024,until))
-        code = ("import json,sys,types\n"
-            "w=types.ModuleType('omux_qualified_ui_worker')\nexec(compile("+repr(worker_source)+",'<declared-ui-worker>','exec'),w.__dict__)\n"
-            "r=types.ModuleType('omux_ui_prepare_worker')\nexec(compile("+repr(remote_source)+",'<declared-ui-prepare>','exec'),r.__dict__)\n"
-            "e=types.ModuleType('omux_pure_elf_parser')\nexec(compile("+repr(elf_source)+",'<declared-elf-parser>','exec'),e.__dict__)\nr.elf=e\n"
-            "try:\n c=json.loads(w.read_line(0,w.time.monotonic()+30,262144),object_pairs_hook=w.unique)\n"
-            " result=r.prepare(w,c)\n print(r.canonical(result).decode('ascii'),flush=True)\n"
-            "except BaseException:\n sys.stderr.write('omux-native-ui-prepare-refused\\n')\n sys.exit(1)\n")
-        require(len(code.encode()) <= 96*1024,"declared_bootstrap_source_bound")
+        set_phase("bootstrap_encode")
+        code = bootstrap(worker_source,remote_source,elf_source)
         ui = {"ssh_path":qualified["sshPath"],"ssh_auth_socket":config["ssh_auth_socket"]}
+        set_phase("host_authority")
         with delivery.KnownHostAuthority(arguments.known_hosts,until) as hosts,carrier.operator_config(include_user=False) as options:
             require(str(Path(config["known_hosts_path"]).resolve(strict=True)) == delivery.KNOWN_HOSTS_SOURCE
                 == str(Path(arguments.known_hosts).resolve(strict=True)),"fixed_host_pin_required")
             doctor_options = [*options,"-l","jsullivan2","-oHostName=100.104.152.110",
                 "-oProxyCommand=none","-oProxyJump=none","-oPermitLocalCommand=no","-oRemoteCommand=none",
                 "-oForwardX11=no"]
+            set_phase("backend_constructor")
             backend = delivery.Backend(qualified["sshPath"],doctor_options,until,
                 {"sshPath":qualified["sshPath"],"sshSha256":qualified["sshSha256"],"remote":qualified["remote"]},hosts)
             backend.env = ssh_environment(ui)
             # Existing bootstrap reobserves the full OS/Nix tuple before staging.
+            set_phase("os_before")
             require(backend.qualify() == qualified["remote"],"actual_os_qualification_changed")
             remote_config = {"expected_os":qualified["remote"],"rows":rows,"control_sha256":config["control_sha256"],
                 "control_bytes":len(control),"task_id":str(uuid.uuid4()),"deadline_seconds":max(1,min(900,int(until-time.monotonic())))}
+            set_phase("remote_prepare")
             observed = remote_prepare(ui,options,hosts,code,canonical(remote_config)+b"\n"+control,until)
+            set_phase("os_after")
             require(backend.qualify() == qualified["remote"],"actual_os_qualification_changed")
             hosts.check()
+        set_phase("receipt_validate")
         require(type(observed) is dict and set(observed) == {"remote","closure","seat"}
             and observed["closure"]["rows"] == rows and observed["seat"]["actual_dialog_eof_clean_exit"] is True
             and observed["seat"]["provider_request_performed"] is False and observed["seat"]["portal_openuri_performed"] is False,"observed_receipt_invalid")
@@ -271,7 +368,9 @@ def main():
         require(private_metadata(directory,"os-qualification.json",16384) == raw,"os_input_changed")
         require(input_identity == tuple(getattr(os.fstat(directory),key) for key in ("st_dev","st_ino","st_uid","st_mode"))
             and output_identity == tuple(getattr(os.fstat(output),key) for key in ("st_dev","st_ino","st_uid","st_mode")),"namespace_changed")
+        set_phase("receipt_publish")
         publish(output,{"closure.json":closure,"seat.json":seat,"ui-qualification.json":join})
+        set_phase("complete")
         print(json.dumps({"scope":"omux-native-login-ui-prepared-v1","ui_qualification_sha256":hashlib.sha256(join).hexdigest(),
             "closure_receipt_sha256":hashlib.sha256(closure).hexdigest(),"seat_receipt_sha256":hashlib.sha256(seat).hexdigest(),
             "provider_request_performed":False,"portal_openuri_performed":False},sort_keys=True),flush=True)
@@ -283,6 +382,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except BaseException:
-        print('{"scope":"omux-native-login-ui-prepare-refused-v1","reason":"provider_free_preparation_refused"}',file=sys.stderr)
+    except BaseException as error:
+        print(json.dumps(refusal_record(error),sort_keys=True),file=sys.stderr)
         sys.exit(1)

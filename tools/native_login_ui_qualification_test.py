@@ -21,6 +21,68 @@ import yoga_portal_worker as worker
 
 
 class Preparation(unittest.TestCase):
+    def test_actual_declared_bootstrap_stays_inside_both_existing_bounds(self):
+        code = local.bootstrap(Path(worker.__file__).read_text(),Path(remote.__file__).read_text(),
+            local.elf_parser_source(Path(self.parser_source).read_bytes()))
+        self.assertLessEqual(len(code.encode()),96*1024)
+        self.assertLessEqual(len(local.carrier.remote_command('/usr/bin/python3',code).encode()),120*1024)
+        with self.assertRaisesRegex(worker.Refusal,'declared_bootstrap_source_bound') as refused:
+            local.bootstrap('x'*(96*1024),'','')
+        self.assertEqual(local.refusal_record(refused.exception)['category'],'bootstrap_bound')
+
+    def test_closed_remote_refusal_roundtrip_discards_private_error_and_unknown_fields(self):
+        config = {'expected_os':{},'rows':[],'control_sha256':'0'*64,'control_bytes':8,
+            'task_id':'11111111-1111-4111-8111-111111111111','deadline_seconds':60}
+        with patch.object(remote.resource,'setrlimit'),patch.object(remote.signal,'alarm'),\
+            patch.object(remote.os,'environ',{}),\
+            patch.object(remote,'seat',side_effect=FileNotFoundError('PRIVATE_MODEL_CANARY')):
+            with self.assertRaises(FileNotFoundError) as refused:
+                remote.prepare(worker,config)
+        observed = remote.refusal_record(refused.exception)
+        self.assertEqual(observed['phase'],'seat')
+        self.assertEqual(observed['category'],'missing_input')
+        local.set_phase('remote_result')
+        record = local.refusal_record(local.RemoteRefusal(observed))
+        self.assertEqual(record['remote_phase'],'seat')
+        self.assertEqual(record['remote_category'],'missing_input')
+        self.assertNotIn('PRIVATE_MODEL_CANARY',json.dumps(record))
+        for forged in ({**observed,'private':'PRIVATE_MODEL_CANARY'},
+                {**observed,'phase':'PRIVATE_MODEL_CANARY'},{**observed,'category':'PRIVATE_MODEL_CANARY'}):
+            with self.assertRaisesRegex(worker.Refusal,'remote_refusal_frame_invalid'):
+                local.RemoteRefusal(forged)
+        failure = local.delivery.GateError('PRIVATE_MODEL_CANARY',hints={
+            'stderrFlags':{'ssh_auth_rejected':True,'private':'PRIVATE_MODEL_CANARY'}})
+        self.assertEqual(local.refusal_record(failure)['category'],'ssh_authentication')
+        self.assertNotIn('PRIVATE_MODEL_CANARY',json.dumps(local.refusal_record(failure)))
+
+    def test_actual_main_marks_control_input_refusal_before_any_ssh_boundary(self):
+        raw = b'{}'
+        config = {'schema_version':1,'scope':'omux-native-login-ui-prepare-v1',
+            'os_qualification_sha256':hashlib.sha256(raw).hexdigest(),'control_sha256':'0'*64,
+            'known_hosts_path':'selected','ssh_auth_socket':None,'output_parent':local.OUTPUT,'deadline_seconds':60}
+        arguments = ['model']
+        for name in ('control','inventory','source-receipt','known-hosts','worker','remote-worker','elf-parser'):
+            arguments.extend(('--'+name,'selected'))
+        environment = {'OMUX_NATIVE_LOGIN_UI_PREPARE_INPUT_MANIFEST':local.INPUT,
+            'OMUX_NATIVE_LOGIN_UI_ORIGINAL_DEADLINE_NS':str(time.monotonic_ns()+300*10**9)}
+        with patch.object(sys,'argv',arguments),patch.object(local.os,'environ',environment),\
+            patch.object(local,'namespace',side_effect=[(41,()),(42,())]),\
+            patch.object(local,'private_metadata',side_effect=[local.canonical(config),raw]),\
+            patch.object(local.settings,'qualification',return_value={}),\
+            patch.object(local.delivery,'read_public',side_effect=PermissionError('PRIVATE_MODEL_CANARY')),\
+            patch.object(local.delivery,'Backend') as backend,patch.object(local,'remote_prepare') as prepare,\
+            patch.object(local.subprocess,'Popen') as spawn,patch.object(local.os,'close') as close:
+            with self.assertRaises(PermissionError) as refused:
+                local.main()
+        record = local.refusal_record(refused.exception)
+        self.assertEqual(record['phase'],'control_input')
+        self.assertEqual(record['category'],'access_refused')
+        self.assertNotIn('PRIVATE_MODEL_CANARY',json.dumps(record))
+        backend.assert_not_called()
+        prepare.assert_not_called()
+        spawn.assert_not_called()
+        self.assertEqual([call.args[0] for call in close.call_args_list],[42,41])
+
     def test_wrong_actual_registry_refuses_before_any_physical_hash(self):
         rows = local.subset(Path(self.inventory).read_bytes())
         wrong = {row["path"]:{"narSize":row["narSize"],"narHash":row["narHash"],"references":row["references"]} for row in rows}

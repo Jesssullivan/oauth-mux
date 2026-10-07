@@ -30,6 +30,28 @@ def require(value, reason):
         raise ValueError(reason)
 
 
+PREPARE_PHASES = frozenset(("entry","config","seat","nix_authority","registry_content","stage",
+    "input_pins","elf_closure","dialog_ready","portal_authority","dialog_eof","seat_recheck","complete"))
+PREPARE_PHASE = "entry"
+
+
+def set_phase(value):
+    global PREPARE_PHASE
+    require(value in PREPARE_PHASES,"diagnostic_phase_invalid")
+    PREPARE_PHASE = value
+
+
+def refusal_record(error):
+    category = ("deadline" if isinstance(error,(TimeoutError,subprocess.TimeoutExpired)) else
+        "missing_input" if isinstance(error,FileNotFoundError) else
+        "access_refused" if isinstance(error,PermissionError) else
+        "os_operation_refused" if isinstance(error,OSError) else
+        "input_refused" if isinstance(error,(json.JSONDecodeError,UnicodeError)) else
+        "predicate_refused" if isinstance(error,(ValueError,KeyError,TypeError)) else "unclassified")
+    return {"scope":"omux-native-ui-prepare-remote-refused-v1",
+        "phase":PREPARE_PHASE if PREPARE_PHASE in PREPARE_PHASES else "entry","category":category}
+
+
 def canonical(value):
     return json.dumps(value,sort_keys=True,separators=(",",":")).encode("ascii")
 
@@ -502,6 +524,7 @@ def stage(worker,config,until):
 
 
 def prepare(worker,config):
+    set_phase("config")
     require(set(config) == {"expected_os","rows","control_sha256","control_bytes","task_id","deadline_seconds"},"prepare_schema")
     require(str(uuid.UUID(config["task_id"])) == config["task_id"] and worker.SHA.fullmatch(config["control_sha256"]),"prepare_selector")
     require(type(config["deadline_seconds"]) is int and 1 <= config["deadline_seconds"] <= 900,"prepare_deadline")
@@ -512,14 +535,18 @@ def prepare(worker,config):
     os.environ.update({"PATH":"","LANG":"C","LC_ALL":"C","GIO_USE_VFS":"local",
         "GIO_MODULE_DIR":"/.omux-native-login-unavailable","GIO_EXTRA_MODULES":""})
     require(hasattr(os,"pidfd_open") and hasattr(signal,"pidfd_send_signal"),"prepare_pidfd_required")
+    set_phase("seat")
     selected,peer = seat(worker,config["expected_os"])
+    set_phase("nix_authority")
     nix = worker.held_immutable(config["expected_os"]["remoteNixPath"],config["expected_os"]["remoteNixSha256"],64*1024*1024)
     root_pins = []
     try:
+        set_phase("registry_content")
         verify_rows(worker,nix,config["rows"],until,root_pins)
     finally:
         os.close(nix)
     try:
+        set_phase("stage")
         dialog_path,staged_identity = stage(worker,config,until)
     except BaseException:
         for _,fd,_ in root_pins:
@@ -527,6 +554,7 @@ def prepare(worker,config):
         raise
     gio = executable = portal = dialog = graph = None
     try:
+        set_phase("input_pins")
         selected.update(python_path=PYTHON,python_sha256=file_digest(PYTHON,128*1024*1024),
             gio_path=GIO,gio_sha256=file_digest(GIO,128*1024*1024),
             qt_platform_plugin=PLUGIN,qt_platform_plugin_sha256=file_digest(PLUGIN,128*1024*1024),
@@ -534,22 +562,28 @@ def prepare(worker,config):
         worker.check_host_and_seat(selected)
         executable = worker.held_dialog(dialog_path,selected["dialog_sha256"])
         gio = worker.held_immutable(GIO,selected["gio_sha256"],128*1024*1024)
+        set_phase("elf_closure")
         graph = ElfClosure(worker,executable,dialog_path,config["rows"],PLUGIN,until,root_pins)
         # All Nix subprocesses finished before GIO threading begins.
+        set_phase("dialog_ready")
         dialog = worker.Dialog(executable,selected,until)
+        set_phase("portal_authority")
         portal = worker.Portal(gio,selected["uid"])
         seat_receipt = {"schema_version":1,"scope":"omux-native-login-ui-seat-v1",**selected,**peer,
             "portal_owner_pid":portal.pid,"portal_owner_start_ticks":portal.start_ticks,
             "actual_dialog_ready":True,"provider_request_performed":False,"portal_openuri_performed":False}
+        set_phase("dialog_eof")
         dialog.close(success=True)
         dialog = None
         graph.check()
         seat_receipt["actual_dialog_eof_clean_exit"] = True
+        set_phase("seat_recheck")
         worker.check_host_and_seat(selected)
         current,current_peer = seat(worker,config["expected_os"])
         require(current == {key:selected[key] for key in
             ("uid","machine_id_sha256","boot_id_sha256","wayland_socket","wayland_device","wayland_inode")}
             and current_peer == peer,"seat_changed")
+        set_phase("complete")
         return {"remote":selected,"closure":{"schema_version":1,"scope":"omux-native-login-ui-closure-v1",
             "rows":config["rows"],"verified_paths":181,"verified_nar_bytes":869166464,
             "destination_registration_verified":True,"destination_content_rehashed":True,
