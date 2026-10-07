@@ -4857,7 +4857,9 @@ fn nativeRequestAuditResult(allocator: std.mem.Allocator, state: *const domain.S
             .alternate = if (record.alternate) |alternate| try nativeAuditAttempt(state, reference, record, alternate) else null,
         };
         if (unresolvedAttempt(record.first)) result.pending_requests = true;
-        if (record.alternate) |alternate| if (unresolvedAttempt(alternate)) result.pending_requests = true;
+        if (record.alternate) |alternate| {
+            if (unresolvedAttempt(alternate)) result.pending_requests = true;
+        }
     }
     for (state.leases.items) |lease| if (lease.native_ref) |original| {
         if (original.same(reference)) result.pending_requests = true;

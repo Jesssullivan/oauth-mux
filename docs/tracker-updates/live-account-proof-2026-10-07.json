@@ -415,5 +415,22 @@
       "descendants_empty": true
     },
     "unchanged_limits": true
+  },
+  "c6_models_terminal": {
+    "authority": "AGENTS.md; R-N13",
+    "source_commit": "7d8c3469b551dcf8bc5ec9ff9cb4159908f7e7b9",
+    "epoch": "837b191f-f077-4c97-a9db-c2b0cd57d15c",
+    "exit": 1,
+    "workload_exit": 1,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "passed": 11,
+    "failed_to_build": [
+      "//:engine_test",
+      "//:storage_test"
+    ],
+    "passed_scope": "Source/SDK/cache/guard/live/enrollment/privacy/request-authority/format/docs models; runtime engine/storage unpassed",
+    "correction": "Add required Zig blocks around nested assignment/defer; no semantic predicate changes.",
+    "acceptance_closed": false
   }
 }

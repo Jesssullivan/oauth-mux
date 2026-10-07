@@ -35,7 +35,9 @@ const DatabaseFile = struct {
         // Never open/close an existing inode for preflight: that would release
         // another Store's process-owned POSIX locks. Existing names use nofollow
         // stat only; SQLite performs the sole actual existing-file open.
-        defer if (file >= 0) _ = std.c.close(file);
+        defer {
+            if (file >= 0) _ = std.c.close(file);
+        }
         const identity = if (file >= 0) try file_metadata.statFd(file) else try file_metadata.statAt(directory, name.ptr, std.c.AT.SYMLINK_NOFOLLOW);
         const result: DatabaseFile = .{ .allocator = allocator, .directory = directory, .identity = identity, .name = name, .path = path, .existed = existed };
         try result.recheck();
