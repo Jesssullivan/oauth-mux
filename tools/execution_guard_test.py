@@ -47,6 +47,271 @@ class FakeClock:
 
 
 class GuardTest(unittest.TestCase):
+    def test_pids_metadata_is_bounded_canonical_and_closed(self):
+        from execution_guard import parse_pids_metadata
+        self.assertEqual(parse_pids_metadata(b'512\n', 'pids.max'), 512)
+        self.assertEqual(parse_pids_metadata(b'max\n', 'pids.max'), 'max')
+        self.assertEqual(parse_pids_metadata(b'max 7\n', 'pids.events'), 7)
+        for data in (b'', b'01\n', b'-1', b'1\nprivate', b'1\n\n', b'\xff',
+                     b'18446744073709551616', b'1' * 4097):
+            with self.subTest(data=data), self.assertRaises((ValueError, UnicodeError)):
+                parse_pids_metadata(data, 'pids.current')
+        for data in (b'max 1\nmax 1\n', b'max 1\nother 2\n', b'private 1\n'):
+            with self.assertRaises(ValueError): parse_pids_metadata(data, 'pids.events')
+
+    def test_pids_sampling_uses_held_directory_and_nofollow_fixed_files(self):
+        from execution_guard import CgroupPin
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'group'; root.mkdir()
+            for name, text in (('pids.current', '3\n'), ('pids.max', '512\n'), ('pids.events', 'max 4\n')):
+                (root / name).write_text(text)
+            pin = CgroupPin(root)
+            try:
+                original_open = os.open
+                calls = []
+                def opening(path, flags, *args, **kwargs):
+                    calls.append((path, flags, kwargs.get('dir_fd')))
+                    return original_open(path, flags, *args, **kwargs)
+                with patch('execution_guard.os.open', side_effect=opening):
+                    row = pin.pids_snapshot()
+                self.assertEqual(row, {'custody': 'same', 'current': 3, 'limit': 512, 'max_events': 4})
+                self.assertEqual(calls[0][0], '.')
+                self.assertEqual(calls[0][2], pin.descriptor)
+                self.assertEqual([call[0] for call in calls[1:]], ['pids.current', 'pids.max', 'pids.events'])
+                self.assertTrue(all(flags & os.O_NOFOLLOW for _, flags, _ in calls))
+                self.assertTrue(all(flags & os.O_NONBLOCK for _, flags, _ in calls[1:]))
+                (root / 'pids.current').unlink()
+                (Path(temporary) / 'private').write_text('private-secret-value')
+                (root / 'pids.current').symlink_to(Path(temporary) / 'private')
+                self.assertIsNone(pin.pids_snapshot()['current'])
+            finally: pin.close()
+
+    def test_pids_replaced_missing_or_closed_pin_is_unknown(self):
+        from execution_guard import CgroupPin
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'group'; root.mkdir()
+            pin = CgroupPin(root)
+            try:
+                root.rename(Path(temporary) / 'original')
+                self.assertEqual(pin.pids_snapshot()['custody'], 'absent')
+                root.mkdir()
+                self.assertEqual(pin.pids_snapshot(), {'custody': 'changed', 'current': None, 'limit': None, 'max_events': None})
+            finally: pin.close()
+            self.assertEqual(pin.pids_snapshot()['custody'], 'unavailable')
+
+    def test_pids_short_read_private_tail_and_file_replacement_are_unknown(self):
+        from execution_guard import CgroupPin
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, text in (('pids.current', '1\nprivate-tail'), ('pids.max', '512'), ('pids.events', 'max 0')):
+                (root / name).write_text(text)
+            pin = CgroupPin(root)
+            original_read = os.read
+            try:
+                with patch('execution_guard.os.read', side_effect=lambda fd, bound: original_read(fd, min(bound, 1))):
+                    self.assertIsNone(pin.pids_snapshot()['current'])
+                (root / 'pids.current').write_text('1')
+                replaced = False
+                def replacing(fd, bound):
+                    nonlocal replaced
+                    data = original_read(fd, bound)
+                    if not replaced:
+                        (root / 'pids.current').rename(root / 'old-current')
+                        (root / 'pids.current').write_text('512'); replaced = True
+                    return data
+                with patch('execution_guard.os.read', side_effect=replacing):
+                    row = pin.pids_snapshot()
+                self.assertIsNone(row['current'])
+                self.assertEqual(row['limit'], 512)
+            finally: pin.close()
+
+    def test_pids_release_failure_remains_unknown_and_preserves_cancellation(self):
+        from execution_guard import CgroupPin
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, text in (('pids.current', '1'), ('pids.max', '512'), ('pids.events', 'max 0')):
+                (root / name).write_text(text)
+            pin = CgroupPin(root)
+            original_close = os.close; released = []
+            def closing(fd):
+                released.append(fd); original_close(fd)
+                raise OSError('private-close-error')
+            try:
+                with patch('execution_guard.os.close', side_effect=closing):
+                    row = pin.pids_snapshot()
+                self.assertEqual(row['custody'], 'unavailable')
+                self.assertEqual(len(released), 4)
+                self.assertNotIn(pin.descriptor, released)
+                cancellation = KeyboardInterrupt()
+                released.clear()
+                with patch('execution_guard.os.read', side_effect=cancellation), \
+                        patch('execution_guard.os.close', side_effect=closing):
+                    with self.assertRaises(KeyboardInterrupt) as raised: pin.pids_snapshot()
+                self.assertIs(raised.exception, cancellation)
+                self.assertEqual(len(released), 2)
+            finally: pin.close()
+
+    def test_pids_changed_during_read_is_not_other_group_measurement(self):
+        from execution_guard import CgroupPin
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'group'; root.mkdir()
+            for name, text in (('pids.current', '3'), ('pids.max', '512'), ('pids.events', 'max 0')):
+                (root / name).write_text(text)
+            pin = CgroupPin(root)
+            original_read = os.read
+            moved = False
+            def reading(fd, bound):
+                nonlocal moved
+                data = original_read(fd, bound)
+                if not moved:
+                    root.rename(Path(temporary) / 'original'); root.mkdir(); moved = True
+                return data
+            try:
+                with patch('execution_guard.os.read', side_effect=reading):
+                    self.assertEqual(pin.pids_snapshot()['custody'], 'changed')
+            finally: pin.close()
+
+    def test_pids_secondary_close_control_flow_preserves_original_and_all_releases(self):
+        from execution_guard import CgroupPin
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, text in (('pids.current', '1'), ('pids.max', '512'), ('pids.events', 'max 0')):
+                (root / name).write_text(text)
+            pin = CgroupPin(root)
+            original_close = os.close
+            try:
+                for primary, secondary in ((KeyboardInterrupt(), SystemExit(17)),
+                                           (SystemExit(9), KeyboardInterrupt())):
+                    released = []
+                    def closing(fd):
+                        released.append(fd); original_close(fd); raise secondary
+                    with patch('execution_guard.os.read', side_effect=primary), \
+                            patch('execution_guard.os.close', side_effect=closing):
+                        with self.assertRaises(type(primary)) as raised: pin.pids_snapshot()
+                    self.assertIs(raised.exception, primary)
+                    self.assertEqual(len(released), 2)
+                    self.assertNotIn(pin.descriptor, released)
+            finally: pin.close()
+
+    def test_pids_partial_unavailable_and_private_tail_are_explicit(self):
+        from execution_guard import CgroupPin, PidsObservation
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); (root / 'pids.current').write_text('3\nprivate-secret-value')
+            (root / 'pids.max').write_text('512')
+            pin = CgroupPin(root)
+            try:
+                observations = PidsObservation(); observations.sample(pin, 'baseline')
+                record = observations.receipt()
+                self.assertIsNone(record['baseline']['current'])
+                self.assertIsNone(record['baseline']['max_events'])
+                self.assertEqual(record['baseline']['pids_limit'], 'verified512')
+                self.assertTrue(record['observed_unknown'])
+                self.assertNotIn('private-secret-value', json.dumps(record))
+                self.assertNotIn(temporary, json.dumps(record))
+            finally: pin.close()
+
+    def test_pids_whole_workload_window_deltas_peak_and_decrease(self):
+        from execution_guard import PidsObservation
+        pin = Mock()
+        pin.pids_snapshot.side_effect = [
+            {'custody': 'same', 'current': 4, 'limit': 512, 'max_events': 900},
+            {'custody': 'same', 'current': 512, 'limit': 512, 'max_events': 901},
+            {'custody': 'same', 'current': 513, 'limit': 512, 'max_events': 899},
+            {'custody': 'same', 'current': 2, 'limit': 512, 'max_events': 903}]
+        observations = PidsObservation(); observations.sample(pin, 'baseline')
+        self.assertEqual(observations.baseline['max_event_delta'], 0)
+        observations.sample(pin, 'monitor'); observations.sample(pin, 'monitor'); observations.finish(pin)
+        record = observations.receipt()
+        self.assertEqual(record['scope'], 'whole-owned-workload-cgroup')
+        self.assertEqual(record['attribution'], 'none')
+        self.assertEqual(record['sampled_peak_current'], 513)
+        self.assertEqual(record['last_monitor']['pids_sample'], 'over')
+        self.assertEqual(record['last_monitor']['max_event_delta'], -1)
+        self.assertEqual(record['pre_cleanup']['max_event_delta'], 3)
+        self.assertTrue(record['observed_at_or_over_verified_limit'])
+        self.assertTrue(record['observed_max_event_increase'])
+        self.assertTrue(record['observed_max_event_decrease'])
+
+    def test_pids_monitor_keeps_cadence_and_samples_before_cleanup_even_on_failure(self):
+        from execution_guard import PidsObservation, monitor_workload, observe_pids_before_cleanup
+        sequence = []; clock = FakeClock()
+        pin = Mock()
+        def snapshot():
+            sequence.append('sample')
+            return {'custody': 'same', 'current': 1, 'limit': 512, 'max_events': 0}
+        pin.pids_snapshot.side_effect = snapshot
+        observations = PidsObservation(); observations.sample(pin, 'baseline')
+        replies = iter([{'ActiveState': 'active'}, {'ActiveState': 'inactive', 'Result': 'success', 'ExecMainStatus': '0'}])
+        pauses = []
+        def pause(seconds): pauses.append(seconds); clock.advance(seconds)
+        def iteration(): observations.sample(pin, 'monitor'); sequence.append('iteration')
+        result = monitor_workload(lambda: next(replies), 10, iteration, clock=clock, pause=pause)
+        self.assertIsNone(observe_pids_before_cleanup(observations, pin))
+        sequence.append('cleanup'); observations.finish(pin)
+        self.assertEqual(result, 0); self.assertEqual(pauses, [0.5])
+        self.assertEqual(sequence, ['sample', 'sample', 'iteration', 'sample', 'iteration', 'sample', 'cleanup'])
+        self.assertEqual(observations.receipt()['monitor_samples'], 2)
+        original = OSError('private-exception-value')
+        failed = PidsObservation(); failed.sample(pin, 'baseline')
+        with self.assertRaises(OSError) as raised:
+            try:
+                monitor_workload(Mock(side_effect=original), 10,
+                    lambda: failed.sample(pin, 'monitor'), clock=clock, pause=pause)
+            finally:
+                self.assertIsNone(observe_pids_before_cleanup(failed, pin, original))
+        self.assertIs(raised.exception, original)
+        self.assertEqual(failed.pre_cleanup['sample_timing'], 'pre-cleanup')
+        self.assertNotIn('private-exception-value', json.dumps(failed.receipt()))
+
+    def test_pids_cleanup_continues_and_deferred_control_flow_keeps_primary(self):
+        from execution_guard import PidsObservation, observe_pids_before_cleanup
+        for error in (ValueError('private-classifier-value'), OSError('private-read-value'), KeyboardInterrupt(), SystemExit(9)):
+            observations = PidsObservation(); observations.finish = Mock(side_effect=error)
+            cleanup = Mock(return_value={'state': 'empty'})
+            deferred = observe_pids_before_cleanup(observations, None)
+            self.assertEqual(cleanup()['state'], 'empty')
+            cleanup.assert_called_once()
+            self.assertTrue(observations.observed_unknown)
+            self.assertIsNone(observations.pre_cleanup['current'])
+            self.assertNotIn('private-', json.dumps(observations.receipt()))
+            if isinstance(error, Exception): self.assertIsNone(deferred)
+            else:
+                self.assertIs(deferred, error)
+                reported_controller_status = 125
+                if isinstance(error, SystemExit):
+                    self.assertEqual(error.code, 9)
+                    self.assertNotEqual(error.code, reported_controller_status)
+                with self.assertRaises(type(error)) as raised: raise deferred
+                self.assertIs(raised.exception, error)
+            original = OSError('private-original-error')
+            self.assertIsNone(observe_pids_before_cleanup(observations, None, original))
+            self.assertIsNone(observe_pids_before_cleanup(observations, None, prior_failure=True))
+        observations = PidsObservation()
+        with patch.object(observations, 'classify', side_effect=ValueError('private-classifier-error')):
+            self.assertIsNone(observe_pids_before_cleanup(observations, None))
+        self.assertIs(observations.pre_cleanup, observations.unknown_pre_cleanup)
+        self.assertTrue(observations.observed_unknown)
+        observations = PidsObservation()
+        with patch.object(observations, 'classify', side_effect=ValueError('private-classifier-error')):
+            observations.sample(None, 'baseline'); observations.sample(None, 'monitor')
+        self.assertEqual(observations.monitor_samples, 1)
+        self.assertIsNone(observations.baseline['current'])
+        self.assertIsNone(observations.last_monitor['current'])
+
+    def test_pids_unavailable_cannot_manufacture_delta_or_continuous_proof(self):
+        from execution_guard import PidsObservation, unknown_pids_snapshot
+        pin = Mock(); pin.pids_snapshot.side_effect = OSError('private-value')
+        observations = PidsObservation(); observations.sample(pin, 'baseline')
+        pin.pids_snapshot.side_effect = None
+        pin.pids_snapshot.return_value = {'custody': 'same', 'current': 1, 'limit': 'max', 'max_events': 80}
+        observations.sample(pin, 'monitor'); observations.finish(pin)
+        record = observations.receipt()
+        self.assertEqual(record['pre_cleanup']['pids_limit'], 'changed')
+        self.assertIsNone(record['pre_cleanup']['max_event_delta'])
+        self.assertFalse(record['observed_max_event_increase'])
+        self.assertTrue(record['observed_unknown'])
+        self.assertEqual(unknown_pids_snapshot()['custody'], 'unavailable')
+
     def test_yoga_delivery_command_binds_original_deadline_and_clears_prior_authority(self):
         from execution_guard import yoga_delivery_command
         args = ['run','//tools:yoga_controller_qualify']

@@ -120,6 +120,215 @@ class CgroupPin:
             os.close(descriptor)
 
 
+    def pids_snapshot(self):
+        """Fixed metadata only, read through the held object; failures are unknown."""
+        descriptor = None
+        primary = None
+        result = unknown_pids_snapshot()
+        try:
+            if self.descriptor is None:
+                return result
+            if _pids_identity(os.fstat(self.descriptor)) != self.identity:
+                return unknown_pids_snapshot('changed')
+            if _pids_identity(self.path.stat(follow_symlinks=False)) != self.identity:
+                return unknown_pids_snapshot('changed')
+            descriptor = os.open('.', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 dir_fd=self.descriptor)
+            if _pids_identity(os.fstat(descriptor)) != self.identity:
+                return unknown_pids_snapshot('changed')
+            result = unknown_pids_snapshot('same')
+            for name, key in (('pids.current', 'current'), ('pids.max', 'limit'),
+                              ('pids.events', 'max_events')):
+                try:
+                    data = _pids_read(descriptor, name)
+                    result[key] = parse_pids_metadata(data, name)
+                except (OSError, ValueError, UnicodeError):
+                    result[key] = None
+            if _pids_identity(os.fstat(self.descriptor)) != self.identity or \
+                    _pids_identity(os.fstat(descriptor)) != self.identity or \
+                    _pids_identity(self.path.stat(follow_symlinks=False)) != self.identity:
+                result = unknown_pids_snapshot('changed')
+        except FileNotFoundError:
+            result = unknown_pids_snapshot('absent')
+        except (OSError, ValueError):
+            result = unknown_pids_snapshot()
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except BaseException as error:
+                    if primary is None:
+                        if isinstance(error, Exception):
+                            result = unknown_pids_snapshot()
+                        else:
+                            raise
+        return result
+
+
+def _pids_identity(information):
+    if not stat.S_ISDIR(information.st_mode):
+        raise ValueError('pids-directory-kind')
+    return information.st_dev, information.st_ino
+
+
+def unknown_pids_snapshot(custody='unavailable'):
+    return {'custody': custody, 'current': None, 'limit': None, 'max_events': None}
+
+
+def _pids_read(directory, name):
+    # The call site supplies only these three fixed names, never an operator path.
+    if name not in ('pids.current', 'pids.max', 'pids.events'):
+        raise ValueError('pids-interface-name')
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                         dir_fd=directory)
+    primary = None
+    try:
+        information = os.fstat(descriptor)
+        identity = information.st_dev, information.st_ino
+        if not stat.S_ISREG(information.st_mode):
+            raise ValueError('pids-interface-kind')
+        before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or (before.st_dev, before.st_ino) != identity:
+            raise ValueError('pids-interface-changed')
+        chunks, size = [], 0
+        while size < 4097:
+            part = os.read(descriptor, 4097 - size)
+            if not part:
+                break
+            chunks.append(part)
+            size += len(part)
+        data = b''.join(chunks)
+        after = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        held = os.fstat(descriptor)
+        if len(data) > 4096 or not stat.S_ISREG(after.st_mode) or \
+                (after.st_dev, after.st_ino) != identity or \
+                (held.st_dev, held.st_ino) != identity:
+            raise ValueError('pids-interface-changed')
+        return data
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            os.close(descriptor)
+        except BaseException:
+            if primary is None:
+                raise
+
+
+def parse_pids_metadata(data, name):
+    if type(data) is not bytes or not data or len(data) > 4096:
+        raise ValueError('pids-metadata-bound')
+    text = data.decode('ascii')
+    if name == 'pids.max' and text in ('max', 'max\n'):
+        return 'max'
+    if name not in ('pids.current', 'pids.max', 'pids.events'):
+        raise ValueError('pids-interface-name')
+    pattern = ('max ' if name == 'pids.events' else '') + r'(0|[1-9][0-9]{0,19})\n?'
+    match = re.fullmatch(pattern, text)
+    if match is None:
+        raise ValueError('pids-metadata-shape')
+    value = int(match.group(1))
+    if value > 2**64 - 1:
+        raise ValueError('pids-metadata-range')
+    return value
+
+
+class PidsObservation:
+    """Bounded sampled workload metadata; never an admission or cleanup predicate."""
+    def __init__(self):
+        self.baseline = self.classify(unknown_pids_snapshot(), 'baseline')
+        self.last_monitor = self.classify(unknown_pids_snapshot(), 'monitor')
+        self.pre_cleanup = self.classify(unknown_pids_snapshot(), 'pre-cleanup')
+        self.unknown_pre_cleanup = self.pre_cleanup
+        self.unknown_samples = {'baseline': self.baseline, 'monitor': self.last_monitor, 'pre-cleanup': self.pre_cleanup}
+        self.monitor_samples = 0
+        self.sample_count_saturated = False
+        self.sampled_peak_current = None
+        self.observed_at_or_over_verified_limit = False
+        self.observed_max_event_increase = False
+        self.observed_max_event_decrease = False
+        self.observed_unknown = False
+        self.finished = False
+        self.pre_cleanup_control_flow_deferred = False
+
+    def classify(self, snapshot, timing):
+        current, limit, events = (snapshot[key] for key in ('current', 'limit', 'max_events'))
+        baseline = getattr(self, 'baseline', {}).get('max_events')
+        delta = events - baseline if type(events) is int and type(baseline) is int else None
+        relation = ('unavailable' if type(current) is not int or type(limit) is not int else
+                    'below' if current < limit else 'at' if current == limit else 'over')
+        return {**snapshot, 'sample_timing': timing,
+                'pids_limit': 'unavailable' if limit is None else 'verified512' if limit == 512 else 'changed',
+                'pids_sample': relation, 'max_event_delta': delta,
+                'pids_max_event_delta': 'unavailable' if delta is None else
+                    'unchanged' if delta == 0 else 'increased' if delta > 0 else 'decreased'}
+
+    def sample(self, pin, timing):
+        try:
+            snapshot = pin.pids_snapshot() if pin is not None else unknown_pids_snapshot()
+            row = self.classify(snapshot, timing)
+        except Exception:
+            row = self.unknown_samples[timing]
+        if timing == 'baseline':
+            self.baseline = row
+            if type(row['max_events']) is int:
+                self.baseline['max_event_delta'] = 0
+                self.baseline['pids_max_event_delta'] = 'unchanged'
+        elif timing == 'monitor':
+            self.last_monitor = row
+            if self.monitor_samples < 4096:
+                self.monitor_samples += 1
+            else:
+                self.sample_count_saturated = True
+        elif timing == 'pre-cleanup':
+            self.pre_cleanup = row
+        else:
+            raise ValueError('pids-sample-timing')
+        if type(row['current']) is int:
+            self.sampled_peak_current = max(self.sampled_peak_current or 0, row['current'])
+        self.observed_at_or_over_verified_limit |= row['limit'] == 512 and row['pids_sample'] in ('at', 'over')
+        self.observed_max_event_increase |= row['pids_max_event_delta'] == 'increased'
+        self.observed_max_event_decrease |= row['pids_max_event_delta'] == 'decreased'
+        self.observed_unknown |= row['custody'] != 'same' or any(row[key] is None for key in ('current', 'limit', 'max_events'))
+
+    def finish(self, pin):
+        if not self.finished:
+            self.finished = True
+            self.sample(pin, 'pre-cleanup')
+
+    def receipt(self):
+        return {'schema_version': 1, 'scope': 'whole-owned-workload-cgroup',
+                'window': 'admitted-before-go-through-pre-cleanup', 'attribution': 'none',
+                'counter_semantics': 'pids.events:max-as-exposed; mount-semantics-unqualified',
+                'read_semantics': 'bounded-sequential-fields; sampled-not-continuous',
+                'baseline': dict(self.baseline), 'last_monitor': dict(self.last_monitor),
+                'pre_cleanup': dict(self.pre_cleanup), 'monitor_samples': self.monitor_samples,
+                'sample_count_saturated': self.sample_count_saturated,
+                'sampled_peak_current': self.sampled_peak_current,
+                'observed_at_or_over_verified_limit': self.observed_at_or_over_verified_limit,
+                'observed_max_event_increase': self.observed_max_event_increase,
+                'observed_max_event_decrease': self.observed_max_event_decrease,
+                'observed_unknown': self.observed_unknown,
+                'pre_cleanup_control_flow_deferred': self.pre_cleanup_control_flow_deferred}
+
+
+def observe_pids_before_cleanup(observation, pin, primary=None, *, prior_failure=False):
+    """Sampling never skips cleanup; only new control flow is deferred."""
+    try:
+        observation.finish(pin)
+    except BaseException as error:
+        # Preallocated unknown record: neither parsing nor allocation recurs here.
+        observation.pre_cleanup = observation.unknown_pre_cleanup
+        observation.observed_unknown = True
+        if not isinstance(error, Exception) and primary is None and not prior_failure:
+            observation.pre_cleanup_control_flow_deferred = True
+            return error
+    return None
+
 def cleanup_owned(*, deadline, readback, authorize, stop, observe,
                   clock=time.monotonic, pause=time.sleep):
     """One absolute budget, read-only retries and at most one verified stop."""
@@ -1147,6 +1356,8 @@ def _main(argv, admission_resources):
         result = 125
         cleanup = False
         controller_failure = None
+        pids_observation = PidsObservation()
+        pids_cancellation = None
         controller_diagnostics = []
         cleanup_summary = {'state': 'not-started', 'stop': 'not-requested',
                            'ownership': 'unproved', 'readback_attempts': 0}
@@ -1399,11 +1610,13 @@ def _main(argv, admission_resources):
                 system_identity(actual, int(actual['MainPID']))
                 yoga.verify_masks(actual, Path(pwd.getpwuid(os.getuid()).pw_dir), expected_binds)
                 source_snapshot = yoga.refresh(yoga_admission, Path(pwd.getpwuid(os.getuid()).pw_dir), graph_digest(Path.cwd())[0])
+                pids_observation.sample(cgroup_pin, 'baseline')
                 yoga_launch.admit_worker(yoga_support, ready, properties=actual, source_snapshot=source_snapshot,
                     effective_readonly_binds=actual.get('BindReadOnlyPaths', '').split(),
                     effective_writable_binds=actual.get('BindPaths', '').split())
             epoch_start_ns = time.time_ns()
             if not yoga:
+                pids_observation.sample(cgroup_pin, 'baseline')
                 (run / 'go').touch(mode=0o600, exist_ok=False)
             deadline = ((args.yoga_deadline_monotonic_ns - yoga.CLEANUP_RESERVE_NS) / 10**9
                         if yoga else time.monotonic() + 1200)
@@ -1412,6 +1625,7 @@ def _main(argv, admission_resources):
             elif owner_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
+                pids_observation.sample(cgroup_pin, 'monitor')
                 check_free_space(args.state_dir)
                 if yoga:
                     for progress in yoga_launch.read_progress(yoga_support):
@@ -1435,6 +1649,8 @@ def _main(argv, admission_resources):
                     cleanup_deadline = min(cleanup_deadline, delivery_entry_deadline_ns / 10**9)
                 if yoga:
                     cleanup_deadline = min(cleanup_deadline, args.yoga_deadline_monotonic_ns / 10**9)
+                pids_cancellation = observe_pids_before_cleanup(pids_observation, cgroup_pin,
+                    sys.exc_info()[1], prior_failure=controller_failure is not None)
                 def authorize(owned):
                     nonlocal cgroup_pin, cgroup, original_pid, original_ticks
                     selected_worker = str(Path(yoga_launch.__file__).resolve()) if yoga else str(Path(__file__).resolve())
@@ -1560,6 +1776,8 @@ def _main(argv, admission_resources):
                     except OSError:
                         owner_input_verified_after = False
             final_status = result if cleanup and evidence_ok and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
+            if pids_cancellation is not None:
+                final_status = 125
             receipt = {'id': identifier, 'unit': unit, 'exit': final_status,
                        'workload_exit': result, 'epoch_start_ns': epoch_start_ns,
                        'test_evidence': evidence,
@@ -1582,6 +1800,7 @@ def _main(argv, admission_resources):
                            'verified_after_cleanup': owner_input_verified_after,
                            'original_deadline_monotonic_ns': delivery_entry_deadline_ns,
                            'runtime_seconds': delivery_runtime_seconds} if owner_input else None,
+                       'pids_observation': pids_observation.receipt(),
                        'disk_monitor': {'free_floor_bytes': FREE_FLOOR, 'filesystem': str(args.state_dir),
                                         'enforcement': 'sampled free space; not a hard disk quota'},
                        'sdk': {'lane': args.sdk_lane, 'plan': sdk_plan,
@@ -1655,6 +1874,8 @@ def _main(argv, admission_resources):
             print(json.dumps({'id': identifier, 'exit': final_status, 'workload_exit': result,
                               'descendants_empty': cleanup, 'test_evidence': evidence['state'],
                               'controller_failure': controller_failure, 'cleanup': cleanup_summary}))
+            if pids_cancellation is not None:
+                raise pids_cancellation
         return final_status
 
 

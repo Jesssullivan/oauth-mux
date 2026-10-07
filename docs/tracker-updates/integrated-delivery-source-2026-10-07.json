@@ -1,0 +1,356 @@
+{
+  "schema_version": 1,
+  "kind": "factual_signed_source_delivery_checkpoint",
+  "authority": "User-authorized signed source delivery/admin workflow; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N12/R-N13",
+  "recorded_at": "2026-10-07T01:16:12Z",
+  "source": {
+    "head": "f878ea367778ef3846cc2985b252ceb8f32cbc2a",
+    "base": "134e4603b16c539316c1ea72194cae523cedab9f",
+    "tree": "2d013554bad5257ff31f2a051af4522cea14b08d",
+    "branch": "codex/omux-native-reset-review-20261006",
+    "worktree": "/srv/fast-local/jess/git/oauth-mux-delivery-20261006",
+    "signature": "GitG; verify-commit0",
+    "clean_checkout": true,
+    "tracked": 967,
+    "upserts": 704,
+    "deletes": 315,
+    "preserved": 263,
+    "total_source_bytes": 27553059,
+    "manifest": "docs/agent-notes/2026-10-07-source-delivery-final-manifest.UNAPPLIED.patch",
+    "manifest_git_blob": "493c9a78a6cd3d96bc93e0b0b0895b97f8d88ef1",
+    "tuples": "docs/agent-notes/2026-10-07-source-delivery-final-tuples.UNAPPLIED.patch",
+    "tuples_git_blob": "4533561d0ddce8ccea8e5e3fdb09708c5da7ac1c",
+    "original_index_current": "b080364090fc804487e6a092d884cfa6a463aa99",
+    "original_index_semantic_before": "unknown; historical cacheTREE refresh preserved as a fact",
+    "release_history_preserved": true
+  },
+  "pr": {
+    "number": 527,
+    "url": "https://github.com/Jesssullivan/oauth-mux/pull/527",
+    "posted": true,
+    "draft": false,
+    "head": "f878ea367778ef3846cc2985b252ceb8f32cbc2a",
+    "base": "134e4603b16c539316c1ea72194cae523cedab9f",
+    "body_readback_verified": true,
+    "merged": true,
+    "state": "closed",
+    "merge_commit": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+    "merged_at": "2026-10-07T01:15:31Z"
+  },
+  "validation": {
+    "ordinary17": {
+      "epoch": "23772bec-f237-46b4-8226-97461905eaeb",
+      "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/23772bec-f237-46b4-8226-97461905eaeb/receipt.json",
+      "receipt_sha256": "734843472057956c6149f275d63afd297ae325ca0b96c415f88d0f337f5a35b1",
+      "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "targets_passed": 17,
+      "targets_total": 17,
+      "test_evidence_sha256": "b3249e827ad3d6db89b76534a84adb2eb0e031240ffd90fe54d601902e537cc8",
+      "scope": "Exact clean signed-worktree source/model predicates only; no installed/native/browser/HM/live claim"
+    },
+    "actor3": {
+      "epoch": "fc6a1cb0-4101-4dfe-bc5d-fd22bcacab9a",
+      "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/fc6a1cb0-4101-4dfe-bc5d-fd22bcacab9a/receipt.json",
+      "receipt_sha256": "9feacf58f5861a912636b33d4188228b6b8d3ef67cced9704c585eba974a3b3c",
+      "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "targets_passed": 3,
+      "targets_total": 3,
+      "test_evidence_sha256": "dff029dd5871daed2b2e99b8ed7eecaf5c22c0da83c637f3badf8f01619122c5",
+      "scope": "Exact clean signed-worktree actor/model predicates only; no installed continuity claim"
+    },
+    "retained7": {
+      "epoch": "8e1eed54-a03f-46c5-b1f9-4055336017a5",
+      "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/8e1eed54-a03f-46c5-b1f9-4055336017a5/receipt.json",
+      "receipt_sha256": "6fe4b01266eeee9c975eb8243c6595bbf1b8f735ff1b33b6ad08c6449f74bd44",
+      "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "targets_passed": 7,
+      "targets_total": 7,
+      "test_evidence_sha256": "d3059f3d52c0dbcd84c9dc228cf750cdaa093dc478f969f62e951c7d6de43842",
+      "sealed_archive_bytes": 119923125,
+      "sealed_archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+      "retained_input_verified_after_cleanup": true,
+      "scope": "Retained proof input byte/custody identity only; no fresh compilation, source lineage, installed executable or release authority"
+    },
+    "source_archive": {
+      "epoch": "cc24e63a-0445-4b26-bc0a-469cdf316e7f",
+      "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/cc24e63a-0445-4b26-bc0a-469cdf316e7f/receipt.json",
+      "receipt_sha256": "c0b85aedbf9f8c7b32f2820575961a57f314a6489db591befdd99c4355eee457",
+      "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "target": "//:public_source_archive",
+      "verb": "build",
+      "scope": "Declared public source archive build only; no release or independently attested embedded provenance"
+    },
+    "actor_case_count_scope": "246 Zig cases in the measured actor target's import closure, including four direct actor tests",
+    "snapshot_case_count": 247,
+    "limits": {
+      "memory_bytes": 4294967296,
+      "swap_bytes": 0,
+      "tasks": 512,
+      "cpu": 2,
+      "aggregate_seconds": 1200
+    },
+    "source_fields": "Guard source commit/dirty are caller assertions; separate Git signature/full tree/clean readbacks establish source binding",
+    "artifact_provenance": "Embedded backend/archive fields remain null/dirty; not independent release attestation"
+  },
+  "repository_transition": {
+    "state": "completed_verified",
+    "before": {
+      "url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection",
+      "required_status_checks": {
+        "url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection/required_status_checks",
+        "strict": true,
+        "contexts": [
+          "test",
+          "nix",
+          "cross-compile (x86_64-linux-musl)",
+          "cross-compile (aarch64-linux-musl)",
+          "cross-compile (x86_64-macos)",
+          "cross-compile (aarch64-macos)",
+          "cross-compile (x86_64-windows)",
+          "cross-compile (aarch64-windows)"
+        ],
+        "contexts_url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection/required_status_checks/contexts",
+        "checks": [
+          {
+            "context": "test",
+            "app_id": 15368
+          },
+          {
+            "context": "nix",
+            "app_id": 15368
+          },
+          {
+            "context": "cross-compile (x86_64-linux-musl)",
+            "app_id": 15368
+          },
+          {
+            "context": "cross-compile (aarch64-linux-musl)",
+            "app_id": 15368
+          },
+          {
+            "context": "cross-compile (x86_64-macos)",
+            "app_id": 15368
+          },
+          {
+            "context": "cross-compile (aarch64-macos)",
+            "app_id": 15368
+          },
+          {
+            "context": "cross-compile (x86_64-windows)",
+            "app_id": 15368
+          },
+          {
+            "context": "cross-compile (aarch64-windows)",
+            "app_id": 15368
+          }
+        ]
+      },
+      "required_signatures": {
+        "url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection/required_signatures",
+        "enabled": false
+      },
+      "enforce_admins": {
+        "url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection/enforce_admins",
+        "enabled": true
+      },
+      "required_linear_history": {
+        "enabled": true
+      },
+      "allow_force_pushes": {
+        "enabled": false
+      },
+      "allow_deletions": {
+        "enabled": false
+      },
+      "block_creations": {
+        "enabled": false
+      },
+      "required_conversation_resolution": {
+        "enabled": true
+      },
+      "lock_branch": {
+        "enabled": false
+      },
+      "allow_fork_syncing": {
+        "enabled": false
+      }
+    },
+    "rulesets": [],
+    "reviews": [],
+    "unresolved_review_threads": 0,
+    "repository": {
+      "allow_squash_merge": true,
+      "delete_branch_on_merge": false,
+      "admin": true
+    },
+    "planned": "Delete only required_status_checks; verify all other settings unchanged; immediate base/head readback; expected-head server squash; verify sole reviewed base parent, exact reviewed tree, server signature and retained signed branch",
+    "protection_modified": true,
+    "merge_performed": true,
+    "pre_action_at": "2026-10-07T01:15:00Z",
+    "after": {
+      "url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection",
+      "required_signatures": {
+        "url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection/required_signatures",
+        "enabled": false
+      },
+      "enforce_admins": {
+        "url": "https://api.github.com/repos/Jesssullivan/oauth-mux/branches/main/protection/enforce_admins",
+        "enabled": true
+      },
+      "required_linear_history": {
+        "enabled": true
+      },
+      "allow_force_pushes": {
+        "enabled": false
+      },
+      "allow_deletions": {
+        "enabled": false
+      },
+      "block_creations": {
+        "enabled": false
+      },
+      "required_conversation_resolution": {
+        "enabled": true
+      },
+      "lock_branch": {
+        "enabled": false
+      },
+      "allow_fork_syncing": {
+        "enabled": false
+      }
+    },
+    "only_required_status_checks_changed": true,
+    "merge_method": "squash",
+    "expected_head": "f878ea367778ef3846cc2985b252ceb8f32cbc2a",
+    "merge_commit": {
+      "parents": [
+        "134e4603b16c539316c1ea72194cae523cedab9f"
+      ],
+      "sha": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+      "tree": "2d013554bad5257ff31f2a051af4522cea14b08d",
+      "verification": {
+        "reason": "valid",
+        "verified": true
+      }
+    },
+    "source_branch_retained": true,
+    "all_readback_predicates_verified": true,
+    "product_release_created": false
+  },
+  "product": {
+    "experimental": true,
+    "unshipped": true,
+    "parent_gates_passed": 5,
+    "parent_gates_open": 6,
+    "new_parent_gate_closed": false,
+    "native_resume": "44d7 failed detach RPC before cold resume; no accepted history/live handoff/unmodified support",
+    "yoga": "d47f qualification and f0c7 inspection passed; c7f6 destination registration/content refused; no copy or human toolbar proof",
+    "home_manager": "9337 deadline expired; no admitted compact pair; genuine evaluation unrun",
+    "provider_calls": false,
+    "fleet_activation": false,
+    "release_publication": false,
+    "store_or_site_publication": false,
+    "darwin": "PZM GF held",
+    "achieved_slo_or_sla": false
+  },
+  "tracker": {
+    "issues": [
+      "TIN-5338",
+      "TIN-2063",
+      "TIN-2057"
+    ],
+    "prior_receipt": "docs/tracker-updates/integrated-delivery-linear0047-2026-10-07.json",
+    "source_delivery_comments_pending": false,
+    "pre_action": {
+      "authority": "User-authorized signed source delivery/admin workflow; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N12/R-N13",
+      "issue_states": "All three freshly read In Progress; no state/scope mutation",
+      "comments": [
+        {
+          "issue": "TIN-5338",
+          "body": "Provider-free five-hour checkpoint and source delivery — 2026-10-07.\n\nPR [#527](https://github.com/Jesssullivan/oauth-mux/pull/527) is merged. Owner-signed source head `f878ea367778ef3846cc2985b252ceb8f32cbc2a` was delivered as server squash `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`: sole parent `134e4603b16c539316c1ea72194cae523cedab9f`, exact reviewed tree `2d013554bad5257ff31f2a051af4522cea14b08d`, valid server signature, signed source branch retained. The 967-file manifest preserves release evidence; the retained native archive stays outside Git.\n\nClean signed-worktree local gates passed serially: source/model17 (23772bec), actor/docs/source3 (fc6a1cb0; 246 Zig cases across the actor target's import closure), retained-input7 (8e1eed54; sealed input reverified after cleanup), and declared public source archive build (cc24e63a). All terminal receipts report 0/0, empty owned descendants and no controller failure/rejection. Graph SHA256 `44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199`. Limits stayed 4 GiB, swap0, Tasks512, CPU2 and 1200s. Removed only obsolete required CI status checks; all remaining branch protections read back unchanged.\n\nThese are source/model/packaging predicates. Embedded archive/backend provenance remains null/dirty and source fields remain caller assertions, separately qualified by signed Git-tree verification. Experimental and unshipped: no provider calls, fleet activation, product release/store/site publication, Darwin proof or achieved SLA. Five historical parent acceptance passes/six open remain; elapsed time closes no gate. Issue state and scope are unchanged.\n\nDurable post-source receipt: `docs/tracker-updates/integrated-delivery-source-2026-10-07.json` in the original workspace; it is later evidence, not a file claimed to exist in f878ea. Goals: `.goal/omux-native-browser-2026-10-06.json` and its original incomplete 15-hour parent.\n\nNative44d7 failed the selected detach RPC before acknowledgement/status/cold resume. Observer158b failed launch-fork with EAGAIN before CLI execution; resource cause and underlying CLI cause remain unknown. Next lead: observation-only detach launch/input/drain/wait/reply stages plus separately scoped held-cgroup counters. Do not repeat a mutation when acknowledgement is absent. Fresh candidate compilation, ordinary installed resume, accepted-history/tool preservation, unmodified support and live same-process handoff remain unproved.",
+          "posted": false
+        },
+        {
+          "issue": "TIN-2063",
+          "body": "Provider-free five-hour checkpoint and source delivery — 2026-10-07.\n\nPR [#527](https://github.com/Jesssullivan/oauth-mux/pull/527) is merged. Owner-signed source head `f878ea367778ef3846cc2985b252ceb8f32cbc2a` was delivered as server squash `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`: sole parent `134e4603b16c539316c1ea72194cae523cedab9f`, exact reviewed tree `2d013554bad5257ff31f2a051af4522cea14b08d`, valid server signature, signed source branch retained. The 967-file manifest preserves release evidence; the retained native archive stays outside Git.\n\nClean signed-worktree local gates passed serially: source/model17 (23772bec), actor/docs/source3 (fc6a1cb0; 246 Zig cases across the actor target's import closure), retained-input7 (8e1eed54; sealed input reverified after cleanup), and declared public source archive build (cc24e63a). All terminal receipts report 0/0, empty owned descendants and no controller failure/rejection. Graph SHA256 `44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199`. Limits stayed 4 GiB, swap0, Tasks512, CPU2 and 1200s. Removed only obsolete required CI status checks; all remaining branch protections read back unchanged.\n\nThese are source/model/packaging predicates. Embedded archive/backend provenance remains null/dirty and source fields remain caller assertions, separately qualified by signed Git-tree verification. Experimental and unshipped: no provider calls, fleet activation, product release/store/site publication, Darwin proof or achieved SLA. Five historical parent acceptance passes/six open remain; elapsed time closes no gate. Issue state and scope are unchanged.\n\nDurable post-source receipt: `docs/tracker-updates/integrated-delivery-source-2026-10-07.json` in the original workspace; it is later evidence, not a file claimed to exist in f878ea. Goals: `.goal/omux-native-browser-2026-10-06.json` and its original incomplete 15-hour parent.\n\nYoga d47f fixed-system-Nix qualification and f0c7 inspection passed; c7f6 refused destination-registration-content metadata. No individual missing-versus-mismatch/corruption inference, copy, wrapper, live Wayland or human toolbar proof. HM9337 reached its deadline without an admitted compact source pair; genuine offline evaluation remains unrun and private residue is retained. Next leads: closed first-failed Yoga metadata predicate and a separately qualified compact HM producer, preserving all content/custody gates and no fleet activation.",
+          "posted": false
+        },
+        {
+          "issue": "TIN-2057",
+          "body": "Provider-free five-hour checkpoint and source delivery — 2026-10-07.\n\nPR [#527](https://github.com/Jesssullivan/oauth-mux/pull/527) is merged. Owner-signed source head `f878ea367778ef3846cc2985b252ceb8f32cbc2a` was delivered as server squash `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`: sole parent `134e4603b16c539316c1ea72194cae523cedab9f`, exact reviewed tree `2d013554bad5257ff31f2a051af4522cea14b08d`, valid server signature, signed source branch retained. The 967-file manifest preserves release evidence; the retained native archive stays outside Git.\n\nClean signed-worktree local gates passed serially: source/model17 (23772bec), actor/docs/source3 (fc6a1cb0; 246 Zig cases across the actor target's import closure), retained-input7 (8e1eed54; sealed input reverified after cleanup), and declared public source archive build (cc24e63a). All terminal receipts report 0/0, empty owned descendants and no controller failure/rejection. Graph SHA256 `44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199`. Limits stayed 4 GiB, swap0, Tasks512, CPU2 and 1200s. Removed only obsolete required CI status checks; all remaining branch protections read back unchanged.\n\nThese are source/model/packaging predicates. Embedded archive/backend provenance remains null/dirty and source fields remain caller assertions, separately qualified by signed Git-tree verification. Experimental and unshipped: no provider calls, fleet activation, product release/store/site publication, Darwin proof or achieved SLA. Five historical parent acceptance passes/six open remain; elapsed time closes no gate. Issue state and scope are unchanged.\n\nDurable post-source receipt: `docs/tracker-updates/integrated-delivery-source-2026-10-07.json` in the original workspace; it is later evidence, not a file claimed to exist in f878ea. Goals: `.goal/omux-native-browser-2026-10-06.json` and its original incomplete 15-hour parent.\n\nOrdinary native resume and human installed-browser consent remain open. Native44d7 failed detach before cold resume; Yoga qualification/inspection passed but destination verification refused; HM9337 timed out without an admitted pair. Next focused work is bounded native detach diagnostics and exact Yoga registration predicate diagnostics before any further installed proof. Omux continues to own each application's auth integration; there is no vendor Omux hook to await.",
+          "posted": false
+        }
+      ]
+    },
+    "readbacks": [
+      {
+        "issue": "TIN-5338",
+        "comment_id": "58db4164-62eb-4ddb-bd5a-8f6dc4b72434",
+        "body_exact": true,
+        "state_change": false
+      },
+      {
+        "issue": "TIN-2063",
+        "comment_id": "fad3f997-9d6c-4f3b-9e80-8213e218d00c",
+        "body_exact": true,
+        "state_change": false
+      },
+      {
+        "issue": "TIN-2057",
+        "comment_id": "8d493ca7-0efd-4f4b-a2ec-1faecd36c2c0",
+        "body_exact": true,
+        "state_change": false
+      }
+    ],
+    "pre_action_snapshot_semantics": "posted=false above records intent before mutation; readbacks below are authoritative results"
+  },
+  "chronology": "This receipt is post-source-head evidence in the original workspace; it is not contained in source head f878ea. Pre-action history remains in docs/agent-notes/2026-10-07-signed-source-delivery.UNAPPLIED.json. No current field here represents an earlier snapshot.",
+  "post_head_document_check": {
+    "epoch": "40577d9d-8ece-40da-801c-da45c996afd2",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "targets_passed": 2,
+    "targets_total": 3,
+    "failure": "docs_check rejected the new post-head source-delivery note as unclassified",
+    "correction": "Add exact note to current authority index; affected docs/source rerun pending",
+    "scope": "Post-H documentation only; all four deliveredH gates remain their prior results"
+  },
+  "post_head_document_correction": {
+    "epoch": "4a51e1cf-5fe4-4c21-9c80-82ea6f96a35c",
+    "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/4a51e1cf-5fe4-4c21-9c80-82ea6f96a35c/receipt.json",
+    "receipt_sha256": "454ddd0dcea9dd1293ecb294b9988924c8b8aa50e713a9170f226d7e0a5b5af9",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+    "targets_passed": 2,
+    "targets_total": 2,
+    "test_evidence_sha256": "9e2e588b9af0e2014001deeebf0e663967e54987e236d8afd127f19f1aa4efd1",
+    "scope": "Original post-H workspace documentation/source capture; prior format passed in40577; not a fresh installed/native/clean-head gate"
+  }
+}
