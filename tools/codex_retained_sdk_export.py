@@ -203,6 +203,19 @@ def read_file(fd, name, budget, output=None, capture=False, private_import=None)
     finally:
         os.close(inp)
 
+LINK_IDENTITY_FIELDS = ('st_dev','st_ino','st_mode','st_uid','st_gid','st_size',
+                        'st_mtime_ns','st_ctime_ns','st_nlink')
+
+def stable_link_target(fd,name,before):
+    target = os.readlink(name,dir_fd=fd)
+    need(target and '\n' not in target and '\x00' not in target,'unsafe link spelling')
+    need(os.readlink(name,dir_fd=fd)==target,'link target mutated')
+    after = os.stat(name,dir_fd=fd,follow_symlinks=False)
+    need(stat.S_ISLNK(before.st_mode) and stat.S_ISLNK(after.st_mode) and
+         tuple(getattr(before,key) for key in LINK_IDENTITY_FIELDS)==
+         tuple(getattr(after,key) for key in LINK_IDENTITY_FIELDS),'link mutated')
+    return target
+
 def inventory(path, budget, output=None, sealed=False):
     lease = public_import(path,sealed)
     root = os.dup(lease.chain[-1][1]) if lease else open_dir(path)
@@ -253,9 +266,7 @@ def inventory(path, budget, output=None, sealed=False):
                     sha,size,_ = read_file(fd,name,budget,private_import=lease)
                 rows.append({'path':rel,'kind':'file','sha256':sha,'size':size,'mode':mode})
             elif stat.S_ISLNK(info.st_mode):
-                target = os.readlink(name,dir_fd=fd)
-                need(target and '\n' not in target and '\x00' not in target, 'unsafe link spelling')
-                need(os.stat(name,dir_fd=fd,follow_symlinks=False) == info,'link mutated')
+                target = stable_link_target(fd,name,info)
                 if output:
                     os.symlink(target,output/rel)
                 rows.append({'path':rel,'kind':'symlink','target':target})

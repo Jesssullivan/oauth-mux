@@ -9,6 +9,28 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def test_readlink_access_time_change_preserves_public_link_identity(self):
+        from types import SimpleNamespace
+        link = self.root/'public-link'; os.symlink('missing-public-target',link)
+        before = os.stat(link,follow_symlinks=False)
+        values = {key:getattr(before,key) for key in sdk.LINK_IDENTITY_FIELDS}
+        values['st_atime_ns'] = before.st_atime_ns+1000000000
+        parent = sdk.open_dir(self.root)
+        try:
+            with patch.object(sdk.os,'stat',return_value=SimpleNamespace(**values)):
+                self.assertEqual(sdk.stable_link_target(parent,'public-link',before),'missing-public-target')
+            for key in sdk.LINK_IDENTITY_FIELDS:
+                changed = dict(values); changed[key] += 1
+                with self.subTest(key=key), patch.object(sdk.os,'stat',return_value=SimpleNamespace(**changed)):
+                    with self.assertRaisesRegex(ValueError,'link mutated'):
+                        sdk.stable_link_target(parent,'public-link',before)
+            with patch.object(sdk.os,'readlink',side_effect=['first-public-target','changed-public-target']):
+                with self.assertRaisesRegex(ValueError,'target mutated'):
+                    sdk.stable_link_target(parent,'public-link',before)
+        finally:
+            os.close(parent)
+        self.assertEqual(os.readlink(link),'missing-public-target')
+
     def test_export_pass_counts_accumulate_without_resetting_shared_bytes(self):
         budget = self.budget(); budget.files = 3; budget.check(7)
         budget.authorize_export_passes(); budget.export_pass('copy'); budget.files += 4
