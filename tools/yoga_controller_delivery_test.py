@@ -263,6 +263,35 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 profile.selected(arguments)
 
+    def test_registry_reports_only_first_fixed_metadata_predicate_and_keeps_content_distinct(self):
+        row = {'path':'/nix/store/'+'a'*32+'-input','narSize':1,
+               'narHash':'sha256:'+'0'*64,'references':['/nix/store/'+'b'*32+'-dependency']}
+        valid = dict(row)
+        delivery.registry({row['path']:valid},[row])
+        cases = [(None,'row-object'),
+            (dict(valid,narSize=True),'nar-size-type'),
+            (dict(valid,narSize=2),'nar-size-value'),
+            (dict(valid,narHash='sha256:'+'1'*64),'nar-hash-value'),
+            (dict(valid,references={}), 'references-list'),
+            (dict(valid,references=[{}]),'reference-path'),
+            (dict(valid,references=valid['references']*2),'reference-unique'),
+            (dict(valid,references=[]),'reference-topology')]
+        for actual,name in cases:
+            with self.assertRaises(delivery.GateError) as captured:
+                delivery.registry({row['path']:actual},[row])
+            self.assertEqual(str(captured.exception),'destination-registration-content')
+            self.assertEqual(captured.exception.hints,
+                {'schemaVersion':1,'stage':'destination-registry','predicate':name})
+            self.assertNotIn('/nix/store/',json.dumps(captured.exception.hints))
+        with self.assertRaisesRegex(ValueError,'nar-hash'):
+            delivery.registry({row['path']:dict(valid,narHash='private-invalid-hash')},[row])
+        # A metadata refusal must not enter the independent per-path byte rehash.
+        backend = delivery.Backend.__new__(delivery.Backend)
+        with patch.object(backend,'nix_call',return_value=json.dumps({row['path']:None}).encode()) as called:
+            with self.assertRaises(delivery.GateError):
+                backend.verify([row])
+        self.assertEqual(called.call_count,1)
+
     def test_registry_is_not_content_proof(self):
         row = {'path': '/nix/store/' + 'a'*32 + '-input', 'narSize': 1,
                'narHash': 'sha256:' + '0'*64, 'references': []}

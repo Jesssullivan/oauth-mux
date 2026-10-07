@@ -158,15 +158,20 @@ def registry(actual, rows):
             'destination-registration-set')
     for row in rows:
         item = actual[row['path']]
-        require(type(item) is dict and type(item.get('narSize')) is int
-                and item['narSize'] == row['narSize']
-                and expected_hash(item.get('narHash')) == expected_hash(row['narHash'])
-                and type(item.get('references')) is list
-                and all(type(reference) is str and qualification.STORE_ROOT.fullmatch(reference)
-                        for reference in item['references'])
-                and len(item['references']) == len(set(item['references']))
-                and sorted(item['references']) == sorted(row['references']),
-                'destination-registration-content')
+        def predicate(value, name):
+            if not value:
+                raise GateError('destination-registration-content', hints={
+                    'schemaVersion': 1, 'stage': 'destination-registry', 'predicate': name})
+        predicate(type(item) is dict, 'row-object')
+        predicate(type(item.get('narSize')) is int, 'nar-size-type')
+        predicate(item['narSize'] == row['narSize'], 'nar-size-value')
+        # Malformed hashes preserve the existing finite generic input refusal.
+        predicate(expected_hash(item.get('narHash')) == expected_hash(row['narHash']), 'nar-hash-value')
+        predicate(type(item.get('references')) is list, 'references-list')
+        predicate(all(type(reference) is str and qualification.STORE_ROOT.fullmatch(reference)
+                      for reference in item['references']), 'reference-path')
+        predicate(len(item['references']) == len(set(item['references'])), 'reference-unique')
+        predicate(sorted(item['references']) == sorted(row['references']), 'reference-topology')
 
 PROBE = r'''set -eu
 test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64

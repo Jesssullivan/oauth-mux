@@ -237,15 +237,32 @@ class JsonProcess:
             self.diagnostics.join()
 
 
-def run_cli(command: list[str], environment: dict, params: dict) -> dict:
+def run_cli(command: list[str], environment: dict, params: dict, *, failure_observer=None) -> dict:
     """Drain both pipes within a byte/deadline bound, never print RPC contents."""
-    process = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # The optional callback sees only finite failure labels, never command or
+    # captured bytes. Disabled callers retain the original helper semantics.
+    def observe(stage, error, code, output, diagnostics):
+        if failure_observer is not None:
+            try:
+                import native_run_cli_failure
+                native_run_cli_failure.notify(failure_observer, stage, error, code, output, diagnostics)
+            except BaseException:
+                # Missing diagnostic cannot replace the original failure.
+                return
+
+    try:
+        process = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except BaseException as error:
+        observe("launch", error, None, b"", b"")
+        raise
     selector = selectors.DefaultSelector()
     output, diagnostics = bytearray(), bytearray()
+    stage = "input"
     try:
         process.stdin.write(json.dumps(params, separators=(",", ":")).encode())
         process.stdin.close()
+        stage = "capture"
         for stream, destination in ((process.stdout, output), (process.stderr, diagnostics)):
             os.set_blocking(stream.fileno(), False)
             selector.register(stream, selectors.EVENT_READ, destination)
@@ -259,12 +276,19 @@ def run_cli(command: list[str], environment: dict, params: dict) -> dict:
                 key.data.extend(chunk)
                 require(len(key.data) <= FRAME_LIMIT, "installed CLI output exceeded its bound")
         require(not selector.get_map(), "installed CLI deadline exceeded")
+        stage = "wait"
         process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        stage = "process"
         require(process.returncode == 0 and not diagnostics, "installed CLI predicate failed")
+        stage = "json"
         value = json.loads(output)
+        stage = "result"
         require(isinstance(value, dict) and "error" not in value
                 and isinstance(value.get("result"), dict), "installed CLI response rejected")
         return value["result"]
+    except BaseException as error:
+        observe(stage, error, process.returncode, output, diagnostics)
+        raise
     finally:
         stop(process)
         selector.close()

@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "kind": "five_hour_continuation_checkpoint",
+  "latest_source_delivery_note": "docs/agent-notes/2026-10-07-sess-omux-source-delivery.md",
   "authority": "User-ratified October6 Codex resume/installed browser proof; provider-free only; AGENTS.md R-HOOK-CONVERGENCE-20261004/R-N13",
   "parent_goal": ".goal/omux-integrated-delivery-2026-10-05.json",
   "plan": "docs/plans/omux-native-browser-continuation-2026-10-06.md",
@@ -16,7 +17,7 @@
   "latest_hm_model_receipt": "docs/tracker-updates/integrated-delivery-hma8ab-2026-10-06.json",
   "latest_surrounding_regression_receipt": "docs/tracker-updates/integrated-delivery-actor0407-2026-10-06.json",
   "latest_restart_regression_receipt": "docs/tracker-updates/integrated-delivery-restartdc4f-2026-10-07.json",
-  "new_source_pending_verification": "Yoga17PASS35d5_observer13PASSec8b;fixed_Nix_QUAL_INSPECTpass_VERIFYrefuses_metadata;ordinary_Tokio2_target44d7_terminal3_3_empty_detach_RPCrefused;exact_signed_source_delivery_gates_pending",
+  "new_source_pending_verification": "Signed sourceH f878ea delivered as exact-tree server squash a4bf48; all four delivery gates passed; subsequent post-head checkpoint metadata and diagnostic proposals separately unverified",
   "latest_yoga_fixture_receipt": "docs/tracker-updates/integrated-delivery-model35d5-2026-10-07.json",
   "native_test_profile": "Retained009 bootstrap_and_cold_resume_TOKIO_WORKER_THREADS2;async_workers_only;total_threads_and_prior_EAGAIN_cause_unmeasured",
   "latest_refined_observer_model_receipt": "docs/tracker-updates/integrated-delivery-modelec8b-2026-10-07.json",
@@ -34,7 +35,7 @@
   "latest_installed_native_diagnostic_result": "158b_terminal3_3_empty_held009_aftertrue_docs_sourcePASS;selected_detach_observer_launch_fork_EAGAIN_before_CLIexec;resource_and_original_CLI_causes_unknown_cold_resume_unreached",
   "scope": "Provider-free partial candidate resume and installed Chromium consent; parent objective/eleven gates preserved",
   "executor": "root",
-  "latest_factual_linear_receipt": "docs/tracker-updates/integrated-delivery-linear0047-2026-10-07.json",
+  "latest_factual_linear_receipt": "docs/tracker-updates/integrated-delivery-source-2026-10-07.json",
   "resource_limits": {
     "memory_bytes": 4294967296,
     "swap_bytes": 0,
@@ -54,7 +55,10 @@
     {
       "id": "NB-SEMANTIC",
       "status": "passed_scoped_predicates",
-      "evidence": ["docs/tracker-updates/integrated-delivery-3508-2026-10-06.json", "docs/tracker-updates/integrated-delivery-be799-2026-10-06.json"],
+      "evidence": [
+        "docs/tracker-updates/integrated-delivery-3508-2026-10-06.json",
+        "docs/tracker-updates/integrated-delivery-be799-2026-10-06.json"
+      ],
       "issues": [
         "TIN-2057",
         "TIN-5338"
@@ -100,13 +104,19 @@
     },
     {
       "id": "NB-DELIVERY",
-      "status": "open",
+      "status": "passed_scoped_source_delivery",
       "issues": [
         "TIN-2057",
         "TIN-2063",
         "TIN-5338"
       ],
-      "criterion": "Reviewable signed exact-source change based on134e ancestry; truthful local receipts/protection transition; no staged-placeholder loss"
+      "criterion": "Reviewable signed exact-source change based on134e ancestry; truthful local receipts/protection transition; no staged-placeholder loss",
+      "evidence": [
+        "docs/tracker-updates/integrated-delivery-source-2026-10-07.json"
+      ],
+      "source_head": "f878ea367778ef3846cc2985b252ceb8f32cbc2a",
+      "merge_commit": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+      "limitations": "No source-only gate closes installed native/browser/Home Manager or six parent gates"
     }
   ],
   "limits": [
@@ -116,5 +126,38 @@
     "PZM/Darwin held",
     "Publication and achieved contractual SLA separate"
   ],
-  "clock_semantics": "Continuation checkpoint, not replacement tool goal; time closes no gate"
+  "clock_semantics": "Continuation checkpoint, not replacement tool goal; time closes no gate",
+  "latest_source_delivery_receipt": "docs/tracker-updates/integrated-delivery-source-2026-10-07.json",
+  "latest_source_delivery": {
+    "observed_at": "2026-10-07T01:18:04Z",
+    "pr": 527,
+    "merged": true,
+    "source_head": "f878ea367778ef3846cc2985b252ceb8f32cbc2a",
+    "merge_commit": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+    "tree": "2d013554bad5257ff31f2a051af4522cea14b08d",
+    "source_signature": "GitG",
+    "server_signature_verified": true,
+    "ordinary17": "passed",
+    "actor3": "passed",
+    "retained7": "passed",
+    "public_source_archive": "build_passed",
+    "other_branch_protections_unchanged": true,
+    "scope": "Version-bound source/model/retained-input/archive delivery only; no installed continuity or new parent acceptance gate"
+  },
+  "checkpoint_result": {
+    "at": "2026-10-07T01:13:12Z",
+    "outcome": "partial_incomplete_work_continues",
+    "source_delivery": "merged exact-tree #527",
+    "native": "44d7 detach RPC failed before cold resume",
+    "yoga": "QUAL/INSPECT passed; VERIFY registration-content metadata refused",
+    "home_manager": "9337 timed out without admitted compact pair",
+    "parent_gates_passed": 5,
+    "parent_gates_open": 6,
+    "clock_closed_gate": false,
+    "next": [
+      "Single-call detach stage diagnostics and separately scoped held-cgroup process counters",
+      "Closed Yoga first-failed registration metadata predicate before any copy",
+      "Qualified bounded compact HM producer; genuine offline evaluation"
+    ]
+  }
 }

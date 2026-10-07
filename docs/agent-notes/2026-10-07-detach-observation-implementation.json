@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_source_diagnostic_adoption",
+  "authority": "User-authorized Omux implementation continuation; AGENTS.md/R-N13; root sole executor",
+  "base": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+  "branch": "codex/omux-detach-observation-20261007",
+  "source_review": {
+    "native": "review_native_patch_oct6 and native_registry_authority; source-cleared, twelve modeled methods unrun",
+    "yoga": "sprint_yoga_delivery and review_product_oct6; source-cleared, first-fixed-predicate fixture unrun"
+  },
+  "applied": {
+    "native": [
+      "delivery/test_installed_native_interop.py",
+      "delivery/test_installed_legacy_native_tui.py",
+      "delivery/native_run_cli_failure.py",
+      "delivery/test_native_run_cli_failure.py",
+      "delivery/BUILD.bazel"
+    ],
+    "yoga": [
+      "tools/yoga_controller_delivery.py",
+      "tools/yoga_controller_delivery_test.py"
+    ]
+  },
+  "limits": "Same original predicates/one mutation/cleanup/deadline/caps; no provider or installed execution",
+  "diagnostic_scope": "Failure-only closed stage/errno/exit/stream-presence fields; selected diagnostic detach only. Missing ACK remains unknown mutation outcome, never repeated. Yoga fixed first-failed metadata label does not replace rehash or authorize copy.",
+  "cgroup": {
+    "status": "source_applied_guard_models_and_actual_guard_run_passed",
+    "proposal_sha256": "d77600fa654190c4147bd24f4ca4e3a9dea8bf6ed628ac386f905e0d55bc6cb5",
+    "reviewers": [
+      "sprint_hm_bundle",
+      "native_selection_review"
+    ],
+    "added_models": 12,
+    "scope": "Held-fd fixed metadata; whole workload sequential sampled window; unknown explicit; no detach/continuous attribution",
+    "cleanup": "Sampler cannot bypass original ownership/cleanup; original primary and recorded failure precedence; reported cancellation125 differs from actual OS exit"
+  },
+  "tests": {
+    "status": "six_of_seven_passed_whole_batch_failed_documentation",
+    "epoch": "0322d305-7145-4c0a-9096-c8dc8b930da0",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "4531a6f1c9d15645500c91e47bc10b07fa303ed5de033b07c156b1ef5c8ef2ed",
+    "receipt_sha256": "f372fda61acad08e53393e68d4d6ee31361df078a498cb4a328db67191d33eac",
+    "test_evidence_sha256": "47ae7195135f3b339867ce606bfd22936f91cc13464ef7194cdbbc2a1f1b7908",
+    "native_helper_models": 12,
+    "native_helper_target_passed": true,
+    "yoga_controller_target_passed": true,
+    "documentation_failure": "Historical0322 failed this note's classification; corrected authority entry passed in a634",
+    "scope": "Modeled actual helper invocation/custody/privacy/parser behavior only; no installed native resume or browser proof"
+  },
+  "delivery": "Source validated, signing next; no new merge or installed diagnostic result yet",
+  "corrected_models": {
+    "epoch": "a634ab32-47f9-4a14-826b-bf82947ef37d",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "targets_passed": 3,
+    "targets_total": 3,
+    "guard_added_models": 12,
+    "documentation_passed": true,
+    "graph_sha256": "9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4",
+    "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/a634ab32-47f9-4a14-826b-bf82947ef37d/receipt.json",
+    "receipt_sha256": "05915fd5cee0227f1bcf1bfaf7fa7e388d91aecf7c8c7fda3a91eab07e11a838",
+    "test_evidence_sha256": "59af731b4e6d1e95f5094083a9bd34beca452da20d7cd0534d29b63bf895762e",
+    "scope": "New guard models/actual bounded guard admission and sampled resource record/docs/source only; no old native resource-cause or installed claim"
+  }
+}

@@ -7,8 +7,9 @@ it does not mean shipped, supported or proven live.
 The [October 5 integrated delivery sprint](plans/omux-integrated-delivery-sprint-2026-10-05.md)
 is the current implementation sequence. Its original fifteen-hour window ran
 from `2026-10-05T04:03:36Z` to `2026-10-05T19:03:36Z`; resumed work preserves
-that clock and all historical results. The user-resumed five-hour continuation
-has a review checkpoint at **06:30 UTC**; elapsed time closes no acceptance gate.
+that clock and all historical results. The October 6 user-ratified five-hour
+continuation ran from **20:13:12 UTC October 6** to **01:13:12 UTC October 7**.
+It reached a partial, incomplete checkpoint; elapsed time closes no acceptance gate.
 Five historical scoped gates pass and six remain open. Its
 [durable session receipt](agent-notes/2026-10-05-sess-omux-integrated-delivery.md)
 records workstream custody and outcomes. The reset remains the architecture SSOT.
@@ -17,6 +18,13 @@ vendor-provided Codex hook is an assumed prerequisite. Existing extension points
 upstream contributions or maintained application modifications are delivery
 choices to prove per application and version. Missing implemented capability
 remains a gate; waiting for a vendor to supply an Omux integration is not the plan.
+
+The [October 7 source-delivery checkpoint](agent-notes/2026-10-07-sess-omux-source-delivery.md)
+records the exact signed source tree delivered in PR #527 and the separate local
+source/model/retained-input/archive gates. Its post-head receipt records verified
+merge, protection and Linear readbacks. Installed native resume, human browser
+consent and genuine Home Manager evaluation remain open; the six parent gates
+are unchanged. Source delivery creates no release or achieved SLO/SLA claim.
 
 The [inert NAR byte-proof note](agent-notes/2026-10-05-inert-nar-byteproof.md)
 records that workstream's original source proposal and custody boundaries.

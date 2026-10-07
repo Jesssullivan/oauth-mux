@@ -31,6 +31,7 @@ import test_installed_native_tui as tui
 import native_cli_stderr
 import native_fd2_observer
 import native_history_diagnostic
+import native_run_cli_failure
 
 support = tui.support
 require = support.require
@@ -50,6 +51,7 @@ CLI_COMPLETION = "unclassified"
 FD2_OBSERVER = None
 FD2_CONTEXT = None
 CLI_OBSERVATION = None
+DETACH_CLI_FAILURE_RECORD = None
 CLI_EXITS = ("exit-zero-stderr", "exit-one", "exit-two", "exit-positive-other",
              "exit-signal", "unclassified")
 STATUS_REFUSALS = {
@@ -508,6 +510,22 @@ def wait_metadata(home, thread, terminal, *, expected_name=tui.FIXTURE_NAME):
     raise ValueError("ordinary native metadata did not flush")
 
 
+def capture_detach_cli_failure(data):
+    # Shared helper delivers finite bytes only. Preserve no raw CLI output.
+    global DETACH_CLI_FAILURE_RECORD
+    DETACH_CLI_FAILURE_RECORD = native_run_cli_failure.parse_record(data)
+
+
+def run_detach_cli(command, environment, params):
+    # The normal target keeps its original helper call and output.
+    if FD2_OBSERVER is None:
+        return support.run_cli(command, environment, params)
+    global DETACH_CLI_FAILURE_RECORD
+    DETACH_CLI_FAILURE_RECORD = None
+    return support.run_cli(command, environment, params,
+                           failure_observer=capture_detach_cli_failure)
+
+
 def detach(cli, endpoint, observed):
     global DIAGNOSTIC, CLI_FAILURE
     operation = os.urandom(32).hex()
@@ -665,6 +683,8 @@ def inside(bundle, candidate, receipt, keyring, root):
         command = [str(prefix / "bin/omux"), "--state-dir", str(state), "rpc", method, "-"]
         if method == "operation.status" and DIAGNOSTIC == "detach-status-rpc":
             return status_cli(command, environment, params or {}, expected_completion=expected_completion)
+        if FD2_OBSERVER is not None and method == "integrations.detach" and DIAGNOSTIC == "detach-rpc":
+            return run_detach_cli(command, environment, params or {})
         return support.run_cli(command, environment, params or {})
 
     try:
@@ -880,6 +900,14 @@ def main():
             print(expected_marker.decode("ascii"), end="")
         else:
             if FD2_OBSERVER:
+                fixed_detach = b"installed legacy native detach cli observation "
+                for line in diagnostics.splitlines():
+                    if line.startswith(fixed_detach):
+                        try:
+                            value = native_run_cli_failure.parse_record(line[len(fixed_detach):] + b"\n")
+                        except ValueError:
+                            continue
+                        print(fixed_detach.decode("ascii") + value.decode("ascii"), end="", file=sys.stderr)
                 fixed = b"installed legacy native fd2 observation "
                 for line in diagnostics.splitlines():
                     if line.startswith(fixed):
@@ -925,6 +953,10 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as error:
+        if FD2_OBSERVER is not None and DETACH_CLI_FAILURE_RECORD is not None:
+            print("installed legacy native detach cli observation "
+                  + native_run_cli_failure.parse_record(DETACH_CLI_FAILURE_RECORD).decode("ascii"),
+                  end="", file=sys.stderr)
         if FD2_OBSERVER and CLI_OBSERVATION:
             print("installed legacy native fd2 observation "
                   + native_fd2_observer.PREFIX.decode("ascii") + "/" + CLI_OBSERVATION, file=sys.stderr)
