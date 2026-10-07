@@ -15,7 +15,11 @@
   "provider_evaluation_authorized": true,
   "provider_usage_policy": "Use an available small model; begin with short text turns and finite engineering deadlines. No user token-spend cap. No credentials/PII in evidence.",
   "publication_authorized": false,
-  "current_owned_execution": null,
+  "current_owned_execution": {
+    "state": "none",
+    "last_epoch": "c556012e-bf08-4f14-8355-32bee408f4c6",
+    "last_result": "failed_native_checkpoint"
+  },
   "source_base": "d829b3cdd91696a375a076970214fbf0621a5f6c",
   "source_branch": "codex/omux-real-account-continuity-20261007",
   "tracker_receipt": "docs/tracker-updates/live-account-proof-2026-10-07.json",
@@ -91,5 +95,5 @@
     "Browser consent, Home Manager activation, Darwin and general support",
     "Signing, store publication, website publication and achieved SLOs"
   ],
-  "next_action": "Run privacy models and one retained native diagnostic while completing explicit live execution/account enrollment and text portability."
+  "next_action": "Qualify enrollment/live admission models then run real first-account identity/custody/restart proof; diagnose native discovery OS failure independently."
 }

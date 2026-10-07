@@ -78,7 +78,7 @@ python_test(
 python_test(
     name = "guard_owner_runtime_input_test",
     main = "guard_owner_runtime_input_test.py",
-    srcs = ["guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
+    srcs = ["guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py"],
     target_compatible_with = ["@platforms//os:linux"],
 )
 
@@ -1003,7 +1003,7 @@ python_binary(
     name = "execution_guard",
     main = "execution_guard.py",
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
     visibility = ["//visibility:public"],
@@ -1013,7 +1013,7 @@ python_test(
     name = "execution_guard_test",
     main = "execution_guard_test.py",
     srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
 )
@@ -1021,7 +1021,7 @@ python_test(
 python_test(
     name = "guard_dependency_profile_test",
     main = "guard_dependency_profile_test.py",
-    srcs = ["guard_dependency_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
+    srcs = ["guard_dependency_profile.py", "guard_codex_live_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
 )
 python_test(
     name = "yoga_delivery_settings_test",
@@ -1374,4 +1374,11 @@ toolchain(
         "@platforms//os:linux",
         "@platforms//cpu:aarch64",
     ],
+)
+
+python_test(
+    name = "guard_codex_live_profile_test",
+    main = "guard_codex_live_profile_test.py",
+    srcs = ["guard_codex_live_profile.py", "guard_dependency_profile.py",
+            "guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
 )

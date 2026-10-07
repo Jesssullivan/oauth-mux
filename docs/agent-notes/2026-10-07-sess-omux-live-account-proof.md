@@ -22,6 +22,12 @@ The user authorizes model IO without a token-spend cap. Choose an available smal
 
 ## First source action
 
+## C1 execution checkpoint and first real enrollment implementation
+
+Signed C1 `9bba6ccc97f800146ef23e9b847adb312a327c66` passed classifier/privacy models, docs and source (3/3) in `c2d4df18-3747-43bf-ac39-55b283e6d620`, with empty descendants. Its original retained native checkpoint `c556012e-bf08-4f14-8355-32bee408f4c6` failed at `cold-native-resume/resume-owner-discovery/resume-os-failure`; docs/source passed. The resumed native process was alive with 22 held threads. Aggregate sampled peak479/512 and exposed max-event increase have no cause attribution. Controller/workload3, descendants empty, retained input reverified. No native gate closes and no identical automatic rerun is planned.
+
+Applied the separately reviewed installed one-source identity/custody/restart fixture and exact `codex-live` admission profile to the owned clean branch. The daemon alone reads the authorized native source; operator selectors remain private, build actions remain network-denied, and only the exact live test is network-enabled. Access-only external renewal remains unchanged. Privacy/admission models and actual live enrollment are unrun at this source checkpoint. The genuine isolated proof deliberately removes its custody after reporting; it does not claim resident deployment, native launch/resume, renewal transfer or handoff.
+
 Source delivery uses per-invocation `core.hooksPath=/dev/null` under R-N12,
 with independent signed-commit verification, explicit staging, contained Bazel
 checks and exact source/tree readbacks. Global hooks/remotes remain untouched.
