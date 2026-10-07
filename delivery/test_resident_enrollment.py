@@ -453,13 +453,68 @@ class ResidentContract(unittest.TestCase):
     def verified_authority_snapshot(self):
         # Public metadata shape emitted by Engine.publicAccountView/publicSnapshot.
         # Synthetic opaque handles only; no credential or raw identity fixture.
-        return {"accounts": [{"id": "b" * 64, "source_ids": ["a" * 64], "lifecycle": "active",
+        return {"sources": [{"id": "a" * 64, "provider": "codex", "label": "Synthetic source",
+                              "kind": "native_store", "status": "connected",
+                              "authorized_at": 900, "authorized_until": 1200}],
+                "accounts": [{"id": "b" * 64, "source_ids": ["a" * 64], "lifecycle": "active",
                               "identity": {"provider": "codex", "verified": True}}],
                 "grants": [{"id": "c" * 64, "account_id": "b" * 64, "source_id": "a" * 64,
                             "credential_kind": "oauth_access", "ownership": "external", "status": "ready",
                             "audience": "https://chatgpt.com", "purposes": ["request", "account_read"],
                             "provider_expires_at": None, "custody_expires_at": 1300, "generation": 7}],
                 "jobs": []}
+
+    def test_retained_grant_requires_its_current_source_authorization_at_captured_time(self):
+        snapshot = self.verified_authority_snapshot()
+        original = resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        # Native disappearance does not revoke independent, still-authorized access.
+        snapshot["sources"][0]["status"] = "detached"
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000), original)
+        snapshot["sources"][0]["authorized_until"] = None
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000), original)
+        # Signed i64 authorization timestamps retain the actual domain comparison.
+        snapshot["sources"][0]["authorized_at"] = -1
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000), original)
+        # Expiry is exclusive and is rechecked without changing grant generation.
+        snapshot["sources"][0]["authorized_until"] = 1000
+        with self.assertRaises(ValueError):
+            resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        self.assertEqual(snapshot["grants"][0]["generation"], 7)
+
+    def test_expired_selected_source_is_not_replaced_by_unrelated_connected_source(self):
+        snapshot = self.verified_authority_snapshot()
+        other = copy.deepcopy(snapshot["sources"][0])
+        other["id"] = "d" * 64
+        snapshot["sources"].append(other)
+        snapshot["sources"][0]["authorized_until"] = 1000
+        with self.assertRaises(ValueError):
+            resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        snapshot["sources"] = [other]
+        with self.assertRaises(ValueError):
+            resident.enrolled_authority(snapshot, "a" * 64, 1000)
+
+    def test_source_shape_provider_status_and_typed_times_refuse_before_enrollment_success(self):
+        for key, value in (("provider", "github"), ("kind", "explicit"),
+                           ("status", "disconnected"), ("status", "ready"), ("status", True),
+                           ("authorized_at", 1001), ("authorized_at", -(2**63)-1),
+                           ("authorized_at", True), ("authorized_at", 900.0),
+                           ("authorized_until", 1000), ("authorized_until", -1),
+                           ("authorized_until", True), ("authorized_until", 1200.0),
+                           ("authorized_until", "1200"), ("authorized_until", 2**63)):
+            snapshot = self.verified_authority_snapshot()
+            snapshot["sources"][0][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        for now in (True, 1000.0, "1000", -1, 2**63):
+            with self.subTest(now=now), self.assertRaises(ValueError):
+                resident.enrolled_authority(self.verified_authority_snapshot(), "a" * 64, now)
+        for mutation in ("missing", "extra", "duplicate"):
+            snapshot = self.verified_authority_snapshot()
+            if mutation == "missing":del snapshot["sources"][0]["authorized_at"]
+            elif mutation == "extra":snapshot["sources"][0]["credential"] = "not-a-source-field"
+            else:snapshot["sources"].append(copy.deepcopy(snapshot["sources"][0]))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                resident.enrolled_authority(snapshot, "a" * 64, 1000)
 
     def test_enrolled_authority_requires_strict_verified_public_identity(self):
         snapshot = self.verified_authority_snapshot()

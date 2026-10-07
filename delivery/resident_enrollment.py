@@ -414,7 +414,27 @@ def selected_source(snapshot, source_path):
     return ids[0]
 
 
+def source_authority(snapshot, source_id, now):
+    require(type(now) is int and 0 <= now < 2**63
+            and type(source_id) is str and re.fullmatch(r"[0-9a-f]{64}", source_id)
+            and type(snapshot["sources"]) is list
+            and all(type(row) is dict for row in snapshot["sources"]))
+    sources = [row for row in snapshot["sources"] if row.get("id") == source_id]
+    require(len(sources) == 1)
+    source = sources[0]
+    require(set(source) == {"id", "provider", "label", "kind", "status",
+                            "authorized_at", "authorized_until"}
+            and source["provider"] == "codex" and source["kind"] == "native_store"
+            and type(source["label"]) is str and source["status"] in ("connected", "detached")
+            and type(source["authorized_at"]) is int and -(2**63) <= source["authorized_at"] <= now
+            and (source["authorized_until"] is None or
+                 (type(source["authorized_until"]) is int and now < source["authorized_until"] < 2**63)))
+    # Domain routing permits independently valid non-browser grants after detachment.
+    return source
+
+
 def enrolled_authority(snapshot, source_id, now):
+    source_authority(snapshot, source_id, now)
     accounts = [account for account in snapshot["accounts"] if source_id in account["source_ids"]]
     if not accounts:
         require(not any(job["status"] == "failed" for job in snapshot["jobs"]
