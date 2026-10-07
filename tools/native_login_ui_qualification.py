@@ -1,5 +1,6 @@
 """Declared provider-free UI preparation. Outputs exactly three public receipts."""
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -31,6 +32,51 @@ ROOTS = frozenset((
 
 def canonical(value):
     return json.dumps(value,sort_keys=True,separators=(",",":")).encode("ascii")
+
+
+def elf_parser_source(payload):
+    """Export only existing bounded pure parser code from its declared source."""
+    require(len(payload) <= 128*1024,"declared_elf_parser_bound")
+    text = payload.decode("utf8")
+    tree = ast.parse(text)
+    expected = {"_MAX_FILE":128*1024*1024,"_MAX_BACKEND_FILE":512*1024*1024,
+        "_MAX_HEADERS":4096,"_MAX_DYNAMIC":4096,"_MAX_STRING":4096,
+        "_MACHINES":{"x86_64-linux":62,"aarch64-linux":183}}
+    constants = set(expected)
+    def bounded_constant(node,depth=0):
+        require(depth <= 8,"declared_elf_constant_depth")
+        if isinstance(node,ast.Constant) and type(node.value) is int:
+            require(0 < node.value <= 512*1024*1024,"declared_elf_constant_bound")
+            return node.value
+        if isinstance(node,ast.Constant) and type(node.value) is str:
+            require(len(node.value) <= 32,"declared_elf_constant_bound")
+            return node.value
+        if isinstance(node,ast.BinOp) and isinstance(node.op,ast.Mult):
+            left,right = bounded_constant(node.left,depth+1),bounded_constant(node.right,depth+1)
+            require(type(left) is int and type(right) is int and left*right <= 512*1024*1024,
+                "declared_elf_constant_bound")
+            return left*right
+        if isinstance(node,ast.Dict):
+            require(len(node.keys) <= 4,"declared_elf_constant_bound")
+            keys = [bounded_constant(key,depth+1) for key in node.keys]
+            values = [bounded_constant(value,depth+1) for value in node.values]
+            require(all(type(key) is str for key in keys) and len(set(keys)) == len(keys)
+                and all(type(value) is int for value in values),"declared_elf_constant_shape")
+            return dict(zip(keys,values))
+        raise worker.Refusal("declared_elf_constant_shape")
+    functions = {"_check_range","_slice","_cstring","_file_limit","elf_metadata"}
+    selected,seen = [],set()
+    for node in tree.body:
+        names = {target.id for target in node.targets if isinstance(target,ast.Name)} if isinstance(node,ast.Assign) else set()
+        key = node.name if isinstance(node,ast.FunctionDef) else next(iter(names)) if len(names) == 1 else None
+        if key in constants|functions:
+            require(key not in seen,"declared_elf_parser_duplicate")
+            if key in constants:
+                require(bounded_constant(node.value) == expected[key],"declared_elf_constant_differs")
+            seen.add(key)
+            selected.append(ast.get_source_segment(text,node))
+    require(seen == constants|functions,"declared_elf_parser_contract")
+    return "import struct\n"+"\n\n".join(selected)+"\n"
 
 
 def require(value,reason):
@@ -159,7 +205,7 @@ def publish(directory,files):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("control","inventory","source-receipt","known-hosts","worker","remote-worker"):
+    for name in ("control","inventory","source-receipt","known-hosts","worker","remote-worker","elf-parser"):
         parser.add_argument("--"+name,required=True)
     arguments = parser.parse_args()
     require(os.environ.get("OMUX_NATIVE_LOGIN_UI_PREPARE_INPUT_MANIFEST") == INPUT,"guard_manifest_required")
@@ -186,9 +232,11 @@ def main():
         rows = subset(inventory_bytes)
         worker_source = delivery.read_public(arguments.worker,65536,until).decode("utf8")
         remote_source = delivery.read_public(arguments.remote_worker,65536,until).decode("utf8")
+        elf_source = elf_parser_source(delivery.read_public(arguments.elf_parser,128*1024,until))
         code = ("import json,sys,types\n"
             "w=types.ModuleType('omux_qualified_ui_worker')\nexec(compile("+repr(worker_source)+",'<declared-ui-worker>','exec'),w.__dict__)\n"
             "r=types.ModuleType('omux_ui_prepare_worker')\nexec(compile("+repr(remote_source)+",'<declared-ui-prepare>','exec'),r.__dict__)\n"
+            "e=types.ModuleType('omux_pure_elf_parser')\nexec(compile("+repr(elf_source)+",'<declared-elf-parser>','exec'),e.__dict__)\nr.elf=e\n"
             "try:\n c=json.loads(w.read_line(0,w.time.monotonic()+30,262144),object_pairs_hook=w.unique)\n"
             " result=r.prepare(w,c)\n print(r.canonical(result).decode('ascii'),flush=True)\n"
             "except BaseException:\n sys.stderr.write('omux-native-ui-prepare-refused\\n')\n sys.exit(1)\n")

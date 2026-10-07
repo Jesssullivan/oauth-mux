@@ -84,3 +84,19 @@ directory, sealed public font configuration, a new owned private empty HOME,
 and actual printable-ASCII font support before READY. Static review found no
 concrete blocker. Three new helper models and actual standalone ELF/Wayland
 qualification remain unrun; no desktop action or provider consent occurred.
+
+Source24ceac7 actually passed retained device API qualification in
+4b486be3-49d3-4085-8a19-8fe465aead58, along with docs and source.
+Exit/workload0, empty descendants and no controller failure. Exact version,
+actual generated device-login schemas and sealed backend/runtime qualified;
+no login or native text-continuity capability is inferred.
+
+The next standalone qualification holds the exact181 immutable root witnesses,
+checks the selected interpreter/plugin and every transitive ELF dependency and
+search path before launch, and retains/rechecks descriptors through owned
+READY/EOF cleanup. The control-only link rule avoids Bazel relative runfile
+search paths. Six inert ELF/parser models plus one actual built-control metadata
+inspection are added. The actual-artifact test builds and inspects a new private
+copy without GUI execution; NAR registration, physical rehash, Wayland/portal,
+glyph readiness and operator consent remain independent host gates. All new
+checks remain unrun until their declared contained execution completes.

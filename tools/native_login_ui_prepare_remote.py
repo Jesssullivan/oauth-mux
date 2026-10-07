@@ -137,7 +137,7 @@ def nix_operation(worker,nix,arguments,until,maximum):
             os.close(pidfd)
 
 
-def verify_rows(worker,nix,rows,until):
+def verify_rows(worker,nix,rows,until,retained=None):
     require(len(rows) == 181 and sum(row["narSize"] for row in rows) == 869166464,"ui_subset_invalid")
     names = [row["path"] for row in rows]
     require(len(set(names)) == len(names),"ui_subset_invalid")
@@ -166,9 +166,192 @@ def verify_rows(worker,nix,rows,until):
         for path,fd,pin in pins:
             witness = lambda s:(s.st_dev,s.st_ino,s.st_uid,s.st_mode,s.st_mtime_ns,s.st_ctime_ns)
             require(witness(os.fstat(fd)) == pin == witness(os.stat(path,follow_symlinks=False)),"store_custody_changed")
+        if retained is not None:
+            retained.extend(pins)
+            pins = []
     finally:
         for _,fd,_ in pins:
             os.close(fd)
+
+
+class ElfClosure:
+    """Keep every transitive selected ELF under the already rehashed181 roots."""
+    def __init__(self,worker,executable,dialog_path,rows,plugin,until,root_pins):
+        self.worker,self.until = worker,until
+        self.roots = frozenset(row["path"] for row in rows)
+        self.root_pins = root_pins
+        self.files,self.pins,self.names = {},[],{}
+        self.total = 0
+        try:
+            require(len(self.roots) == 181 and {path for path,_,_ in root_pins} == self.roots,
+                "dialog_elf_inventory")
+            self.check()
+            fd = os.dup(executable)
+            self.pins.append((dialog_path,fd,self.witness(os.fstat(fd))))
+            control = self.read(fd)
+            metadata = self.metadata(control)
+            require(metadata["interpreter"] is not None,"dialog_elf_interpreter_missing")
+            interpreter = self.member(metadata["interpreter"])
+            require(interpreter == "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/ld-linux-x86-64.so.2",
+                "dialog_elf_interpreter_differs")
+            self.visit(interpreter,())
+            self.names[Path(interpreter).name] = interpreter
+            self.walk(dialog_path,control,(),control=True)
+            self.visit(self.member(plugin),())
+            self.check()
+        except BaseException:
+            self.close()
+            raise
+
+    def tick(self):
+        require(time.monotonic() < self.until,"dialog_elf_deadline")
+
+    def member(self,value):
+        self.tick()
+        require(type(value) is str and self.worker.STORE.fullmatch(value)
+            and "$" not in value and ":" not in value,"dialog_elf_nonclosure_path")
+        lexical = os.path.normpath(value)
+        require(lexical == value and "/".join(lexical.split("/")[:4]) in self.roots,"dialog_elf_nonclosure_path")
+        physical = str(Path(lexical).resolve(strict=True))
+        require(self.worker.STORE.fullmatch(physical)
+            and "/".join(physical.split("/")[:4]) in self.roots,"dialog_elf_nonclosure_path")
+        return physical
+
+    def read(self,fd):
+        self.tick()
+        before = os.fstat(fd)
+        require(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= 128*1024*1024,"dialog_elf_file_bound")
+        self.total += before.st_size
+        require(self.total <= 512*1024*1024,"dialog_elf_total_bound")
+        result = bytearray()
+        while len(result) < before.st_size:
+            self.tick()
+            data = os.pread(fd,min(65536,before.st_size-len(result)),len(result))
+            require(bool(data),"dialog_elf_changed")
+            result.extend(data)
+        require(self.witness(before) == self.witness(os.fstat(fd)),"dialog_elf_changed")
+        return bytes(result)
+
+    @staticmethod
+    def witness(info):
+        return (info.st_dev,info.st_ino,info.st_uid,info.st_mode,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+    def metadata(self,payload):
+        result = elf.elf_metadata(payload,max_bytes=128*1024*1024)
+        require(result["machine"] == 62 and len(result["needed"]) <= 128
+            and len(result["rpath"]) <= 256,"dialog_elf_metadata_bound")
+        # Reuse the validated segment bounds to preserve RPATH inheritance rules.
+        header = struct.unpack_from("<HHIQQQIHHHHHH",payload,16)
+        kinds = set()
+        for index in range(header[9]):
+            record = struct.unpack_from("<IIQQQQQQ",payload,header[4]+index*header[8])
+            if record[0] == 2:
+                for offset in range(record[2],record[2]+record[5],16):
+                    tag = struct.unpack_from("<qQ",payload,offset)[0]
+                    if tag == 0:
+                        break
+                    if tag in (15,29):
+                        kinds.add(tag)
+        require(len(kinds) <= 1,"dialog_elf_conflicting_search_tags")
+        result["runpath"] = 29 in kinds
+        return result
+
+    def directory(self,value,origin,control):
+        self.tick()
+        require(type(value) is str and bool(value),"dialog_elf_empty_search")
+        if value == "$ORIGIN" or value.startswith("$ORIGIN/"):
+            require(not control,"dialog_elf_control_origin_search")
+            value = origin+value[len("$ORIGIN"):]
+        require("$" not in value and value.startswith("/nix/store/")
+            and ":" not in value,"dialog_elf_nonclosure_search")
+        normalized = os.path.normpath(value)
+        require("/".join(normalized.split("/")[:4]) in self.roots,"dialog_elf_nonclosure_search")
+        physical = str(Path(value).resolve(strict=False))
+        require("/".join(physical.split("/")[:4]) in self.roots,"dialog_elf_nonclosure_search")
+        if os.path.lexists(physical):
+            info = os.stat(physical,follow_symlinks=False)
+            require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o222,
+                "dialog_elf_search_custody")
+            # Refuse unmodelled loader-selected hardware variants.
+            require(not os.path.lexists(physical+"/glibc-hwcaps"),"dialog_elf_hwcaps_unqualified")
+        return physical
+
+    def resolve(self,name,directories):
+        self.tick()
+        if "/" in name:
+            require(name.startswith("/nix/store/"),"dialog_elf_nonclosure_needed")
+            return self.member(name)
+        require(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}",name),"dialog_elf_needed_name")
+        matches = set()
+        for directory in directories:
+            self.tick()
+            candidate = directory+"/"+name
+            if os.path.lexists(candidate):
+                matches.add(self.member(candidate))
+        # Deliberately conservative: ambiguous priority/order is never adopted.
+        if not matches and name in self.names:
+            return self.names[name]
+        require(len(matches) == 1,"dialog_elf_needed_unresolved_or_ambiguous")
+        physical = next(iter(matches))
+        require(name not in self.names or self.names[name] == physical,"dialog_elf_soname_ambiguous")
+        self.names[name] = physical
+        return physical
+
+    def walk(self,path,payload,inherited,control=False):
+        metadata = self.metadata(payload)
+        if metadata["interpreter"] is not None:
+            require(self.member(metadata["interpreter"]) ==
+                "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/ld-linux-x86-64.so.2",
+                "dialog_elf_interpreter_differs")
+        directories = tuple(self.directory(value,str(Path(path).parent),control) for value in metadata["rpath"])
+        fixed = self.directory("/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib","",False)
+        before = () if metadata["runpath"] else directories+inherited
+        after = directories if metadata["runpath"] else ()
+        search = tuple(dict.fromkeys(before+(fixed,)+after))
+        ancestry = inherited if metadata["runpath"] else directories+inherited
+        require(len(search) <= 1024 and len(ancestry) <= 1024,"dialog_elf_search_bound")
+        for needed in metadata["needed"]:
+            self.visit(self.resolve(needed,search),ancestry)
+
+    def visit(self,path,inherited):
+        self.tick()
+        if path in self.files:
+            return
+        require(len(self.files) < 256,"dialog_elf_graph_bound")
+        fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            require(info.st_uid == 0 and not info.st_mode & 0o222 and stat.S_ISREG(info.st_mode),
+                "dialog_elf_file_custody")
+            self.pins.append((path,fd,self.witness(info)))
+            fd = None
+            self.files[path] = True
+            self.walk(path,self.read(self.pins[-1][1]),inherited)
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def check(self):
+        self.tick()
+        for path,fd,witness in self.root_pins:
+            self.tick()
+            measured = lambda info:(info.st_dev,info.st_ino,info.st_uid,info.st_mode,info.st_mtime_ns,info.st_ctime_ns)
+            require(measured(os.fstat(fd)) == witness == measured(os.stat(path,follow_symlinks=False)),
+                "dialog_elf_root_changed")
+        for path,fd,witness in self.pins:
+            self.tick()
+            require(self.witness(os.fstat(fd)) == witness ==
+                self.witness(os.stat(path,follow_symlinks=False)),"dialog_elf_changed")
+
+    def close(self):
+        failed = False
+        for _,fd,_ in self.pins:
+            try:
+                os.close(fd)
+            except OSError:
+                failed = True
+        self.pins = []
+        require(not failed,"dialog_elf_release_incomplete")
 
 
 def seat(worker,expected):
@@ -289,12 +472,18 @@ def prepare(worker,config):
     require(hasattr(os,"pidfd_open") and hasattr(signal,"pidfd_send_signal"),"prepare_pidfd_required")
     selected,peer = seat(worker,config["expected_os"])
     nix = worker.held_immutable(config["expected_os"]["remoteNixPath"],config["expected_os"]["remoteNixSha256"],64*1024*1024)
+    root_pins = []
     try:
-        verify_rows(worker,nix,config["rows"],until)
+        verify_rows(worker,nix,config["rows"],until,root_pins)
     finally:
         os.close(nix)
-    dialog_path,staged_identity = stage(worker,config,until)
-    gio = executable = portal = dialog = None
+    try:
+        dialog_path,staged_identity = stage(worker,config,until)
+    except BaseException:
+        for _,fd,_ in root_pins:
+            os.close(fd)
+        raise
+    gio = executable = portal = dialog = graph = None
     try:
         selected.update(python_path=PYTHON,python_sha256=file_digest(PYTHON,128*1024*1024),
             gio_path=GIO,gio_sha256=file_digest(GIO,128*1024*1024),
@@ -303,6 +492,7 @@ def prepare(worker,config):
         worker.check_host_and_seat(selected)
         executable = worker.held_dialog(dialog_path,selected["dialog_sha256"])
         gio = worker.held_immutable(GIO,selected["gio_sha256"],128*1024*1024)
+        graph = ElfClosure(worker,executable,dialog_path,config["rows"],PLUGIN,until,root_pins)
         # All Nix subprocesses finished before GIO threading begins.
         dialog = worker.Dialog(executable,selected,until)
         portal = worker.Portal(gio,selected["uid"])
@@ -311,6 +501,7 @@ def prepare(worker,config):
             "actual_dialog_ready":True,"provider_request_performed":False,"portal_openuri_performed":False}
         dialog.close(success=True)
         dialog = None
+        graph.check()
         seat_receipt["actual_dialog_eof_clean_exit"] = True
         worker.check_host_and_seat(selected)
         current,current_peer = seat(worker,config["expected_os"])
@@ -341,6 +532,10 @@ def prepare(worker,config):
             dialog.close()
         if portal is not None:
             portal.close()
+        if graph is not None:
+            graph.close()
+        for _,fd,_ in root_pins:
+            os.close(fd)
         for fd in (executable,gio):
             if fd is not None:
                 os.close(fd)

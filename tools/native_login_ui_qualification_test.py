@@ -6,9 +6,11 @@ from pathlib import Path
 import signal
 import stat
 import subprocess
+import struct
 import sys
 import tempfile
 import time
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
@@ -111,6 +113,175 @@ class Preparation(unittest.TestCase):
                 os.close(directory)
 
 
+def elf_model(needed=(),interpreter=None,rpath=(),path_tag=29):
+    strings,references = bytearray(b"\0"),[]
+    for tag,value in [(1,name) for name in needed]+([(path_tag,":".join(rpath))] if rpath else []):
+        references.append((tag,len(strings)))
+        strings.extend(value.encode()+b"\0")
+    count = 2+(interpreter is not None)
+    dyn = 64+56*count
+    size = 16*(len(references)+3)
+    off = dyn+size
+    interp = b"" if interpreter is None else interpreter.encode()+b"\0"
+    ioff,base = off+len(strings),0x400000
+    length = ioff+len(interp)
+    header = b"\x7fELF\x02\x01\x01"+bytes(9)+struct.pack("<HHIQQQIHHHHHH",3,62,1,0,64,0,0,64,56,count,0,0,0)
+    heads = struct.pack("<IIQQQQQQ",1,5,0,base,base,length,length,4096)
+    heads += struct.pack("<IIQQQQQQ",2,4,dyn,base+dyn,0,size,size,8)
+    if interpreter is not None:
+        heads += struct.pack("<IIQQQQQQ",3,4,ioff,base+ioff,0,len(interp),len(interp),1)
+    return header+heads+b"".join(struct.pack("<qQ",tag,value) for tag,value in
+        references+[(5,base+off),(10,len(strings)),(0,0)])+strings+interp
+
+
+class ElfClosureModels(unittest.TestCase):
+    def test_actual_declared_control_closed_graph_before_any_ui_execution(self):
+        rows = local.subset(Path(Preparation.inventory).read_bytes())
+        roots = []
+        graph = control = None
+        until = time.monotonic()+120
+        try:
+            # This selected artifact and all181 source inputs are target data.
+            selected = Path(Preparation.control).resolve(strict=True)
+            source = os.open(selected,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
+            try:
+                before = os.fstat(source)
+                self.assertTrue(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= 128*1024*1024)
+                payload = bytearray()
+                while len(payload) < before.st_size:
+                    self.assertLess(time.monotonic(),until)
+                    piece = os.read(source,min(65536,before.st_size-len(payload)))
+                    self.assertTrue(piece)
+                    payload.extend(piece)
+                self.assertEqual(remote.ElfClosure.witness(before),remote.ElfClosure.witness(os.fstat(source)))
+            finally:
+                os.close(source)
+            for row in rows:
+                self.assertLess(time.monotonic(),until)
+                path = row["path"]
+                self.assertEqual(str(Path(path).resolve(strict=True)),path)
+                fd = os.open(path,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC)
+                info = os.fstat(fd)
+                roots.append((path,fd,(info.st_dev,info.st_ino,info.st_uid,info.st_mode,info.st_mtime_ns,info.st_ctime_ns)))
+                self.assertEqual(info.st_uid,0)
+                self.assertFalse(info.st_mode & 0o222)
+            with tempfile.TemporaryDirectory(prefix="omux-public-elf-model-") as directory:
+                path = str(Path(directory)/"control")
+                control = os.open(path,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+                try:
+                    offset = 0
+                    while offset < len(payload):
+                        self.assertLess(time.monotonic(),until)
+                        count = os.write(control,payload[offset:offset+65536])
+                        self.assertGreater(count,0)
+                        offset += count
+                    os.fchmod(control,0o500)
+                    os.fsync(control)
+                    graph = remote.ElfClosure(worker,control,path,rows,remote.PLUGIN,until,roots)
+                    graph.check()
+                    self.assertGreater(len(graph.files),1)
+                finally:
+                    if graph is not None:
+                        graph.close()
+                        graph = None
+                    os.close(control)
+                    control = None
+        finally:
+            if graph is not None:
+                graph.close()
+            if control is not None:
+                os.close(control)
+            for _,fd,_ in roots:
+                os.close(fd)
+
+    def test_declared_elf_parser_accepts_real_multiplied_constants_and_refuses_other_ast(self):
+        data = Path(Preparation.parser_source).read_bytes()
+        source = local.elf_parser_source(data)
+        module = types.ModuleType("actual_declared_parser_constant_model")
+        exec(compile(source,"<declared-parser-model>","exec"),module.__dict__)
+        self.assertEqual(module._MAX_FILE,128*1024*1024)
+        self.assertEqual(module._MAX_BACKEND_FILE,512*1024*1024)
+        marker = b"_MAX_FILE = 128 * 1024 * 1024"
+        self.assertEqual(data.count(marker),1)
+        for expression in (b"int('128')",b"2 ** 27",b"True",b"1024 * 1024 * 1024",b"128 * 1024"):
+            with self.subTest(expression=expression),self.assertRaisesRegex(ValueError,"declared_elf_constant_"):
+                local.elf_parser_source(data.replace(marker,b"_MAX_FILE = "+expression))
+
+    def graph(self,*,control_rpath=None,transitive_needed=("libc.so.6",),ambiguous=False,
+            child_rpath=True,path_tag=29):
+        rows = local.subset(Path(Preparation.inventory).read_bytes())
+        roots = {row["path"] for row in rows}
+        qt = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
+        glibc = "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib"
+        loader = glibc+"/ld-linux-x86-64.so.2"
+        control = "/model/private/control"
+        files = {control:elf_model(("libQt6Core.so.6",),loader,
+                (qt,glibc) if control_rpath is None else control_rpath,path_tag),
+            loader:elf_model(),glibc+"/libc.so.6":elf_model(("ld-linux-x86-64.so.2",),rpath=(glibc,)),
+            qt+"/libQt6Core.so.6":elf_model(transitive_needed,rpath=(glibc,) if child_rpath else ()),
+            remote.PLUGIN:elf_model(("libQt6Core.so.6",),rpath=(qt,))}
+        if ambiguous:
+            files[glibc+"/libQt6Core.so.6"] = elf_model()
+        directories = roots|{qt,glibc}
+        descriptors = {path:2000+index for index,path in enumerate(files)}
+        records = {descriptor:(path,payload) for path,payload in files.items()
+            for descriptor in [descriptors[path]]}
+        records[1999] = control,files[control]
+        rootfds = {4000+index:path for index,path in enumerate(sorted(roots))}
+        def information(path):
+            directory = path in directories
+            return SimpleNamespace(st_dev=1,st_ino=hash(path),st_uid=0 if path != control else 1000,
+                st_mode=(stat.S_IFDIR|0o555) if directory else stat.S_IFREG|(0o500 if path == control else 0o444),
+                st_size=4096 if directory else len(files[path]),st_mtime_ns=1,st_ctime_ns=1)
+        def held(fd):
+            return information(rootfds[fd] if fd in rootfds else records[fd][0])
+        pins = [(path,fd,(info.st_dev,info.st_ino,info.st_uid,info.st_mode,info.st_mtime_ns,info.st_ctime_ns))
+            for fd,path in rootfds.items() for info in [information(path)]]
+        with patch.object(Path,"resolve",autospec=True,side_effect=lambda path,*a,**kw:path),\
+            patch.object(remote.os,"dup",return_value=1999),\
+            patch.object(remote.os,"open",side_effect=lambda path,*a,**kw:descriptors[str(path)]),\
+            patch.object(remote.os,"fstat",side_effect=held),\
+            patch.object(remote.os,"stat",side_effect=lambda path,*a,**kw:information(str(path))),\
+            patch.object(remote.os,"pread",side_effect=lambda fd,size,offset:records[fd][1][offset:offset+size]),\
+            patch.object(remote.os.path,"lexists",side_effect=lambda path:str(path) in files or str(path) in directories),\
+            patch.object(remote.os,"close") as close:
+            graph = remote.ElfClosure(worker,descriptors[control],control,rows,remote.PLUGIN,time.monotonic()+5,pins)
+            graph.check()
+            self.assertIn(loader,graph.files)
+            self.assertIn(qt+"/libQt6Core.so.6",graph.files)
+            graph.close()
+            self.assertEqual(set(call.args[0] for call in close.call_args_list),
+                {1999,descriptors[loader],descriptors[glibc+"/libc.so.6"],
+                 descriptors[qt+"/libQt6Core.so.6"],descriptors[remote.PLUGIN]})
+
+    def test_actual_pure_parser_and_closed_transitive_graph_hold_and_release_files(self):
+        self.graph()
+
+    def test_ambient_or_bazel_relative_control_search_refuses(self):
+        for paths in (("/usr/lib",),("$ORIGIN/../../_solib_k8",),("",)):
+            with self.subTest(paths=paths),self.assertRaisesRegex(ValueError,"dialog_elf_"):
+                self.graph(control_rpath=paths)
+
+    def test_transitive_foreign_or_unresolved_needed_refuses(self):
+        for needed in (("/usr/lib/outside.so",),("missing-model.so.1",)):
+            with self.subTest(needed=needed),self.assertRaisesRegex(ValueError,"dialog_elf_"):
+                self.graph(transitive_needed=needed)
+
+    def test_duplicate_lookup_targets_are_never_adopted(self):
+        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved_or_ambiguous"):
+            self.graph(ambiguous=True)
+
+    def test_runpath_is_not_inherited_but_rpath_is(self):
+        self.graph(child_rpath=False,path_tag=15)
+        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved_or_ambiguous"):
+            self.graph(child_rpath=False,path_tag=29)
+
+
 if __name__ == "__main__":
     Preparation.inventory = sys.argv.pop(1)
+    Preparation.parser_source = sys.argv.pop(1)
+    module = types.ModuleType("declared_pure_elf_parser_model")
+    exec(compile(local.elf_parser_source(Path(Preparation.parser_source).read_bytes()),"<declared-elf-model>","exec"),module.__dict__)
+    remote.elf = module
+    Preparation.control = sys.argv.pop(1)
     unittest.main()

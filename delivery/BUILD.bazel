@@ -12,12 +12,14 @@ python_binary(
     main = "//tools:native_login_ui_qualification.py",
     srcs = ["//tools:yoga_portal_carrier_sources", "//tools:yoga_delivery_settings.py", "//tools:guard_yoga_delivery_profile.py"],
     data = ["//clients/linux:control", "//tools:native_login_ui_prepare_remote.py", "//tools:yoga_portal_worker.py",
+            "//delivery:portable.py",
             "@omux_yoga_controller_nars//:native_login_ui_inputs", "@omux_yoga_controller_nars//:inventory.json",
             "@omux_yoga_delivery_inputs//:d631-receipt.json", "@omux_yoga_delivery_inputs//:yoga-ssh-known-hosts", "@omux_host//:ssh"],
     args = ["--control", "$(location //clients/linux:control)", "--inventory", "$(location @omux_yoga_controller_nars//:inventory.json)",
             "--source-receipt", "$(location @omux_yoga_delivery_inputs//:d631-receipt.json)",
             "--known-hosts", "$(location @omux_yoga_delivery_inputs//:yoga-ssh-known-hosts)",
-            "--worker", "$(location //tools:yoga_portal_worker.py)", "--remote-worker", "$(location //tools:native_login_ui_prepare_remote.py)"],
+            "--worker", "$(location //tools:yoga_portal_worker.py)", "--remote-worker", "$(location //tools:native_login_ui_prepare_remote.py)",
+            "--elf-parser", "$(location //delivery:portable.py)"],
     tags = ["manual", "no-remote", "no-cache"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
@@ -26,8 +28,10 @@ python_test(
     main = "//tools:native_login_ui_qualification_test.py",
     srcs = ["//tools:native_login_ui_qualification.py", "//tools:native_login_ui_prepare_remote.py",
             "//tools:yoga_portal_carrier_sources", "//tools:yoga_delivery_settings.py", "//tools:guard_yoga_delivery_profile.py"],
-    data = ["@omux_yoga_controller_nars//:inventory.json"],
-    args = ["$(location @omux_yoga_controller_nars//:inventory.json)"],
+    data = ["@omux_yoga_controller_nars//:inventory.json", "//delivery:portable.py",
+            "//clients/linux:control", "@omux_yoga_controller_nars//:native_login_ui_inputs"],
+    args = ["$(location @omux_yoga_controller_nars//:inventory.json)", "$(location //delivery:portable.py)",
+            "$(location //clients/linux:control)"],
     target_compatible_with = ["@platforms//os:linux"],
 )
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
