@@ -21,7 +21,7 @@ def _implementation(ctx):
     if len(files) != 8546 or report.get("tracked_files") != 8546:
         fail("fixed native source input count differs")
     names = []
-    for name in sorted(files):
+    for index, name in enumerate(sorted(files)):
         if name.startswith("/") or any([part in ["", ".", ".."] for part in name.split("/")]) or any([character in name for character in ["\\", "\n", "\r", "\t"]]):
             fail("native source input path is noncanonical")
         if files[name].get("mode") not in ["100644", "100755", "120000"]:
@@ -30,8 +30,10 @@ def _implementation(ctx):
         if not source.exists:
             fail("declared native source input is absent")
         ctx.watch(source)
-        ctx.symlink(source, "source/" + name)
-        names.append("source/" + name)
+        # Native BUILD files must be inert data, not nested Bazel packages.
+        alias = "source-inputs/" + str(index)
+        ctx.symlink(source, alias)
+        names.append(alias)
     ctx.symlink(_BASE + "/" + _RECEIPT, "baseline-receipt.json")
     names.append("baseline-receipt.json")
     for name in _PATCHES:
@@ -44,6 +46,7 @@ def _implementation(ctx):
     ctx.file("input-anchor.txt", "Exact pinned prepared public native source and reviewed native patch inputs only.\n", executable = False)
     ctx.file("BUILD.bazel", "\n".join([
         'package(default_visibility = ["//visibility:public"])',
+        'exports_files({})'.format(repr(names)),
         'filegroup(name = "inputs", srcs = {})'.format(repr(names)),
         'exports_files(["input-anchor.txt"])',
         "",

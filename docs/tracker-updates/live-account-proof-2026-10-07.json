@@ -432,5 +432,20 @@
     "passed_scope": "Source/SDK/cache/guard/live/enrollment/privacy/request-authority/format/docs models; runtime engine/storage unpassed",
     "correction": "Add required Zig blocks around nested assignment/defer; no semantic predicate changes.",
     "acceptance_closed": false
+  },
+  "c7_producer_terminal": {
+    "authority": "AGENTS.md; R-N13",
+    "source_commit": "cc0e6d57b90ffc98166cd550dcc6f957b091e923",
+    "epoch": "307bcedd-d8c9-4cbf-a623-6fc2d6f3cfb7",
+    "exit": 125,
+    "workload_exit": 125,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "stage": "Bazel analysis failed on hierarchical public native input labels",
+    "native_source_produced": false,
+    "sdk_qualified": false,
+    "runtime_checks_executed": false,
+    "correction": "Flat finite source aliases plus explicit exports prevent upstream BUILD files from introducing nested package boundaries.",
+    "limit_raise": false
   }
 }
