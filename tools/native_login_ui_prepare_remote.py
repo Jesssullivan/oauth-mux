@@ -265,16 +265,9 @@ class ElfClosure:
             result["rpath"] = []
         return result
 
-    def directory(self,value,origin,control,defer_driver=False):
+    def directory(self,value,origin,control):
         self.tick()
         require(type(value) is str and bool(value),"dialog_elf_empty_search")
-        # This exact immutable GLX RUNPATH entry remains a denied search target.
-        # Keep its position but do not probe it when held/earlier fixed inputs
-        # resolve the name. resolve() calls without deferral before any probe.
-        if defer_driver and not control and value == "/run/opengl-driver/lib":
-            require(origin.startswith("/nix/store/")
-                and "/".join(origin.split("/")[:4]) in self.roots,"dialog_elf_deferred_search_owner")
-            return value
         if value == "$ORIGIN" or value.startswith("$ORIGIN/"):
             require(not control,"dialog_elf_control_origin_search")
             value = origin+value[len("$ORIGIN"):]
@@ -298,14 +291,23 @@ class ElfClosure:
             require(name.startswith("/nix/store/"),"dialog_elf_nonclosure_needed")
             return self.member(name)
         require(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}",name),"dialog_elf_needed_name")
+        parent_name = Path(parent).name
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}",parent_name):
+            parent_name = "selected-elf"
         # glibc reuses a mapped name before trying any new search directory.
         if name in self.names:
             physical = self.names[name]
             require(physical in self.files,"dialog_elf_loaded_name_without_hold")
             return physical
-        for directory in directories:
+        for index,descriptor in enumerate(directories):
             self.tick()
-            directory = self.directory(directory,"",False)
+            # A descriptor keeps the originating held DSO's ORIGIN context.
+            # Validate before any existence/candidate probe. A denied prefix
+            # stops this lookup; it is never skipped to seek a later match.
+            try:
+                directory = self.directory(*descriptor)
+            except ValueError as error:
+                raise ValueError(str(error)+":parent="+parent_name+":search_index="+str(index)) from None
             candidate = directory+"/"+name
             if os.path.lexists(candidate):
                 # Ordered paths determine the first selection. A malformed or
@@ -314,9 +316,6 @@ class ElfClosure:
                 self.names[name] = physical
                 return physical
         # Only public ELF basenames and validated public DT_NEEDED names appear.
-        parent_name = Path(parent).name
-        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}",parent_name):
-            parent_name = "selected-elf"
         raise ValueError("dialog_elf_needed_unresolved:"+parent_name+":"+name)
 
     def walk(self,path,payload,inherited,control=False):
@@ -325,9 +324,20 @@ class ElfClosure:
             require(self.member(metadata["interpreter"]) ==
                 "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/ld-linux-x86-64.so.2",
                 "dialog_elf_interpreter_differs")
-        directories = tuple(self.directory(value,str(Path(path).parent),control,
-            defer_driver=not control) for value in metadata["rpath"])
-        fixed = tuple(self.directory(value,"",False) for value in self.worker.DIALOG_LIBRARY_DIRECTORIES)
+        origin = str(Path(path).parent)
+        directories = []
+        for value in metadata["rpath"]:
+            if control:
+                # The externally staged executable may carry no ambient path,
+                # including paths that would happen to be unused this run.
+                directories.append((self.directory(value,origin,True),"",False))
+            else:
+                # Held immutable DSO metadata is not authority to search a path.
+                # Keep its order and origin; resolve validates only if reached.
+                directories.append((value,origin,False))
+        directories = tuple(directories)
+        fixed = tuple((self.directory(value,"",False),"",False)
+            for value in self.worker.DIALOG_LIBRARY_DIRECTORIES)
         before = () if metadata["runpath"] else directories+inherited
         after = directories if metadata["runpath"] else ()
         search = tuple(dict.fromkeys(before+fixed+after))

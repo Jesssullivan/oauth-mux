@@ -209,19 +209,22 @@ class ElfClosureModels(unittest.TestCase):
                 local.elf_parser_source(data.replace(marker,b"_MAX_FILE = "+expression))
 
     def graph(self,*,control_rpath=None,transitive_needed=("libc.so.6",),ambiguous=False,
-            child_rpath=True,path_tag=29,child_empty_tag=None,direct_libc=False,child_driver=False):
+            child_rpath=True,path_tag=29,child_empty_tag=None,direct_libc=False,child_driver=False,
+            child_search=None,forbidden_probe_prefix=None):
         rows = local.subset(Path(Preparation.inventory).read_bytes())
         roots = {row["path"] for row in rows}
         qt = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
         glibc = "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib"
         loader = glibc+"/ld-linux-x86-64.so.2"
         control = "/model/private/control"
+        child_paths = child_search if child_search is not None else (
+            ("/run/opengl-driver/lib",glibc) if child_driver else
+            (((glibc,) if child_rpath else ()) if child_empty_tag is None else ("",)))
         files = {control:elf_model(("libQt6Core.so.6","libc.so.6") if direct_libc else ("libQt6Core.so.6",),loader,
                 (qt,glibc) if control_rpath is None else control_rpath,path_tag),
             loader:elf_model(),glibc+"/libc.so.6":elf_model(("ld-linux-x86-64.so.2",),rpath=(glibc,)),
             qt+"/libQt6Core.so.6":elf_model(transitive_needed,
-                rpath=("/run/opengl-driver/lib",glibc) if child_driver else
-                    (((glibc,) if child_rpath else ()) if child_empty_tag is None else ("",)),
+                rpath=child_paths,
                 path_tag=29 if child_empty_tag is None else child_empty_tag),
             remote.PLUGIN:elf_model(("libQt6Core.so.6",),rpath=(qt,))}
         if ambiguous:
@@ -241,13 +244,22 @@ class ElfClosureModels(unittest.TestCase):
             return information(rootfds[fd] if fd in rootfds else records[fd][0])
         pins = [(path,fd,(info.st_dev,info.st_ino,info.st_uid,info.st_mode,info.st_mtime_ns,info.st_ctime_ns))
             for fd,path in rootfds.items() for info in [information(path)]]
-        with patch.object(Path,"resolve",autospec=True,side_effect=lambda path,*a,**kw:path),\
+        def no_foreign_probe(path):
+            if forbidden_probe_prefix is not None:
+                self.assertFalse(str(path).startswith(forbidden_probe_prefix))
+        def canonical_path(path,*args,**kwargs):
+            no_foreign_probe(path)
+            return path
+        def exists(path):
+            no_foreign_probe(path)
+            return str(path) in files or str(path) in directories
+        with patch.object(Path,"resolve",autospec=True,side_effect=canonical_path),\
             patch.object(remote.os,"dup",return_value=1999),\
             patch.object(remote.os,"open",side_effect=lambda path,*a,**kw:descriptors[str(path)]),\
             patch.object(remote.os,"fstat",side_effect=held),\
             patch.object(remote.os,"stat",side_effect=lambda path,*a,**kw:information(str(path))),\
             patch.object(remote.os,"pread",side_effect=lambda fd,size,offset:records[fd][1][offset:offset+size]),\
-            patch.object(remote.os.path,"lexists",side_effect=lambda path:str(path) in files or str(path) in directories),\
+            patch.object(remote.os.path,"lexists",side_effect=exists),\
             patch.object(remote.os,"close") as close:
             graph = remote.ElfClosure(worker,descriptors[control],control,rows,remote.PLUGIN,time.monotonic()+5,pins)
             graph.check()
@@ -283,7 +295,7 @@ class ElfClosureModels(unittest.TestCase):
                 patch.object(remote.os.path,"lexists",return_value=True) as exists,\
                 patch.object(inspector,"directory",side_effect=lambda value,*args:value),\
                 patch.object(inspector,"member",side_effect=lambda value:value) as member:
-                selected = inspector.resolve("model.so.1",directories,"control")
+                selected = inspector.resolve("model.so.1",tuple((value,"",False) for value in directories),"control")
                 self.assertEqual(selected,directories[0]+"/model.so.1")
                 exists.assert_called_once_with(selected)
                 member.assert_called_once_with(selected)
@@ -316,6 +328,18 @@ class ElfClosureModels(unittest.TestCase):
             self.graph(child_driver=True)
         with self.assertRaisesRegex(ValueError,"dialog_elf_nonclosure_search"):
             self.graph(control_rpath=("/run/opengl-driver/lib",))
+
+    def test_unused_foreign_dso_search_is_not_probed_and_consulted_prefix_refuses(self):
+        glibc = "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib"
+        denied = ("/nix/store/00000000000000000000000000000000-unqualified-model/lib",
+            "/usr/lib","/run/opengl-driver/lib","${ORIGIN}/unqualified-model")
+        for prefix in denied:
+            with self.subTest(prefix=prefix):
+                self.graph(child_search=(prefix,glibc),direct_libc=True,forbidden_probe_prefix=prefix)
+                with self.assertRaisesRegex(ValueError,"dialog_elf_nonclosure_search.*parent=libQt6Core.so.6"):
+                    self.graph(child_search=(prefix,glibc),forbidden_probe_prefix=prefix)
+                with self.assertRaisesRegex(ValueError,"dialog_elf_nonclosure_search"):
+                    self.graph(control_rpath=(prefix,),forbidden_probe_prefix=prefix)
 
     def test_loaded_name_reuses_held_file_before_any_new_search(self):
         inspector = object.__new__(remote.ElfClosure)
