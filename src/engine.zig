@@ -46,6 +46,26 @@ const sql_api = @import("c");
 
 pub const Channel = control.Channel;
 const Policy = struct { sticky_routes: bool = true, warm_alternatives: bool = true };
+const PublicAccountView = struct {
+    id: []const u8,
+    label: []const u8,
+    account_type: []const u8,
+    lifecycle: domain.AccountLifecycle,
+    identity: struct { provider: []const u8, verified: bool },
+    source_ids: []const []const u8,
+};
+
+fn publicAccountView(account: domain.Account) PublicAccountView {
+    return .{
+        .id = account.id,
+        .label = account.label,
+        .account_type = account.account_type,
+        .lifecycle = account.lifecycle,
+        .identity = .{ .provider = account.identity.provider, .verified = account.identity.verified },
+        .source_ids = account.source_ids,
+    };
+}
+
 const SourceDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8 = "", path: []const u8 = "" };
 const OutcomeIntent = struct {
     key: snapshot_admission.Key,
@@ -454,6 +474,8 @@ pub const Engine = struct {
     root_key: envelope.Key = @splat(0),
     root_id: ?[:0]u8 = null,
     poisoned: bool = false,
+    vault_locked: bool = false,
+    fixture_startup_vault_locked: bool = false,
     test_key: ?envelope.Key = null,
     state: domain.State,
     db: ?storage.Store = null,
@@ -527,15 +549,16 @@ pub const Engine = struct {
     }
 
     fn create(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection) !*Engine {
-        return createConfigured(io, allocator, state_dir, key, selection, null);
+        return createConfigured(io, allocator, state_dir, key, selection, null, false);
     }
 
     pub fn openWithMeasuredRootForTest(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key, root: []const u8) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
-        return createConfigured(io, allocator, state_dir, key, .default, root);
+        return createConfigured(io, allocator, state_dir, key, .default, root, false);
     }
 
-    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8) !*Engine {
+    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool) !*Engine {
+        if (locked_fixture and !builtin.is_test) return error.TestOnly;
         try paths.validateAbsolute(state_dir);
         const self = try allocator.create(Engine);
         errdefer allocator.destroy(self);
@@ -587,6 +610,7 @@ pub const Engine = struct {
             self.installation_service_status = observed.service_status;
             self.installation_probe_at = if (collection_timed_out) null else self.now();
         }
+        self.fixture_startup_vault_locked = locked_fixture;
         self.thread = try std.Thread.spawn(.{}, actor, .{self});
         self.mutex.lockUncancelable(io);
         while (!self.startup_complete) self.condition.waitUncancelable(io, &self.mutex);
@@ -734,6 +758,16 @@ pub const Engine = struct {
 
     fn actor(self: *Engine) void {
         self.bootstrap() catch |err| {
+            // Vault loading precedes database/network creation. Preserve a
+            // bounded local control plane for an ordinary platform unlock;
+            // never turn an unavailable wrapping key into fresh custody.
+            if (err == error.Locked and self.db == null and self.network == null) {
+                self.vault_locked = true;
+                self.poisoned = true;
+                std.crypto.secureZero(u8, &self.root_key);
+                self.lockedActor();
+                return;
+            }
             if (self.network) |client| client.deinit();
             if (self.db) |*db| db.close();
             self.mutex.lockUncancelable(self.io);
@@ -855,6 +889,54 @@ pub const Engine = struct {
         self.mutex.lockUncancelable(self.io);
         self.condition.broadcast(self.io);
         self.mutex.unlock(self.io);
+    }
+    fn lockedActor(self: *Engine) void {
+        self.mutex.lockUncancelable(self.io);
+        self.startup_complete = true;
+        self.condition.broadcast(self.io);
+        while (true) {
+            while (self.queue_count == 0 and !self.stopping) self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.queue_count == 0 and self.stopping) {
+                self.mutex.unlock(self.io);
+                return;
+            }
+            const item = self.queue[self.queue_head].?;
+            self.queue[self.queue_head] = null;
+            self.queue_head = (self.queue_head + 1) % self.queue.len;
+            self.queue_count -= 1;
+            const stopping = self.stopping;
+            self.mutex.unlock(self.io);
+            // No maintenance, source reads, provider work, native workers,
+            // mutation ledger admission or database access exists here.
+            const response = if (stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.lockedRequest(item.allocator, item.payload, item.channel);
+            self.finishInvocation(item, response);
+            self.mutex.lockUncancelable(self.io);
+        }
+    }
+
+    fn lockedRequest(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel) ![]u8 {
+        if (channel == .browser) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = @as(?[]const u8, null), .@"error" = .{ .code = "VaultLocked", .message = "Unlock the platform vault, then explicitly restart the daemon." } }, .{});
+        var request = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32600, "InvalidRequest");
+        defer request.deinit();
+        if (channel != .control) return control.failure(allocator, request.id, -32000, "VaultLocked");
+        if (eql(request.method, "system.handshake")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .service = "omuxd",
+            .channel = "control",
+            .custody_available = false,
+            .capabilities = .{ .credential_free_control = true, .native_launch = false, .live_handoff_proven = false },
+        });
+        if (eql(request.method, "system.health")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .status = "vault_locked",
+            .custody_available = false,
+            .metadata_loaded = false,
+            .provider_access = false,
+            .live_handoff_proven = false,
+            .recovery_action = "unlock_platform_vault_then_restart_daemon",
+        });
+        if (eql(request.method, "setup.readiness") or eql(request.method, "setup.evidence") or eql(request.method, "setup.plan")) return self.handleRequest(allocator, request, channel);
+        return control.failure(allocator, request.id, -32000, "VaultLocked");
     }
     fn finishInvocation(self: *Engine, item: *Invocation, response: anyerror![]u8) void {
         self.mutex.lockUncancelable(self.io);
@@ -1564,6 +1646,7 @@ pub const Engine = struct {
         self.root_id = if (existing) try storage.Store.readRootId(self.allocator, database_path) else try self.allocator.dupeSentinel(u8, self.instance_selection.vaultRoot(), 0);
         if (!eql(self.root_id.?, self.instance_selection.vaultRoot())) return error.InstanceCustodyMismatch;
         if (!existing) try validatePersistedAdmission(self.allocator, "{}", 0);
+        if (builtin.is_test and self.fixture_startup_vault_locked) return error.Locked;
         self.root_key = self.test_key orelse if (existing) try vault.Vault.loadRoot(self.root_id.?) else try vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false);
         self.db = try storage.Store.openRootWithSnapshotValidator(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission);
         var saved = try self.db.?.readSnapshot();
@@ -1826,7 +1909,9 @@ pub const Engine = struct {
             snapshot.artifact = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
             snapshot.service = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
         }
-        snapshot.vault = .{ .state = if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
+        snapshot.vault = .{ .state = if (self.vault_locked) .locked else if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
+        // A locked startup has not loaded retained source/account metadata.
+        if (self.vault_locked) return snapshot;
         var connected = false;
         for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= self.now() and (source.authorized_until == null or source.authorized_until.? > self.now())) {
             connected = true;
@@ -2214,6 +2299,9 @@ pub const Engine = struct {
         };
         var request = control.parse(allocator, payload) catch |err| return control.failure(allocator, .null, -32600, @errorName(err));
         defer request.deinit();
+        // Audit refusals do not restore or rewrite the actor's committed state.
+        // Production control ingress already verifies the socket's peer user.
+        if (eql(request.method, "integrations.nativeRequestAudit")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -2971,6 +3059,20 @@ pub const Engine = struct {
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);
+        if (eql(method, "integrations.nativeRequestAudit")) {
+            if (params != .object or params.object.count() != 2) return error.InvalidParams;
+            const reference_value = control.get(params, "native_ref") orelse return error.NativeOwnerRequired;
+            if (reference_value != .object or reference_value.object.count() != 5) return error.InvalidNativeRef;
+            const reference = try parseNativeRef(params);
+            const thread_id = try control.string(params, "thread_id");
+            var arena: std.heap.ArenaAllocator = .init(allocator);
+            defer arena.deinit();
+            const result = try nativeRequestAuditResult(arena.allocator(), &self.state, &self.requests, &self.native_owners, self.outcome_intents.items, self.revision, reference, thread_id);
+            _ = snapshot_admission.countJson(.{ .jsonrpc = "2.0", .id = request.id, .result = result }, 32 * 1024) catch |err| switch (err) {
+                error.SnapshotTooLarge => return error.NativeResultTooLarge,
+            };
+            return control.success(allocator, request.id, result);
+        }
         if (eql(method, "sources.catalog")) return control.success(allocator, request.id, .{
             .providers = .{
                 .{ .provider = "codex", .native_store = true, .explicit_import = true, .browser_import = "needs_provider_adapter_proof", .identity_verification_required = true, .live_handoff_proven = false },
@@ -3244,17 +3346,9 @@ pub const Engine = struct {
     }
 
     fn publicSnapshot(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value) ![]u8 {
-        const AccountView = struct { id: []const u8, label: []const u8, account_type: []const u8, lifecycle: domain.AccountLifecycle, identity: struct { provider: []const u8 }, source_ids: []const []const u8 };
-        const accounts = try allocator.alloc(AccountView, self.state.accounts.items.len);
+        const accounts = try allocator.alloc(PublicAccountView, self.state.accounts.items.len);
         defer allocator.free(accounts);
-        for (self.state.accounts.items, accounts) |account, *view| view.* = .{
-            .id = account.id,
-            .label = account.label,
-            .account_type = account.account_type,
-            .lifecycle = account.lifecycle,
-            .identity = .{ .provider = account.identity.provider },
-            .source_ids = account.source_ids,
-        };
+        for (self.state.accounts.items, accounts) |account, *view| view.* = publicAccountView(account);
         const Capacity = struct { provider: []const u8, issuer: []const u8, complete: bool, resource: domain.Resource, window_start: i64, window_end: i64, remaining: f64, limit: ?f64, buckets: usize, unknown_buckets: usize };
         var capacities: std.ArrayList(Capacity) = .empty;
         defer capacities.deinit(allocator);
@@ -4770,6 +4864,192 @@ const NativeRefWire = struct {
     thread_instance_generation: []const u8,
     attachment_generation: []const u8,
 };
+const NativeAuditAttempt = struct {
+    account_handle: []const u8,
+    issued_sequence: u64,
+    state: request_authority.Status,
+    accepted_report: ?request_authority.Report,
+    terminal_report: ?request_authority.Report,
+    // A current binding is not historical route authority. Lease retirement
+    // leaves this null; do not infer a completed request's route from a binding.
+    route_generation: ?u64,
+};
+const NativeAuditRecord = struct { request_id: []const u8, first: NativeAuditAttempt, alternate: ?NativeAuditAttempt };
+const NativeAuditBinding = struct { account_handle: []const u8, route_generation: u64 };
+const NativeRequestAuditResult = struct {
+    schema_version: u32 = 1,
+    native_ref: NativeRefWire,
+    thread_id: []const u8,
+    revision: u64,
+    records: []NativeAuditRecord,
+    binding: ?NativeAuditBinding = null,
+    pending_requests: bool = false,
+    pending_outcomes: bool = false,
+};
+
+// Enrollment creates random daemon-local identifiers, already used as opaque
+// control handles by accounts.list and account.drain. Refuse noncanonical
+// legacy identifiers instead of exposing a label or provider account ID.
+fn nativeAuditAccountHandle(id: []const u8) ![]const u8 {
+    if (id.len != 64) return error.InvalidNativeAuditAccountHandle;
+    for (id) |byte| if (!std.ascii.isDigit(byte) and (byte < 'a' or byte > 'f')) return error.InvalidNativeAuditAccountHandle;
+    return id;
+}
+
+fn nativeAuditAttempt(state: *const domain.State, reference: native_owner.NativeRef, record: *const request_authority.Record, attempt: request_authority.Attempt) !NativeAuditAttempt {
+    var result: NativeAuditAttempt = .{
+        .account_handle = try nativeAuditAccountHandle(attempt.account_id),
+        .issued_sequence = attempt.issued_sequence,
+        .state = attempt.state,
+        .accepted_report = attempt.accepted_report,
+        .terminal_report = attempt.terminal_report,
+        .route_generation = null,
+    };
+    for (state.leases.items) |lease| {
+        if (!eql(lease.id, attempt.lease_handle)) continue;
+        const original = lease.native_ref orelse return error.InvalidNativeAttribution;
+        if (!original.same(reference) or !eql(lease.binding_id, record.intent.binding_id) or !eql(lease.account_id, attempt.account_id) or lease.purpose != .request) return error.InvalidNativeAttribution;
+        result.route_generation = lease.route_generation;
+    }
+    return result;
+}
+
+fn nativeRequestAuditResult(allocator: std.mem.Allocator, state: *const domain.State, requests: *const request_authority.Ledger, owners: *const native_owner.Ledger, outcomes: []const OutcomeIntent, revision: u64, reference: native_owner.NativeRef, thread_id: []const u8) !NativeRequestAuditResult {
+    try reference.validate();
+    if (thread_id.len == 0 or thread_id.len > native_owner.maximum_thread_bytes) return error.InvalidNativeAttachment;
+    const owner = owners.lookupOwnerForRef(reference) orelse return error.UnknownNativeOwner;
+    if (!eql(owner.application, "codex")) return error.WrongPurpose;
+    const attachment = owners.lookupAttachment(reference) orelse return error.UnknownNativeAttachment;
+    if (!eql(attachment.thread_id, thread_id)) return error.NativeOwnerMismatch;
+    // Terminal/retired attribution remains readable. This does not authorize
+    // attachment, native access, renewal, routing, or a new request attempt.
+    const selected = try requests.nativeAuditRecords(allocator, "codex", reference, thread_id);
+    defer allocator.free(selected);
+    const records = try allocator.alloc(NativeAuditRecord, selected.len);
+    var result: NativeRequestAuditResult = .{ .native_ref = try nativeRefWire(allocator, reference), .thread_id = thread_id, .revision = revision, .records = records };
+    for (selected, records) |record, *output| {
+        output.* = .{
+            .request_id = record.intent.key.request_id,
+            .first = try nativeAuditAttempt(state, reference, record, record.first),
+            .alternate = if (record.alternate) |alternate| try nativeAuditAttempt(state, reference, record, alternate) else null,
+        };
+        if (unresolvedAttempt(record.first)) result.pending_requests = true;
+        if (record.alternate) |alternate| {
+            if (unresolvedAttempt(alternate)) result.pending_requests = true;
+        }
+    }
+    for (state.leases.items) |lease| if (lease.native_ref) |original| {
+        if (original.same(reference)) result.pending_requests = true;
+    };
+    for (state.bindings.items) |binding| {
+        const original = binding.native_ref orelse continue;
+        if (!original.same(reference) or !eql(binding.application, "codex") or !eql(binding.session_id, thread_id)) continue;
+        if (result.binding != null) return error.NativeAuditBindingAmbiguous;
+        result.binding = .{ .account_handle = try nativeAuditAccountHandle(binding.account_id), .route_generation = binding.route_generation };
+    }
+    for (outcomes) |outcome| {
+        if (outcome.native_ref) |original| if (original.same(reference)) {
+            result.pending_outcomes = true;
+            continue;
+        };
+        if (outcome.key.kind != .request) continue;
+        const intent = requests.intentForHandle("codex", outcome.owner_id) orelse continue;
+        const original = intent.native_ref orelse continue;
+        if (original.same(reference) and eql(intent.key.session_id, thread_id)) result.pending_outcomes = true;
+    }
+    return result;
+}
+
+test "native request audit preserves terminal truth and redacts unselected custody and internal request fields" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const reference: native_owner.NativeRef = .{ .owner_id = @splat(7), .adapter_epoch = 1, .endpoint_generation = 1, .thread_instance_generation = 1, .attachment_generation = 1 };
+    var owners = native_owner.Ledger.init(allocator);
+    try owners.owners.append(allocator, .{ .id = reference.owner_id, .application = "codex", .adapter_epoch = 1, .endpoint_generation = 1, .witness = undefined, .native_nonce = @splat(9), .endpoint_path = "/generated-private-owner-path" });
+    try owners.attachments.append(allocator, .{ .reference = reference, .thread_id = "selected-thread", .registration_operation = @splat('1'), .phase = .attached });
+    var requests = request_authority.Ledger.init(allocator, 8);
+    const account: [64]u8 = @splat('b');
+    const handle: [64]u8 = @splat('a');
+    const fingerprint: [64]u8 = @splat('f');
+    const intent: request_authority.Intent = .{ .key = .{ .application = "codex", .session_id = "selected-thread", .request_id = "selected-request" }, .binding_id = "private-binding", .demand_fingerprint = &fingerprint, .native_ref = reference };
+    _ = try requests.issue(intent, &handle, &account, 10);
+    _ = try requests.reportForOwner("codex", &handle, reference, .{ .event = .accepted, .status = 200 });
+    _ = try requests.reportForOwner("codex", &handle, reference, .{ .event = .completed });
+    var foreign = intent;
+    foreign.native_ref.?.attachment_generation += 1;
+    foreign.key.request_id = "foreign-private-request";
+    const foreign_handle: [64]u8 = @splat('c');
+    _ = try requests.issue(foreign, &foreign_handle, &account, 10);
+    var state = domain.State.init(allocator);
+    try state.bindings.append(allocator, .{ .id = "private-binding", .application = "codex", .session_id = "selected-thread", .native_ref = reference, .account_id = &account, .grant_id = "private-grant", .grant_generation = 1, .route_generation = 2 });
+    const before = try std.json.Stringify.valueAlloc(allocator, requests.snapshot(), .{});
+    const result = try nativeRequestAuditResult(allocator, &state, &requests, &owners, &.{}, 12, reference, "selected-thread");
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqualStrings("selected-request", result.records[0].request_id);
+    try std.testing.expectEqualStrings(&account, result.records[0].first.account_handle);
+    try std.testing.expectEqual(request_authority.Status.completed, result.records[0].first.state);
+    try std.testing.expectEqual(request_authority.Event.accepted, result.records[0].first.accepted_report.?.event);
+    try std.testing.expectEqual(request_authority.Event.completed, result.records[0].first.terminal_report.?.event);
+    try std.testing.expect(result.records[0].first.route_generation == null);
+    try std.testing.expectEqual(@as(u64, 2), result.binding.?.route_generation);
+    try std.testing.expect(!result.pending_requests and !result.pending_outcomes);
+    const encoded = try std.json.Stringify.valueAlloc(allocator, result, .{});
+    for ([_][]const u8{ "lease_handle", "account_id", "binding_id", "demand_fingerprint", "native_nonce", "endpoint_path", "private-binding", "private-grant", "generated-private-owner-path", "foreign-private-request" }) |private_field| try std.testing.expect(std.mem.indexOf(u8, encoded, private_field) == null);
+    const after = try std.json.Stringify.valueAlloc(allocator, requests.snapshot(), .{});
+    try std.testing.expectEqualStrings(before, after);
+    try std.testing.expectError(error.NativeOwnerMismatch, nativeRequestAuditResult(allocator, &state, &requests, &owners, &.{}, 12, reference, "different-thread"));
+    var changed = reference;
+    changed.endpoint_generation += 1;
+    try std.testing.expectError(error.UnknownNativeOwner, nativeRequestAuditResult(allocator, &state, &requests, &owners, &.{}, 12, changed, "selected-thread"));
+    try std.testing.expectError(error.InvalidNativeAuditAccountHandle, nativeAuditAccountHandle("generated-label"));
+}
+
+test "native request audit exposes unknown and outstanding request credit without fabricating terminal completion" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const reference: native_owner.NativeRef = .{ .owner_id = @splat(7), .adapter_epoch = 1, .endpoint_generation = 1, .thread_instance_generation = 1, .attachment_generation = 1 };
+    var owners = native_owner.Ledger.init(allocator);
+    try owners.owners.append(allocator, .{ .id = reference.owner_id, .application = "codex", .adapter_epoch = 1, .endpoint_generation = 1, .witness = undefined, .native_nonce = @splat(9), .endpoint_path = "/generated-private-owner-path" });
+    try owners.attachments.append(allocator, .{ .reference = reference, .thread_id = "selected-thread", .registration_operation = @splat('1'), .phase = .attached });
+    var requests = request_authority.Ledger.init(allocator, 8);
+    const account: [64]u8 = @splat('b');
+    const handle: [64]u8 = @splat('a');
+    const fingerprint: [64]u8 = @splat('f');
+    const intent: request_authority.Intent = .{ .key = .{ .application = "codex", .session_id = "selected-thread", .request_id = "selected-request" }, .binding_id = "private-binding", .demand_fingerprint = &fingerprint, .native_ref = reference };
+    _ = try requests.issue(intent, &handle, &account, 10);
+    _ = try requests.reportForOwner("codex", &handle, reference, .{ .event = .accepted });
+    requests.recoverAfterRestart();
+    const state = domain.State.init(allocator);
+    const outcomes = [_]OutcomeIntent{.{ .key = creditKey(.request, &handle, 1), .owner_id = &handle, .plan_bytes = 1 }};
+    const result = try nativeRequestAuditResult(allocator, &state, &requests, &owners, &outcomes, 12, reference, "selected-thread");
+    try std.testing.expect(result.pending_requests and result.pending_outcomes);
+    try std.testing.expectEqual(request_authority.Status.unknown, result.records[0].first.state);
+    try std.testing.expect(result.records[0].first.accepted_report != null);
+    try std.testing.expect(result.records[0].first.terminal_report == null);
+    try std.testing.expect(result.binding == null);
+    try std.testing.expectError(error.AttemptBudgetExhausted, requests.checkIssue(intent));
+}
+
+test "native audit RPC rejects adapter purpose, unknown selectors and poisoned custody without restore or mutation" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var current: Engine = undefined;
+    current.poisoned = false;
+    // Wrong channel and malformed selectors must refuse before reading any
+    // uninitialized custody fields, including a database restore path.
+    var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeRequestAudit\",\"params\":{\"cursor\":\"unbounded\"}}");
+    defer request.deinit();
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .adapter));
+    const refused = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeRequestAudit\",\"params\":{\"cursor\":\"unbounded\"}}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "InvalidParams") != null);
+    current.poisoned = true;
+    const poisoned = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeRequestAudit\",\"params\":{}}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, poisoned, "CustodyUnavailable") != null);
+}
+
 const NativeDiscoveryThread = struct {
     thread_id: []const u8,
     thread_instance_generation: []const u8,
@@ -5515,6 +5795,114 @@ fn sameDemand(a: anytype, b: @TypeOf(a)) bool {
     return true;
 }
 
+test "locked vault startup keeps bounded diagnostics and refuses all custody work" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, true);
+    defer current.deinit();
+    try std.testing.expect(current.vault_locked and current.poisoned);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    const cleared_key: envelope.Key = @splat(0);
+    try std.testing.expectEqualSlices(u8, &cleared_key, &current.root_key);
+    for ([_][]const u8{ "system.handshake", "system.health", "setup.readiness", "setup.evidence", "setup.plan" }) |method| {
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, .control);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+        if (eql(method, "system.health")) {
+            try std.testing.expectEqualStrings("vault_locked", try control.string(result, "status"));
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            try std.testing.expect(!try control.boolean(result, "metadata_loaded", true));
+            try std.testing.expectEqualStrings("unlock_platform_vault_then_restart_daemon", try control.string(result, "recovery_action"));
+        }
+        if (eql(method, "setup.readiness")) {
+            try std.testing.expect(!try control.boolean(result, "ready", true));
+            const findings = control.get(result, "findings").?.array.items;
+            try std.testing.expectEqualStrings("vault_locked", try control.string(findings[2], "reason"));
+            try std.testing.expectEqualStrings("unlock_vault", try control.string(findings[2], "action"));
+            try std.testing.expectEqualStrings("observation_unknown", try control.string(findings[3], "reason"));
+        }
+    }
+    for (control.methods) |method| {
+        if (eql(method.name, "system.handshake") or eql(method.name, "system.health") or eql(method.name, "setup.readiness") or eql(method.name, "setup.evidence") or eql(method.name, "setup.plan")) continue;
+        // Absent params is a valid envelope. An empty Zig tuple serializes
+        // as [], which the control wire contract correctly refuses first.
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 2, .method = method.name }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, method.channel);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(parsed.value, "error").?, "message"));
+    }
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":true}",
+    }) |malformed| {
+        const refusal = try current.dispatch(allocator, malformed, .control);
+        defer allocator.free(refusal);
+        var result = try std.json.parseFromSlice(std.json.Value, allocator, refusal, .{});
+        defer result.deinit();
+        const failure = control.get(result.value, "error").?;
+        try std.testing.expectEqualStrings("InvalidRequest", try control.string(failure, "message"));
+        try std.testing.expectEqual(@as(i64, -32600), control.get(failure, "code").?.integer);
+    }
+    const native_handshake = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"system.handshake\"}", .adapter);
+    defer allocator.free(native_handshake);
+    var native_result = try std.json.parseFromSlice(std.json.Value, allocator, native_handshake, .{});
+    defer native_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(native_result.value, "error").?, "message"));
+    const browser_reply = try current.dispatch(allocator, "untrusted browser payload", .browser);
+    defer allocator.free(browser_reply);
+    var browser_result = try std.json.parseFromSlice(std.json.Value, allocator, browser_reply, .{});
+    defer browser_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(browser_result.value, "error").?, "code"));
+    try std.testing.expectEqual(@as(usize, 0), current.state.sources.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectError(error.FileNotFound, directory.dir.statFile(io, "state.sqlite", .{ .follow_symlinks = false }));
+}
+
+test "locked existing custody retains its original database and key across explicit restart" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const key: envelope.Key = @splat(0x63);
+    const original = try Engine.openWithKey(io, allocator, path, key);
+    original.deinit();
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_before);
+    const locked = try Engine.createConfigured(io, allocator, path, null, .default, null, true);
+    try std.testing.expect(locked.vault_locked and locked.db == null);
+    locked.deinit();
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+    try std.testing.expectError(error.WrongKey, Engine.openWithKey(io, allocator, path, @splat(0x64)));
+    const reopened = try Engine.openWithKey(io, allocator, path, key);
+    defer reopened.deinit();
+    try std.testing.expect(!reopened.vault_locked and !reopened.poisoned);
+    try std.testing.expect(reopened.db != null);
+    // Synthetic supplied key only: this is not a real platform unlock proof.
+}
+
 test "snapshot maintenance float reserve covers decimal smallest subnormals" {
     const smallest: f64 = @bitCast(@as(u64, 1));
     const range = try scalarRange(f64);
@@ -5655,6 +6043,37 @@ test "actor state survives restart and control cannot materialize credentials" {
     defer allocator.free(snapshot);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "work") != null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "access_token") == null);
+}
+
+test "public account identity exposes only provider and actual verification truth" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ true, false }) |verified| {
+        // Threadless DTO model reports the stored identity bit. The same
+        // projector is used by the actor's actual publicSnapshot serializer.
+        const account: domain.Account = .{
+            .id = "public-account-model",
+            .identity = .{
+                .provider = "codex",
+                .issuer = "private-issuer-model",
+                .subject = "private-subject-model",
+                .tenant = "private-tenant-model",
+                .verified = verified,
+            },
+            .source_ids = &.{"public-source-model"},
+        };
+        const raw = try std.json.Stringify.valueAlloc(allocator, publicAccountView(account), .{});
+        defer allocator.free(raw);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+        defer parsed.deinit();
+        const identity = control.get(parsed.value, "identity").?;
+        try std.testing.expectEqual(@as(usize, 2), identity.object.count());
+        try std.testing.expectEqualStrings("codex", try control.string(identity, "provider"));
+        try std.testing.expectEqual(verified, control.get(identity, "verified").?.bool);
+        for ([_][]const u8{ "issuer", "subject", "tenant" }) |field| try std.testing.expect(control.get(identity, field) == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-issuer-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-subject-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-tenant-model") == null);
+    }
 }
 
 test "Git route cache retires oldest idle context while preserving native and leased routes" {

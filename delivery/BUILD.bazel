@@ -7,10 +7,72 @@ load(":metadata_rules.bzl", "extension_metadata")
 load(":browser_proof_rules.bzl", "browser_runtime_authority")
 
 package(default_visibility = ["//visibility:public"])
+python_binary(
+    name = "native_login_ui_qualification",
+    main = "//tools:native_login_ui_qualification.py",
+    srcs = ["//tools:yoga_portal_carrier_sources", "//tools:yoga_delivery_settings.py", "//tools:guard_yoga_delivery_profile.py"],
+    data = ["//clients/linux:control", "//tools:native_login_ui_prepare_remote.py", "//tools:yoga_portal_worker.py",
+            "//delivery:portable.py",
+            "@omux_yoga_controller_nars//:native_login_ui_inputs", "@omux_yoga_controller_nars//:inventory.json",
+            "@omux_yoga_delivery_inputs//:d631-receipt.json", "@omux_yoga_delivery_inputs//:yoga-ssh-known-hosts", "@omux_host//:ssh"],
+    args = ["--control", "$(location //clients/linux:control)", "--inventory", "$(location @omux_yoga_controller_nars//:inventory.json)",
+            "--source-receipt", "$(location @omux_yoga_delivery_inputs//:d631-receipt.json)",
+            "--known-hosts", "$(location @omux_yoga_delivery_inputs//:yoga-ssh-known-hosts)",
+            "--worker", "$(location //tools:yoga_portal_worker.py)", "--remote-worker", "$(location //tools:native_login_ui_prepare_remote.py)",
+            "--elf-parser", "$(location //delivery:portable.py)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "native_login_ui_qualification_test",
+    main = "//tools:native_login_ui_qualification_test.py",
+    srcs = ["//tools:native_login_ui_qualification.py", "//tools:native_login_ui_prepare_remote.py",
+            "//tools:yoga_portal_carrier_sources", "//tools:yoga_delivery_settings.py", "//tools:guard_yoga_delivery_profile.py"],
+    data = ["@omux_yoga_controller_nars//:inventory.json", "//delivery:portable.py",
+            "//clients/linux:control", "@omux_yoga_controller_nars//:native_login_ui_inputs"],
+    args = ["$(location @omux_yoga_controller_nars//:inventory.json)", "$(location //delivery:portable.py)",
+            "$(location //clients/linux:control)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
 filegroup(name = "public_sources", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
 exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
 exports_files(["yoga_wrapper_authority.py", "yoga_wrapper_custody.py", "generate_portable_launcher_template.py"])
+
+# One guard-bound native OAuth RUN; UI descriptors are created after Bazel launch.
+python_binary(
+    name = "native_account_login",
+    main = "native_account_login_guarded.py",
+    srcs = ["native_account_login.py", "//tools:yoga_portal_carrier_sources",
+            "//tools:guard_codex_login_profile.py", "//tools:guard_codex_live_profile.py",
+            "//tools:guard_owner_runtime_input.py", "//tools:codex_owner_runtime_input.py"],
+    data = ["@omux_native_enrollment//:codex", "@omux_native_enrollment//:native-source-receipt.json",
+            "@omux_native_enrollment//:retained_runtime",
+            "@omux_native_enrollment//:runtime/lib/codex/lib/ld-linux-x86-64.so.2",
+            "@omux_native_enrollment//:runtime/lib/codex/share/ca-bundle.crt",
+            "//tools:yoga_portal_worker.py", "@omux_yoga_delivery_inputs//:yoga-ssh-known-hosts", "@omux_host//:ssh"],
+    args = ["--codex", "$(location @omux_native_enrollment//:codex)",
+            "--source-receipt", "$(location @omux_native_enrollment//:native-source-receipt.json)",
+            "--portal-worker", "$(location //tools:yoga_portal_worker.py)",
+            "--loader", "$(location @omux_native_enrollment//:runtime/lib/codex/lib/ld-linux-x86-64.so.2)",
+            "--ca-bundle", "$(location @omux_native_enrollment//:runtime/lib/codex/share/ca-bundle.crt)"],
+    tags = ["manual", "no-remote", "no-cache", "requires-network"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "native_account_login_test",
+    main = "native_account_login_test.py",
+    srcs = ["native_account_login.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "native_account_login_guarded_test",
+    main = "native_account_login_guarded_test.py",
+    srcs = ["native_account_login.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 
 # Initial support is the declared native Linux target only. Other targets get
 # an explicit unavailable module; there is no host-template fallback.
@@ -656,6 +718,26 @@ python_test(
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 
+# Failure-only PTY recognition and cleanup models; no native process execution.
+python_test(
+    name = "native_terminal_failure_test",
+    main = "test_native_terminal_failure.py",
+    srcs = [
+        "test_native_cold_discovery.py",
+        "native_thread_census.py",
+        "test_installed_legacy_native_tui.py", "test_installed_native_tui.py",
+        "test_installed_native_interop.py", "test_installed_custody.py",
+        "native_run_cli_failure.py", "native_resumed_checkpoint.py",
+        "native_history_diagnostic.py", "native_fd2_observer.py", "native_cli_stderr.py",
+        "codex_runtime_selection.py", "pack.py", "install.py", "portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
 python_test(
     name = "native_run_cli_failure_test",
     main = "test_native_run_cli_failure.py",
@@ -876,4 +958,101 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Opt-in installed first-account verification; no candidate native runtime.
+python_test(
+    name = "installed_codex_live_enrollment_test",
+    main = "test_installed_codex_live_enrollment.py",
+    srcs = ["test_installed_custody.py", "pack.py", "install.py", "portable.py"],
+    data = [":default_core_instance_archive", "@omux_nix//:dbus_run_session",
+            "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["$(location :default_core_instance_archive)", "$(location @omux_nix//:dbus_run_session)",
+            "$(location @omux_nix//:dbus_daemon)", "$(location @omux_nix//:gnome_keyring_daemon)"],
+    env_inherit = ["OMUX_CODEX_LIVE_INPUT_MANIFEST"],
+    tags = ["manual", "no-remote", "no-cache", "requires-network"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "codex_live_enrollment_contract_test",
+    main = "test_codex_live_enrollment_contract.py",
+    srcs = ["test_installed_codex_live_enrollment.py", "test_installed_custody.py",
+            "pack.py", "install.py", "portable.py"],
+)
+
+# Opt-in real provider work; execution guard admits this exact target only.
+python_test(
+    name = "installed_codex_live_continuity_test",
+    main = "test_installed_codex_live_continuity.py",
+    srcs = [
+        "test_installed_native_tui.py", "test_installed_native_interop.py",
+        "test_installed_custody.py", "native_resumed_checkpoint.py",
+        "pack.py", "install.py", "portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    data = [
+        ":default_instance_archive",
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon",
+        "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    tags = ["manual", "no-remote", "no-cache", "requires-network"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "codex_live_contract_test",
+    main = "test_codex_live_contract.py",
+    srcs = [
+        "test_installed_codex_live_continuity.py", "test_installed_native_tui.py",
+        "test_installed_native_interop.py", "test_installed_custody.py",
+        "native_resumed_checkpoint.py", "pack.py", "install.py", "portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py",
+    ],
+)
+
+python_test(
+    name = "native_account_login_loader_test",
+    main = "native_account_login_loader_test.py",
+    srcs = ["native_account_login.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# One explicit persistent product action, separate from disposable proof tests.
+cc_binary(
+    name = "resident_session_services",
+    srcs = ["resident_session_services.c"],
+    deps = ["@omux_nix//:glib"],
+    tags = ["manual"],
+)
+python_binary(
+    name = "resident_codex_enrollment",
+    main = "resident_enrollment.py",
+    srcs = ["install.py","pack.py","portable.py","//tools:guard_resident_enrollment_profile.py"],
+    data = [":default_instance_archive","@omux_nix//:systemctl",":resident_session_services"],
+    args = ["$(location :default_instance_archive)","$(location @omux_nix//:systemctl)",
+        "$(location :resident_session_services)"],
+    tags = ["manual","no-remote","no-cache","requires-network"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "resident_enrollment_contract_test",
+    main = "test_resident_enrollment.py",
+    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py",
+        "//tools:guard_resident_enrollment_profile.py"],
 )

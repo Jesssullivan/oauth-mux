@@ -123,7 +123,7 @@ class TerminalProcess:
     No poll/wait may reap the child before exact owned process-group cleanup.
     """
 
-    def __init__(self, candidate, environment, cwd, resume=None, *, popen_factory=None):
+    def __init__(self, candidate, environment, cwd, resume=None, *, cli_overrides=(), popen_factory=None, failure_observer=None):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         bootstrap = ("import os,runpy,sys;p=sys.argv.pop(1);sys.path.insert(0,os.path.dirname(p));"
@@ -132,10 +132,13 @@ class TerminalProcess:
                    "--pty-exec", str(candidate), str(cwd), str(os.getpid())]
         if resume is not None:
             command.append(resume)
+        if cli_overrides:
+            command.extend(["--cli-overrides", json.dumps(list(cli_overrides), separators=(",", ":"))])
         self.selector = selectors.DefaultSelector()
         self.closed = False
         self.total = 0
         self.suffix = b""
+        self.failure_observer = failure_observer
         try:
             os.set_blocking(self.master, False)
             self.selector.register(self.master, selectors.EVENT_READ)
@@ -162,6 +165,8 @@ class TerminalProcess:
                 raise
             self.total += len(packet)
             require(self.total <= OUTPUT_LIMIT, "native terminal output exceeded bound")
+            if self.failure_observer is not None:
+                self.failure_observer.observe(packet)
             observed = self.suffix + packet
             # A terminal-emulator reply only: this never submits application
             # input or a provider prompt. Account/model output is not retained.
@@ -382,7 +387,7 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
                 "sealed original native process attribution changed")
 
 
-def inside(bundle, candidate, receipt, keyring, root):
+def inside(bundle, candidate, receipt, keyring, root, *, live=None):
     global PHASE
     require(os.environ.get("OMUX_ISOLATED_VAULT_PROOF") == "private-bus-private-xdg",
             "disposable genuine vault context required")
@@ -413,6 +418,8 @@ def inside(bundle, candidate, receipt, keyring, root):
                       '[analytics]\nenabled = false\n[features]\nplugins = false\nrecommended_plugins = false\n'
                       'apps = false\nenable_mcp_apps = false\n[projects.' + json.dumps(str(work)) + ']\ntrust_level = "trusted"\n')
     config.chmod(0o600)
+    if live is not None:
+        live.configure(config)
     payload = support.pack.read_bundle(bundle)
     manifest, _ = support.pack.verify_bundle(payload)
     require(manifest["distribution"] == "portable-linux", "actual portable Omux archive required")
@@ -458,7 +465,11 @@ def inside(bundle, candidate, receipt, keyring, root):
             time.sleep(0.05)
         else:
             raise ValueError("installed custody startup deadline exceeded")
-        support.check_empty_domain(cli("state.snapshot"))
+        if live is None:
+            support.check_empty_domain(cli("state.snapshot"))
+        else:
+            support.check_empty_domain(cli("state.snapshot"))
+            live.enroll(cli)
         PHASE = "bootstrap-native"
         # This process only supplies genuine capability inventory for initial
         # reversible setup. It creates no native thread or owner attachment.
@@ -480,7 +491,10 @@ def inside(bundle, candidate, receipt, keyring, root):
         bootstrap_native = None
         require(not endpoint.exists(), "bootstrap native endpoint remained after clean shutdown")
         PHASE = "ordinary-tui-startup"
-        terminal = TerminalProcess(binary, environment, work)
+        if live is not None:
+            live.prepare_native_profile(binary, environment, work)
+        terminal = TerminalProcess(binary, environment, work,
+                                   cli_overrides=live.cli_overrides if live is not None else ())
         first_pid = terminal.process.pid
         endpoint, thread, first = wait_loaded(codex_home, terminal)
         first_endpoint, first_witness = endpoint, process_witness(first_pid)
@@ -506,14 +520,18 @@ def inside(bundle, candidate, receipt, keyring, root):
         require(support.private_file(config, 1024 * 1024) == configured
                 and support.private_file(capability_path, 128) == capability,
                 "selected detach removed installed configuration")
-        support.check_empty_domain(cli("state.snapshot"))
+        if live is None:
+            support.check_empty_domain(cli("state.snapshot"))
+        else:
+            live.check_domain(cli("state.snapshot"))
         PHASE = "ordinary-clean-exit"
         terminal.close(require_success=True)
         terminal = None
         require(metadata(codex_home, thread) == before and not endpoint.exists(),
                 "clean native exit changed persistent metadata")
         PHASE = "cold-native-resume"
-        terminal = TerminalProcess(binary, environment, work, resume=thread)
+        terminal = TerminalProcess(binary, environment, work, resume=thread,
+                                   cli_overrides=live.cli_overrides if live is not None else ())
         require(terminal.process.pid != first_pid, "cold native resume reused original process")
         endpoint, resumed_thread, second = wait_loaded(codex_home, terminal)
         second_witness = process_witness(terminal.process.pid)
@@ -526,6 +544,29 @@ def inside(bundle, candidate, receipt, keyring, root):
         require(support.private_file(config, 1024 * 1024) == configured
                 and support.private_file(capability_path, 128) == capability,
                 "cold native resume changed retained history or configuration")
+        if live is not None:
+            result, completed = live.prove(cli, codex_home, thread, terminal, endpoint,
+                                           second, resumed, candidate, receipt)
+            # Raw encrypted native history retains the existing detach/reentry refusal.
+            # Ordinary clean exit is owned cleanup, not a native-removal proof.
+            terminal.alive()
+            require(live.history(codex_home, thread, resumed) == completed,
+                    "live completed boundary changed accepted native history")
+            terminal.close(require_success=True)
+            terminal = None
+            require(live.history(codex_home, thread, resumed) == completed,
+                    "live clean exit changed accepted native history")
+            require(support.private_file(config, 1024 * 1024) == configured
+                    and support.private_file(capability_path, 128) == capability,
+                    "live cleanup changed installed native configuration")
+            support.stop(daemon, require_success=True)
+            daemon = None
+            uninstalled = support.install.uninstall(prefix, records)
+            require(uninstalled["preserved"] == [] and len(uninstalled["removed"]) == len(record["files"]),
+                    "live owned distribution uninstall failed")
+            print(live.marker.decode("ascii"), end="")
+            print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+            return
         PHASE = "resumed-detach"
         second_operation = detach(cli, endpoint, thread, second)
         terminal.alive()
@@ -536,7 +577,10 @@ def inside(bundle, candidate, receipt, keyring, root):
         require(support.private_file(config, 1024 * 1024) == configured
                 and support.private_file(capability_path, 128) == capability,
                 "resumed selected detach removed installed configuration")
-        support.check_empty_domain(cli("state.snapshot"))
+        if live is None:
+            support.check_empty_domain(cli("state.snapshot"))
+        else:
+            live.check_domain(cli("state.snapshot"))
         support.stop(daemon, require_success=True)
         daemon = None
         PHASE = "durable-inspection"
@@ -568,7 +612,7 @@ def inside(bundle, candidate, receipt, keyring, root):
 
 
 def main():
-    if len(sys.argv) in (5, 6) and sys.argv[1] == "--pty-exec":
+    if len(sys.argv) >= 5 and sys.argv[1] == "--pty-exec":
         binary, cwd = (Path(value).resolve(strict=True) for value in sys.argv[2:4])
         # The PTY needs a separate controlling-terminal session. Bind its
         # lifetime to the exact parent in the kernel so the outer private-bus
@@ -584,9 +628,21 @@ def main():
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
         os.chdir(cwd)
         command = [str(binary)]
-        if len(sys.argv) == 6:
-            require(re.fullmatch(r"[0-9a-f-]{36}", sys.argv[5]) is not None, "native resume identity changed")
-            command.extend(["resume", sys.argv[5]])
+        extra = sys.argv[5:]
+        if extra and extra[0] != "--cli-overrides":
+            require(re.fullmatch(r"[0-9a-f-]{36}", extra[0]) is not None, "native resume identity changed")
+            command.extend(["resume", extra.pop(0)])
+        if extra:
+            require(len(extra) == 2 and extra[0] == "--cli-overrides", "native text profile flags differ")
+            overrides = json.loads(extra[1], object_pairs_hook=strict_object)
+            require(isinstance(overrides, list) and len(overrides) == 3
+                    and overrides[:2] == ['omux_broker.context_mode="text_transcript_v1"',
+                                          'model_reasoning_summary="none"']
+                    and re.fullmatch(r'model_reasoning_effort="(?:none|minimal|low|medium|high|xhigh|max|ultra|persistent)"',
+                                     overrides[2]) is not None,
+                    "native text profile flags differ")
+            for value in overrides:
+                command.extend(["-c", value])
         command.extend(["--no-alt-screen", "--strict-config"])
         os.execve(str(binary), command, os.environ)
     if len(sys.argv) == 7 and sys.argv[1] == "--inside":

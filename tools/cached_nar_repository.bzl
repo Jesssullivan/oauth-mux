@@ -45,16 +45,44 @@ def _implementation(ctx):
         # Generator emits only lstat-regular paths, never link aliases.
         ctx.symlink(item["source"], item["label"])
         labels.append(item["label"])
+    ui_labels = []
+    if ctx.attr.ui_roots:
+        inventory = json.decode(content)
+        by_path = {row["path"]: row for row in inventory["paths"]}
+        selected = {root: True for root in ctx.attr.ui_roots}
+        for _ in range(472):
+            additions = {}
+            for root in selected:
+                if root not in by_path:
+                    fail("UI reference outside pinned controller inventory")
+                for reference in by_path[root]["references"]:
+                    if reference not in selected:
+                        additions[reference] = True
+            if not additions:
+                break
+            selected.update(additions)
+        ui_bytes = 0
+        for root in selected:
+            ui_bytes += by_path[root]["narSize"]
+        if len(selected) != 181 or ui_bytes != 869166464:
+            fail("exact reference-closed native UI inventory required")
+        descriptors = json.decode(ctx.read("nar-descriptors.json"))
+        for item in descriptors["roots"]:
+            if item["descriptor"]["root"] in selected:
+                ui_labels.extend(item["regularInputs"].values())
+        ui_labels = sorted({label: True for label in ui_labels}.keys())
     ctx.file("BUILD.bazel", "\n".join([
         'package(default_visibility = ["//visibility:public"])',
         'exports_files(["inventory.json", "nar-descriptors.json"])',
         'filegroup(name = "regular_inputs", srcs = {})'.format(repr(labels)),
         'filegroup(name = "byteproof_inputs", srcs = [":regular_inputs", "inventory.json", "nar-descriptors.json"])',
+        'filegroup(name = "native_login_ui_inputs", srcs = {} + ["inventory.json", "nar-descriptors.json"])'.format(repr(ui_labels)),
     ]) + "\n", executable = False)
 
 cached_nar_repository = repository_rule(
     implementation = _implementation,
     attrs = {
+        "ui_roots": attr.string_list(),
         "inventory_path": attr.string(),
         "inventory_sha256": attr.string(),
         "bootstrap_closure": attr.string(),

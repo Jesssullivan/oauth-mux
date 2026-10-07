@@ -35,6 +35,7 @@ pub const methods = [_]Method{
     .{ .name = "operation.cancel", .summary = "Cancel an unissued enrollment or repair job." },
     .{ .name = "integrations.status", .summary = "Inspect implemented and unproven native integration capabilities." },
     .{ .name = "integrations.discover", .summary = "Inspect bounded authenticated native owner inventory in the selected integration context; hook compatibility is experimental and native support remains false." },
+    .{ .name = "integrations.nativeRequestAudit", .summary = "Read at most six retained request fences for one exact native owner attachment and thread, with opaque account handles and pending-state facts; no replay or continuity claim." },
     .{ .name = "integrations.install", .summary = "Install a reversible integration after proving its prerequisites." },
     .{ .name = "integrations.remove", .summary = "Restore owned settings; Codex retains custody until reachable native threads detach safely." },
     .{ .name = "integrations.attach", .summary = "Attach a compatible native Codex hook to selected or discovered loaded threads." },
