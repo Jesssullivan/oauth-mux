@@ -1428,7 +1428,7 @@ exports_files(["guard_codex_login_profile.py", "guard_native_login_ui_profile.py
 python_test(
     name = "guard_codex_login_profile_test",
     main = "guard_codex_login_profile_test.py",
-    srcs = ["execution_guard.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", "guard_codex_live_profile.py",
+    srcs = ["guard_codex_fresh_live_profile.py", "execution_guard.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", "guard_codex_live_profile.py",
             "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_dependency_profile.py",
             "guard_cache.py", "guard_test_evidence.py", "system_mask_policy.py"],
     target_compatible_with = ["@platforms//os:linux"],
@@ -1579,7 +1579,7 @@ python_test(
 python_test(
     name = "guard_native_login_ui_profile_test",
     main = "guard_native_login_ui_profile_test.py",
-    srcs = ["guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py","guard_codex_login_profile.py","guard_codex_live_profile.py",
+    srcs = ["guard_codex_fresh_live_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py","guard_codex_login_profile.py","guard_codex_live_profile.py",
         "guard_owner_runtime_input.py","codex_owner_runtime_input.py","execution_guard.py","guard_dependency_profile.py",
         "guard_cache.py","guard_test_evidence.py","system_mask_policy.py","verify_cached_nars.py"],
     target_compatible_with = ["@platforms//os:linux"],
@@ -1589,7 +1589,7 @@ exports_files(["guard_resident_enrollment_profile.py"])
 python_test(
     name = "guard_resident_enrollment_profile_test",
     main = "guard_resident_enrollment_profile_test.py",
-    srcs = ["guard_resident_enrollment_profile.py","execution_guard.py",
+    srcs = ["guard_codex_fresh_live_profile.py", "guard_resident_enrollment_profile.py","execution_guard.py",
         "guard_cache.py","guard_test_evidence.py","system_mask_policy.py","guard_dependency_profile.py",
         "guard_owner_runtime_input.py","codex_owner_runtime_input.py",
         "guard_codex_live_profile.py","guard_codex_login_profile.py","guard_native_login_ui_profile.py"],
