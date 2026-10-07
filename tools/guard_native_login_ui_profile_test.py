@@ -20,6 +20,11 @@ def plan():
         "known_hosts_path":login.KNOWN_HOSTS,"ssh_auth_socket":None,
         "output_parent":ui.OUTPUT_DESTINATION,"deadline_seconds":900}
 
+def systemctl_bind_readback(configured):
+    """Pinned systemctl v260.1: nonrecursive has no suffix, recursive has rbind."""
+    return " ".join(value.removesuffix(":norbind") if value.endswith(":norbind")
+        else value if value.endswith(":rbind") else value+":rbind" for value in configured)
+
 class PrepareModels(unittest.TestCase):
     def test_exact_provider_free_route_does_not_inherit_login_admission(self):
         self.assertEqual(dependency.selected_profile("native-login-ui",["run",ui.LABEL]),{"PrivateNetwork":"no"})
@@ -61,10 +66,10 @@ class PrepareModels(unittest.TestCase):
         admitted.namespace = Path("/private/prepare")
         admitted.output = Path("/private/output")
         admitted.agent_path = None
-        actual = {"BindReadOnlyPaths":" ".join(admitted.bindings()),
-            "BindPaths":admitted.writable_binding()}
+        actual = {"BindReadOnlyPaths":systemctl_bind_readback(admitted.bindings()),
+            "BindPaths":systemctl_bind_readback([admitted.writable_binding()])}
         admitted.verify_bindings(actual)
-        admitted.verify_bindings({key:value+":rbind" for key,value in actual.items()})
+        admitted.verify_bindings({**actual,"BindReadOnlyPaths":" ".join(reversed(actual["BindReadOnlyPaths"].split()))})
         for key,value in (("BindPaths",""),("BindPaths",actual["BindPaths"]+" /private/extra:/extra"),
                 ("BindReadOnlyPaths",actual["BindReadOnlyPaths"]+":rw"),
                 ("BindReadOnlyPaths",actual["BindReadOnlyPaths"]+" "+actual["BindReadOnlyPaths"])):
@@ -124,20 +129,36 @@ class PrepareModels(unittest.TestCase):
         admitted.namespace,admitted.output = Path("/private/prepare"),Path("/private/output")
         admitted.agent_path = "/private/authorized-agent"
         leaf = admitted.agent_path+":"+ui.AGENT_DESTINATION
-        actual = {"BindReadOnlyPaths":" ".join(v if v.endswith(":norbind") else v+":rbind"
-            for v in admitted.bindings()),"BindPaths":admitted.writable_binding()+":rbind"}
+        actual = {"BindReadOnlyPaths":systemctl_bind_readback(admitted.bindings()),"BindPaths":admitted.writable_binding()+":rbind"}
         admitted.verify_bindings(actual)
+        self.assertIn(leaf,actual["BindReadOnlyPaths"].split())
         self.assertIn(leaf+":norbind",admitted.bindings())
-        for selector in (leaf,leaf+":rbind",leaf+":rw",leaf+":unknown"):
+        for field in ("BindReadOnlyPaths","BindPaths"):
+            for token in actual[field].split():
+                if token.endswith(":rbind"):
+                    changed = {**actual,field:actual[field].replace(token,token.removesuffix(":rbind"))}
+                    with self.subTest(field=field,token=token),self.assertRaises(ValueError):
+                        admitted.verify_bindings(changed)
+        for selector in (leaf+":norbind",leaf+":rbind",leaf+":rw",leaf+":unknown"):
             changed = {**actual,"BindReadOnlyPaths":str(admitted.namespace)+":/omux-native-login-ui-prepare:rbind "+selector}
             with self.subTest(selector=selector),self.assertRaises(ValueError):
                 admitted.verify_bindings(changed)
-        for field,extra in (("BindReadOnlyPaths"," "+leaf+":norbind"),
-                ("BindReadOnlyPaths"," /private/other:/extra:norbind"),("BindPaths"," /private/other:/extra")):
+        for field,extra in (("BindReadOnlyPaths"," "+leaf),
+                ("BindReadOnlyPaths"," /private/other:/extra:rbind"),("BindPaths"," /private/other:/extra:rbind")):
             with self.subTest(field=field,extra=extra),self.assertRaises(ValueError):
                 admitted.verify_bindings({**actual,field:actual[field]+extra})
         with self.assertRaises(ValueError):
             ui.normalized_bindings(admitted.writable_binding()+":norbind")
+
+    def test_configuration_and_pinned_systemctl_readback_keep_agent_directory_modes_distinct(self):
+        leaf = "/private/agent:"+ui.AGENT_DESTINATION
+        root = "/private/input:/omux-native-login-ui-prepare"
+        self.assertEqual(ui.normalized_bindings(root+" "+leaf+":norbind",[leaf]),{root,leaf})
+        self.assertEqual(ui.normalized_bindings(root+":rbind "+leaf,[leaf],readback=True),{root,leaf})
+        for readback,value in ((False,leaf),(False,leaf+":rbind"),(False,root+":norbind"),
+                (True,leaf+":rbind"),(True,leaf+":norbind"),(True,root),(True,root+":norbind")):
+            with self.subTest(readback=readback,value=value),self.assertRaises(ValueError):
+                ui.normalized_bindings(value,[leaf],readback=readback)
 
     def test_failure_projection_copies_private_bind_data_and_never_renders_error(self):
         actual = {"BindReadOnlyPaths":"/private/input:/fixed","BindPaths":"/private/output:/fixed"}

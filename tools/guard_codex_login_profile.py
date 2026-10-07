@@ -224,7 +224,7 @@ def agent_mountpoint_identity(directory, descriptor):
         raise ValueError("codex-login-agent-mountpoint-changed")
     return private_inputs.identity(held)
 
-def normalized_bindings(value, leaf_bindings=()):
+def normalized_bindings(value, leaf_bindings=(), *, readback=False):
     result = []
     leaf_bindings = set(leaf_bindings)
     for token in value.split():
@@ -233,7 +233,10 @@ def normalized_bindings(value, leaf_bindings=()):
         if len(parts) != 2:
             raise ValueError("codex-login-readonly-bind-refused")
         binding = ":".join(parts)
-        if (option != "norbind" if binding in leaf_bindings else option not in (None, "rbind")):
+        # Pinned systemctl prints only recursive binds with an option suffix.
+        invalid = ((option is not None if binding in leaf_bindings else option != "rbind")
+                   if readback else (option != "norbind" if binding in leaf_bindings else option not in (None, "rbind")))
+        if invalid:
             raise ValueError("codex-login-readonly-bind-refused")
         result.append(binding)
     if len(set(result)) != len(result):
@@ -511,7 +514,7 @@ class Admission:
 
     def verify_bindings(self, actual):
         leaves = [self.agent_path + ":" + AGENT_DESTINATION] if self.agent_path is not None else []
-        if (normalized_bindings(actual.get("BindReadOnlyPaths", ""), leaves)
+        if (normalized_bindings(actual.get("BindReadOnlyPaths", ""), leaves, readback=True)
                 != normalized_bindings(" ".join(self.bindings()), leaves)
                 or actual.get("BindPaths", "").strip()):
             raise ValueError("codex-login-readonly-bind-refused")

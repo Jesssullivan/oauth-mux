@@ -30,6 +30,11 @@ def selection():
                 "qt_platform_plugin":"/nix/store/"+"c"*32+"-qtwayland/lib/qt-6/plugins/platforms/libqwayland-generic.so",
                 "qt_platform_plugin_sha256":"4"*64}}}
 
+def systemctl_bind_readback(configured):
+    """Pinned systemctl v260.1: nonrecursive has no suffix, recursive has rbind."""
+    return " ".join(value.removesuffix(":norbind") if value.endswith(":norbind")
+        else value if value.endswith(":rbind") else value+":rbind" for value in configured)
+
 class LoginProfileTests(unittest.TestCase):
     def test_one_exact_run_separate_from_live_and_standard(self):
         self.assertEqual(dependency.selected_profile("codex-login",["run",login.LABEL]),{"PrivateNetwork":"no"})
@@ -138,19 +143,19 @@ class LoginProfileTests(unittest.TestCase):
         admission.directory = Path("/private/native")
         admission.qualification = Path("/private/ui.json")
         admission.agent_path = None
-        actual = {"BindReadOnlyPaths":" ".join(reversed(admission.bindings())),"BindPaths":""}
+        actual = {"BindReadOnlyPaths":systemctl_bind_readback(reversed(admission.bindings())),"BindPaths":""}
         admission.verify_bindings(actual)
         actual["BindReadOnlyPaths"] = " ".join(value + ":rbind" for value in admission.bindings())
         admission.verify_bindings(actual)
         actual["BindReadOnlyPaths"] = " ".join(value + ":rw" for value in admission.bindings())
         with self.assertRaises(ValueError):
             admission.verify_bindings(actual)
-        actual["BindReadOnlyPaths"] = " ".join(admission.bindings())
-        actual["BindReadOnlyPaths"] += " " + admission.bindings()[0]
+        actual["BindReadOnlyPaths"] = systemctl_bind_readback(admission.bindings())
+        actual["BindReadOnlyPaths"] += " " + actual["BindReadOnlyPaths"].split()[0]
         with self.assertRaises(ValueError):
             admission.verify_bindings(actual)
         actual["BindReadOnlyPaths"] = " ".join(admission.bindings())
-        actual["BindPaths"] = "/private/native:/private/native"
+        actual["BindPaths"] = "/private/native:/private/native:rbind"
         with self.assertRaises(ValueError):
             admission.verify_bindings(actual)
 
@@ -268,18 +273,33 @@ class LoginProfileTests(unittest.TestCase):
         admitted.namespace,admitted.directory = Path("/private/input"),Path("/private/native")
         admitted.agent_path = "/private/authorized-agent"
         leaf = admitted.agent_path+":"+login.AGENT_DESTINATION
-        actual = {"BindReadOnlyPaths":" ".join(v if v.endswith(":norbind") else v+":rbind"
-            for v in admitted.bindings()),"BindPaths":""}
+        actual = {"BindReadOnlyPaths":systemctl_bind_readback(admitted.bindings()),"BindPaths":""}
         admitted.verify_bindings(actual)
+        self.assertIn(leaf,actual["BindReadOnlyPaths"].split())
         self.assertIn(leaf+":norbind",admitted.bindings())
+        for token in actual["BindReadOnlyPaths"].split():
+            if token.endswith(":rbind"):
+                changed = {**actual,"BindReadOnlyPaths":actual["BindReadOnlyPaths"].replace(token,token.removesuffix(":rbind"))}
+                with self.subTest(token=token),self.assertRaises(ValueError):
+                    admitted.verify_bindings(changed)
         directory_binds = " ".join(v+":rbind" for v in admitted.bindings() if not v.endswith(":norbind"))
-        for selector in (leaf,leaf+":rbind",leaf+":rw",leaf+":unknown"):
+        for selector in (leaf+":norbind",leaf+":rbind",leaf+":rw",leaf+":unknown"):
             with self.subTest(selector=selector),self.assertRaises(ValueError):
                 admitted.verify_bindings({**actual,"BindReadOnlyPaths":directory_binds+" "+selector})
-        for field,extra in (("BindReadOnlyPaths"," "+leaf+":norbind"),
-                ("BindReadOnlyPaths"," /private/other:/extra:norbind"),("BindPaths","/private/native:/private/native")):
+        for field,extra in (("BindReadOnlyPaths"," "+leaf),
+                ("BindReadOnlyPaths"," /private/other:/extra:rbind"),("BindPaths","/private/native:/private/native:rbind")):
             with self.subTest(field=field),self.assertRaises(ValueError):
                 admitted.verify_bindings({**actual,field:actual[field]+extra})
+
+    def test_configuration_and_pinned_systemctl_readback_keep_native_agent_modes_distinct(self):
+        leaf = "/private/agent:"+login.AGENT_DESTINATION
+        root = "/private/input:/omux-native-login"
+        self.assertEqual(login.normalized_bindings(root+" "+leaf+":norbind",[leaf]),{root,leaf})
+        self.assertEqual(login.normalized_bindings(root+":rbind "+leaf,[leaf],readback=True),{root,leaf})
+        for readback,value in ((False,leaf),(False,leaf+":rbind"),(False,root+":norbind"),
+                (True,leaf+":rbind"),(True,leaf+":norbind"),(True,root),(True,root+":norbind")):
+            with self.subTest(readback=readback,value=value),self.assertRaises(ValueError):
+                login.normalized_bindings(value,[leaf],readback=readback)
 
     def test_original_deadline_is_not_reset(self):
         admission = object.__new__(login.Admission)

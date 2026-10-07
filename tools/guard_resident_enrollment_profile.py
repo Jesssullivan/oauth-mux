@@ -247,7 +247,7 @@ def regular_mountpoint_witness(path,descriptor):
         and stable(info) == stable(path.stat(follow_symlinks=False)))
     return stable(info)
 
-def normalize_binds(value,leaf_bindings=()):
+def normalize_binds(value,leaf_bindings=(),*,readback=False):
     result = []
     leaf_bindings = set(leaf_bindings)
     for item in value.split():
@@ -255,7 +255,11 @@ def normalize_binds(value,leaf_bindings=()):
         option = parts.pop() if len(parts) == 3 else None
         require(len(parts) == 2)
         binding = ":".join(parts)
-        require(option == "norbind" if binding in leaf_bindings else option in (None,"rbind"))
+        # Pinned systemctl serializes a nonrecursive bind with no suffix.
+        if readback:
+            require(option is None if binding in leaf_bindings else option == "rbind")
+        else:
+            require(option == "norbind" if binding in leaf_bindings else option in (None,"rbind"))
         result.append(binding)
     return result
 
@@ -375,7 +379,7 @@ class Admission:
         leaves = [str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))
             for target,source in self.sources.items()]
         expected_ro = normalize_binds(" ".join(self.bindings()),leaves)
-        ro,rw = normalize_binds(actual.get("BindReadOnlyPaths",""),leaves),normalize_binds(actual.get("BindPaths",""))
+        ro,rw = normalize_binds(actual.get("BindReadOnlyPaths",""),leaves,readback=True),normalize_binds(actual.get("BindPaths",""),readback=True)
         require(len(ro) == len(expected_ro) and set(ro) == set(expected_ro)
             and len(rw) == len(expected_rw) and set(rw) == set(expected_rw))
 

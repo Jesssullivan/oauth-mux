@@ -24,6 +24,11 @@ def limits():
     return ({"MemoryMax":"268435456","MemorySwapMax":"0","TasksMax":"32","CPUQuotaPerSecUSec":"100ms"},
         {"memory.max":"268435456","memory.swap.max":"0","pids.max":"32","cpu.max":"10000 100000"})
 
+def systemctl_bind_readback(configured):
+    """Pinned systemctl v260.1: nonrecursive has no suffix, recursive has rbind."""
+    return " ".join(value.removesuffix(":norbind") if value.endswith(":norbind")
+        else value if value.endswith(":rbind") else value+":rbind" for value in configured)
+
 class ResidentModels(unittest.TestCase):
     def test_fixed_sum_and_valid_bounds(self):
         self.assertEqual(resident.PROOF_MEMORY+resident.RESIDENT_MEMORY,4294967296)
@@ -110,16 +115,26 @@ class ResidentModels(unittest.TestCase):
             admission.root/"systemd/private":Path("/run/user/1000/systemd/private")}
         admission.product_directories = [(Path("/private/product"),None,None)]
         run = Path("/private/run")
-        actual = {"BindReadOnlyPaths":" ".join(v if v.endswith(":norbind") else v+":rbind" for v in admission.bindings()),
-            "BindPaths":admission.writable_binding()+" "+str(run)+":"+str(run)}
+        actual = {"BindReadOnlyPaths":systemctl_bind_readback(admission.bindings()),
+            "BindPaths":systemctl_bind_readback(admission.writable_binding().split()+[str(run)+":"+str(run)])}
         admission.verify_bindings(actual,run)
+        self.assertIn("/run/user/1000/bus:/omux-resident-inputs/bus",actual["BindReadOnlyPaths"].split())
+        self.assertIn("/run/user/1000/systemd/private:/omux-resident-inputs/systemd/private",actual["BindReadOnlyPaths"].split())
+        self.assertNotIn(":norbind",actual["BindReadOnlyPaths"])
+        self.assertEqual(sum(value.endswith(":norbind") for value in admission.bindings()),2)
+        for role in ("BindReadOnlyPaths","BindPaths"):
+            for token in actual[role].split():
+                replacement = token.removesuffix(":rbind") if token.endswith(":rbind") else token+":rbind"
+                bad = {**actual,role:" ".join(replacement if value == token else value for value in actual[role].split())}
+                with self.subTest(role=role,token=token),self.assertRaises(ValueError):
+                    admission.verify_bindings(bad,run)
         for role in ("BindReadOnlyPaths","BindPaths"):
             bad = dict(actual)
-            bad[role] += " /foreign:/foreign"
+            bad[role] += " /foreign:/foreign:rbind"
             with self.assertRaises(ValueError):
                 admission.verify_bindings(bad,run)
         bad = dict(actual)
-        bad["BindReadOnlyPaths"] += " "+admission.bindings()[0]
+        bad["BindReadOnlyPaths"] += " "+actual["BindReadOnlyPaths"].split()[0]
         with self.assertRaises(ValueError):
             admission.verify_bindings(bad,run)
 
@@ -240,13 +255,17 @@ class ResidentLeafMountModels(unittest.TestCase):
                 finally:
                     placeholder.close()
 
-    def test_socket_leaf_readback_requires_exact_nonrecursive_binding(self):
+    def test_socket_leaf_configuration_and_pinned_readback_have_distinct_exact_modes(self):
         leaf = "/run/user/1000/bus:/omux-resident-inputs/bus"
         root = "/private/input:/omux-resident-inputs"
+        self.assertEqual(resident.normalize_binds(root+" "+leaf+":norbind",[leaf]),[root,leaf])
         self.assertEqual(resident.normalize_binds(root+":rbind "+leaf+":norbind",[leaf]),[root,leaf])
-        for actual in (leaf,leaf+":rbind",root+":norbind",leaf+":unknown",leaf+":norbind:rbind"):
-            with self.subTest(actual=actual),self.assertRaises(ValueError):
-                resident.normalize_binds(actual,[leaf])
+        self.assertEqual(resident.normalize_binds(root+":rbind "+leaf,[leaf],readback=True),[root,leaf])
+        for readback,actual in ((False,leaf),(False,leaf+":rbind"),(False,root+":norbind"),
+                (True,leaf+":rbind"),(True,leaf+":norbind"),(True,root),(True,root+":norbind"),
+                (True,leaf+":unknown"),(True,leaf+":norbind:rbind")):
+            with self.subTest(readback=readback,actual=actual),self.assertRaises(ValueError):
+                resident.normalize_binds(actual,[leaf],readback=readback)
 
     def test_leaf_cleanup_closes_only_owned_mountpoint_and_retains_replacement(self):
         with tempfile.TemporaryDirectory() as temporary:
