@@ -14,6 +14,22 @@ import guard_resident_vault_profile as vault
 import guard_resident_enrollment_profile as resident
 OBSERVER_PREDICATES = frozenset((
     "observer-arguments","observer-deadline","observer-bus-connect","observer-broker-identity",
+    "observer-broker-stream-type",
+    "observer-broker-peer-credentials",
+    "observer-broker-peer-length",
+    "observer-broker-peer-uid",
+    "observer-identity-pid",
+    "observer-identity-proc-stat",
+    "observer-identity-proc-owner",
+    "observer-identity-stat-open",
+    "observer-identity-stat-read",
+    "observer-identity-stat-delimiter",
+    "observer-identity-start-field",
+    "observer-identity-start-value",
+    "observer-identity-exe-readlink",
+    "observer-identity-exe-prefix",
+    "observer-identity-exe-characters",
+    "observer-identity-deadline",
     "observer-manager-owner","observer-manager-identity","observer-secret-owner","observer-secret-identity",
     "observer-secret-absence","observer-default-alias","observer-collection-locked",
     "observer-owner-stability","observer-alias-stability"))

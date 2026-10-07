@@ -16,6 +16,15 @@ cc_binary(
     tags = ["manual"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+# Compile-time model selection never opens the bus or /proc.
+cc_binary(
+    name = "resident_vault_broker_header_model",
+    srcs = ["resident_vault_metadata.c"],
+    copts = ["-DOMUX_VAULT_BROKER_HEADER_MODEL"],
+    deps = ["@omux_nix//:glib"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
 cc_binary(
     name = "resident_vault_control_client",
     srcs = ["resident_vault_control.c"],
@@ -44,8 +53,9 @@ python_test(
     name = "resident_vault_models",
     main = "test_resident_vault.py",
     srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
-    data = [":resident_vault_control_client", ":resident_vault_metadata_observer"],
-    args = ["$(location :resident_vault_control_client)", "$(location :resident_vault_metadata_observer)"],
+    data = [":resident_vault_control_client", ":resident_vault_metadata_observer", ":resident_vault_broker_header_model"],
+    args = ["$(location :resident_vault_control_client)", "$(location :resident_vault_metadata_observer)",
+            "$(location :resident_vault_broker_header_model)"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 python_binary(

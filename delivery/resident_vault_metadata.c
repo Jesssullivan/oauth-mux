@@ -23,36 +23,59 @@ static int remaining(void) {
     gint64 left = until - g_get_monotonic_time();
     return left <= 0 ? 0 : (int)(left > 5000000 ? 5000 : (left + 999)/1000);
 }
+/* Failure detail is private until the initial broker branch selects it. */
+static const char *identity_predicate="observer-identity-pid";
 static int identity(guint32 pid, Identity *out) {
+    identity_predicate="observer-identity-pid";
     char path[64], raw[8192]; struct stat info;
     if (pid <= 1) return 0;
     snprintf(path,sizeof(path),"/proc/%u",pid);
-    if (stat(path,&info) || info.st_uid != getuid()) return 0;
+    identity_predicate="observer-identity-proc-stat";
+    if (stat(path,&info)) return 0;
+    identity_predicate="observer-identity-proc-owner";
+    if (info.st_uid != getuid()) return 0;
     snprintf(path,sizeof(path),"/proc/%u/stat",pid);
+    identity_predicate="observer-identity-stat-open";
     FILE *file = fopen(path,"re");
     if (!file) return 0;
     size_t count = fread(raw,1,sizeof(raw)-1,file); int ok = !ferror(file) && feof(file);
     fclose(file); raw[count] = 0;
     char *cursor = strrchr(raw,')');
-    if (!ok || !cursor || cursor[1] != ' ') return 0;
+    identity_predicate="observer-identity-stat-read";
+    if (!ok) return 0;
+    identity_predicate="observer-identity-stat-delimiter";
+    if (!cursor || cursor[1] != ' ') return 0;
     cursor += 2;
+    identity_predicate="observer-identity-start-field";
     for (int field=3;field<22;field++) {
         cursor = strchr(cursor,' ');
         if (!cursor) return 0;
         ++cursor;
     }
+    identity_predicate="observer-identity-start-value";
     char *end=NULL; out->start=strtoull(cursor,&end,10);
     if (end == cursor || !out->start || (*end && *end!=' ')) return 0;
     snprintf(path,sizeof(path),"/proc/%u/exe",pid);
+    identity_predicate="observer-identity-exe-readlink";
     ssize_t length = readlink(path,out->exe,sizeof(out->exe)-1);
     if (length <= 0 || length >= (ssize_t)sizeof(out->exe)-1) return 0;
     out->exe[length]=0;
     /* Publish only public immutable executable paths; no arbitrary process paths. */
+    identity_predicate="observer-identity-exe-prefix";
     if (strncmp(out->exe,"/nix/store/",11) && strncmp(out->exe,"/usr/",5) && strncmp(out->exe,"/run/wrappers/bin/",18)) return 0;
+    identity_predicate="observer-identity-exe-characters";
     for (const char *p=out->exe;*p;p++)
         if (!g_ascii_isalnum(*p) && !strchr("/+._-",*p)) return 0;
     out->uid=getuid(); out->pid=pid;
+    identity_predicate="observer-identity-deadline";
     return remaining();
+}
+/* Pure scalar classification; never reflects peer values or syscall errors. */
+static const char *broker_peer_header(int result, socklen_t size, const struct ucred *peer, uid_t uid) {
+    if (result) return "observer-broker-peer-credentials";
+    if (size!=sizeof(*peer)) return "observer-broker-peer-length";
+    if (peer->uid!=uid) return "observer-broker-peer-uid";
+    return NULL;
 }
 static GVariant *call(GDBusConnection *bus, const char *dest, const char *path,
                      const char *iface, const char *method, GVariant *args, const char *reply) {
@@ -119,6 +142,7 @@ static void print_identity(const Identity *value,const char *name) {
     if (name) printf(",\"owner\":\"%s\"",name);
     printf("}");
 }
+#ifndef OMUX_VAULT_BROKER_HEADER_MODEL
 int main(int argc,char **argv) {
     (void)argv;
     const char *address=getenv("DBUS_SESSION_BUS_ADDRESS");
@@ -136,14 +160,19 @@ int main(int argc,char **argv) {
         NULL,NULL,&error);
     if (error) g_error_free(error);
     if (!bus) return refused();
-    predicate="observer-broker-identity";
-    GIOStream *stream=g_dbus_connection_get_stream(bus); struct ucred peer;
+    predicate="observer-broker-stream-type";
+    GIOStream *stream=g_dbus_connection_get_stream(bus); struct ucred peer={0};
     socklen_t size=sizeof(peer); Identity broker={0},manager={0},secret={0};
     int ok=G_IS_SOCKET_CONNECTION(stream);
     if (ok) {
         int fd=g_socket_get_fd(g_socket_connection_get_socket(G_SOCKET_CONNECTION(stream)));
-        ok=!getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&peer,&size) && size==sizeof(peer)
-            && peer.uid==getuid() && identity(peer.pid,&broker);
+        int result=getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&peer,&size);
+        const char *failure=broker_peer_header(result,size,&peer,getuid());
+        if (failure) { predicate=failure; ok=0; }
+        else {
+            ok=identity(peer.pid,&broker);
+            if (!ok) predicate=identity_predicate;
+        }
     }
     if (ok) predicate="observer-manager-owner";
     char *manager_name=ok ? owner(bus,"org.freedesktop.systemd1") : NULL;
@@ -203,3 +232,18 @@ int main(int argc,char **argv) {
     g_free(path);g_free(manager_name);g_free(secret_name);g_free(manager_again);g_free(secret_again);g_object_unref(bus);
     return ok?0:refused();
 }
+#else
+/* Separate declared provider-free model binary; production accepts no model flag. */
+int main(void) {
+    struct ucred peer={.pid=2,.uid=1000,.gid=1000};
+    if (broker_peer_header(0,sizeof(peer),&peer,1000)!=NULL) return 1;
+    if (strcmp(broker_peer_header(-1,sizeof(peer),&peer,1000),"observer-broker-peer-credentials")) return 2;
+    if (strcmp(broker_peer_header(0,sizeof(peer)-1,&peer,1000),"observer-broker-peer-length")) return 3;
+    if (strcmp(broker_peer_header(0,sizeof(peer)+1,&peer,1000),"observer-broker-peer-length")) return 4;
+    if (strcmp(broker_peer_header(0,sizeof(peer),&peer,1001),"observer-broker-peer-uid")) return 5;
+    Identity value={0};
+    if (identity(0,&value) || strcmp(identity_predicate,"observer-identity-pid")) return 6;
+    if (identity(1,&value) || strcmp(identity_predicate,"observer-identity-pid")) return 7;
+    return 0;
+}
+#endif

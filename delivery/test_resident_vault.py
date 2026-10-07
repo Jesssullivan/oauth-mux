@@ -14,6 +14,7 @@ import guard_resident_enrollment_profile as resident
 import resident_vault as action
 CLIENT=None
 OBSERVER=None
+BROKER_MODEL=None
 def observed():
     common={"uid":os.getuid(),"pid":101,"start_ticks":7,"exe":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bus/bin/dbus-broker"}
     return {"schema":"omux-existing-vault-metadata-v1","broker":dict(common),
@@ -27,6 +28,36 @@ def selected():
         "mapping":{"role":"become/password","purpose":"gnome-login-keyring-unlock","encoding":"exact-bytes","user_confirmed":True},
         "expected":observed()}
 class VaultModels(unittest.TestCase):
+    def test_compiled_broker_header_keeps_syscall_length_uid_and_pid_checks(self):
+        self.assertIsNotNone(BROKER_MODEL)
+        answer=subprocess.run([BROKER_MODEL],env={},stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5,check=False)
+        self.assertEqual((answer.returncode,answer.stdout,answer.stderr),(0,b"",b""))
+
+    def test_broker_subpredicate_preserves_closed_projection_and_stops_before_unlock(self):
+        names=["observer-broker-stream-type","observer-broker-peer-credentials","observer-broker-peer-length","observer-broker-peer-uid","observer-identity-pid","observer-identity-proc-stat","observer-identity-proc-owner","observer-identity-stat-open","observer-identity-stat-read","observer-identity-stat-delimiter","observer-identity-start-field","observer-identity-start-value","observer-identity-exe-readlink","observer-identity-exe-prefix","observer-identity-exe-characters","observer-identity-deadline"]
+        for name in names:
+            with self.subTest(predicate=name):
+                body=json.dumps({"schema":"omux-vault-observer-refusal-v1","predicate":name}).encode()
+                with patch.object(action,"budget",return_value=1), \
+                        patch.object(action.subprocess,"run",return_value=SimpleNamespace(returncode=125,stdout=body)):
+                    with self.assertRaises(action.ClosedRefusal) as failure:
+                        action.observe("/declared/observer",10**18)
+                with patch.object(action,"PHASE","before-observation"):
+                    self.assertEqual(action.refusal_projection(failure.exception)["predicate"],name)
+                with patch.object(action,"deadline",return_value=10**18), \
+                        patch.object(action,"private_manifest",return_value=selected()), \
+                        patch.object(action,"observe",side_effect=failure.exception), \
+                        patch.object(action,"unlock") as unlock,patch.object(action,"retain") as retain:
+                    with self.assertRaises(action.ClosedRefusal):
+                        action.main(["unlock","/declared/observer","/declared/client"])
+                    unlock.assert_not_called();retain.assert_not_called()
+        for name in ("observer-identity-exe-readlink:/private/path","observer-identity-exe-readlink-EACCES"):
+            with self.assertRaises(action.ClosedRefusal) as failure:
+                action.observer_refusal(SimpleNamespace(returncode=125,stdout=json.dumps(
+                    {"schema":"omux-vault-observer-refusal-v1","predicate":name}).encode()))
+            self.assertEqual(failure.exception.predicate,"observer-exit")
+
 
     def test_failed_observer_exposes_only_a_declared_closed_predicate(self):
         body=json.dumps({"schema":"omux-vault-observer-refusal-v1","predicate":"observer-manager-identity"}).encode()
@@ -169,4 +200,6 @@ if __name__=="__main__":
         CLIENT=sys.argv.pop(1)
     if len(sys.argv)>1:
         OBSERVER=sys.argv.pop(1)
+    if len(sys.argv)>1:
+        BROKER_MODEL=sys.argv.pop(1)
     unittest.main()
