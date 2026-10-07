@@ -845,7 +845,7 @@ def selected_site_receipt(path, expected_sha256, state_root, coordination_root, 
 def verify(actual, cgroup, manager='user', isolation=None, profile='standard', runtime_seconds=None):
     for key, value in {**PROPERTIES, **(isolation or SANDBOX)}.items():
         if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'codex-native') or
-                profile in ('standard', 'codex-live', 'codex-login') and runtime_seconds is not None):
+                profile in ('standard', 'codex-live', 'codex-login', 'native-login-ui') and runtime_seconds is not None):
             import yoga_delivery_settings as delivery_settings
             delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
             continue
@@ -857,7 +857,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             home = Path(pwd.getpwuid(os.getuid()).pw_dir)
             yoga.verify_masks(actual, home, actual.get('BindReadOnlyPaths', '').split())
         else:
-            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'codex-live', 'codex-login') else profile)
+            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'codex-live', 'codex-login', 'native-login-ui') else profile)
         if profile in ('installed-browser', 'site', 'yoga-toolbar') and '/etc/environment' not in {
                 path.lstrip('-') for path in actual.get('InaccessiblePaths', '').split()}:
             raise ValueError('host environment file mask missing')
@@ -954,6 +954,21 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             '--enable_bzlmod', '--noenable_workspace', '--incompatible_strict_action_env',
             '--@rules_zig//zig/settings:use_standalone_translate_c', '--lockfile_mode=error'] + cache_args + evaluation_args + site_args + pack_args + retained_args + test_args + provenance + arguments[1:]
 
+
+def native_login_ui_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None):
+    import guard_native_login_ui_profile as ui
+    ui.selected(arguments)
+    command = bazel_command(bazel,run,['build',ui.LABEL],source_commit=source_commit,source_dirty=source_dirty)
+    command[command.index('build')] = 'run'
+    command[command.index('--spawn_strategy=sandboxed')] = '--spawn_strategy=linux-sandbox'
+    command[-1:-1] = [
+        '--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=',
+        '--run_env='+ui.VARIABLE+'='+ui.DESTINATION,
+        '--run_env=OMUX_NATIVE_LOGIN_UI_NAMESPACE_ID='+str(os.fstat(admission.namespace_fd).st_dev)+':'+str(os.fstat(admission.namespace_fd).st_ino),
+        '--run_env=OMUX_NATIVE_LOGIN_UI_OUTPUT_ID='+str(os.fstat(admission.output_fd).st_dev)+':'+str(os.fstat(admission.output_fd).st_ino),
+        '--run_env=OMUX_NATIVE_LOGIN_UI_ORIGINAL_DEADLINE_NS='+str(admission.deadline),
+        '--symlink_prefix='+str(Path(run)/'bazel-')]
+    return command
 
 def codex_login_command(bazel, run, arguments, admission, *, source_commit=None, source_dirty=None):
     import guard_codex_login_profile as login
@@ -1070,7 +1085,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'codex-login'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'codex-login', 'native-login-ui'), default='standard')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1101,6 +1116,11 @@ def _main(argv, admission_resources):
     parser.add_argument('--native-login-sha256')
     parser.add_argument('--native-login-source-receipt-sha256')
     parser.add_argument('--native-login-ui-qualification-sha256')
+    parser.add_argument('--ui-prepare-manifest',type=Path)
+    parser.add_argument('--ui-prepare-output',type=Path)
+    parser.add_argument('--ui-prepare-manifest-sha256')
+    parser.add_argument('--ui-prepare-os-qualification-sha256')
+    parser.add_argument('--ui-prepare-control-sha256')
     parser.add_argument('--manager', choices=('user', 'system'), default='user')
     parser.add_argument('--become-file', type=Path)
     parser.add_argument('--reuse-owned-cache', action='store_true')
@@ -1172,6 +1192,7 @@ def _main(argv, admission_resources):
     owner_input_after = None
     login_input = None
     login_input_verified_after = None
+    ui_prepare_output = None
     live_input = None
     live_input_verified_after = None
     live_binding_readback = None
@@ -1212,6 +1233,24 @@ def _main(argv, admission_resources):
             args.native_login_sha256, args.native_login_source_receipt_sha256,
             args.native_login_ui_qualification_sha256)):
         raise ValueError('codex-login-input-exclusive-to-login-profile')
+    if args.profile == 'native-login-ui':
+        import guard_native_login_ui_profile as login
+        login.finite(arguments,args.manager,args.ui_prepare_manifest,args.ui_prepare_output,
+            args.reuse_owned_cache,
+            (args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256),
+            (args.repository_cache,args.nixpkgs_source,args.site_source,args.codex_owner_runtime_directory,
+             args.codex_live_manifest,args.codex_login_manifest,args.native_login_directory,
+             args.codex_pack_directory,args.codex_recovery_source,args.site_inventory,
+             args.site_inventory_sha256,args.site_nixpkgs_source,args.site_phase,args.site_qualification,
+             args.site_qualification_sha256,args.site_delivery_manifest,args.site_delivery_manifest_sha256,
+             args.codex_pristine_directory,args.codex_recovery_delta_directory,args.sdk_lane,
+             args.sdk_source_root,args.sdk_source_receipt_sha256,args.sdk_settings_root,
+             args.sdk_settings_receipt_sha256,args.sdk_bundle,args.sdk_bundle_receipt_sha256,
+             args.yoga_delivery_epoch,args.yoga_qualification,args.yoga_qualification_sha256,
+             args.yoga_deadline_monotonic_ns))
+    elif any(v is not None for v in (args.ui_prepare_manifest,args.ui_prepare_output,
+            args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256)):
+        raise ValueError('native-ui-input-exclusive-to-prepare-profile')
     delivery_lock = None
     delivery_lock_verified_before_cleanup = None
     if args.codex_owner_runtime_directory is not None:
@@ -1303,7 +1342,7 @@ def _main(argv, admission_resources):
     if sdk and (args.sdk_bundle != Path('/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/052fde9c-7e07-490f-a940-fb11820f1d31/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/fetch_codex_archives_bundle/test.outputs/bundle') or
                args.sdk_bundle_receipt_sha256 != '1d3d34323a3e19fd7e640146bf0eba006881a9bdd2d376a0493153f4cd8d30a0'):
         raise ValueError('SDK requires the exact retained archive producer receipt')
-    mask_profile = 'installed-browser' if yoga else 'standard' if sdk or native_sdk or delivery_settings or args.profile in ('codex-live', 'codex-login') else args.profile
+    mask_profile = 'installed-browser' if yoga else 'standard' if sdk or native_sdk or delivery_settings or args.profile in ('codex-live', 'codex-login', 'native-login-ui') else args.profile
     DIAGNOSTIC_STAGE = 'privilege-metadata'
     sudo = None
     if args.manager == 'system':
@@ -1334,7 +1373,7 @@ def _main(argv, admission_resources):
     environment = {'OMUX_BAZEL_BOOTSTRAP_CLOSURE': str(bootstrap), 'JAVA_HOME': str(java)}
     if not site and not native_sdk:
         environment.update(OMUX_BAZEL_CLOSURE=str(closure), OMUX_ZIG_SDK=str(zig))
-    if args.profile == 'codex-login':
+    if args.profile in ('codex-login','native-login-ui'):
         environment['HOME'] = pwd.getpwuid(os.getuid()).pw_dir
     if delivery_settings:
         delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
@@ -1372,6 +1411,11 @@ def _main(argv, admission_resources):
             Path.cwd(), args.state_dir, delivery_entry_deadline_ns,
             (args.native_login_sha256, args.native_login_source_receipt_sha256,
              args.native_login_ui_qualification_sha256))
+        admission_resources.callback(login_input.close)
+    if args.profile == 'native-login-ui':
+        login_input = login.Admission(args.ui_prepare_manifest,args.ui_prepare_output,Path.cwd(),
+            args.state_dir,delivery_entry_deadline_ns,
+            (args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256))
         admission_resources.callback(login_input.close)
     fresh_metadata = selected_fresh_inputs(args.profile, arguments, args.codex_pristine_directory,
                                            args.codex_recovery_delta_directory, private)
@@ -1454,7 +1498,7 @@ def _main(argv, admission_resources):
                 delivery_prior, source_commit=args.source_commit, source_dirty=args.source_dirty)
             environment.update(delivery_envelope)
         elif login_input is not None:
-            command = codex_login_command(bazel, run, arguments, login_input,
+            command = (native_login_ui_command if args.profile == 'native-login-ui' else codex_login_command)(bazel, run, arguments, login_input,
                 source_commit=args.source_commit, source_dirty=args.source_dirty)
         elif yoga:
             yoga.publish_repository_inventory(yoga_admission, run)
@@ -1717,6 +1761,8 @@ def _main(argv, admission_resources):
                 launch += ['--property=BindReadOnlyPaths=' + yoga_admission['witness']['source'] + ':' + yoga_admission['witness']['destination']]
             if login_input is not None:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(login_input.bindings())]
+                if args.profile == 'native-login-ui':
+                    launch += ['--property=BindPaths=' + login_input.writable_binding()]
             if native_sdk:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(native_sdk.readonly_paths(args, native_plan))]
                 if native_cache is not None:
@@ -1867,7 +1913,7 @@ def _main(argv, admission_resources):
             result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--all', unit],
                 operation='unit-readback', phase='monitor')), deadline, iteration)
         except (ValueError, OSError) as error:
-            rejection = (login.rejection(error) if args.profile == 'codex-login'
+            rejection = (login.rejection(error) if args.profile in ('codex-login','native-login-ui')
                          else live.rejection_category(error) if args.profile == 'codex-live'
                          else str(error) if isinstance(error, ValueError) else None)
             raise
@@ -2035,6 +2081,8 @@ def _main(argv, admission_resources):
             if login_input is not None:
                 try:
                     login_input.recheck()
+                    if args.profile == 'native-login-ui':
+                        ui_prepare_output = login_input.completed()
                     login_input_verified_after = graph_digest(Path.cwd()) == (graph_sha256, graph_inputs)
                 except (OSError, ValueError):
                     login_input_verified_after = False
@@ -2063,7 +2111,16 @@ def _main(argv, admission_resources):
                            'explicit_agent_selected': login_input.agent_fd is not None,
                            'native_support': False,
                            'original_deadline_monotonic_ns': delivery_entry_deadline_ns
-                       } if login_input else None,
+                       } if login_input and args.profile == 'codex-login' else None,
+                       'native_login_ui_input': {
+                           'verified_after_cleanup':login_input_verified_after,
+                           'manifest_sha256':args.ui_prepare_manifest_sha256,
+                           'os_qualification_sha256':args.ui_prepare_os_qualification_sha256,
+                           'control_sha256':args.ui_prepare_control_sha256,
+                           'output_receipts':ui_prepare_output,
+                           'provider_invocation':False,
+                           'original_deadline_monotonic_ns':delivery_entry_deadline_ns
+                       } if login_input and args.profile == 'native-login-ui' else None,
                        'codex_live_input': {'verified_after_cleanup': live_input_verified_after,
                            'selected_sources': live_input.count, 'source_content_read_by_guard': False} if live_input else None,
                        'codex_live_binding_readback': live_binding_readback,

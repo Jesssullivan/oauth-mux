@@ -7,6 +7,29 @@ load(":metadata_rules.bzl", "extension_metadata")
 load(":browser_proof_rules.bzl", "browser_runtime_authority")
 
 package(default_visibility = ["//visibility:public"])
+python_binary(
+    name = "native_login_ui_qualification",
+    main = "//tools:native_login_ui_qualification.py",
+    srcs = ["//tools:yoga_portal_carrier_sources", "//tools:yoga_delivery_settings.py", "//tools:guard_yoga_delivery_profile.py"],
+    data = ["//clients/linux:control", "//tools:native_login_ui_prepare_remote.py", "//tools:yoga_portal_worker.py",
+            "@omux_yoga_controller_nars//:native_login_ui_inputs", "@omux_yoga_controller_nars//:inventory.json",
+            "@omux_yoga_delivery_inputs//:d631-receipt.json", "@omux_yoga_delivery_inputs//:yoga-ssh-known-hosts", "@omux_host//:ssh"],
+    args = ["--control", "$(location //clients/linux:control)", "--inventory", "$(location @omux_yoga_controller_nars//:inventory.json)",
+            "--source-receipt", "$(location @omux_yoga_delivery_inputs//:d631-receipt.json)",
+            "--known-hosts", "$(location @omux_yoga_delivery_inputs//:yoga-ssh-known-hosts)",
+            "--worker", "$(location //tools:yoga_portal_worker.py)", "--remote-worker", "$(location //tools:native_login_ui_prepare_remote.py)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "native_login_ui_qualification_test",
+    main = "//tools:native_login_ui_qualification_test.py",
+    srcs = ["//tools:native_login_ui_qualification.py", "//tools:native_login_ui_prepare_remote.py",
+            "//tools:yoga_portal_carrier_sources", "//tools:yoga_delivery_settings.py", "//tools:guard_yoga_delivery_profile.py"],
+    data = ["@omux_yoga_controller_nars//:inventory.json"],
+    args = ["$(location @omux_yoga_controller_nars//:inventory.json)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
 filegroup(name = "public_sources", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
 exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])

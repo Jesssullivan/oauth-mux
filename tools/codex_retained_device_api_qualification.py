@@ -25,6 +25,24 @@ PRODUCER_SHA = "545727183aa4e361eb1967fa3599dd30e5fd38a78f68dad9fec74793f8f713ee
 SOURCE_SHA = "e3c6d45bc93119ddf1da8bee6e02de3c7c3a3bbe52bb6d2664eb4b7b3d7b5273"
 SCHEMA_NAMES = ("ClientRequest.json", "v2/LoginAccountParams.json", "v2/LoginAccountResponse.json")
 DEADLINE = None
+PHASE = "admission"
+PHASES = ("admission", "archive", "output", "nativeversion", "schemageneration", "schemavalidation", "finalseal")
+
+def phase(name):
+    global PHASE
+    require(name in PHASES)
+    PHASE = name
+    print("OMUX_RETAINED_DEVICE_API_PHASE_" + name.upper(), file=sys.stderr, flush=True)
+
+def wire_schema(value):
+    # Generated annotation titles differ between standalone and embedded schemas.
+    # Preserve every validation keyword, including unknown future keywords.
+    if isinstance(value, dict):
+        return {key: wire_schema(item) for key, item in value.items()
+            if key not in ("title", "description", "$comment")}
+    if isinstance(value, list):
+        return [wire_schema(item) for item in value]
+    return value
 
 def require(value):
     if not value:
@@ -178,7 +196,10 @@ def schema_contract(values):
         if row.get("properties", {}).get("method", {}).get("enum") == ["account/login/start"]]
     require(len(envelopes) == 1 and set(envelopes[0]["required"]) == {"id", "method", "params"}
         and envelopes[0]["properties"]["params"] == {"$ref": "#/definitions/LoginAccountParams"})
-    require(device_branch(values[SCHEMA_NAMES[0]]["definitions"]["LoginAccountParams"]) == request)
+    embedded = device_branch(values[SCHEMA_NAMES[0]]["definitions"]["LoginAccountParams"])
+    require(set(embedded["properties"]) == {"type"}
+        and embedded["required"] == ["type"]
+        and wire_schema(embedded) == wire_schema(request))
     return {"method": "account/login/start", "request": request, "response": response,
         "provider_invocation": False}
 
@@ -189,12 +210,14 @@ def main():
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     args = parser.parse_args()
+    phase("admission")
     require(os.environ.get("OMUX_EXECUTION_GUARD") and os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR"))
     DEADLINE = time.monotonic()+600
     until_ns = time.monotonic_ns()+600*10**9
     archive_path = args.archive.resolve(strict=True)
     admitted = custody.Admission(archive_path.parent, args.manifest, args.receipt, Path.cwd(), until_ns)
     try:
+        phase("archive")
         archive = read_fd(admitted.archive_fd, retained.ARCHIVE_BYTES)
         manifest_fd, receipt_fd = retained.open_declared(args.manifest), retained.open_declared(args.receipt)
         try:
@@ -211,6 +234,7 @@ def main():
             and sha(files[selection.runtime.BACKEND]) == BACKEND_SHA
             and len(files[selection.runtime.BACKEND]) == BACKEND_BYTES
             and sha(files[selection.LOADER]) == LOADER_SHA)
+        phase("output")
         outputs = Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]).resolve(strict=True)
         parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -247,11 +271,14 @@ def main():
                     "XDG_STATE_HOME": str(scratch/"state"), "XDG_RUNTIME_DIR": str(scratch/"run"), "PATH": "/nonexistent",
                     "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "RUST_LOG": "off",
                     "SSL_CERT_FILE": str(runtime/selection.runtime.CA)}
+                phase("nativeversion")
                 version, diagnostics = native(loader, backend, runtime/"lib/codex/lib", ["--version"],
                     environment, scratch)
                 require(re.fullmatch(rb"codex-cli [0-9][0-9A-Za-z.+_-]{0,127}\n", version))
+                phase("schemageneration")
                 _, schema_diagnostics = native(loader, backend, runtime/"lib/codex/lib",
                     ["app-server", "generate-json-schema", "--out", str(scratch/"schemas")], environment, scratch)
+                phase("schemavalidation")
                 values, schema_rows = {}, {}
                 for name in SCHEMA_NAMES:
                     fd = member(scratch/"schemas", name)
@@ -265,6 +292,7 @@ def main():
         finally:
             os.close(backend)
             os.close(loader)
+        phase("finalseal")
         inventory(runtime, rows)
         fd = member(root, "codex")
         try:
@@ -310,5 +338,5 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        print("OMUX_RETAINED_DEVICE_API_QUALIFICATION_REFUSED", file=sys.stderr)
+        print("OMUX_RETAINED_DEVICE_API_QUALIFICATION_REFUSED_PHASE_" + PHASE.upper(), file=sys.stderr)
         sys.exit(125)

@@ -45,3 +45,17 @@ predicates; cleanup now genuinely models timeout followed by owned termination.
 The document is classified in authority.json. Yoga uses its recorded remote
 account rather than assuming that the local username matches. These corrections
 are unverified until their next declared invocation completes.
+
+Corrected source faba18f passed all six retry targets in
+92f51ec6-1db3-4be0-bfa1-d7782a5a2089; empty descendants. Its actual
+provider-free retained device API qualification a75d77f9 failed with empty
+descendants before provider access. No generated schema survived scratch cleanup.
+Fixed phase diagnostics and annotation-only wire-schema comparison are added;
+every validation keyword and the exact one-field embedded request remain checked.
+
+Applied the separate provider-free native-login-ui guard and preparation
+carrier proposals. They stage a fresh owned dialog and require actual 181-path
+closure, Wayland/portal and READY/EOF evidence; no provider/login capability is
+inherited. Detailed closure-row provenance refinement and actual local/host
+qualification are still pending. This source checkpoint permits testing the
+unverified proposals; it cannot claim installed readiness or account consent.
