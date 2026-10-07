@@ -26,3 +26,15 @@ that launcher generation still refuses missing packaging input.
 Static review found no concrete blocker. Actual corrected SDK qualification,
 helper and packaging regression checks remain pending on this source. Earlier
 device-API and first-account receipts retain their exact separate scope.
+
+C13 actually passed the JDK, pure-controller and packaging models; SDK
+qualification subsequently identified an absent `tar.bzl+` downloader
+configuration target. C14 docs/source passed and retained the exact missing
+public target diagnosis. The export now preserves finite public dangling
+links as explicit origin/target absence facts. Raw and relocated file
+inventories remain complete; selected roots, cycle/depth and escape checks
+remain enforced. After every sealed repository is rehashed, the consumer
+rederives and checks the exact absence lists. No configuration is invented,
+no file is omitted and no absent target grants read or write authority.
+Three focused models cover preserved absence, changed presence, chain limits
+and escapes. Actual corrected qualification/export remain pending.

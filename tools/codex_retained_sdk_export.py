@@ -355,7 +355,35 @@ def relocate_links(repositories, nix_inventory, budget):
         repo['files'] = rewritten
         repo['source_inventory_sha256'] = repo['inventory_sha256']
         repo['inventory_sha256'] = digest(canonical(rewritten))
-    def resolve(key, visited):
+    absences = public_link_absences(repositories,budget)
+    for repo in repositories:
+        repo['absent_links'] = [row for row in absences if row['origin'].split('/')[0]==repo['canonical_name']]
+
+def public_link_absences(repositories,budget):
+    """Preserve missing finite-public targets as facts, never materialize them."""
+    names, objects, links = set(), {}, {}
+    selected_names = {repo['canonical_name'] for repo in repositories}
+    for repo in repositories:
+        name = repo['canonical_name']
+        need(re.fullmatch(r'[A-Za-z0-9_+.~-]+',name) and name not in names,'link graph repository identity')
+        names.add(name); objects[name] = {'kind':'directory'}
+        for item in repo['files']:
+            key = name+'/'+item['path']
+            need(key not in objects,'duplicate public link graph object')
+            objects[key] = item
+            if item['kind']=='symlink':
+                target = item['target']
+                destination = posixpath.normpath(target if target.startswith('/') else posixpath.join(posixpath.dirname(key),target))
+                if destination.startswith(JDK+'/'):
+                    need(name=='rules_java++toolchains+local_jdk' and item['path'] in ('bin','include','lib','nix-support','share')
+                         and destination==JDK+'/'+item['path'],'unselected immutable store link')
+                else:
+                    need(not destination.startswith('/') and destination.split('/')[0] in selected_names,
+                         'link escapes finite qualified public repositories')
+                links[key] = destination
+    absences = []
+    def resolve(key, visited, origin):
+        budget.check()
         need(len(visited)<64 and key not in visited,'cyclic or excessive repository link chain')
         if key.startswith(JDK+'/'):
             return
@@ -365,11 +393,13 @@ def relocate_links(repositories, nix_inventory, budget):
             if prefix in links:
                 destination = links[prefix]
                 suffix = '/'.join(parts[count:])
-                resolve(destination+('/'+suffix if suffix else ''),visited|{key})
+                resolve(posixpath.normpath(destination+('/'+suffix if suffix else '')),visited|{key},origin)
                 return
-        need(key in objects,'dangling public repository link: '+repr(key))
+        need(not key.startswith('/') and key.split('/')[0] in names,'resolved link escapes finite public repositories')
+        if key not in objects: absences.append({'origin':origin,'target':key})
     for key in links:
-        resolve(key,set())
+        resolve(key,set(),key)
+    return sorted(absences,key=lambda row:(row['origin'],row['target']))
 
 def registry_metadata(lock_path, lock_sha256, cache_root, budget, *, sealed=False):
     """Read only exact BCR metadata hashes declared by the verified baseline lock."""
@@ -598,6 +628,10 @@ def validate_export(root, receipt_sha256, source_inventory_sha256, graph_files, 
         need(rows==repo['files'] and digest(canonical(rows))==repo['inventory_sha256'],'export byte inventory')
         repositories[name] = str(root/'repositories'/name)
     need(digest(canonical(receipt['repositories']))==receipt['inventory_sha256'],'aggregate inventory')
+    absences = public_link_absences(receipt['repositories'],budget)
+    for repo in receipt['repositories']:
+        need(repo.get('absent_links',[])==[row for row in absences if row['origin'].split('/')[0]==repo['canonical_name']],
+             'sealed public link absence inventory changed')
     module_overrides = {}
     for module, binding in receipt['modules'].items():
         name = binding['canonical_name']

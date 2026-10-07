@@ -9,6 +9,30 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def test_public_missing_links_preserve_raw_bytes_and_record_absence(self):
+        rows = [{'path':'first','kind':'symlink','target':'second'},
+                {'path':'second','kind':'symlink','target':'tools/downloader.cfg'}]
+        repos = [{'canonical_name':'tar.bzl+','source_root':str(self.root),
+                  'files':rows,'inventory_sha256':sdk.digest(sdk.canonical(rows))}]
+        sdk.relocate_links(repos,[],self.budget())
+        expected = [{'origin':'tar.bzl+/first','target':'tar.bzl+/tools/downloader.cfg'},
+                    {'origin':'tar.bzl+/second','target':'tar.bzl+/tools/downloader.cfg'}]
+        self.assertEqual(repos[0]['absent_links'],expected)
+        self.assertEqual(repos[0]['source_files'],rows)
+        self.assertEqual(sdk.public_link_absences(repos,self.budget()),expected)
+        repos[0]['files'].append({'path':'tools/downloader.cfg','kind':'file','sha256':'0'*64,'size':0,'mode':0o444})
+        self.assertEqual(sdk.public_link_absences(repos,self.budget()),[])
+    def test_missing_link_escape_cycle_and_depth_still_refuse(self):
+        for rows in ([{'path':'x','kind':'symlink','target':'../../outside'}],
+                     [{'path':'x','kind':'symlink','target':'x'}],
+                     [{'path':str(i),'kind':'symlink','target':str(i+1)} for i in range(65)]):
+            with self.subTest(rows=rows):
+                with self.assertRaises(ValueError):
+                    sdk.public_link_absences([{'canonical_name':'fixture','files':rows}],self.budget())
+    def test_missing_link_unselected_absolute_target_refuses(self):
+        with self.assertRaises(ValueError):
+            sdk.public_link_absences([{'canonical_name':'fixture','files':[{'path':'x','kind':'symlink','target':'/unselected/public'}]}],self.budget())
+
     def jdk_fixture(self):
         root = self.boundary/'jdk-fixture'
         root.mkdir()
