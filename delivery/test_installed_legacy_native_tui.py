@@ -19,8 +19,10 @@ import os
 from pathlib import Path
 import re
 import selectors
+import socket
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -166,6 +168,7 @@ RESUME_FAILURES = (*RESUME_FAILURE_MESSAGES.values(), "resume-json", "resume-mis
                    "resume-permission", "resume-os-failure", "resume-process-deadline",
                    "resume-database-busy", "resume-database-query", "resume-database-error",
                    "resume-other-predicate", "resume-shape", "resume-type", "resume-unrecognized")
+RESUME_FAILURES += tuple("resume-" + value for value in native_run_cli_failure.FAILURES if value.startswith("os-"))
 CLI_FAILURE_MESSAGES = {
     "installed CLI deadline exceeded": "cli-stream-deadline",
     "installed CLI output exceeded its bound": "cli-output-bound",
@@ -482,7 +485,7 @@ def classify_resume_failure(error):
     if isinstance(error, PermissionError):
         return "resume-permission"
     if isinstance(error, OSError):
-        return "resume-os-failure"
+        return "resume-" + native_run_cli_failure.failure_kind(error)
     if isinstance(error, subprocess.TimeoutExpired):
         return "resume-process-deadline"
     if isinstance(error, ValueError):
@@ -492,6 +495,58 @@ def classify_resume_failure(error):
     if isinstance(error, TypeError):
         return "resume-type"
     return "resume-unrecognized"
+
+
+def cold_discovery(socket_path, daemon_pid, params):
+    """Read actual daemon discovery without a short-lived CLI process per poll.
+
+    Install, seed discovery, detach and preservation still exercise installed
+    CLI boundaries. Only cold attachment polling uses this bounded control
+    client; it never substitutes an owner response or guessed attachment.
+    """
+    deadline = time.monotonic() + 20
+
+    def exchange(method, supplied):
+        information = socket_path.lstat()
+        parent = socket_path.parent.lstat()
+        require(stat.S_ISSOCK(information.st_mode) and information.st_uid == os.getuid()
+                and stat.S_IMODE(information.st_mode) == 0o600
+                and stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.getuid()
+                and stat.S_IMODE(parent.st_mode) == 0o700,
+                "cold discovery control socket custody changed")
+        packet = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
+                             "params": supplied}, separators=(",", ":")).encode() + b"\n"
+        require(len(packet) <= 8192, "cold discovery request exceeded bound")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "cold discovery control deadline exceeded")
+            channel.settimeout(remaining)
+            channel.connect(str(socket_path))
+            peer = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            require(peer[0] == daemon_pid and peer[1] == os.getuid(),
+                    "cold discovery control peer changed")
+            channel.sendall(packet)
+            response = bytearray()
+            while b"\n" not in response:
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "cold discovery control deadline exceeded")
+                channel.settimeout(remaining)
+                chunk = channel.recv(8192)
+                require(chunk and len(response) + len(chunk) <= tui.FRAME_LIMIT,
+                        "cold discovery control frame exceeded bound")
+                response.extend(chunk)
+        require(response.endswith(b"\n") and response.count(b"\n") == 1,
+                "cold discovery control frame changed")
+        value = json.loads(response, object_pairs_hook=tui.strict_object)
+        require(isinstance(value, dict) and set(value) == {"jsonrpc", "id", "result"}
+                and value["jsonrpc"] == "2.0" and type(value["id"]) is int and value["id"] == 1
+                and isinstance(value["result"], dict), "cold discovery control response rejected")
+        return value["result"]
+
+    hello = exchange("system.handshake", {"protocol_version": 2, "client": "omux-tui-fixture"})
+    require(type(hello.get("protocol_version")) is int and hello["protocol_version"] == 2,
+            "cold discovery control handshake rejected")
+    return exchange("integrations.discover", params)
 
 
 def wait_attached(cli, home, native, *, resume_diagnostics=False):
@@ -781,6 +836,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
     def cli(method, params=None, *, expected_completion=None):
         for drain in drains:
             drain.check()
+        if method == "integrations.discover" and PHASE == "cold-native-resume":
+            return cold_discovery(socket_path, daemon.pid, params or {})
         command = [str(prefix / "bin/omux"), "--state-dir", str(state), "rpc", method, "-"]
         if method == "operation.status" and DIAGNOSTIC == "detach-status-rpc":
             return status_cli(command, environment, params or {}, expected_completion=expected_completion)

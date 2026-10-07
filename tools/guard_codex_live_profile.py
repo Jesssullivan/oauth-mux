@@ -75,6 +75,29 @@ def unique_object(pairs):
         result[key] = value
     return result
 
+def open_manifest_directory(manifest):
+    path = Path(manifest)
+    if path.name != 'input.json' or not path.is_absolute():
+        raise ValueError('codex-live-manifest-namespace')
+    descriptor = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for part in path.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+            info = os.fstat(descriptor)
+            if info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+                raise ValueError('codex-live-manifest-ancestor')
+        info = os.fstat(descriptor)
+        if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700
+                or os.listdir(descriptor) != ['input.json']):
+            raise ValueError('codex-live-manifest-private-directory')
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
 def binding_selector(value):
     if not isinstance(value, str) or ':' in value or '\\' in value or any(char.isspace() for char in value):
         raise ValueError('codex-live-bind-selector')
@@ -122,9 +145,13 @@ class Admission:
         self.descriptors = []
         self.paths = []
         self.identities = []
+        self.parent_fd = None
+        self.parent_identity = None
         try:
             if self.manifest.is_relative_to(self.source_root):
                 raise ValueError("codex-live-private-input-in-source")
+            self.parent_fd = open_manifest_directory(self.manifest)
+            self.parent_identity = identity(os.fstat(self.parent_fd))
             fd = open_private(self.manifest, MAX_MANIFEST, read=True)
             self.descriptors.append(fd)
             self.paths.append(self.manifest)
@@ -152,6 +179,15 @@ class Admission:
     def recheck(self):
         if time.monotonic_ns() >= self.deadline_ns:
             raise ValueError("codex-live-input-deadline")
+        named_parent = open_manifest_directory(self.manifest)
+        try:
+            if (identity(os.fstat(self.parent_fd)) != self.parent_identity
+                    or identity(os.fstat(named_parent)) != self.parent_identity
+                    or identity(os.stat('input.json', dir_fd=self.parent_fd, follow_symlinks=False))
+                    != self.identities[0]):
+                raise ValueError('codex-live-manifest-directory-changed')
+        finally:
+            os.close(named_parent)
         for index, (path, fd, expected) in enumerate(zip(self.paths, self.descriptors, self.identities)):
             named = open_private(path, MAX_MANIFEST if index == 0 else MAX_SOURCE)
             try:
@@ -173,9 +209,12 @@ class Admission:
         return min(1200, remaining)
 
     def binding(self):
-        return str(self.manifest) + ":" + DESTINATION
+        return str(self.manifest.parent) + ":" + str(Path(DESTINATION).parent)
 
     def close(self):
         descriptors, self.descriptors = self.descriptors, []
         for fd in descriptors:
             os.close(fd)
+        if self.parent_fd is not None:
+            descriptor, self.parent_fd = self.parent_fd, None
+            os.close(descriptor)

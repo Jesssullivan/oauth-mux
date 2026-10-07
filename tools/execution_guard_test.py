@@ -1230,10 +1230,13 @@ class GuardTest(unittest.TestCase):
         from execution_guard import controller_thread_profile
         policy = controller_thread_profile()
         flags = {'legacy_globbing_threads': '--legacy_globbing_threads=',
-                 'fsvc_threads': '--experimental_fsvc_threads='}
+                 'fsvc_threads': '--experimental_fsvc_threads=',
+                 'loading_phase_threads': '--loading_phase_threads='}
         cases = (
             ('standard', ['build', '//:omux']),
             ('standard', ['test', '//:docs_check']),
+            ('codex-live', ['test', '//delivery:installed_codex_live_enrollment_test']),
+            ('codex-live', ['test', '//delivery:installed_codex_live_continuity_test']),
             ('dependency-prefetch', ['test', '//tools:fetch_codex_archives_bundle']),
             ('installed-browser', ['test', '//delivery:installed_chromium_test']),
             ('standard', ['run', '//delivery:linux_launcher_format', '--',
@@ -1252,7 +1255,6 @@ class GuardTest(unittest.TestCase):
                                     command.index(arguments[1]))
                 self.assertEqual(command.count('--jobs=2'), 1)
                 self.assertEqual(command.count('--host_jvm_args=-XX:ActiveProcessorCount=2'), 1)
-                self.assertFalse(any(item.startswith('--loading_phase_threads=') for item in command))
         for flag in ('--legacy_globbing_threads=100', '--experimental_fsvc_threads=200',
                      '--loading_phase_threads=100', '--config=unbounded',
                      '--host_jvm_args=-XX:ActiveProcessorCount=100'):
@@ -1262,8 +1264,9 @@ class GuardTest(unittest.TestCase):
                 with self.subTest(arguments=arguments), self.assertRaises(ValueError):
                     bazel_command('/store/bazel', Path('/owned/epoch'), arguments)
         policy['fsvc_threads'] = 200
+        policy['loading_phase_threads'] = 200
         self.assertEqual(controller_thread_profile(),
-                         {'legacy_globbing_threads': 2, 'fsvc_threads': 2})
+                         {'legacy_globbing_threads': 2, 'fsvc_threads': 2, 'loading_phase_threads': 2})
 
     def test_controller_worker_policy_partitions_cache_without_changing_limits(self):
         from execution_guard import controller_thread_profile
@@ -1279,6 +1282,8 @@ class GuardTest(unittest.TestCase):
             old = {name: value for name, value in execution.items()
                    if name not in controller_thread_profile()}
             self.assertNotEqual(current, key(old))
+            without_loading = {name: value for name, value in execution.items() if name != 'loading_phase_threads'}
+            self.assertNotEqual(current, key(without_loading))
             for field in controller_thread_profile():
                 self.assertNotEqual(current, key({**execution, field: 100}))
             self.assertEqual(PROPERTIES['TasksMax'], '512')

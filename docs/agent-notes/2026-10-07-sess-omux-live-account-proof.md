@@ -6,6 +6,14 @@ The checkpoint runs **05:48:41–10:48:41 UTC**. It continues the incomplete ori
 
 ## Honest product position
 
+## First live admission and C3 correction
+
+C2 `036bef69dc28d7e39be9b6b8b72f3500a15227ec` passed all seven privacy/admission/docs/source targets in `079efa57-5fdd-4cab-8e1c-e3875c54063f`; descendants empty. Live epoch `44894013-0717-4d59-b023-2bc683a46110` failed before worker/Bazel/provider IO: systemd226/NAMESPACE, destination file mountpoint creation denied beneath the root-owned directory. No credential contents were read. Original conservative cleanup refusal is retained; subsequent own-unit readback reports failed/MainPID0/no cgroup, without rewriting the historical receipt.
+
+C3 binds a dedicated owned0700 single-file private directory read-only over the existing fixed destination directory. The controller holds and rechecks parent/file identities and refuses extra files, shared modes or redirected/replaced parents. Selectors never enter receipts. This avoids privileged global file creation and retains the fixture's fixed namespace. Actual models and live dispatch are still unrun on this correction.
+
+C3 also replaces only cold owner-discovery polling forks with bounded actual-daemon socket requests authenticated by UID/exact owned daemon PID. It retains original discovery/history/configuration/readiness predicates. Six real socket boundary models accompany it. Explicit loading2 is policy hardening: pinned Bazel's CPU-derived default was already nominally2 under ActiveProcessorCount2, so no resource reduction or failure cause is claimed. Root remains sole executor; all caps unchanged. TIN-5338 terminal result was reconciled with exact owned-comment readback.
+
 PR531 merged reviewed diagnostics as `d829b3cdd91696a375a076970214fbf0621a5f6c`. Seven focused diagnostic/guard/source targets passed; the fresh native run `e761fae3-bbf4-4c68-af4c-23075c43bab7` failed after seed/history/detach, when the cold resumed terminal exited before its owner endpoint. Yoga registry metadata refused before content rehash. Neither run establishes ordinary native resume or live handoff. Durable real-account enrollment has not yet been established. Current code has native source import, authenticated provider identity verification and encrypted access-grant custody; these require actual evaluation.
 
 ## Work order

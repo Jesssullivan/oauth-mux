@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from test_native_cold_discovery import ColdDiscoverySocketTests
 import test_installed_legacy_native_tui as legacy
 import test_installed_native_tui as tui
 

@@ -1,5 +1,9 @@
 """Exact live admission cannot broaden ordinary/offline execution."""
 import json
+import os
+from pathlib import Path
+import tempfile
+import time
 import unittest
 import guard_dependency_profile as profiles
 import guard_owner_runtime_input as retained
@@ -99,6 +103,58 @@ class LiveAdmissionTests(unittest.TestCase):
     def test_private_manifest_rejects_duplicate_fields(self):
         with self.assertRaises(ValueError):
             live.unique_object([("model", "first"), ("model", "second")])
+
+    def test_private_directory_bind_and_named_custody(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as temporary:
+            root = Path(temporary)
+            repository = root / 'repository'
+            repository.mkdir(mode=0o700)
+            source = root / 'source'
+            source.mkdir(mode=0o700)
+            credential = source / 'auth.json'
+            credential.write_bytes(b'nonsecret model input')
+            credential.chmod(0o600)
+            directory = root / 'inputs'
+            directory.mkdir(mode=0o700)
+            manifest = directory / 'input.json'
+            manifest.write_text(json.dumps({'schema_version':1,'authorized_source_paths':[str(credential)]}))
+            manifest.chmod(0o600)
+            admission = live.Admission(manifest, repository, time.monotonic_ns()+60*10**9,
+                                       ['test', live.ENROLLMENT_LABEL])
+            try:
+                self.assertEqual(admission.binding(), str(directory)+':/omux-live-inputs')
+                self.assertFalse(admission.recheck()['sourceContentReadByGuard'])
+                extra = directory / 'unexpected'
+                extra.write_bytes(b'unrelated')
+                with self.assertRaises(ValueError):
+                    admission.recheck()
+                extra.unlink()
+                directory.rename(root / 'retired-inputs')
+                directory.mkdir(mode=0o700)
+                (directory/'input.json').write_text('{}')
+                (directory/'input.json').chmod(0o600)
+                with self.assertRaises(ValueError):
+                    admission.recheck()
+            finally:
+                admission.close()
+
+    def test_manifest_directory_refuses_shared_or_redirected_namespace(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as temporary:
+            directory=Path(temporary)/'inputs'
+            directory.mkdir(mode=0o700)
+            manifest=directory/'input.json'
+            manifest.write_text('{}')
+            manifest.chmod(0o600)
+            descriptor=live.open_manifest_directory(manifest)
+            os.close(descriptor)
+            directory.chmod(0o755)
+            with self.assertRaises(ValueError):
+                live.open_manifest_directory(manifest)
+            directory.chmod(0o700)
+            redirect=Path(temporary)/'redirect'
+            redirect.symlink_to(directory,target_is_directory=True)
+            with self.assertRaises(OSError):
+                live.open_manifest_directory(redirect/'input.json')
 
 if __name__ == "__main__":
     unittest.main()

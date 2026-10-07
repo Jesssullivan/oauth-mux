@@ -48,9 +48,11 @@ def controller_thread_profile():
 
     legacy_globbing_threads controls ForkJoin parallelism, not its maximum
     thread count. fsvc_threads controls the fixed filesystem-value pool.
+    Explicit loading parallelism avoids the resource-derived auto option;
+    ActiveProcessorCount=2 already makes its nominal default two in 9.0.1.
     Separate SDK and site constructors do not adopt this policy.
     """
-    return {'legacy_globbing_threads': 2, 'fsvc_threads': 2}
+    return {'legacy_globbing_threads': 2, 'fsvc_threads': 2, 'loading_phase_threads': 2}
 
 
 def controller_diagnostic(error, operation, phase, timeout):
@@ -946,6 +948,7 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             '--noworkspace_rc', '--output_base=' + str(output_base or run / 'output-base')] + arguments[:1] + [
             '--jobs=2', '--legacy_globbing_threads=' + str(threads['legacy_globbing_threads']),
             '--experimental_fsvc_threads=' + str(threads['fsvc_threads']),
+            '--loading_phase_threads=' + str(threads['loading_phase_threads']),
             '--spawn_strategy=' + ('linux-sandbox' if profile == 'codex-live' else 'sandboxed'), '--remote_executor=',
             '--remote_cache=', '--disk_cache=', '--sandbox_default_allow_network=false',
             '--enable_bzlmod', '--noenable_workspace', '--incompatible_strict_action_env',

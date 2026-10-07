@@ -661,6 +661,7 @@ python_test(
     name = "native_terminal_failure_test",
     main = "test_native_terminal_failure.py",
     srcs = [
+        "test_native_cold_discovery.py",
         "native_thread_census.py",
         "test_installed_legacy_native_tui.py", "test_installed_native_tui.py",
         "test_installed_native_interop.py", "test_installed_custody.py",

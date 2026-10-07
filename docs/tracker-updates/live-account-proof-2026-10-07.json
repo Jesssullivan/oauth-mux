@@ -178,5 +178,77 @@
     "attribution": "none",
     "provider_calls": false,
     "scope": "Native resume remains failed; no cause attribution, caps or acceptance changes."
+  },
+  "linear_c1_terminal_pre_action": {
+    "issue": "TIN-5338",
+    "comment_id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+    "authority": "User-authorized factual reconciliation; R-N13; issue status/scope unchanged",
+    "appended_text": "\n\n2026-10-07 06:25 UTC — terminal C1 native result: `c556012e-bf08-4f14-8355-32bee408f4c6` FAILED at cold-native-resume/resume-owner-discovery/resume-os-failure. Controller/workload3, descendants empty, controller failure/rejection null, sealed009 reverified after cleanup. Docs/source passed. Resumed native was alive (22 held threads); aggregate sampled479/512 and exposed max-event increase do not identify a cause. Native resume remains unproved; no unchanged automatic rerun.\n\nSigned C2 `036bef69dc28d7e39be9b6b8b72f3500a15227ec` applies reviewed first-account provider identity/encrypted custody/restart and opt-in exact live admission, preserving offline network denial and resource caps. Its seven-target privacy/admission/source batch is running; real enrollment not yet attempted. This proof deliberately cleans its isolated custody and cannot claim resident deployment or handoff. Native discovery fork removal is a separate proposed source fix; fresh candidate and second-account consent remain independently gated.",
+    "before_prefix_preserved": true,
+    "readback_pending": false
+  },
+  "c2_models": {
+    "epoch": "079efa57-5fdd-4cab-8e1c-e3875c54063f",
+    "source_commit": "036bef69dc28d7e39be9b6b8b72f3500a15227ec",
+    "exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "targets": [
+      "//delivery:codex_live_enrollment_contract_test",
+      "//tools:guard_codex_live_profile_test",
+      "//tools:execution_guard_test",
+      "//tools:guard_dependency_profile_test",
+      "//tools:guard_owner_runtime_input_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "test_evidence": {
+      "bytes": 224822,
+      "files": 17,
+      "manifest": "test-evidence.json",
+      "sha256": "fd741109f4a5388cf10e44be575bc2e85d24b5af49ab9bdabd9a7acab2319998",
+      "state": "preserved"
+    },
+    "passed_targets": 7,
+    "scope": "Offline privacy/admission contracts; no provider calls."
+  },
+  "first_live_admission": {
+    "epoch": "44894013-0717-4d59-b023-2bc683a46110",
+    "source_commit": "036bef69dc28d7e39be9b6b8b72f3500a15227ec",
+    "exit": 125,
+    "workload_exit": 125,
+    "descendants_empty": false,
+    "cleanup": {
+      "ownership": "refused",
+      "readback_attempts": 1,
+      "state": "deadline-exhausted",
+      "stop": "not-requested"
+    },
+    "test_evidence": {
+      "state": "not-admitted"
+    },
+    "provider_calls": false,
+    "source_contents_read": false,
+    "payload_started": false,
+    "namespace_exit": 226,
+    "closed_reason": "destination-file-mountpoint-create-denied",
+    "current_unit_readback": {
+      "ActiveState": "failed",
+      "MainPID": 0,
+      "ControlGroup": ""
+    },
+    "scope": "Failed before worker/Bazel. Conservative original cleanup receipt retained; current readback does not retroactively rewrite it."
+  },
+  "linear_c1_terminal_readback": {
+    "comment_exact": true,
+    "issue_state_scope_unchanged": true
+  },
+  "c3_source": {
+    "scope": "Private-directory readonly live-input mount; bounded peer-checked cold discovery eliminates polling CLI fork; explicit loading2 policy.",
+    "provider_access": "User authorization unchanged",
+    "models": "unrun at source checkpoint",
+    "live": "unrun on repaired namespace"
   }
 }
