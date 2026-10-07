@@ -251,7 +251,10 @@ def parse_pids_metadata(data, name):
 
 class PidsObservation:
     """Bounded sampled workload metadata; never an admission or cleanup predicate."""
-    def __init__(self):
+    def __init__(self, expected_limit=512):
+        if expected_limit not in (480,512):
+            raise ValueError('unknown finite workload task reservation')
+        self.expected_limit = expected_limit
         self.baseline = self.classify(unknown_pids_snapshot(), 'baseline')
         self.last_monitor = self.classify(unknown_pids_snapshot(), 'monitor')
         self.pre_cleanup = self.classify(unknown_pids_snapshot(), 'pre-cleanup')
@@ -274,7 +277,7 @@ class PidsObservation:
         relation = ('unavailable' if type(current) is not int or type(limit) is not int else
                     'below' if current < limit else 'at' if current == limit else 'over')
         return {**snapshot, 'sample_timing': timing,
-                'pids_limit': 'unavailable' if limit is None else 'verified512' if limit == 512 else 'changed',
+                'pids_limit': 'unavailable' if limit is None else 'verified'+str(self.expected_limit) if limit == self.expected_limit else 'changed',
                 'pids_sample': relation, 'max_event_delta': delta,
                 'pids_max_event_delta': 'unavailable' if delta is None else
                     'unchanged' if delta == 0 else 'increased' if delta > 0 else 'decreased'}
@@ -302,7 +305,7 @@ class PidsObservation:
             raise ValueError('pids-sample-timing')
         if type(row['current']) is int:
             self.sampled_peak_current = max(self.sampled_peak_current or 0, row['current'])
-        self.observed_at_or_over_verified_limit |= row['limit'] == 512 and row['pids_sample'] in ('at', 'over')
+        self.observed_at_or_over_verified_limit |= row['limit'] == self.expected_limit and row['pids_sample'] in ('at', 'over')
         self.observed_max_event_increase |= row['pids_max_event_delta'] == 'increased'
         self.observed_max_event_decrease |= row['pids_max_event_delta'] == 'decreased'
         self.observed_unknown |= row['custody'] != 'same' or any(row[key] is None for key in ('current', 'limit', 'max_events'))
@@ -843,11 +846,20 @@ def selected_site_receipt(path, expected_sha256, state_root, coordination_root, 
 
 
 def verify(actual, cgroup, manager='user', isolation=None, profile='standard', runtime_seconds=None):
-    for key, value in {**PROPERTIES, **(isolation or SANDBOX)}.items():
+    expected_properties, expected_cgroup = dict(PROPERTIES), dict(CGROUP)
+    if profile == 'resident-enrollment':
+        import guard_resident_enrollment_profile as resident
+        expected_properties.update(MemoryMax=str(resident.PROOF_MEMORY),TasksMax=str(resident.PROOF_TASKS),CPUQuotaPerSecUSec='1.900s')
+        expected_cgroup.update({'memory.max':str(resident.PROOF_MEMORY),'pids.max':str(resident.PROOF_TASKS)})
+    for key, value in {**expected_properties, **(isolation or SANDBOX)}.items():
         if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'codex-native') or
-                profile in ('standard', 'codex-live', 'codex-login', 'native-login-ui') and runtime_seconds is not None):
+                profile in ('standard', 'codex-live', 'codex-login', 'native-login-ui', 'resident-enrollment') and runtime_seconds is not None):
             import yoga_delivery_settings as delivery_settings
             delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
+            continue
+        if key == 'CPUQuotaPerSecUSec' and profile == 'resident-enrollment':
+            if actual.get(key) not in ('1.900s','1.9s','1900ms'):
+                raise ValueError('effective complementary CPU reservation rejected')
             continue
         if actual.get(key) != value:
             raise ValueError('effective service property rejected: ' + key)
@@ -857,7 +869,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             home = Path(pwd.getpwuid(os.getuid()).pw_dir)
             yoga.verify_masks(actual, home, actual.get('BindReadOnlyPaths', '').split())
         else:
-            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'codex-live', 'codex-login', 'native-login-ui') else profile)
+            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'codex-live', 'codex-login', 'native-login-ui', 'resident-enrollment') else profile)
         if profile in ('installed-browser', 'site', 'yoga-toolbar') and '/etc/environment' not in {
                 path.lstrip('-') for path in actual.get('InaccessiblePaths', '').split()}:
             raise ValueError('host environment file mask missing')
@@ -871,13 +883,14 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         if manager == 'system':
             hidden.update(entry.split(':', 1)[0] for entry in actual.get('TemporaryFileSystem', '').split())
         required_masks(hidden)
-    if not set(DELEGATION_ENV).issubset(actual.get('UnsetEnvironment', '').split()):
+    delegated = tuple(key for key in DELEGATION_ENV if profile != 'resident-enrollment' or key != 'DBUS_SESSION_BUS_ADDRESS')
+    if not set(delegated).issubset(actual.get('UnsetEnvironment', '').split()):
         raise ValueError('delegation environment isolation rejected')
-    for key, value in CGROUP.items():
+    for key, value in expected_cgroup.items():
         if (cgroup / key).read_text().strip() != value:
             raise ValueError('effective cgroup bound rejected: ' + key)
     quota, period = (cgroup / 'cpu.max').read_text().split()
-    if quota == 'max' or int(quota) > 2 * int(period) or int(quota) <= 0:
+    if quota == 'max' or int(quota) > 2 * int(period) or int(quota) <= 0 or (profile == 'resident-enrollment' and int(quota)*10 > 19*int(period)):
         raise ValueError('effective CPU quota rejected')
 
 
@@ -954,6 +967,15 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             '--enable_bzlmod', '--noenable_workspace', '--incompatible_strict_action_env',
             '--@rules_zig//zig/settings:use_standalone_translate_c', '--lockfile_mode=error'] + cache_args + evaluation_args + site_args + pack_args + retained_args + test_args + provenance + arguments[1:]
 
+
+def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None):
+    import guard_resident_enrollment_profile as resident
+    resident.finite(arguments,'system',admission.manifest,False)
+    command = bazel_command(bazel,run,['build',resident.LABEL],source_commit=source_commit,source_dirty=source_dirty)
+    command[command.index('build')] = 'run'
+    command[command.index('--spawn_strategy=sandboxed')] = '--spawn_strategy=linux-sandbox'
+    command[-1:-1] = ['--run_env='+key+'='+value for key,value in admission.environment().items()]
+    return command
 
 def native_login_ui_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None):
     import guard_native_login_ui_profile as ui
@@ -1085,7 +1107,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'codex-login', 'native-login-ui'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'codex-login', 'native-login-ui', 'resident-enrollment'), default='standard')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1121,6 +1143,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--ui-prepare-manifest-sha256')
     parser.add_argument('--ui-prepare-os-qualification-sha256')
     parser.add_argument('--ui-prepare-control-sha256')
+    parser.add_argument('--resident-enrollment-manifest')
     parser.add_argument('--manager', choices=('user', 'system'), default='user')
     parser.add_argument('--become-file', type=Path)
     parser.add_argument('--reuse-owned-cache', action='store_true')
@@ -1193,6 +1216,7 @@ def _main(argv, admission_resources):
     login_input = None
     login_input_verified_after = None
     ui_prepare_output = None
+    resident_disposition = None
     live_input = None
     live_input_verified_after = None
     live_binding_readback = None
@@ -1251,6 +1275,20 @@ def _main(argv, admission_resources):
     elif any(v is not None for v in (args.ui_prepare_manifest,args.ui_prepare_output,
             args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256)):
         raise ValueError('native-ui-input-exclusive-to-prepare-profile')
+    if args.profile == 'resident-enrollment':
+        import guard_resident_enrollment_profile as login
+        login.finite(arguments,args.manager,args.resident_enrollment_manifest,args.reuse_owned_cache,
+            (args.repository_cache,args.nixpkgs_source,args.site_source,args.codex_owner_runtime_directory,
+             args.codex_live_manifest,args.codex_login_manifest,args.native_login_directory,
+             args.ui_prepare_manifest,args.ui_prepare_output,args.codex_pack_directory,args.codex_recovery_source,
+             args.site_inventory,args.site_inventory_sha256,args.site_nixpkgs_source,args.site_phase,
+             args.site_qualification,args.site_qualification_sha256,args.site_delivery_manifest,
+             args.site_delivery_manifest_sha256,args.codex_pristine_directory,args.codex_recovery_delta_directory,
+             args.sdk_lane,args.sdk_source_root,args.sdk_source_receipt_sha256,args.sdk_settings_root,
+             args.sdk_settings_receipt_sha256,args.sdk_bundle,args.sdk_bundle_receipt_sha256,
+             args.yoga_delivery_epoch,args.yoga_qualification,args.yoga_qualification_sha256,args.yoga_deadline_monotonic_ns))
+    elif args.resident_enrollment_manifest is not None:
+        raise ValueError('resident-input-exclusive-to-resident-profile')
     delivery_lock = None
     delivery_lock_verified_before_cleanup = None
     if args.codex_owner_runtime_directory is not None:
@@ -1330,7 +1368,7 @@ def _main(argv, admission_resources):
         raise ValueError('SDK inputs are exclusive to the SDK profile')
     if os.environ.get('OMUX_EXECUTION_GUARD'):
         raise ValueError('recursive launcher reentry rejected')
-    isolation = {**SANDBOX, **site.phase_isolation(args.site_phase, arguments)} if site else {**SANDBOX, **selected_profile(args.profile, arguments,
+    isolation = {**SANDBOX, **login.finite(arguments,args.manager,args.resident_enrollment_manifest,False)} if args.profile == 'resident-enrollment' else {**SANDBOX, **site.phase_isolation(args.site_phase, arguments)} if site else {**SANDBOX, **selected_profile(args.profile, arguments,
         site_inputs=any((args.site_source, args.site_nixpkgs_source, args.site_inventory,
                          args.site_inventory_sha256, args.nixpkgs_source)),
         pack_input=args.codex_pack_directory is not None,
@@ -1342,7 +1380,7 @@ def _main(argv, admission_resources):
     if sdk and (args.sdk_bundle != Path('/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/052fde9c-7e07-490f-a940-fb11820f1d31/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/fetch_codex_archives_bundle/test.outputs/bundle') or
                args.sdk_bundle_receipt_sha256 != '1d3d34323a3e19fd7e640146bf0eba006881a9bdd2d376a0493153f4cd8d30a0'):
         raise ValueError('SDK requires the exact retained archive producer receipt')
-    mask_profile = 'installed-browser' if yoga else 'standard' if sdk or native_sdk or delivery_settings or args.profile in ('codex-live', 'codex-login', 'native-login-ui') else args.profile
+    mask_profile = 'installed-browser' if yoga else 'standard' if sdk or native_sdk or delivery_settings or args.profile in ('codex-live', 'codex-login', 'native-login-ui', 'resident-enrollment') else args.profile
     DIAGNOSTIC_STAGE = 'privilege-metadata'
     sudo = None
     if args.manager == 'system':
@@ -1373,7 +1411,7 @@ def _main(argv, admission_resources):
     environment = {'OMUX_BAZEL_BOOTSTRAP_CLOSURE': str(bootstrap), 'JAVA_HOME': str(java)}
     if not site and not native_sdk:
         environment.update(OMUX_BAZEL_CLOSURE=str(closure), OMUX_ZIG_SDK=str(zig))
-    if args.profile in ('codex-login','native-login-ui'):
+    if args.profile in ('codex-login','native-login-ui','resident-enrollment'):
         environment['HOME'] = pwd.getpwuid(os.getuid()).pw_dir
     if delivery_settings:
         delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
@@ -1417,6 +1455,10 @@ def _main(argv, admission_resources):
             args.state_dir,delivery_entry_deadline_ns,
             (args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256))
         admission_resources.callback(login_input.close)
+    if args.profile == 'resident-enrollment':
+        login_input = login.Admission(args.resident_enrollment_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns)
+        admission_resources.callback(login_input.close)
+        login_input.service_observation(control,starting=True)
     fresh_metadata = selected_fresh_inputs(args.profile, arguments, args.codex_pristine_directory,
                                            args.codex_recovery_delta_directory, private)
     if args.codex_recovery_source is not None:
@@ -1498,7 +1540,7 @@ def _main(argv, admission_resources):
                 delivery_prior, source_commit=args.source_commit, source_dirty=args.source_dirty)
             environment.update(delivery_envelope)
         elif login_input is not None:
-            command = (native_login_ui_command if args.profile == 'native-login-ui' else codex_login_command)(bazel, run, arguments, login_input,
+            command = (resident_enrollment_command if args.profile == 'resident-enrollment' else native_login_ui_command if args.profile == 'native-login-ui' else codex_login_command)(bazel, run, arguments, login_input,
                 source_commit=args.source_commit, source_dirty=args.source_dirty)
         elif yoga:
             yoga.publish_repository_inventory(yoga_admission, run)
@@ -1589,7 +1631,7 @@ def _main(argv, admission_resources):
         result = 125
         cleanup = False
         controller_failure = None
-        pids_observation = PidsObservation()
+        pids_observation = PidsObservation(login.PROOF_TASKS if args.profile == 'resident-enrollment' else 512)
         pids_cancellation = None
         controller_diagnostics = []
         cleanup_summary = {'state': 'not-started', 'stop': 'not-requested',
@@ -1761,15 +1803,15 @@ def _main(argv, admission_resources):
                 launch += ['--property=BindReadOnlyPaths=' + yoga_admission['witness']['source'] + ':' + yoga_admission['witness']['destination']]
             if login_input is not None:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(login_input.bindings())]
-                if args.profile == 'native-login-ui':
-                    launch += ['--property=BindPaths=' + login_input.writable_binding()]
+                if args.profile in ('native-login-ui','resident-enrollment'):
+                    launch += ['--property=BindPaths=' + login_input.writable_binding() + ((' '+str(run)+':'+str(run)) if args.profile == 'resident-enrollment' else '')]
             if native_sdk:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(native_sdk.readonly_paths(args, native_plan))]
                 if native_cache is not None:
                     launch += ['--property=BindPaths=' + str(native_cache.lease.output_base)]
             if live_input is not None:
                 launch += ['--property=BindReadOnlyPaths=' + live_input.binding()]
-            unset = DELEGATION_ENV + (('OMUX_ZIG_SDK', 'OMUX_BAZEL_CLOSURE', 'OMUX_SITE_BAZEL_CLOSURE') if site else ())
+            unset = tuple(key for key in DELEGATION_ENV if args.profile != 'resident-enrollment' or key != 'DBUS_SESSION_BUS_ADDRESS') + (('OMUX_ZIG_SDK', 'OMUX_BAZEL_CLOSURE', 'OMUX_SITE_BAZEL_CLOSURE') if site else ())
             if yoga or login_input is not None:
                 unset += ('DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE',
                           'SSH_AUTH_SOCK', 'SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY', 'NODE_OPTIONS', 'NODE_PATH',
@@ -1777,6 +1819,9 @@ def _main(argv, admission_resources):
                           'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_DIRS',
                           'GNOME_KEYRING_CONTROL', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
                           'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')
+            if args.profile == 'resident-enrollment':
+                unset = tuple(key for key in unset if key not in ('XDG_RUNTIME_DIR',))
+                environment.update(login_input.environment())
             launch += ['--property=UnsetEnvironment=' + ' '.join(unset)]
             launch += ['--setenv=' + key + '=' + value for key, value in environment.items()]
             settings = dict(PROPERTIES)
@@ -1785,6 +1830,9 @@ def _main(argv, admission_resources):
             settings.pop('RuntimeMaxUSec')
             settings.pop('TimeoutStopUSec')
             settings.update(CPUQuota='200%', RuntimeMaxSec='1200', TimeoutStopSec='10')
+            if args.profile == 'resident-enrollment':
+                settings.update(MemoryMax=str(login.PROOF_MEMORY),TasksMax=str(login.PROOF_TASKS),
+                    CPUQuota=str(login.PROOF_CPU_PERCENT)+'%')
             if native_sdk:
                 delivery_runtime_seconds = native_sdk.runtime(args)
                 settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
@@ -1817,7 +1865,8 @@ def _main(argv, admission_resources):
                                    (*PROPERTIES, *SANDBOX, 'ActiveState', 'Result', 'ControlGroup',
                                     'User', 'Group', 'PrivateUsers', 'CapabilityBoundingSet',
                                     'AmbientCapabilities', 'StandardInput', 'MainPID',
-                                    'TemporaryFileSystem', 'InaccessiblePaths', 'BindReadOnlyPaths', 'BindPaths')}
+                                    'TemporaryFileSystem', 'InaccessiblePaths', 'BindReadOnlyPaths', 'BindPaths',
+                                    *(('ProtectSystem','PrivateTmp') if args.profile == 'resident-enrollment' else ()))}
             if login_input is not None:
                 observed_properties = login.projection(observed_properties)
             if live_input is not None:
@@ -1841,7 +1890,10 @@ def _main(argv, admission_resources):
             if native_sdk:
                 native_sdk.verify_readonly(actual, args, native_plan)
             if login_input is not None:
-                login_input.verify_bindings(actual)
+                if args.profile == 'resident-enrollment':
+                    login_input.verify_bindings(actual,run)
+                else:
+                    login_input.verify_bindings(actual)
                 observed_properties = login.projection(observed_properties, verified=True)
                 login_input.recheck()
             if live_input is not None:
@@ -1913,7 +1965,7 @@ def _main(argv, admission_resources):
             result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--all', unit],
                 operation='unit-readback', phase='monitor')), deadline, iteration)
         except (ValueError, OSError) as error:
-            rejection = (login.rejection(error) if args.profile in ('codex-login','native-login-ui')
+            rejection = (login.rejection(error) if args.profile in ('codex-login','native-login-ui','resident-enrollment')
                          else live.rejection_category(error) if args.profile == 'codex-live'
                          else str(error) if isinstance(error, ValueError) else None)
             raise
@@ -2083,6 +2135,8 @@ def _main(argv, admission_resources):
                     login_input.recheck()
                     if args.profile == 'native-login-ui':
                         ui_prepare_output = login_input.completed()
+                    elif args.profile == 'resident-enrollment':
+                        resident_disposition = login_input.service_observation(control)
                     login_input_verified_after = graph_digest(Path.cwd()) == (graph_sha256, graph_inputs)
                 except (OSError, ValueError):
                     login_input_verified_after = False
@@ -2103,6 +2157,10 @@ def _main(argv, admission_resources):
                            'export_receipt_sha256': args.native_export_sha256,
                            'source_and_export_verified_after_cleanup': native_verified_after} if native_sdk else None,
                        'native_candidate_cache': native_cache.facts() if native_cache is not None else None,
+                       'resident_enrollment': {'budget':login_input.facts,
+                           'service_disposition':resident_disposition,'verified_after_cleanup':login_input_verified_after,
+                           'native_support':False,'same_process_handoff_proven':False
+                       } if login_input and args.profile == 'resident-enrollment' else None,
                        'codex_login_input': {
                            'verified_after_cleanup': login_input_verified_after,
                            'native_sha256': args.native_login_sha256,
@@ -2177,7 +2235,8 @@ def _main(argv, admission_resources):
                        'original_cgroup_identity': {'device': cgroup_pin.identity[0], 'inode': cgroup_pin.identity[1]} if cgroup_pin else None,
                        'rejection': rejection, 'observed_properties': observed_properties,
                        'startup_history': startup_history,
-                       'descendants_empty': cleanup, 'limits': PROPERTIES,
+                       'descendants_empty': cleanup, 'limits': ({**PROPERTIES,'MemoryMax':str(login.PROOF_MEMORY),
+                           'TasksMax':str(login.PROOF_TASKS),'CPUQuotaPerSecUSec':'1.900s'} if args.profile == 'resident-enrollment' else PROPERTIES),
                        'isolation': isolation,
                        'inaccessible_paths': blocked_paths(args.profile) if args.manager == 'user' else
                            (['/etc/environment'] if args.profile in ('installed-browser', 'site', 'yoga-toolbar') else []),

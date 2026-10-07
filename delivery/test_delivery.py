@@ -245,6 +245,29 @@ class BundleTest(DeliveryFixture):
 
 
 class InstallationTest(DeliveryFixture):
+    def test_owned_linux_service_binds_persistent_daemon_state_without_activation(self) -> None:
+        service = self.service.with_name("ai.xoxd.omux.dev.service")
+        persistent = self.root / 'runtime state with % and $ and "quotes"'
+        receipt = install.install_bundle(self.portable_bundle("development"), self.prefix, self.state,
+                                         service, daemon_state_dir=persistent)
+        self.assertFalse(receipt["serviceActivated"])
+        self.assertIn('--state-dir "' + str(persistent).replace("%", "%%").replace("$", "$$").replace('"', '\\"') + '"',
+                      service.read_text())
+        self.assertFalse(persistent.exists())
+        for bound in ("MemoryMax=268435456\n", "MemorySwapMax=0\n", "TasksMax=32\n", "CPUQuota=10%\n"):
+            self.assertIn(bound, service.read_text())
+        runtime = "/run/user/" + str(os.getuid())
+        self.assertIn('Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=' + runtime + '/bus"\n', service.read_text())
+        self.assertIn('Environment="XDG_RUNTIME_DIR=' + runtime + '"\n', service.read_text())
+        self.assertEqual(next(entry for entry in receipt["files"] if entry["path"] == str(service))["mode"], 0o600)
+
+    def test_daemon_state_binding_requires_an_owned_linux_service(self) -> None:
+        persistent = self.root / "runtime-state"
+        with self.assertRaisesRegex(ValueError, "requires a Linux owned service"):
+            install.install_bundle(self.portable_bundle("development"), self.prefix, self.state,
+                                   daemon_state_dir=persistent)
+        self.assertFalse(self.prefix.exists())
+
     def test_receipt_binds_archive_provenance_without_claiming_activation(self) -> None:
         payload = self.portable_bundle("development", source_revision="a" * 40, source_dirty=False)
         manifest, files = pack.verify_bundle(payload)

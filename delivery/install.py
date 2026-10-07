@@ -140,7 +140,8 @@ def _matches(path: Path, entry: dict) -> bool:
 
 
 def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
-                   user_service: Path | None = None, platform: str = "linux") -> dict:
+                   user_service: Path | None = None, platform: str = "linux",
+                   *, daemon_state_dir: Path | None = None) -> dict:
     manifest, files = verify_bundle(payload)
     _absolute(prefix)
     _absolute(state_dir)
@@ -148,6 +149,12 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
         raise ValueError("bundle and service platform differ")
     if user_service is not None:
         _absolute(user_service)
+    if daemon_state_dir is not None:
+        _absolute(daemon_state_dir)
+        if user_service is None or platform != "linux":
+            raise ValueError("explicit daemon state requires a Linux owned service")
+        if any(char in str(daemon_state_dir) for char in "\n\r\x00"):
+            raise ValueError("unsafe daemon state path")
     channel = manifest.get("channel")
     instance = {"development": "dev", "release": "default"}.get(channel)
     if user_service is not None and platform == "linux" and instance is not None:
@@ -169,13 +176,23 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
             # systemd expands percent specifiers even inside quoted values.
             escaped = executable.replace("%", "%%").replace("$", "$$").replace("\\", "\\\\").replace('"', '\\"')
             replacement = '"' + escaped + '"'
+            if daemon_state_dir is not None:
+                state_argument = str(daemon_state_dir).replace("%", "%%").replace("$", "$$").replace("\\", "\\\\").replace('"', '\\"')
+                replacement += ' --state-dir "' + state_argument + '"'
             template = files["share/omux/services/omux.service.in"].decode()
             bindings = {"OMUX_INSTALL_PREFIX": str(prefix),
                         "OMUX_INSTALL_RECORD": str(state_dir / RECORD),
                         "OMUX_INSTALL_SERVICE_PATH": str(user_service)}
+            if daemon_state_dir is not None:
+                runtime = "/run/user/" + str(os.getuid())
+                bindings.update(DBUS_SESSION_BUS_ADDRESS="unix:path=" + runtime + "/bus",
+                                XDG_RUNTIME_DIR=runtime)
             if instance is not None:
                 bindings["OMUX_INSTANCE"] = instance
             template += "\n[Service]\n"
+            if daemon_state_dir is not None:
+                # Finite resident reservation, independent of proof lifetime.
+                template += "MemoryMax=268435456\nMemorySwapMax=0\nTasksMax=32\nCPUQuota=10%\n"
             for key, value in bindings.items():
                 if any(char in value for char in "\n\r\x00"):
                     raise ValueError("unsafe installation binding")
@@ -286,12 +303,14 @@ def main() -> None:
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--user-service", type=Path)
+    parser.add_argument("--daemon-state-dir", type=Path)
     parser.add_argument("--platform", choices=["linux", "macos"], default="linux")
     args = parser.parse_args()
     if args.operation == "install":
         if args.bundle is None:
             parser.error("install requires --bundle")
-        result = install_bundle(read_bundle(args.bundle), args.prefix, args.state_dir, args.user_service, args.platform)
+        result = install_bundle(read_bundle(args.bundle), args.prefix, args.state_dir, args.user_service, args.platform,
+                                daemon_state_dir=args.daemon_state_dir)
     else:
         result = uninstall(args.prefix, args.state_dir)
     print(json.dumps(result, sort_keys=True))
