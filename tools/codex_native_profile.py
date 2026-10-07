@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import time
 import math
 import xml.etree.ElementTree as ET
@@ -41,7 +42,16 @@ QUALIFICATION_GATES = {
     ),
 }
 PRODUCTION = ('//codex-rs/core:core', '//codex-rs/app-server:app-server', '//codex-rs/config:config', '//codex-rs/app-server-protocol:app-server-protocol', '//codex-rs/tui:tui', '//codex-rs/cli:codex', '//codex-rs/config-schema:codex-write-config-schema', '//bazel/schema:public-schema-bundle')
+CLI = '//codex-rs/cli:codex'
+COMBINED_MODE = 'qualification-cli'
+CLI_CONTEXT_FIELDS = frozenset(('invocation_id', 'output_base',
+    'source_receipt_sha256', 'export_receipt_sha256', 'source_inventory_sha256',
+    'export_inventory_sha256', 'candidate_cache_key', 'candidate_provenance_sha256',
+    'controller_graph_sha256', 'bazel', 'workload_exit', 'descendants_empty',
+    'source_and_export_verified_after_cleanup'))
+MAX_CLI_BYTES = 1024 * 1024 * 1024
 MODES = {
+    COMBINED_MODE: ('test', (CORE, CONFIG, LOGIN, CLI), None),
     'qualification': ('test', (CORE, CONFIG, LOGIN), None),
     'analysis': ('build', PRODUCTION, None), 'production8': ('build', PRODUCTION, None),
     'cli-opt': ('build', ('//codex-rs/cli:codex',), None),
@@ -158,7 +168,7 @@ def command(args, run, locked_path, bash, candidate=None):
         argv += ['--local_test_jobs=1', '--test_sharding_strategy=disabled', '--test_timeout=1200', '--test_env=RUST_TEST_THREADS=1',
             '--test_env=RUST_MIN_STACK=8388608', '--test_env=PATH=' + locked_path, '--nocache_test_results',
             '--nozip_undeclared_test_outputs', '--test_output=errors']
-        if args.native_mode == 'qualification':
+        if args.native_mode in ('qualification', COMBINED_MODE):
             argv += ['--test_arg=--exact', '--test_arg=--format=pretty', '--test_arg=--color=never']
             argv += ['--test_arg=' + name for names in QUALIFICATION_GATES.values() for name in names]
         else:
@@ -193,7 +203,98 @@ def qualification_log(value, target):
             'qualification actual libtest counts differ')
     return sorted(observed)
 
-def qualification_evidence(run, manifest):
+
+def combined_cli_artifact(context):
+    """Read actual explicit CLI output only after successful verified cleanup."""
+    require(isinstance(context, dict) and set(context) == CLI_CONTEXT_FIELDS,
+        'combined CLI exact cleanup context required')
+    require(context['workload_exit'] == 0 and type(context['workload_exit']) is int
+        and context['descendants_empty'] is True
+        and context['source_and_export_verified_after_cleanup'] is True
+        and context['bazel'] == BAZEL
+        and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            context['invocation_id']),
+        'combined CLI successful cleanup/tool context required')
+    for name in CLI_CONTEXT_FIELDS - {'invocation_id', 'output_base', 'bazel',
+            'workload_exit', 'descendants_empty', 'source_and_export_verified_after_cleanup'}:
+        require(isinstance(context[name], str) and re.fullmatch(r'[0-9a-f]{64}', context[name]),
+            'combined CLI exact provenance digest required')
+    output = STATE / ('cache-v2-' + context['candidate_cache_key']) / 'output-base'
+    require(context['output_base'] == str(output), 'combined CLI exact output base required')
+    root = output / 'execroot/_main/bazel-out'
+    parent = trusted_parent(root)
+    configurations = []
+    try:
+        names = os.listdir(parent)
+        require(len(names) <= 64, 'combined CLI configuration inventory bound')
+        for name in names:
+            if not re.fullmatch(r'[A-Za-z0-9_.-]+-opt', name):
+                continue
+            directory = root / name / 'bin/codex-rs/cli'
+            try:
+                held = trusted_parent(directory)
+            except FileNotFoundError:
+                continue
+            try:
+                try:
+                    info = os.stat('codex', dir_fd=held, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                require(stat.S_ISREG(info.st_mode), 'combined CLI output must be regular')
+                configurations.append((name, directory))
+            finally:
+                os.close(held)
+        require(len(configurations) == 1, 'combined CLI requires one actual declared output')
+    finally:
+        os.close(parent)
+    configuration, directory = configurations[0]
+    parent = trusted_parent(directory)
+    child = None
+    try:
+        child = os.open('codex', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        before = os.fstat(child)
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+            and before.st_nlink == 1 and not before.st_mode & 0o022
+            and before.st_mode & 0o111 and 4 <= before.st_size <= MAX_CLI_BYTES,
+            'combined CLI output custody/size refused')
+        require(os.pread(child, 4, 0) == b'\x7fELF', 'combined CLI actual ELF required')
+        sha, count = hashlib.sha256(), 0
+        while True:
+            tick(source_io.DEADLINE)
+            value = os.read(child, 1024 * 1024)
+            if not value:
+                break
+            count += len(value)
+            require(count <= MAX_CLI_BYTES, 'combined CLI output bound')
+            sha.update(value)
+        witness = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+            item.st_nlink, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+        require(count == before.st_size and witness(before) == witness(os.fstat(child))
+            == witness(os.stat('codex', dir_fd=parent, follow_symlinks=False)),
+            'combined CLI output changed during actual hash')
+        return {'kind': 'actual-explicit-cli-target-v1', 'target': CLI,
+            'configuration': configuration, 'path': str(directory / 'codex'),
+            'sha256': sha.hexdigest(), 'bytes': count}
+    finally:
+        if child is not None:
+            os.close(child)
+        os.close(parent)
+
+def qualification_evidence(run, manifest, context=None):
+    cli = None
+    if context is not None:
+        require(isinstance(context, dict) and set(context) == CLI_CONTEXT_FIELDS,
+            'combined CLI exact cleanup context required')
+        require(context['invocation_id'] == run.name, 'combined CLI invocation differs')
+        require(set(manifest['targets']) == set(MODES[COMBINED_MODE][1])
+            and len(manifest['targets']) == 4 and len(manifest['results']) == 4
+            and {row['target'] for row in manifest['results']} == set(MODES[COMBINED_MODE][1]),
+            'combined qualification exact four requested targets differ')
+        cli_rows = [row for row in manifest['results'] if row['target'] == CLI]
+        require(len(cli_rows) == 1 and cli_rows[0]['state'] == 'missing-test-directory'
+            and cli_rows[0]['files'] == [], 'combined CLI must remain an explicit non-test target')
+        manifest = dict(manifest, results=[row for row in manifest['results'] if row['target'] != CLI])
+        cli = combined_cli_artifact(context)
     require({row['target'] for row in manifest['results']} == set(QUALIFICATION_GATES)
         and len(manifest['results']) == len(QUALIFICATION_GATES),
         'qualification exact target set differs')
@@ -225,6 +326,9 @@ def qualification_evidence(run, manifest):
         'targets': rows, 'passed': count, 'failed': 0, 'ignored': 0,
         'xml_sha256': hashlib.sha256(raw).hexdigest(),
         'native_support': False, 'provider_evaluation': False}
+    if cli is not None:
+        require(count == 14, 'combined qualification requires all fourteen named gates')
+        receipt.update(cli_artifact=cli, cli_context=dict(context))
     parent = trusted_parent(run)
     try:
         for name, value in (('native-qualification.xml', raw),
@@ -238,7 +342,11 @@ def qualification_evidence(run, manifest):
     finally:
         os.close(parent)
     return receipt
-def meaningful_tests(run, manifest, mode):
+def meaningful_tests(run, manifest, mode, context=None):
+    if mode == COMBINED_MODE:
+        require(context is not None, 'combined qualification cleanup context missing')
+        return qualification_evidence(run, manifest, context)
+    require(context is None, 'historical native modes do not accept combined context')
     if mode == 'qualification':
         return qualification_evidence(run, manifest)
     minimum = {'core-text': 8, 'login-bind': 2}.get(mode, 1)

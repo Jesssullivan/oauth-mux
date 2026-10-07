@@ -233,6 +233,91 @@ class SourceMutationTests(unittest.TestCase):
             for folder, _, _ in os.walk(registry_cache):
                 Path(folder).chmod(0o755)
 
+
+class CombinedQualificationTests(unittest.TestCase):
+    def context(self, root):
+        return {'invocation_id':'12345678-1234-4234-8234-123456789abc',
+            'output_base':str(root/('cache-v2-'+'a'*64)/'output-base'),
+            'source_receipt_sha256':'1'*64, 'export_receipt_sha256':'2'*64,
+            'source_inventory_sha256':'3'*64, 'export_inventory_sha256':'4'*64,
+            'candidate_cache_key':'a'*64, 'candidate_provenance_sha256':'b'*64,
+            'controller_graph_sha256':'c'*64, 'bazel':native.BAZEL,
+            'workload_exit':0, 'descendants_empty':True,
+            'source_and_export_verified_after_cleanup':True}
+
+    def fixture(self, root, context):
+        run=root/context['invocation_id']; (run/'test-evidence').mkdir(parents=True,mode=0o700)
+        rows=[]
+        for index,(target,names) in enumerate(native.QUALIFICATION_GATES.items()):
+            value=('\n'.join('test '+name+' ... ok' for name in names)
+                +'\ntest result: ok. %d passed; 0 failed; 0 ignored;\n'%len(names)).encode()
+            path=run/'test-evidence'/('log%d'%index); path.write_bytes(value); path.chmod(0o600)
+            rows.append({'target':target,'files':[{'source':'test.log','state':'copied',
+                'file':path.name,'sha256':hashlib.sha256(value).hexdigest()}]})
+        rows.append({'target':native.CLI,'state':'missing-test-directory','files':[]})
+        return run,{'targets':list(native.MODES[native.COMBINED_MODE][1]),'results':rows}
+
+    def cli(self, context, configuration='k8-opt'):
+        path=Path(context['output_base'])/'execroot/_main/bazel-out'/configuration/'bin/codex-rs/cli/codex'
+        path.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
+        path.write_bytes(b'\x7fELFmodel-actual-file'); path.chmod(0o500)
+        return path
+
+    def test_explicit_combined_command_preserves_four_targets_14_names_and_old_modes(self):
+        self.assertEqual(native.MODES[native.COMBINED_MODE],('test',(native.CORE,native.CONFIG,native.LOGIN,native.CLI),None))
+        self.assertEqual(native.MODES['qualification'],('test',(native.CORE,native.CONFIG,native.LOGIN),None))
+        self.assertEqual(native.MODES['cli-opt'],('build',(native.CLI,),None))
+        self.assertEqual(native.MODES['schema'][1],('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'))
+        self.assertEqual(sum(map(len,native.QUALIFICATION_GATES.values())),14)
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); run=root/'run'; run.mkdir(mode=0o700); source=root/'source'; source.mkdir(mode=0o700)
+            args=SimpleNamespace(native_source_root=root/'input',native_export_root=root/'export',
+                native_deadline=None,native_mode=native.COMBINED_MODE)
+            exported={'registry_cache':str(args.native_export_root/'registry-cache'),
+                'inventory_sha256':'2'*64,'mapping_sha256':'3'*64,'repositories':{},'module_overrides':{}}
+            candidate=SimpleNamespace(source=source,root=root/'candidate',lease=SimpleNamespace(output_base=root/'output-base'))
+            with patch.object(native,'verify_inputs',return_value=({'inventory_sha256':'1'*64},exported)):
+                plan=native.command(args,run,'/nix/store/locked-tool/bin',
+                    '/nix/store/i27rhb3nr65rkrwz36bchkwmav6ggsmn-bash-5.3p9/bin/bash',candidate)
+            self.assertEqual(plan['argv'][-4:],list(native.MODES[native.COMBINED_MODE][1]))
+            for name in (name for names in native.QUALIFICATION_GATES.values() for name in names):
+                self.assertEqual(plan['argv'].count('--test_arg='+name),1)
+
+    def test_actual_cli_hash_and_exact_three_test_logs_are_joined(self):
+        with tempfile.TemporaryDirectory() as temp,patch.object(native,'STATE',Path(temp)):
+            root=Path(temp); context=self.context(root); path=self.cli(context); run,manifest=self.fixture(root,context)
+            result=native.meaningful_tests(run,manifest,native.COMBINED_MODE,context)
+            self.assertEqual(result['passed'],14)
+            self.assertEqual(result['cli_artifact']['path'],str(path))
+            self.assertEqual(result['cli_artifact']['sha256'],hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(result['cli_context'],context)
+            self.assertNotIn(native.CLI,result['targets'])
+            self.assertTrue((run/'native-qualification.xml').is_file())
+
+    def test_failed_cleanup_wrong_tool_missing_duplicate_symlink_or_nonelf_cli_refuses(self):
+        with tempfile.TemporaryDirectory() as temp,patch.object(native,'STATE',Path(temp)):
+            root=Path(temp); context=self.context(root); path=self.cli(context)
+            for key,value in (('workload_exit',1),('descendants_empty',False),
+                    ('source_and_export_verified_after_cleanup',False),('bazel','/foreign/bazel'),
+                    ('output_base','/foreign/output-base')):
+                with self.subTest(key=key),self.assertRaises(ValueError): native.combined_cli_artifact({**context,key:value})
+            path.unlink()
+            with self.assertRaises(ValueError): native.combined_cli_artifact(context)
+            path=self.cli(context); path.chmod(0o700); path.write_bytes(b'not-an-elf')
+            with self.assertRaises(ValueError): native.combined_cli_artifact(context)
+            path.write_bytes(b'\x7fELFfixture'); path.chmod(0o500); other=self.cli(context,'other-opt')
+            with self.assertRaises(ValueError): native.combined_cli_artifact(context)
+            other.unlink(); path.unlink(); path.symlink_to(other)
+            with self.assertRaises(ValueError): native.combined_cli_artifact(context)
+
+    def test_extra_test_row_or_missing_explicit_cli_request_refuses(self):
+        with tempfile.TemporaryDirectory() as temp,patch.object(native,'STATE',Path(temp)):
+            root=Path(temp); context=self.context(root); self.cli(context); run,manifest=self.fixture(root,context)
+            manifest['results'].append({'target':'//foreign:test','files':[]})
+            with self.assertRaises(ValueError): native.meaningful_tests(run,manifest,native.COMBINED_MODE,context)
+            manifest['results'].pop(); manifest['targets'].remove(native.CLI)
+            with self.assertRaises(ValueError): native.meaningful_tests(run,manifest,native.COMBINED_MODE,context)
+
 class RegistryMetadataAdmissionTests(unittest.TestCase):
     def test_actual_registry_bytes_missing_extra_and_outside_urls(self):
         with tempfile.TemporaryDirectory() as temp:
