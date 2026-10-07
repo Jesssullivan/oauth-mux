@@ -209,14 +209,14 @@ class ElfClosureModels(unittest.TestCase):
                 local.elf_parser_source(data.replace(marker,b"_MAX_FILE = "+expression))
 
     def graph(self,*,control_rpath=None,transitive_needed=("libc.so.6",),ambiguous=False,
-            child_rpath=True,path_tag=29,child_empty_tag=None):
+            child_rpath=True,path_tag=29,child_empty_tag=None,direct_libc=False):
         rows = local.subset(Path(Preparation.inventory).read_bytes())
         roots = {row["path"] for row in rows}
         qt = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
         glibc = "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib"
         loader = glibc+"/ld-linux-x86-64.so.2"
         control = "/model/private/control"
-        files = {control:elf_model(("libQt6Core.so.6",),loader,
+        files = {control:elf_model(("libQt6Core.so.6","libc.so.6") if direct_libc else ("libQt6Core.so.6",),loader,
                 (qt,glibc) if control_rpath is None else control_rpath,path_tag),
             loader:elf_model(),glibc+"/libc.so.6":elf_model(("ld-linux-x86-64.so.2",),rpath=(glibc,)),
             qt+"/libQt6Core.so.6":elf_model(transitive_needed,
@@ -271,13 +271,24 @@ class ElfClosureModels(unittest.TestCase):
             with self.subTest(needed=needed),self.assertRaisesRegex(ValueError,"dialog_elf_"):
                 self.graph(transitive_needed=needed)
 
-    def test_duplicate_lookup_targets_are_never_adopted(self):
-        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved_or_ambiguous"):
-            self.graph(ambiguous=True)
+    def test_first_lookup_target_is_adopted_in_declared_order(self):
+        self.graph(ambiguous=True)
+        inspector = object.__new__(remote.ElfClosure)
+        inspector.until = time.monotonic()+5
+        inspector.files = {}
+        for directories in (("/first","/second"),("/second","/first")):
+            inspector.names = {}
+            with self.subTest(directories=directories),\
+                patch.object(remote.os.path,"lexists",return_value=True) as exists,\
+                patch.object(inspector,"member",side_effect=lambda value:value) as member:
+                selected = inspector.resolve("model.so.1",directories,"control")
+                self.assertEqual(selected,directories[0]+"/model.so.1")
+                exists.assert_called_once_with(selected)
+                member.assert_called_once_with(selected)
 
     def test_runpath_is_not_inherited_but_rpath_is(self):
         self.graph(child_rpath=False,path_tag=15)
-        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved_or_ambiguous"):
+        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved"):
             self.graph(child_rpath=False,path_tag=29)
 
     def test_whole_empty_search_tag_ignores_nul_terminated_padding(self):
@@ -291,8 +302,25 @@ class ElfClosureModels(unittest.TestCase):
 
     def test_whole_empty_runpath_still_blocks_ancestor_rpath(self):
         self.graph(path_tag=15,child_empty_tag=15)
-        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved_or_ambiguous"):
+        with self.assertRaisesRegex(ValueError,"dialog_elf_needed_unresolved"):
             self.graph(path_tag=15,child_empty_tag=29)
+
+    def test_direct_sibling_is_held_before_first_child_needs_it(self):
+        self.graph(child_rpath=False,path_tag=29,direct_libc=True)
+
+    def test_loaded_name_reuses_held_file_before_any_new_search(self):
+        inspector = object.__new__(remote.ElfClosure)
+        inspector.until = time.monotonic()+5
+        inspector.names = {"model.so.1":"/model/held/model.so.1"}
+        inspector.files = {"/model/held/model.so.1":True}
+        with patch.object(remote.os.path,"lexists") as exists,patch.object(inspector,"member") as member:
+            self.assertEqual(inspector.resolve("model.so.1",("/model/later",),"control"),
+                "/model/held/model.so.1")
+            exists.assert_not_called()
+            member.assert_not_called()
+            inspector.files = {}
+            with self.assertRaisesRegex(ValueError,"dialog_elf_loaded_name_without_hold"):
+                inspector.resolve("model.so.1",("/model/later",),"control")
 
 
 if __name__ == "__main__":

@@ -181,6 +181,7 @@ class ElfClosure:
         self.roots = frozenset(row["path"] for row in rows)
         self.root_pins = root_pins
         self.files,self.pins,self.names = {},[],{}
+        self.pending = []
         self.total = 0
         try:
             require(len(self.roots) == 181 and {path for path,_,_ in root_pins} == self.roots,
@@ -197,7 +198,9 @@ class ElfClosure:
             self.visit(interpreter,())
             self.names[Path(interpreter).name] = interpreter
             self.walk(dialog_path,control,(),control=True)
+            self.drain()
             self.visit(self.member(plugin),())
+            self.drain()
             self.check()
         except BaseException:
             self.close()
@@ -282,26 +285,31 @@ class ElfClosure:
             require(not os.path.lexists(physical+"/glibc-hwcaps"),"dialog_elf_hwcaps_unqualified")
         return physical
 
-    def resolve(self,name,directories):
+    def resolve(self,name,directories,parent):
         self.tick()
         if "/" in name:
             require(name.startswith("/nix/store/"),"dialog_elf_nonclosure_needed")
             return self.member(name)
         require(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}",name),"dialog_elf_needed_name")
-        matches = set()
+        # glibc reuses a mapped name before trying any new search directory.
+        if name in self.names:
+            physical = self.names[name]
+            require(physical in self.files,"dialog_elf_loaded_name_without_hold")
+            return physical
         for directory in directories:
             self.tick()
             candidate = directory+"/"+name
             if os.path.lexists(candidate):
-                matches.add(self.member(candidate))
-        # Deliberately conservative: ambiguous priority/order is never adopted.
-        if not matches and name in self.names:
-            return self.names[name]
-        require(len(matches) == 1,"dialog_elf_needed_unresolved_or_ambiguous")
-        physical = next(iter(matches))
-        require(name not in self.names or self.names[name] == physical,"dialog_elf_soname_ambiguous")
-        self.names[name] = physical
-        return physical
+                # Ordered paths determine the first selection. A malformed or
+                # foreign first candidate refuses; never fall through it.
+                physical = self.member(candidate)
+                self.names[name] = physical
+                return physical
+        # Only public ELF basenames and validated public DT_NEEDED names appear.
+        parent_name = Path(parent).name
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}",parent_name):
+            parent_name = "selected-elf"
+        raise ValueError("dialog_elf_needed_unresolved:"+parent_name+":"+name)
 
     def walk(self,path,payload,inherited,control=False):
         metadata = self.metadata(payload)
@@ -317,7 +325,15 @@ class ElfClosure:
         ancestry = inherited if metadata["runpath"] else directories+inherited
         require(len(search) <= 1024 and len(ancestry) <= 1024,"dialog_elf_search_bound")
         for needed in metadata["needed"]:
-            self.visit(self.resolve(needed,search),ancestry)
+            self.visit(self.resolve(needed,search,path),ancestry)
+
+    def drain(self):
+        # Map all direct siblings before their children, matching dl-deps BFS.
+        # Every queued file is already held and participates in final check().
+        while self.pending:
+            self.tick()
+            path,payload,inherited = self.pending.pop(0)
+            self.walk(path,payload,inherited)
 
     def visit(self,path,inherited):
         self.tick()
@@ -332,7 +348,7 @@ class ElfClosure:
             self.pins.append((path,fd,self.witness(info)))
             fd = None
             self.files[path] = True
-            self.walk(path,self.read(self.pins[-1][1]),inherited)
+            self.pending.append((path,self.read(self.pins[-1][1]),inherited))
         finally:
             if fd is not None:
                 os.close(fd)
@@ -350,6 +366,7 @@ class ElfClosure:
                 self.witness(os.stat(path,follow_symlinks=False)),"dialog_elf_changed")
 
     def close(self):
+        self.pending = []
         failed = False
         for _,fd,_ in self.pins:
             try:
