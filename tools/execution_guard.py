@@ -954,7 +954,8 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
         test_args += ['--test_env=' + live.VARIABLE + '=' + live.DESTINATION]
     threads = controller_thread_profile()
     run_args = ['--run_env=OMUX_SDK_EXPORT_EPOCH='+str(run),
-                '--run_env=OMUX_EXECUTION_GUARD='+str(run)] if sdk_export_run else []
+                '--run_env=OMUX_EXECUTION_GUARD='+str(run),
+                '--run_env=PYTHONUTF8=1'] if sdk_export_run else []
     # Exactly one finite writer; no caller argv or other RUN labels admitted.
     return [bazel, '--batch', '--nosystem_rc', '--nohome_rc',
             '--host_jvm_args=-Xmx1536m', '--host_jvm_args=-XX:ActiveProcessorCount=2',
