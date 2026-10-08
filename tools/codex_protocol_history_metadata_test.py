@@ -84,6 +84,8 @@ class MetadataProducerModels(unittest.TestCase):
         selected = root/"selected"
         with patch.object(history,"load_parent",return_value=(before,parent)),patch.object(history,"PATCH_DIRECTORY",root):
             report = history.produce(selected,60)
+        # Model the observed retained Bazel output, without changing its writer.
+        (selected/"source-receipt.json").chmod(0o555)
         export = root/"sdk";export.mkdir(mode=0o700)
         (export/"repositories").mkdir(mode=0o700)
         old = self.hub();hub = export/"repositories"/metadata.HUB
@@ -178,6 +180,63 @@ class MetadataProducerModels(unittest.TestCase):
                 self.assertEqual((root/"result/hub/data.bzl").stat().st_mode&0o777,0o444)
                 self.assertEqual(source.sha((root/"selected/source-receipt.json").read_bytes()),
                     fixture[2]["source_receipt_sha256"])
+            finally:self.clean(root)
+
+    def test_retained_source_receipt_requires_exact_mode_and_independent_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            try:
+                before,parent,document,*_=self.fixture(root)
+                receipt=root/"selected/source-receipt.json"
+                raw=receipt.read_bytes()
+                with patch.object(history,"load_parent",return_value=(before,parent)) as loaded:
+                    report,files,actual_parent=producer.load_candidate(document)
+                    self.assertEqual(report,json.loads(raw))
+                    self.assertEqual(files,history.transform(before,history.PATCH_BYTES))
+                    self.assertEqual(actual_parent,parent)
+                    loaded.assert_called_once_with()
+                for mode in (0o444,0o644,0o777):
+                    receipt.chmod(mode)
+                    with patch.object(history,"load_parent") as loaded:
+                        with self.assertRaises(ValueError):producer.load_candidate(document)
+                        loaded.assert_not_called()
+                receipt.chmod(0o600);receipt.write_bytes(raw+b" ");receipt.chmod(0o555)
+                with patch.object(history,"load_parent") as loaded:
+                    with self.assertRaises(ValueError):producer.load_candidate(document)
+                    loaded.assert_not_called()
+            finally:self.clean(root)
+
+    def test_retained_source_receipt_custody_keeps_full_claim_and_tree_checks(self):
+        for claim_drift in (True,False):
+            with tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                try:
+                    before,parent,document,*_=self.fixture(root)
+                    receipt=root/"selected/source-receipt.json"
+                    if claim_drift:
+                        report=json.loads(receipt.read_bytes())
+                        report["native_compile_passed"]=True
+                        receipt.chmod(0o600);receipt.write_bytes(source.encoded(report));receipt.chmod(0o555)
+                        document={**document,"source_receipt_sha256":source.sha(receipt.read_bytes())}
+                    else:
+                        path=root/"selected/source/retained/source.rs"
+                        path.chmod(0o600);path.write_bytes(b"unqualified source drift");path.chmod(0o555)
+                    with patch.object(history,"load_parent",return_value=(before,parent)):
+                        with self.assertRaises(ValueError):producer.load_candidate(document)
+                finally:self.clean(root)
+
+    def test_retained_source_receipt_redirect_refuses_before_parent_io(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            try:
+                _,_,document,*_=self.fixture(root)
+                selected=root/"selected";selected.chmod(0o700)
+                receipt=selected/"source-receipt.json"
+                receipt.rename(root/"original-receipt")
+                receipt.symlink_to(root/"original-receipt")
+                with patch.object(history,"load_parent") as loaded:
+                    with self.assertRaises(OSError):producer.load_candidate(document)
+                    loaded.assert_not_called()
             finally:self.clean(root)
 
     def test_selected_exact_absolute_deadline_reaches_the_query_without_renewal(self):

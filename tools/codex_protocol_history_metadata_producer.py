@@ -18,6 +18,8 @@ import codex_retained_sdk_export as sdk
 KIND = "omux-protocol-history-metadata-input-v1"
 OUTPUT_KIND = "omux-protocol-history-metadata-v1"
 INPUT_NAME = "omux_protocol_history_metadata_inputs"
+# Fixed observed retained source receipt custody, distinct from action writers.
+SOURCE_RECEIPT_MODE = 0o555
 INPUT_CONTROL = Path("/srv/fast-local/jess/state/codex/omux-native-candidate-20261007/protocol-history-metadata-input.json")
 EXPORT_ROOT = Path("/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/e5b17d7e-d19d-4cb2-be22-41a86b98af7b/sdk-private/sdk-export")
 EXPORT_SHA = "1aa4c87d689f464e576a5c6a51b4c6350a8f0346f6b94299856d01db5147d4f0"
@@ -106,7 +108,7 @@ def load_candidate(document):
     try:
         raw,mode = source.read(fd,"source-receipt.json",source.MAX_METADATA)
     finally:os.close(fd)
-    require(mode == 0o444 and source.sha(raw) == document["source_receipt_sha256"])
+    require(mode == SOURCE_RECEIPT_MODE and source.sha(raw) == document["source_receipt_sha256"])
     report = json.loads(raw,object_pairs_hook=source.unique)
     before,parent = history.load_parent()
     expected = history.transform(before,history.PATCH_BYTES)
