@@ -332,6 +332,8 @@ class PidsObservation:
 
 
 def workload_pids_observation(settings, profile):
+    if profile == 'yoga-install-inputs':
+        return PidsObservation(480)
     return PidsObservation(settings.PROOF_TASKS
         if profile in ('resident-enrollment','resident-sources','codex-device-component-reserved') else 512)
 
@@ -862,10 +864,14 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
     acquisition_proof = profile in (*acquisition.PROFILES,*component.PROFILES)
     resident_proof = profile in resident_dispatch.PROFILES or profile == resident_dispatch.SETUP_PROFILE
     component_reserved = profile == component.RESERVED_PROFILE
+    install_stage = profile == 'yoga-install-inputs'
     expected = (component.proof_properties(PROPERTIES,profile) if component_reserved else
         resident_dispatch.proof_properties(PROPERTIES) if resident_proof else PROPERTIES)
+    if install_stage:
+        import guard_yoga_install_inputs_profile as staging
+        expected = staging.proof_properties(PROPERTIES)
     for key, value in {**expected, **(isolation or SANDBOX)}.items():
-        if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'codex-native') or
+        if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'yoga-install-inputs', 'codex-native') or
                 profile in ('standard', 'codex-live', *resident_dispatch.PROFILES, resident_dispatch.SETUP_PROFILE, *acquisition.PROFILES, *component.PROFILES) and runtime_seconds is not None):
             import yoga_delivery_settings as delivery_settings
             if profile == 'codex-native' and native_phase2 is True:
@@ -874,7 +880,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             else:
                 delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
             continue
-        if key == 'CPUQuotaPerSecUSec' and (resident_proof or component_reserved):
+        if key == 'CPUQuotaPerSecUSec' and (resident_proof or component_reserved or install_stage):
             resident_dispatch.verify_cpu(actual.get(key))
             continue
         if actual.get(key) != value:
@@ -885,7 +891,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             home = Path(pwd.getpwuid(os.getuid()).pw_dir)
             yoga.verify_masks(actual, home, actual.get('BindReadOnlyPaths', '').split())
         else:
-            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if resident_proof or acquisition_proof or profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'codex-live') else profile)
+            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if resident_proof or acquisition_proof or profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live') else profile)
         if profile in ('installed-browser', 'site', 'yoga-toolbar') and '/etc/environment' not in {
                 path.lstrip('-') for path in actual.get('InaccessiblePaths', '').split()}:
             raise ValueError('host environment file mask missing')
@@ -902,12 +908,12 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
     delegated = acquisition.unset_environment(DELEGATION_ENV) if acquisition_proof else resident_dispatch.unset_environment(DELEGATION_ENV) if resident_proof else DELEGATION_ENV
     if not set(delegated).issubset(actual.get('UnsetEnvironment', '').split()):
         raise ValueError('delegation environment isolation rejected')
-    expected_cgroup = {**CGROUP, 'memory.max':expected['MemoryMax'], 'pids.max':expected['TasksMax']} if resident_proof or component_reserved else CGROUP
+    expected_cgroup = {**CGROUP, 'memory.max':expected['MemoryMax'], 'pids.max':expected['TasksMax']} if resident_proof or component_reserved or install_stage else CGROUP
     for key, value in expected_cgroup.items():
         if (cgroup / key).read_text().strip() != value:
             raise ValueError('effective cgroup bound rejected: ' + key)
     quota, period = (cgroup / 'cpu.max').read_text().split()
-    if quota == 'max' or int(quota) > 2 * int(period) or int(quota) <= 0 or (resident_proof and int(quota)*10 > 19*int(period)) or (component_reserved and int(quota)*10 != 19*int(period)):
+    if quota == 'max' or int(quota) > 2 * int(period) or int(quota) <= 0 or (resident_proof and int(quota)*10 > 19*int(period)) or ((component_reserved or install_stage) and int(quota)*10 != 19*int(period)):
         raise ValueError('effective CPU quota rejected')
 
 
@@ -1110,13 +1116,17 @@ def yoga_command(bazel, run, arguments, admission, *, manager, source_commit=Non
     return command
 
 
-def yoga_delivery_command(bazel, run, arguments, deadline_ns, prior=None, *, source_commit=None, source_dirty=None):
-    import guard_yoga_delivery_profile as delivery_profile
+def yoga_delivery_command(bazel, run, arguments, deadline_ns, prior=None, *, source_commit=None, source_dirty=None, repository_cache=None, nixpkgs_source=None):
+    if arguments == ['run', '//tools:yoga_install_inputs_stage']:
+        import guard_yoga_install_inputs_profile as delivery_profile
+    else:
+        import guard_yoga_delivery_profile as delivery_profile
     delivery_profile.selected(arguments)
     # The standard constructor keeps rejecting general run verbs. Its fixed
     # local build options are reused, then one exact reviewed run replaces build.
     command = bazel_command(bazel, run, ['build', arguments[1]],
-                            source_commit=source_commit, source_dirty=source_dirty)
+                            source_commit=source_commit, source_dirty=source_dirty,
+                            repository_cache=repository_cache, nixpkgs_source=nixpkgs_source)
     command[command.index('build')] = 'run'
     values = delivery_profile.envelope(deadline_ns, arguments, prior['sha256'] if prior else None)
     options = delivery_profile.run_options(values)
@@ -1125,6 +1135,10 @@ def yoga_delivery_command(bazel, run, arguments, deadline_ns, prior=None, *, sou
     # Empty repo_env clears an inherited qualification selection for qualify.
     options += ['--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=' + (prior['path'] if prior else ''),
                 '--symlink_prefix=' + str(Path(run) / 'bazel-')]
+    if arguments == ['run', '//tools:yoga_install_inputs_stage']:
+        options += ['--repository_disable_download']
+        if repository_cache is not None:
+            options += ['--repo_contents_cache=']
     command[-1:-1] = options
     return command, values
 
@@ -1206,7 +1220,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved'), default='standard')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1430,10 +1444,15 @@ def _main(argv, admission_resources):
             args.sdk_settings_root, args.sdk_settings_receipt_sha256,
             args.sdk_bundle, args.sdk_bundle_receipt_sha256, args.yoga_delivery_epoch,
             args.yoga_qualification, args.yoga_qualification_sha256, args.yoga_deadline_monotonic_ns))
-    if args.profile == 'yoga-controller-delivery':
-        import yoga_delivery_settings as delivery_settings
+    if args.profile in ('yoga-controller-delivery','yoga-install-inputs'):
+        if args.profile == 'yoga-install-inputs':
+            import guard_yoga_install_inputs_profile as delivery_settings
+        else:
+            import yoga_delivery_settings as delivery_settings
         delivery_settings.finite(arguments, args.manager, args.yoga_delivery_epoch,
-            (args.reuse_owned_cache, args.repository_cache, args.nixpkgs_source, args.site_source,
+            (args.reuse_owned_cache,
+             args.repository_cache if args.profile != 'yoga-install-inputs' else False,
+             args.nixpkgs_source if args.profile != 'yoga-install-inputs' else False, args.site_source,
              args.site_nixpkgs_source, args.site_inventory, args.site_inventory_sha256, args.site_phase,
              args.site_qualification, args.site_qualification_sha256, args.site_delivery_manifest,
              args.site_delivery_manifest_sha256, args.codex_pack_directory, args.codex_recovery_source,
@@ -1442,6 +1461,9 @@ def _main(argv, admission_resources):
              args.sdk_source_receipt_sha256, args.sdk_settings_root, args.sdk_settings_receipt_sha256,
              args.sdk_bundle, args.sdk_bundle_receipt_sha256))
         delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
+        if args.profile == 'yoga-install-inputs':
+            import guard_resident_enrollment_profile as repository_policy
+            repository_policy.repository_inputs(args.repository_cache,args.nixpkgs_source)
     elif args.yoga_delivery_epoch is not None:
         raise ValueError('prior Yoga delivery epoch is exclusive to its fixed read-only profile')
     if args.profile == 'yoga-toolbar':
@@ -1497,7 +1519,7 @@ def _main(argv, admission_resources):
         raise ValueError('recursive launcher reentry rejected')
     isolation = resident_isolation(resident_settings, args, arguments) if resident_settings else {**SANDBOX, **site.phase_isolation(args.site_phase, arguments)} if site else {**SANDBOX, **selected_profile(args.profile, arguments,
         site_inputs=any((args.site_source, args.site_nixpkgs_source, args.site_inventory,
-                         args.site_inventory_sha256, args.nixpkgs_source)),
+                         args.site_inventory_sha256, args.nixpkgs_source if args.profile != 'yoga-install-inputs' else False)),
         pack_input=args.codex_pack_directory is not None,
         recovery_input=args.codex_recovery_source is not None)}
     if args.profile == 'dependency-prefetch' and args.reuse_owned_cache:
@@ -1549,6 +1571,9 @@ def _main(argv, admission_resources):
             closure_digest, bootstrap_digest)
         # HOME is the same inspected user's native SSH configuration boundary.
         environment['HOME'] = pwd.getpwuid(os.getuid()).pw_dir
+        if args.profile == 'yoga-install-inputs':
+            delivery_settings.admit(delivery_entry_deadline_ns)
+            admission_resources.callback(delivery_settings.AGENT.close)
     if yoga:
         # All live seat/input/closure checks precede state initialization, lock,
         # epoch, cache or unit creation. The selected deadline never restarts.
@@ -1668,7 +1693,8 @@ def _main(argv, admission_resources):
                 repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
         elif delivery_settings:
             command, delivery_envelope = yoga_delivery_command(bazel, run, arguments, delivery_entry_deadline_ns,
-                delivery_prior, source_commit=args.source_commit, source_dirty=args.source_dirty)
+                delivery_prior, source_commit=args.source_commit, source_dirty=args.source_dirty,
+                repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
             environment.update(delivery_envelope)
         elif yoga:
             yoga.publish_repository_inventory(yoga_admission, run)
@@ -1825,7 +1851,7 @@ def _main(argv, admission_resources):
                     descriptor = become_descriptor(args.become_file)
                     parts = [sudo, '-S', '-p', '', '--'] + parts
                 if dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
-                    bound = delivery_entry_deadline_ns - (30*10**9 if (getattr(resident_input,'acquisition_profile',False) or getattr(resident_input,'sources_profile',False)) and phase != 'cleanup' else 0)
+                    bound = delivery_entry_deadline_ns - (30*10**9 if (getattr(resident_input,'acquisition_profile',False) or getattr(resident_input,'sources_profile',False) or args.profile == 'yoga-install-inputs') and phase != 'cleanup' else 0)
                     deadline = min(deadline, bound / 10**9) if deadline is not None else bound / 10**9
                 if native_sdk and (phase != 'cleanup' or native_history is not None or native_cli is not None):
                     deadline = min(deadline, args.native_deadline) if deadline is not None else args.native_deadline
@@ -1850,6 +1876,8 @@ def _main(argv, admission_resources):
             if live_input is not None:
                 live_input.recheck()
             if delivery_settings:
+                if args.profile == 'yoga-install-inputs':
+                    delivery_settings.observe(delivery_entry_deadline_ns)
                 delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
                 require_delivery_graph = graph_sha256 == delivery_initial_graph
                 if not require_delivery_graph: raise ValueError('delivery graph changed before dispatch')
@@ -1961,6 +1989,8 @@ def _main(argv, admission_resources):
                 launch += ['--property=InaccessiblePaths=-/etc/environment']
             if yoga:
                 launch += ['--property=BindReadOnlyPaths=' + yoga_admission['witness']['source'] + ':' + yoga_admission['witness']['destination']]
+            if args.profile == 'yoga-install-inputs':
+                launch += ['--property=BindReadOnlyPaths='+' '.join(delivery_settings.AGENT.bindings())]
             if native_sdk:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(native_sdk.readonly_paths(args, native_plan))]
                 if native_cache is not None or native_fresh is not None or native_staged is not None or native_history is not None or native_cli is not None:
@@ -1980,7 +2010,7 @@ def _main(argv, admission_resources):
                     unset = acquisition.unset_environment(unset)
                 else:
                     unset = resident_dispatch.unset_environment(unset)
-            if yoga:
+            if yoga or args.profile == 'yoga-install-inputs':
                 unset += ('DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE',
                           'SSH_AUTH_SOCK', 'SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY', 'NODE_OPTIONS', 'NODE_PATH',
                           'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME', 'XAUTHORITY',
@@ -2008,6 +2038,9 @@ def _main(argv, admission_resources):
             if delivery_settings:
                 delivery_runtime_seconds = delivery_settings.runtime_seconds(delivery_entry_deadline_ns)
                 settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
+                if args.profile == 'yoga-install-inputs':
+                    settings.update(MemoryMax=str(delivery_settings.PROOF_MEMORY),
+                        TasksMax=str(delivery_settings.PROOF_TASKS),CPUQuota='190%')
             elif owner_input is not None:
                 delivery_runtime_seconds = owner_input.runtime_seconds()
                 settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
@@ -2122,6 +2155,9 @@ def _main(argv, admission_resources):
                 if resident_input is not None:
                     resident_input.recheck()
                     resident_input.runtime_seconds()
+                if args.profile == 'yoga-install-inputs':
+                    delivery_settings.observe(delivery_entry_deadline_ns)
+                    delivery_settings.AGENT.verify_bindings(actual)
                 (run / 'go').touch(mode=0o600, exist_ok=False)
             deadline = ((args.yoga_deadline_monotonic_ns - yoga.CLEANUP_RESERVE_NS) / 10**9
                         if yoga else time.monotonic() + 1200)
@@ -2134,6 +2170,8 @@ def _main(argv, admission_resources):
             def iteration():
                 pids_observation.sample(cgroup_pin, 'monitor')
                 check_free_space(args.state_dir)
+                if args.profile == 'yoga-install-inputs':
+                    delivery_settings.observe(delivery_entry_deadline_ns)
                 if yoga:
                     for progress in yoga_launch.read_progress(yoga_support):
                         print(json.dumps(progress, sort_keys=True), flush=True)

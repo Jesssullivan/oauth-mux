@@ -38,7 +38,10 @@ _CODEX_GIT_INPUT_SOURCES = _CODEX_SDK_SOURCES + [
 ]
 
 _YOGA_DELIVERY_GUARD_SOURCES = ['guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
-                                'yoga_executable_qualification.py']
+    'yoga_executable_qualification.py','guard_yoga_install_inputs_profile.py',
+    'yoga_install_inputs_receiver.py','yoga_install_inputs_stage.py',
+    'guard_resident_owned_update.py','guard_resident_enrollment_profile.py',
+    '//delivery:install.py','//delivery:pack.py','//delivery:portable.py']
 
 _YOGA_GUARD_SOURCES = [
     "guard_yoga_profile.py", "yoga_display_binding.py", "yoga_proof_inputs.py",
@@ -1944,6 +1947,44 @@ python_test(
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with = ["@platforms//os:linux"],
+)
+
+exports_files(['guard_yoga_install_inputs_profile.py','yoga_install_inputs_receiver.py',
+               'yoga_install_inputs_stage.py'],visibility=['//visibility:public'])
+
+host_python_binary(
+    name='yoga_install_inputs_stage',
+    main='yoga_install_inputs_stage.py',
+    srcs=_YOGA_DELIVERY_GUARD_SOURCES+['yoga_controller_delivery.py','host_closure_transfer.py',
+        'verify_cached_nars.py','ssh_policy.py'],
+    data=['@omux_yoga_controller_nars//:inventory.json',
+          '@omux_yoga_delivery_inputs//:d631-receipt.json',
+          '@omux_yoga_delivery_inputs//:bootstrap-native.json',
+          '@omux_yoga_delivery_inputs//:yoga-ssh-known-hosts',
+          '@omux_yoga_delivery_inputs//:authority.json',
+          '@omux_yoga_public_install_inputs//:receipt.json',
+          '@omux_yoga_public_install_inputs//:default_instance_archive.tar.gz',
+          ':yoga_install_inputs_receiver.py'],
+    args=['--inventory','$(location @omux_yoga_controller_nars//:inventory.json)',
+          '--receipt','$(location @omux_yoga_delivery_inputs//:d631-receipt.json)',
+          '--bootstrap-manifest','$(location @omux_yoga_delivery_inputs//:bootstrap-native.json)',
+          '--known-hosts','$(location @omux_yoga_delivery_inputs//:yoga-ssh-known-hosts)',
+          '--authority','$(location @omux_yoga_delivery_inputs//:authority.json)',
+          '--receiver-source','$(location :yoga_install_inputs_receiver.py)'],
+    tags=['manual','no-remote','no-cache'],
+    target_compatible_with=['@platforms//os:linux','@platforms//cpu:x86_64'],
+)
+
+python_test(
+    name='yoga_install_inputs_stage_test',
+    main='yoga_install_inputs_stage_test.py',
+    srcs=depset(_YOGA_DELIVERY_GUARD_SOURCES+['yoga_controller_delivery.py','host_closure_transfer.py',
+        'verify_cached_nars.py','ssh_policy.py','guard_dependency_profile.py','execution_guard.py']+
+        _RESIDENT_GUARD_SOURCES+_CODEX_GIT_INPUT_SOURCES+
+        ['guard_cache.py','guard_test_evidence.py','system_mask_policy.py',
+         'guard_codex_device_component_profile.py']).to_list(),
+    tags=['manual','no-remote','no-cache'],
+    target_compatible_with=['@platforms//os:linux'],
 )
 
 

@@ -203,6 +203,10 @@ host_repository(
 native_enrollment_inputs = use_repo_rule("//tools:native_enrollment_repository.bzl", "native_enrollment_repository")
 native_enrollment_inputs(name = "omux_native_enrollment")
 
+# Inert exact public artifact bytes; no native/rebuild/store-import edge.
+yoga_public_install_inputs=use_repo_rule("//tools:yoga_public_install_inputs_repository.bzl","yoga_public_install_inputs")
+yoga_public_install_inputs(name="omux_yoga_public_install_inputs")
+
 
 # Append without any actual selection or future artifact digest. Bazel only
 # evaluates this data repository when its exact manual consumer is requested.
