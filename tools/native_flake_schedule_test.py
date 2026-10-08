@@ -16,7 +16,7 @@ import nar_descriptor as nar
 import nix_private_store_seed as seed
 
 DRV = "/nix/store/"+"d"*32+"-omux-bazel-closure.drv"
-CHILD = "/nix/store/"+"e"*32+"-dependency.drv"
+CHILD = "/nix/store/"+"b"*32+"-dependency.drv"
 OUT = "/nix/store/"+"f"*32+"-omux-bazel-closure"
 DEPENDENCY = "/nix/store/"+"b"*32+"-dependency"
 SCRIPT = "/nix/store/"+"c"*32+"-builder.sh"
@@ -95,7 +95,7 @@ class Fixture:
                 physical.write_bytes(b"public-generated-"+logical.rsplit("/",1)[1].encode())
                 os.chmod(physical,0o444)
             self.extra.update({DRV: [CHILD,SCRIPT], CHILD: [], SCRIPT: []})
-            raw = encoded({"drvPath": DRV, "outPath": OUT, "system": "x86_64-linux",
+            raw = encoded({"drvPath": DRV, "outputPath": OUT, "system": "x86_64-linux",
                            "sourcePaths": self.imports})
             if diagnostics is not None:
                 diagnostics.update({"child_exit": 0, "stdout_bytes": len(raw), "stderr_bytes": 0,
@@ -534,6 +534,62 @@ class ScheduleModels(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     model.operate()
             self.assertEqual(model.calls, [])
+
+
+    def test_exact_nonreserved_wire_preserves_full_internal_target_document(self):
+        paths = {role: "/nix/store/"+str(index+1)*32+"-source"
+                 for index, role in enumerate(("project", *schedule.sources.ROLES))}
+        wire = {"drvPath": DRV, "outputPath": OUT, "system": "x86_64-linux",
+                "sourcePaths": paths}
+        self.assertEqual(schedule.target_document(encoded(wire)),
+            {"drvPath": DRV, "outPath": OUT, "system": "x86_64-linux", "sourcePaths": paths})
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, _ = model.operate()
+            self.assertEqual(set(result["target"]), {"drvPath", "outPath", "system", "sourcePaths"})
+            self.assertEqual(result["target"]["outPath"], OUT)
+            self.assertEqual(result["target"]["sourcePaths"], model.imports)
+            self.assertEqual(set(result["derivations"]), {DRV, CHILD})
+            self.assertTrue(result["source_rechecked"] and result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"])
+
+    def test_scalar_ambiguous_missing_and_extra_wire_members_are_refused(self):
+        paths = {role: "/nix/store/"+str(index+1)*32+"-source"
+                 for index, role in enumerate(("project", *schedule.sources.ROLES))}
+        valid = {"drvPath": DRV, "outputPath": OUT, "system": "x86_64-linux",
+                 "sourcePaths": paths}
+        cases = [OUT, {**valid, "outPath": OUT}, {**valid, "extra": 0},
+                 {**valid, "system": "aarch64-linux"}, {**valid, "outputPath": SCRIPT},
+                 {**valid, "sourcePaths": list(paths)}, {**valid, "sourcePaths": []},
+                 {key: value for key, value in valid.items() if key != "sourcePaths"},
+                 {**{key: value for key, value in valid.items() if key != "outputPath"}, "outPath": OUT},
+                 {**valid, "sourcePaths": {**paths, "systems": paths["project"]}},
+                 {**valid, "sourcePaths": {**paths, "unexpected": SCRIPT}},
+                 {**valid, "sourcePaths": {**paths, "systems": "/unselected/source"}}]
+        for case in cases:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                schedule.target_document(encoded(case))
+        # The unique-key decoder still rejects a duplicate even if both values agree.
+        duplicate = b'{"outputPath":'+encoded(OUT)+b','+encoded(valid)[1:]
+        with self.assertRaises(ValueError):
+            schedule.target_document(duplicate)
+
+    def test_zero_exit_scalar_wire_is_refused_before_graph_and_owned_root_is_cleaned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "eval" in args[0]:
+                    raw = encoded(OUT)
+                    kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "target-document")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertTrue(schedule.DIAGNOSTICS["streams_complete"])
+            self.assertFalse(any("derivation" in call[0] for call in model.calls))
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
 
 
 if __name__ == "__main__":

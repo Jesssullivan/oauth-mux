@@ -65,16 +65,20 @@ def parse(raw):
 
 def target_document(raw):
     value = parse(raw)
-    require(isinstance(value, dict) and set(value) == {"drvPath", "outPath", "system", "sourcePaths"}
-        and value["system"] == "x86_64-linux")
+    # Nix 2.34 JSON collapses any attrset carrying the reserved outPath key.
+    # Use one exact nonreserved wire key, then retain the existing internal ABI.
+    require(isinstance(value, dict) and set(value) == {"drvPath", "outputPath", "system", "sourcePaths"}
+        and value["system"] == "x86_64-linux"
+        and isinstance(value["sourcePaths"], dict))
     store_path(value["drvPath"], drv=True)
-    store_path(value["outPath"])
-    require(value["outPath"].endswith("-omux-bazel-closure")
+    store_path(value["outputPath"])
+    require(value["outputPath"].endswith("-omux-bazel-closure")
         and set(value["sourcePaths"]) == {"project", *sources.ROLES})
     for path in value["sourcePaths"].values():
         store_path(path)
     require(len(set(value["sourcePaths"].values())) == 4)
-    return value
+    return {"drvPath": value["drvPath"], "outPath": value["outputPath"],
+            "system": value["system"], "sourcePaths": value["sourcePaths"]}
 
 
 def derivations(raw, target):

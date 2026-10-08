@@ -12,7 +12,9 @@ let
   };
   target = actual.packages.x86_64-linux.bazel-closure;
 in {
-  inherit (target) drvPath outPath system;
+  # JSON treats a top-level outPath as coercion to a store-path string.
+  inherit (target) drvPath system;
+  outputPath = target.outPath;
   sourcePaths = {
     project = projectSource; nixpkgs = nixpkgsSource;
     flake-utils = utilsSource; systems = systemsSource;
