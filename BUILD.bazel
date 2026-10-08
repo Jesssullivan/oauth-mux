@@ -662,6 +662,9 @@ zig_test(
     # permit concurrent sandbox contention without changing runtime deadlines.
     timeout = "long",
     main = "src/snapshot_import_tests.zig",
+    # All root cases remain here; engine_test and enrollment_wait_test own
+    # the imported suites, including the real saturated actor restart case.
+    zigopts = ["--test-filter", "snapshot_import_tests.test."],
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
