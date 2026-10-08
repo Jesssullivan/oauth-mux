@@ -8,6 +8,13 @@ load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
 
 package(default_visibility = ["//visibility:public"])
 
+# Public invocation-scoped evidence linked by the installed runtime checkpoint.
+INSTALLED_RUNTIME_RECORDS = [
+    "docs/agent-notes/2026-10-08-current-flake93-actual-evaluation-result.json",
+    "docs/agent-notes/2026-10-08-installed-closure-models-partial-result.json",
+    "docs/agent-notes/2026-10-08-runtime-custody-qualification-result.json",
+]
+
 # Current declared code/build inputs; excludes docs, checkpoints and artifacts.
 filegroup(
     name = "selected_runtime_source_inputs",
@@ -46,7 +53,7 @@ zig_test(
 # Git metadata, operator state, captured browser data or credential fixtures.
 source_archive(
     name = "public_source_archive",
-    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + [
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + INSTALLED_RUNTIME_RECORDS + [
         "clients/README.md", "nix/README.md", "nix/evaluation_runner.py", "nix/evaluation_runner_test.py",
         "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
         "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
@@ -118,7 +125,7 @@ python_test(
         "src/**/*.h",
         "nix/**/*.nix",
         "nix/**/*.md",
-    ]) + [
+    ]) + INSTALLED_RUNTIME_RECORDS + [
         "AGENTS.md", "README.md", "CHANGELOG.md", "BUILD.bazel", "flake.nix", "flake.lock",
         "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
         "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
