@@ -6598,8 +6598,33 @@ test "source enrollment generation reply stays bound to the admitted job and pre
     try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
     const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(path);
-    const engine = try Engine.openWithKey(io, allocator, path, @splat(0x51));
-    defer engine.deinit();
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/enrollment-generation.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    // Threadless synthetic writer: the Store and all direct model mutations
+    // have the same real thread owner, as in the setup-refresh fixture above.
+    // Opening an actor would give its Store to a different owner thread.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .root_key = @splat(0x51),
+        .test_key = @splat(0x51),
+        .db = try storage.Store.open(io, allocator, database, @splat(0x51)),
+    };
+    defer {
+        current.db.?.close();
+        current.release();
+    }
+    try std.testing.expect(current.thread == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqual(std.Thread.getCurrentId(), current.db.?.owner_thread);
+    const engine = &current;
     _ = try engine.state.putJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .running, .operation_generation = 7 });
     try engine.persist(&.{});
     const admitted = try engine.sourceReconcileReply(allocator, .{ .integer = 1 }, "reconcile-fixture-source", true);
@@ -6620,8 +6645,7 @@ test "source enrollment generation reply stays bound to the admitted job and pre
     var old = try std.json.parseFromSlice(std.json.Value, allocator, legacy, .{});
     defer old.deinit();
     try std.testing.expectEqual(@as(usize, 2), control.get(old.value, "result").?.object.count());
-    var malformed = try std.json.parseFromSlice(std.json.Value, allocator,
-        "{\"source_id\":\"fixture-source\",\"include_operation_generation\":1}", .{});
+    var malformed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"source_id\":\"fixture-source\",\"include_operation_generation\":1}", .{});
     defer malformed.deinit();
     const before = engine.revision;
     try std.testing.expectError(error.InvalidParams, engine.preflightMutationResult(allocator, "enrollment.start", malformed.value));

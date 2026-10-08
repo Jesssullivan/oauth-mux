@@ -1,4 +1,6 @@
 """Offline admission and private transport regressions; no provider/native run."""
+from contextlib import contextmanager
+import hashlib
 import json
 import os
 import socket
@@ -34,6 +36,106 @@ def systemctl_bind_readback(configured):
     """Pinned systemctl v260.1: nonrecursive has no suffix, recursive has rbind."""
     return " ".join(value.removesuffix(":norbind") if value.endswith(":norbind")
         else value if value.endswith(":rbind") else value+":rbind" for value in configured)
+
+def device_report():
+    response_properties = {name:{"type":"string"} for name in ("type","loginId","verificationUrl","userCode")}
+    response_properties["type"]["enum"] = ["chatgptDeviceCode"]
+    receipt = {"schema_version":1,"kind":"omux-retained-device-api-qualification-v1",
+        "status":"provider-free-device-api-qualified","archive_sha256":login.ARCHIVE_SHA,
+        "manifest_sha256":login.MANIFEST_SHA,"backend_sha256":login.BACKEND_SHA,
+        "backend_bytes":318579008,"loader_sha256":login.RUNTIME_FILES["lib/codex/lib/ld-linux-x86-64.so.2"][0],
+        "runtime_inventory":{name:{"sha256":pin,"bytes":size,"mode":mode}
+            for name,(pin,size,mode) in login.RUNTIME_FILES.items()},
+        "native_support":False,"text_continuity":False,"provider_evaluation":False,
+        "device_api":{"method":"account/login/start","provider_invocation":False,
+            "request":{"type":"object","properties":{"type":{"type":"string","enum":["chatgptDeviceCode"]}},
+                "required":["type"]},
+            "response":{"type":"object","properties":response_properties,
+                "required":list(response_properties)}}}
+    return receipt
+
+@contextmanager
+def retained_admission_fixture(report_mode=0o555, ca_mode=0o555, mutation=None):
+    # Bounded public bytes stand in for the fixed ten-file inventory. The real
+    # constructor, receipt schema, descriptor reads and stat rechecks still run.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        source, state, namespace, parent = (root/name for name in ("source", "state", "input", "profiles"))
+        for path in (source, state, namespace, parent):
+            path.mkdir(mode=0o700)
+        backend = b"public backend model"
+        backend_pin = hashlib.sha256(backend).hexdigest()
+        native = root/backend_pin
+        native.mkdir(mode=0o700)
+        runtime = native/"runtime"
+        runtime.mkdir(mode=0o700)
+        files = {}
+        for name, (_, _, mode) in login.RUNTIME_FILES.items():
+            payload = b"public runtime model: "+name.encode()
+            files[name] = (hashlib.sha256(payload).hexdigest(), len(payload), mode)
+            target = runtime/name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            target.chmod(ca_mode if name == "lib/codex/share/ca-bundle.crt" else mode)
+        with mock.patch.object(login, "BACKEND_SHA", backend_pin), mock.patch.object(login, "RUNTIME_FILES", files):
+            report = device_report()
+            if mutation == "logical-ca":
+                report["runtime_inventory"]["lib/codex/share/ca-bundle.crt"]["mode"] = 0o555
+            report_raw = json.dumps(report).encode()
+            value = selection()
+            value["state_parent"] = str(parent)
+            value["source_receipt_sha256"] = hashlib.sha256(report_raw).hexdigest()
+            value["ui"]["qualification_path"] = str(namespace/"ui-qualification.json")
+            qualification = {"schema_version":1, "scope":"omux-native-login-ui-qualification-v1",
+                "host_alias":"yoga", "remote":value["ui"]["remote"],
+                "controller_ssh":{"path":value["ui"]["ssh_path"], "sha256":value["ui"]["ssh_sha256"]},
+                "closure_receipt_sha256":"a"*64, "seat_receipt_sha256":"b"*64}
+            qualification_raw = json.dumps(qualification).encode()
+            value["ui"]["qualification_sha256"] = hashlib.sha256(qualification_raw).hexdigest()
+            (namespace/"ui-qualification.json").write_bytes(qualification_raw)
+            (namespace/"input.json").write_text(json.dumps(value))
+            for path in namespace.iterdir():
+                path.chmod(0o600)
+            (native/"codex").write_bytes(backend)
+            (native/"codex").chmod(0o555)
+            report_path = native/"native-source-receipt.json"
+            ca_path = runtime/"lib/codex/share/ca-bundle.crt"
+            report_path.write_bytes(report_raw)
+            report_path.chmod(report_mode)
+            if mutation in ("report-hardlink", "ca-hardlink"):
+                os.link(report_path if mutation.startswith("report") else ca_path, root/"extra-link")
+            elif mutation in ("report-digest", "ca-digest"):
+                target = report_path if mutation.startswith("report") else ca_path
+                target.chmod(0o600)
+                content = target.read_bytes()
+                target.write_bytes(b"!" + content[1:])
+                target.chmod(report_mode if mutation.startswith("report") else ca_mode)
+            elif mutation == "backend-mode":
+                (native/"codex").chmod(0o444)
+            for path in sorted((p for p in native.rglob("*") if p.is_dir()), key=lambda p:len(p.parts), reverse=True):
+                path.chmod(0o555)
+            native.chmod(0o555)
+            # Shared test-temporary ancestors are the sole trust substitution;
+            # every actual fixture leaf, held file, named file and private input
+            # keeps its real mode/UID/link count/stat identity.
+            real_fstat = os.fstat
+            ancestors = {(p.stat().st_dev, p.stat().st_ino) for p in root.parents}
+            def trusted_test_ancestor(fd):
+                info = real_fstat(fd)
+                if (info.st_dev, info.st_ino) in ancestors:
+                    return mock.Mock(st_uid=info.st_uid, st_mode=info.st_mode & ~0o022)
+                return info
+            pins = (value["native_sha256"], value["source_receipt_sha256"], value["ui"]["qualification_sha256"])
+            try:
+                with mock.patch.object(login.os, "fstat", side_effect=trusted_test_ancestor):
+                    yield lambda:login.Admission(namespace/"input.json", native, source, state,
+                        time.monotonic_ns()+60*10**9, pins), report_path, ca_path
+            finally:
+                # Restore only model fixture directories for temporary cleanup.
+                for path in native.rglob("*"):
+                    if path.is_dir():
+                        path.chmod(0o700)
+                native.chmod(0o700)
 
 class LoginProfileTests(unittest.TestCase):
     def test_one_exact_run_separate_from_live_and_standard(self):
@@ -314,20 +416,7 @@ class LoginProfileTests(unittest.TestCase):
 
 
     def test_retained_device_receipt_requires_all_ten_files_and_actual_branch(self):
-        response_properties = {name:{"type":"string"} for name in ("type","loginId","verificationUrl","userCode")}
-        response_properties["type"]["enum"] = ["chatgptDeviceCode"]
-        receipt = {"schema_version":1,"kind":"omux-retained-device-api-qualification-v1",
-            "status":"provider-free-device-api-qualified","archive_sha256":login.ARCHIVE_SHA,
-            "manifest_sha256":login.MANIFEST_SHA,"backend_sha256":login.BACKEND_SHA,
-            "backend_bytes":318579008,"loader_sha256":login.RUNTIME_FILES["lib/codex/lib/ld-linux-x86-64.so.2"][0],
-            "runtime_inventory":{name:{"sha256":pin,"bytes":size,"mode":mode}
-                for name,(pin,size,mode) in login.RUNTIME_FILES.items()},
-            "native_support":False,"text_continuity":False,"provider_evaluation":False,
-            "device_api":{"method":"account/login/start","provider_invocation":False,
-                "request":{"type":"object","properties":{"type":{"type":"string","enum":["chatgptDeviceCode"]}},
-                    "required":["type"]},
-                "response":{"type":"object","properties":response_properties,
-                    "required":list(response_properties)}}}
+        receipt = device_report()
         login.device_qualification(receipt)
         import copy
         for changed in ("inventory","backend","live","bool_schema","browser"):
@@ -344,6 +433,48 @@ class LoginProfileTests(unittest.TestCase):
                 value["device_api"]["response"]["properties"]["type"]["enum"] = ["chatgpt"]
             with self.subTest(changed=changed),self.assertRaises(ValueError):
                 login.device_qualification(value)
+
+
+    def test_actual_admission_reads_bazel_seals_and_retains_observed_modes(self):
+        for report_mode, ca_mode in ((0o444,0o444), (0o555,0o555), (0o444,0o555), (0o555,0o444)):
+            with self.subTest(report_mode=report_mode,ca_mode=ca_mode), retained_admission_fixture(
+                    report_mode,ca_mode) as (construct,report_path,ca_path):
+                admitted = construct()
+                try:
+                    self.assertTrue(admitted.recheck())
+                    report_identity = next(expected for name,_,expected in admitted.identities
+                        if name == "native-source-receipt.json")
+                    ca_identity = next(expected for name,_,expected in admitted.runtime_files
+                        if name == "lib/codex/share/ca-bundle.crt")
+                    self.assertEqual(stat.S_IMODE(report_identity[3]),report_mode)
+                    self.assertEqual(stat.S_IMODE(ca_identity[3]),ca_mode)
+                    for path,mode in ((report_path,report_mode),(ca_path,ca_mode)):
+                        self.assertEqual(stat.S_IMODE(path.stat().st_mode),mode)
+                finally:
+                    admitted.close()
+
+    def test_actual_admission_refuses_unsealed_wrong_bytes_links_and_logical_mode(self):
+        cases = ((0o644,0o555,None), (0o755,0o555,None), (0o555,0o644,None),
+            (0o555,0o755,None), (0o555,0o555,"report-hardlink"),
+            (0o555,0o555,"ca-hardlink"), (0o555,0o555,"report-digest"),
+            (0o555,0o555,"ca-digest"), (0o555,0o555,"logical-ca"),
+            (0o555,0o555,"backend-mode"))
+        for report_mode,ca_mode,mutation in cases:
+            with self.subTest(report_mode=report_mode,ca_mode=ca_mode,mutation=mutation), retained_admission_fixture(
+                    report_mode,ca_mode,mutation) as (construct,_,_):
+                with self.assertRaises(ValueError):
+                    construct()
+
+    def test_actual_admission_refuses_mode_change_between_two_allowed_source_modes(self):
+        for selected in ("report","ca"):
+            with self.subTest(selected=selected), retained_admission_fixture() as (construct,report_path,ca_path):
+                admitted = construct()
+                try:
+                    (report_path if selected == "report" else ca_path).chmod(0o444)
+                    with self.assertRaises(ValueError):
+                        admitted.recheck()
+                finally:
+                    admitted.close()
 
     def test_runtime_namespace_refuses_extra_symlink_and_parent_escape(self):
         import tempfile

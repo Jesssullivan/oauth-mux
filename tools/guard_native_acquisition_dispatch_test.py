@@ -38,8 +38,10 @@ def admitted(profile='codex-login'):
     value.run = Path('/private/epoch')
     value.home = Path('/home/model')
     value.repository_cache = value.nixpkgs_source = None
-    value.inner = mock.Mock(directory=Path('/private/'+'a'*64),parent=Path('/private/fresh'),
+    value.inner = mock.Mock(directory=Path('/private/'+'a'*64),
         value={'enrollment':{'model':'synthetic-template'}},namespace_fd=21,output_fd=22)
+    # Mock(parent=...) configures mock ancestry, not the modeled path field.
+    value.inner.parent = Path('/private/fresh')
     value.facts = {'scope':'synthetic-model'}
     return value
 
@@ -245,8 +247,10 @@ class AcquisitionModels(unittest.TestCase):
             value.verify_manifest_pin = mock.Mock()
             with mock.patch.object(acquisition.time,'monotonic_ns',return_value=1):
                 value.bind_run(run); value.recheck()
+                value.inner.recheck.assert_called_once()
                 run.rename(root/'prior'); run.mkdir(mode=0o700)
                 with self.assertRaises(ValueError): value.recheck()
+                self.assertEqual(value.inner.recheck.call_count,2)
             value = admitted(); value.run = None
             run.chmod(0o755)
             with self.assertRaises(ValueError): value.bind_run(run)
@@ -256,6 +260,9 @@ class AcquisitionModels(unittest.TestCase):
             value = admitted(profile)
             value.inner.writable_binding.return_value = '/private/ui:/omux-native-login-ui-output'
             expected = value.writable_bindings(value.run)
+            output = ('/private/fresh:/private/fresh' if profile=='codex-login'
+                else '/private/ui:/omux-native-login-ui-output')
+            self.assertEqual(expected,[output,'/private/epoch:/private/epoch'])
             actual = {'BindPaths':' '.join(token+':rbind' for token in expected),
                 'BindReadOnlyPaths':''}
             value.verify_bindings(actual,value.run,None)

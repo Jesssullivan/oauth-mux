@@ -399,6 +399,7 @@ class Models(unittest.TestCase):
         owned.reader,owned.writer,owned.pidfd = 11,12,13
         owned.hosts,owned.policy = Mock(),Mock()
         hosts,policy = owned.hosts,owned.policy
+        policy.__exit__ = Mock(return_value=False)
         hosts.close.side_effect = OSError(5,"synthetic-close")
         def close_fd(fd):
             if fd in (12,11):
@@ -412,7 +413,7 @@ class Models(unittest.TestCase):
         self.assertEqual([call.args[0] for call in close.call_args_list],[12,11,13])
         owned.process.stdout.close.assert_called_once()
         hosts.close.assert_called_once()
-        policy.__exit__.assert_called_once()
+        policy.__exit__.assert_called_once_with(None,None,None)
         self.assertEqual((owned.writer,owned.reader,owned.pidfd,owned.hosts,owned.policy),(None,None,None,None,None))
 
 

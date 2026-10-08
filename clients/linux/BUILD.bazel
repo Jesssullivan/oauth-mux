@@ -13,6 +13,18 @@ cc_binary(
     target_compatible_with = ["@platforms//os:linux"],
 )
 
+# The remotely staged UI is qualified against immutable selected Nix roots,
+# rather than Bazel's adjacent solib tree. Ordinary control keeps its defaults.
+cc_binary(
+    name = "control_native_login_ui",
+    srcs = ["main.cpp", "tray.cpp", "tray.h", "codex_account_acquisition.cpp", "codex_account_acquisition.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h",
+            "device_code_dialog.cpp", "device_code_dialog.h"],
+    copts = ["-std=c++20", "-fPIC"],
+    deps = ["@omux_nix//:qt"],
+    features = ["-runtime_library_search_directories"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
 cc_test(
     name = "transport_test",
     srcs = ["transport_test.cpp", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h"],

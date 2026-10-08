@@ -321,7 +321,9 @@ class Admission:
                 self.fds.append(fd)
                 before = os.fstat(fd)
                 if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
-                        or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != (0o555 if executable else 0o444)
+                        or before.st_nlink != 1
+                        # Bazel seals qualified public reports as 0555; retain their observed stat fence.
+                        or stat.S_IMODE(before.st_mode) not in ((0o555,) if executable else (0o444, 0o555))
                         or not 0 < before.st_size <= maximum or executable and not before.st_mode & 0o100):
                     raise ValueError("codex-login-public-input-custody")
                 digest, count = hashlib.sha256(), 0
@@ -358,7 +360,9 @@ class Admission:
                 before = os.fstat(fd)
                 if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
                         or before.st_nlink != 1 or before.st_size != size
-                        or stat.S_IMODE(before.st_mode) != mode):
+                        # Only the fixed CA source admits Bazel's sealed output mode.
+                        or stat.S_IMODE(before.st_mode) not in ((0o444, 0o555)
+                            if name == "lib/codex/share/ca-bundle.crt" and mode == 0o444 else (mode,))):
                     raise ValueError("codex-login-sealed-runtime-file")
                 digest = hashlib.sha256()
                 total = 0

@@ -137,9 +137,11 @@ class Directory:
             fd,self.fd=self.fd,-1;os.close(fd)
 
 class File:
-    def __init__(self, path, deadline, pin=None, mode=None, limit=1024**3):
+    def __init__(self, path, deadline, pin=None, mode=None, limit=1024**3, *, bazel_read_only_seal=False):
         self.fd, self.parent = -1, None
         self.path, self.deadline = canonical(str(path)), deadline
+        # Only qualified Bazel source readers opt in. Installed rows remain exact.
+        require(type(bazel_read_only_seal) is bool and (not bazel_read_only_seal or mode == 0o444))
         try:
             self.parent = Directory(self.path.parent)
             self.fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
@@ -147,9 +149,12 @@ class File:
             info = os.fstat(self.fd)
             require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid == os.getuid() and info.st_gid == os.getgid()
                 and not stat.S_IMODE(info.st_mode) & 0o022 and 0 < info.st_size <= limit
-                and (mode is None or stat.S_IMODE(info.st_mode) == mode))
+                and (mode is None or stat.S_IMODE(info.st_mode) == mode
+                    or bazel_read_only_seal and stat.S_IMODE(info.st_mode) == 0o555))
             self.fence = identity(info)
-            self.row = {'sha256':self.digest(), 'bytes':info.st_size, 'mode':stat.S_IMODE(info.st_mode)}
+            # Logical copy/descriptor mode is not the observed physical seal.
+            self.row = {'sha256':self.digest(), 'bytes':info.st_size,
+                'mode':0o444 if bazel_read_only_seal else stat.S_IMODE(info.st_mode)}
             if pin is not None:
                 require(self.row['sha256'] == pin['sha256'] and self.row['bytes'] == pin['bytes'])
             self.recheck()
@@ -294,8 +299,12 @@ def directories(files):
         for index,part in enumerate(parts): result.setdefault('/'.join(parts[:index]),set()).add(part)
     return result
 
+BAZEL_READ_ONLY_ROLES = frozenset(('native-source-receipt.json', 'qualification.json',
+    'component.json', 'runtime/lib/codex/share/ca-bundle.crt'))
+
 class Tree:
-    def __init__(self, root, files, deadline):
+    def __init__(self, root, files, deadline, *, bazel_sealed_source=False):
+        require(type(bazel_sealed_source) is bool)
         self.root, self.files, self.dirs = canonical(str(root)), {}, {}
         self.members=directories(files)
         try:
@@ -308,7 +317,8 @@ class Tree:
             for name,row in files.items():
                 require(type(row) is dict and set(row) == {'sha256','bytes','mode'}
                     and type(row['mode']) is int and row['mode'] in (0o444,0o555))
-                self.files[name] = File(self.root/name, deadline, row, row['mode'])
+                self.files[name] = File(self.root/name, deadline, row, row['mode'],
+                    bazel_read_only_seal=bazel_sealed_source and name in BAZEL_READ_ONLY_ROLES and row['mode']==0o444)
             self.recheck()
         except BaseException:
             self.close(); raise
@@ -385,10 +395,11 @@ class Qualified:
                 require(Path(value['runtime_directory']) == out/BACKEND)
                 owner = parsed(raw).get('codex_owner_runtime_input')
                 require(type(owner) is dict and owner.get('verified_after_cleanup') is True)
-                self.report = File(out/BACKEND/'native-source-receipt.json',deadline,value['device_receipt'],0o444)
+                self.report = File(out/BACKEND/'native-source-receipt.json',deadline,value['device_receipt'],0o444,
+                    bazel_read_only_seal=True)
                 inner(parsed(self.report.raw()))
                 rows = inventory() | {'native-source-receipt.json':self.report.row}
-                self.tree = Tree(out/BACKEND,rows,deadline)
+                self.tree = Tree(out/BACKEND,rows,deadline,bazel_sealed_source=True)
                 rows = dict(rows); rows['qualification.json'] = dict(self.receipt.row,mode=0o444)
                 self.component = {'schema_version':1,'scope':SCOPE,'purpose':'device-account-acquisition',
                     'system':'x86_64-linux','backend_sha256':BACKEND,'files':rows,
@@ -398,10 +409,12 @@ class Qualified:
                 validate_component(self.component)
             else:
                 require(Path(value['component_directory']) == out/'component'/BACKEND)
-                self.descriptor = File(out/'component'/BACKEND/'component.json',deadline,mode=0o444)
+                self.descriptor = File(out/'component'/BACKEND/'component.json',deadline,mode=0o444,
+                    bazel_read_only_seal=True)
                 require(self.descriptor.row['sha256']==value['component_sha256'])
                 self.component=parsed(self.descriptor.raw(),True); validate_component(self.component)
-                self.tree=Tree(out/'component'/BACKEND,self.component['files']|{'component.json':self.descriptor.row},deadline)
+                self.tree=Tree(out/'component'/BACKEND,self.component['files']|{'component.json':self.descriptor.row},deadline,
+                    bazel_sealed_source=True)
                 inner(parsed(self.tree.files['native-source-receipt.json'].raw()))
                 q=self.component['qualification']['outer']
                 # Installed metadata preserves the exact original device output join.

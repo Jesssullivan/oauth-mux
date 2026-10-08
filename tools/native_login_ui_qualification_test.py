@@ -157,17 +157,22 @@ class Preparation(unittest.TestCase):
         self.stage_model(wrong=True)
 
     def test_nix_constructor_failure_reaps_only_still_owned_child(self):
-        process = Mock(pid=4321)
-        process.stdout = Mock()
-        process.poll.return_value = None
-        process.wait.side_effect = [subprocess.TimeoutExpired("owned-model",5),0]
-        with patch.object(remote.subprocess,"Popen",return_value=process),\
-            patch.object(remote.os,"pidfd_open",side_effect=OSError("synthetic")),\
-            patch.object(remote.os.path,"lexists",return_value=False):
-            with self.assertRaises(OSError):
-                remote.nix_operation(worker,3,["hash","path"],time.monotonic()+1,128)
-        self.assertEqual([call.args[0] for call in process.send_signal.call_args_list],[signal.SIGTERM,signal.SIGKILL])
-        process.stdout.close.assert_called_once()
+        for survives_term in (False,True):
+            with self.subTest(survives_term=survives_term):
+                process = Mock(pid=4321)
+                process.stdout = Mock()
+                process.poll.return_value = None
+                process.wait.side_effect = [subprocess.TimeoutExpired("owned-model",5)] * (2 if survives_term else 1) + [0]
+                with patch.object(remote.subprocess,"Popen",return_value=process),\
+                    patch.object(remote.os,"pidfd_open",side_effect=OSError("synthetic")),\
+                    patch.object(remote.os.path,"lexists",return_value=False):
+                    with self.assertRaises(OSError):
+                        remote.nix_operation(worker,3,["hash","path"],time.monotonic()+1,128)
+                expected = [signal.SIGTERM,signal.SIGKILL] if survives_term else [signal.SIGTERM]
+                self.assertEqual([call.args[0] for call in process.send_signal.call_args_list],expected)
+                self.assertEqual(process.wait.call_count,3 if survives_term else 2)
+                self.assertEqual(process.poll.call_count,len(expected))
+                process.stdout.close.assert_called_once()
 
     def test_receipt_publish_is_exclusive_and_existing_output_remains(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -207,14 +212,20 @@ def elf_model(needed=(),interpreter=None,rpath=(),path_tag=29,padding=b""):
 
 
 class ElfClosureModels(unittest.TestCase):
-    def test_actual_declared_control_closed_graph_before_any_ui_execution(self):
+    def test_actual_declared_control_origin_search_refuses_before_any_ui_execution(self):
+        self.actual_declared_control_graph(Preparation.control,origin_refusal=True)
+
+    def test_actual_declared_isolated_control_closed_graph_before_any_ui_execution(self):
+        self.actual_declared_control_graph(Preparation.isolated_control,origin_refusal=False)
+
+    def actual_declared_control_graph(self,selected_path,*,origin_refusal):
         rows = local.subset(Path(Preparation.inventory).read_bytes())
         roots = []
         graph = control = None
         until = time.monotonic()+120
         try:
             # This selected artifact and all181 source inputs are target data.
-            selected = Path(Preparation.control).resolve(strict=True)
+            selected = Path(selected_path).resolve(strict=True)
             source = os.open(selected,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
             try:
                 before = os.fstat(source)
@@ -249,9 +260,20 @@ class ElfClosureModels(unittest.TestCase):
                         offset += count
                     os.fchmod(control,0o500)
                     os.fsync(control)
-                    graph = remote.ElfClosure(worker,control,path,rows,remote.PLUGIN,until,roots)
-                    graph.check()
-                    self.assertGreater(len(graph.files),1)
+                    with patch.object(worker,"Dialog") as dialog,patch.object(worker,"Portal") as portal,\
+                        patch.object(remote.subprocess,"Popen") as spawn:
+                        if origin_refusal:
+                            # Ordinary control's Bazel-relative paths remain
+                            # an explicit unsupported staging boundary.
+                            with self.assertRaisesRegex(ValueError,"^dialog_elf_control_origin_search$"):
+                                graph = remote.ElfClosure(worker,control,path,rows,remote.PLUGIN,until,roots)
+                        else:
+                            graph = remote.ElfClosure(worker,control,path,rows,remote.PLUGIN,until,roots)
+                            graph.check()
+                            self.assertGreater(len(graph.files),1)
+                        dialog.assert_not_called()
+                        portal.assert_not_called()
+                        spawn.assert_not_called()
                 finally:
                     if graph is not None:
                         graph.close()
@@ -315,7 +337,8 @@ class ElfClosureModels(unittest.TestCase):
         close.assert_called_once_with(19)
 
     def test_actual_prepare_dialog_fault_keeps_stage_and_releases_graph_root_and_inputs(self):
-        config = {"expected_os":{},"rows":[],"control_sha256":"a"*64,"control_bytes":8,
+        config = {"expected_os":{"remoteNixPath":"/nix/store/"+"d"*32+"-nix/bin/nix",
+            "remoteNixSha256":"b"*64},"rows":[],"control_sha256":"a"*64,"control_bytes":8,
             "task_id":"11111111-1111-4111-8111-111111111111","deadline_seconds":60}
         dialog,graph = Mock(),Mock()
         dialog.close.side_effect = OSError(5,"synthetic-close")
@@ -323,7 +346,7 @@ class ElfClosureModels(unittest.TestCase):
         def pinned_rows(_worker,_nix,_rows,_until,retained):
             retained.append(("/declared/public-root",14,(1,2)))
         with patch.object(remote.resource,"setrlimit"),patch.object(remote.signal,"alarm"),\
-            patch.object(remote.os,"environ",{}),patch.object(remote,"seat",return_value=({},{})),\
+            patch.object(remote.os,"environ",{}),patch.object(remote,"seat",return_value=({"uid":os.getuid()},{})),\
             patch.object(worker,"held_immutable",side_effect=[11,12]),patch.object(worker,"held_dialog",return_value=13),\
             patch.object(worker,"check_host_and_seat"),patch.object(remote,"verify_rows",side_effect=pinned_rows),\
             patch.object(remote,"stage",return_value=("/declared/public-stage/control",(1,2))),\
@@ -492,4 +515,5 @@ if __name__ == "__main__":
     exec(compile(local.elf_parser_source(Path(Preparation.parser_source).read_bytes()),"<declared-elf-model>","exec"),module.__dict__)
     remote.elf = module
     Preparation.control = sys.argv.pop(1)
+    Preparation.isolated_control = sys.argv.pop(1)
     unittest.main()

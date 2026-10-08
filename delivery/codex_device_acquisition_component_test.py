@@ -129,6 +129,115 @@ class FileOwnershipTests(unittest.TestCase):
         raw=b'public-model-backend'
         (root/'codex').write_bytes(raw);os.chmod(root/'codex',0o555);os.chmod(root,0o555)
         return root,{'codex':{'sha256':subject.sha(raw),'bytes':len(raw),'mode':0o555}}
+
+    def test_bazel_source_mode_roles_pin_bytes_and_keep_installed_modes_strict(self):
+        root,rows=self.leaf()
+        os.chmod(root,0o700)
+        for name in ('native-source-receipt.json','qualification.json','component.json',
+                'runtime/lib/codex/share/ca-bundle.crt','unrelated-metadata.json'):
+            path=root/name;path.parent.mkdir(parents=True,exist_ok=True,mode=0o555)
+            # This is a tiny public mode fixture, not API/provider qualification.
+            if path.parent!=root:os.chmod(path.parent,0o700)
+            raw=b'public-non-executable-role'
+            path.write_bytes(raw);os.chmod(path,0o444)
+            rows[name]={'sha256':subject.sha(raw),'bytes':len(raw),'mode':0o444}
+        for parent,dirs,files in os.walk(root):os.chmod(parent,0o555)
+        normal=subject.Tree(root,rows,self.deadline,bazel_sealed_source=True);normal.close()
+        for name in subject.BAZEL_READ_ONLY_ROLES:os.chmod(root/name,0o555)
+        source=subject.Tree(root,rows,self.deadline,bazel_sealed_source=True)
+        try:
+            for name in subject.BAZEL_READ_ONLY_ROLES:
+                self.assertEqual(source.files[name].fence[4],0o555)
+                self.assertEqual(source.files[name].row['mode'],0o444)
+            with self.assertRaises(ValueError):subject.Tree(root,rows,self.deadline)
+            # Source seal acceptance is an initial predicate; later changes fail.
+            os.chmod(root/'native-source-receipt.json',0o444)
+            with self.assertRaises(ValueError):source.recheck()
+        finally:source.close()
+        os.chmod(root/'native-source-receipt.json',0o555)
+        os.chmod(root/'unrelated-metadata.json',0o555)
+        with self.assertRaises(ValueError):subject.Tree(root,rows,self.deadline,bazel_sealed_source=True)
+        os.chmod(root/'unrelated-metadata.json',0o444)
+        for mode in (0o400,0o554,0o644,0o755):
+            os.chmod(root/'runtime/lib/codex/share/ca-bundle.crt',mode)
+            with self.subTest(mode=mode),self.assertRaises(ValueError):
+                subject.Tree(root,rows,self.deadline,bazel_sealed_source=True)
+        os.chmod(root/'runtime/lib/codex/share/ca-bundle.crt',0o555)
+        altered=copy.deepcopy(rows);altered['qualification.json']['sha256']='f'*64
+        with self.assertRaises(ValueError):subject.Tree(root,altered,self.deadline,bazel_sealed_source=True)
+        os.chmod(root,0o700);(root/'extra-capsule').write_bytes(b'not-authorized');os.chmod(root,0o555)
+        with self.assertRaises(ValueError):subject.Tree(root,rows,self.deadline,bazel_sealed_source=True)
+
+    def test_qualified_api_and_component_seals_copy_to_strict_installed_rows(self):
+        # Real File/Tree/Qualified/materialize paths; only enormous fixed bytes
+        # and inner API validation are synthetic. Actual outer joins stay real.
+        bases=(self.base/'device-coordinator',self.base/'component-coordinator')
+        raws=[];pins=[]
+        for base in bases:
+            epoch=base/EPOCH;epoch.mkdir(parents=True,mode=0o700)
+            value=receipt(base)
+            value['codex_owner_runtime_input']={'verified_after_cleanup':True}
+            raws.append(value)
+        raws[1]['profile']='codex-device-component';raws[1]['targets']=[subject.PRODUCER]
+        raws[1]['codex_device_component']={'verified_after_cleanup':True,
+            'original_entry_monotonic_ns':1,'original_deadline_monotonic_ns':1+1200*10**9,
+            'input':{'action':'produce','scope':'provider-free-codex-device-component','manifest_sha256':'e'*64,
+                'provider_request_performed':False,'native_execution_performed':False,'resident_effects_authorized':False,
+                'continuity_qualified':False,'credential_contents_read':False},
+            'output':{'action':'produce','action_epoch':EPOCH,'controller_graph_sha256':GRAPH,'manifest_sha256':'e'*64,
+                'provider_request_performed':False,'resident_enrollment_completed':False,'continuity_qualified':False}}
+        for base,value in zip(bases,raws):
+            raw=subject.encoded(value);(base/EPOCH/'receipt.json').write_bytes(raw)
+            os.chmod(base/EPOCH/'receipt.json',0o600)
+            pins.append(selected(base)|{'sha256':subject.sha(raw),'bytes':len(raw)})
+        backend=b'tiny-synthetic-backend';ca=b'tiny-synthetic-public-ca';report=b'{"public":"mode-fixture"}\n'
+        tiny={'codex':{'sha256':subject.sha(backend),'bytes':len(backend),'mode':0o555},
+            'runtime/lib/codex/share/ca-bundle.crt':{'sha256':subject.sha(ca),'bytes':len(ca),'mode':0o444}}
+        with mock.patch.object(subject,'COORDS',bases),mock.patch.object(subject,'inventory',return_value=tiny),\
+                mock.patch.object(subject,'inner') as validate_inner:
+            api_root=subject.outer(raws[0],pins[0],subject.DEVICE)/subject.BACKEND
+            api_root.mkdir(parents=True,mode=0o700)
+            ca_path=api_root/'runtime/lib/codex/share/ca-bundle.crt'
+            ca_path.parent.mkdir(parents=True,mode=0o700)
+            for path,raw in ((api_root/'codex',backend),(ca_path,ca),(api_root/'native-source-receipt.json',report)):
+                path.write_bytes(raw);os.chmod(path,0o555)
+            for parent,dirs,files in os.walk(api_root):os.chmod(parent,0o555)
+            produce={'action':'produce','qualification':pins[0],
+                'runtime_directory':str(api_root),'device_receipt':{'sha256':subject.sha(report),'bytes':len(report)}}
+            qualified=subject.Qualified(produce,self.deadline)
+            package=installed=None
+            try:
+                self.assertEqual(qualified.report.fence[4],0o555)
+                self.assertEqual(qualified.component['files']['native-source-receipt.json']['mode'],0o444)
+                component_parent=subject.outer(raws[1],pins[1],subject.PRODUCER)/'component'
+                component_parent.mkdir(parents=True,mode=0o700)
+                component_root=component_parent/subject.BACKEND
+                subject.materialize(component_root,qualified,self.deadline)
+                # Reproduce Bazel's observed executable read-only output seal.
+                for name in subject.BAZEL_READ_ONLY_ROLES:os.chmod(component_root/name,0o555)
+                descriptor=(component_root/'component.json').read_bytes()
+                install={'action':'install','producer':pins[1],
+                    'component_directory':str(component_root),'component_sha256':subject.sha(descriptor)}
+                package=subject.Qualified(install,self.deadline)
+                self.assertEqual(package.descriptor.fence[4],0o555)
+                self.assertEqual(package.descriptor.row['mode'],0o444)
+                destination=self.base/'installed'
+                rows=subject.materialize(destination,package,self.deadline)
+                self.assertTrue(all(rows[name]['mode']==0o444 for name in subject.BAZEL_READ_ONLY_ROLES))
+                installed=subject.Tree(destination,rows,self.deadline)
+                installed.recheck()
+                self.assertTrue(all(stat.S_IMODE(os.stat(destination/name).st_mode)==0o444
+                    for name in subject.BAZEL_READ_ONLY_ROLES))
+                os.chmod(destination/'component.json',0o555)
+                with self.assertRaises(ValueError):subject.Tree(destination,rows,self.deadline)
+                self.assertEqual(validate_inner.call_count,2)
+            finally:subject.close_all((installed,package,qualified))
+
+    def test_historical_three_target_device_receipt_is_not_singleton_qualification(self):
+        base=subject.COORDS[0]
+        value=receipt(base)|{'targets':[subject.DEVICE,'//:docs_check','//tools:runtime_source_receipt']}
+        with self.assertRaises(ValueError):subject.outer(value,selected(base),subject.DEVICE)
+
     def test_actual_tree_bytes_named_custody_and_extra_capsule_refusal(self):
         root,rows=self.leaf();tree=subject.Tree(root,rows,self.deadline)
         try:
@@ -158,8 +267,12 @@ class FileOwnershipTests(unittest.TestCase):
         held=subject.Directory(root,0o555)
         try:
             os.rename(parent,self.base/'retired-parent');parent.mkdir(mode=0o700)
+            # Permit the owned model directory's cross-parent transplant, then
+            # restore its original sealed mode before checking custody.
+            os.chmod(self.base/'retired-parent/leaf',0o700)
             os.rename(self.base/'retired-parent/leaf',root)
-            self.assertEqual(os.stat(root).st_ino,held.fence[1])
+            os.chmod(root,0o555)
+            self.assertEqual(subject.identity(os.stat(root),True),held.fence)
             with self.assertRaises(ValueError):held.recheck()
         finally:held.close()
     def test_shared_lease_blocks_install_and_lock_alias_replacement(self):
