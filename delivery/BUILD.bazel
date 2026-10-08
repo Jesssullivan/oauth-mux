@@ -226,6 +226,30 @@ python_test(
     timeout = "moderate",
     target_compatible_with = ["@platforms//os:linux"],
 )
+# Observed four-component byte tuple; private disposable daemon restart only.
+# Historical dev_generation_restart_retained pins and behavior remain untouched.
+python_test(
+    name = "dev_generation_restart_complete_retained",
+    main = "dev_generation_restart.py",
+    srcs = ["dev_generation.py", "portable.py"],
+    data = ["@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon", "@omux_nix//:native.json"],
+    args = [
+        "--stage-root", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/9e6d2e2b-b2d8-45fd-867f-393321091a42/dev-stage-complete",
+        "--generation", "4e51aa3374894368800bf21524c1d644",
+        "--receipt-sha256", "b2377cf20db819fef5e72c1efd98fe35266017ae1205be56874f5c7f0c8c7d48",
+        "--core-sha256", "4ac4a8eef54a295fc309b12b7b721f9584365f48cc8ba12a0d0eb2b9e1783c95",
+        "--daemon-sha256", "c798d7d541943612122f0f031b6fcd58d94e2075d9faca4d29bd19280bfd485c",
+        "--control-sha256", "3a632a19c4e59d2cb5577d106aee4c6c256a5a532c0e13493b20f3a28e0bcd10",
+        "--extension-sha256", "0ec74f20b4d9831e760e0e133e4082298413677a1fca7c0f21c95619685dac01",
+        "--session", "$(location @omux_nix//:dbus_run_session)",
+        "--bus", "$(location @omux_nix//:dbus_daemon)",
+        "--keyring", "$(location @omux_nix//:gnome_keyring_daemon)",
+        "--tool-manifest", "$(location @omux_nix//:native.json)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "moderate",
+    target_compatible_with = ["@platforms//os:linux"],
+)
 # Operator-selected durable development staging; no service/registration changes.
 python_test(
     name = "dev_stage_retained",

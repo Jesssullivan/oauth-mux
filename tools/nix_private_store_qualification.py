@@ -149,9 +149,10 @@ def commands(tools, private):
                 "--expr", expression(tools["bash"])])
 
 
-def run(command, env, cwd, deadline, *, input_file=None, tool_fd=None):
+def run(command, env, cwd, deadline, *, input_file=None, tool_fd=None, output_limit=MAX_OUTPUT):
     """Every post-Popen operation is inside own-client cleanup."""
     tick(deadline)
+    seed.require(type(output_limit) is int and 0 < output_limit <= 32 * 1024**2)
     seed.require(type(tool_fd) is int and tool_fd >= 0)
     info = os.fstat(tool_fd)
     seed.require(stat.S_ISREG(info.st_mode) and bool(info.st_mode & stat.S_IXUSR))
@@ -177,7 +178,7 @@ def run(command, env, cwd, deadline, *, input_file=None, tool_fd=None):
                     selected.unregister(key.fileobj)
                     continue
                 count += len(chunk)
-                seed.require(count <= MAX_OUTPUT)
+                seed.require(count <= output_limit)
                 if key.data == "stdout":
                     output.extend(chunk)
                 # stderr is bounded and discarded, never retained or printed.
