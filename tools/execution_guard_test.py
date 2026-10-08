@@ -216,16 +216,47 @@ class ResidentGuardModels(unittest.TestCase):
     def test_actual_standard_command_builder_only_changes_exact_resident_run(self):
         import guard_resident_dispatch as resident
         import guard_resident_namespace_profile as namespace
+        import guard_resident_continuity_profile as continuity
+        import guard_codex_fresh_live_profile as fresh
         run=Path('/private/11111111-1111-4111-8111-111111111111')
-        admission=SimpleNamespace(facts={'scope':namespace.SCOPE},manifest=Path('/public/input.json'),environment=lambda:{'OMUX_RESIDENT_NAMESPACE_EPOCH':run.name})
-        command=resident.command(bazel_command,'/nix/store/public/bin/bazel',run,['run',namespace.LABEL],admission,
-            source_commit='1'*40,source_dirty='false',repository_cache=resident.REPOSITORY_CACHE,nixpkgs_source=resident.NIXPKGS)
-        self.assertIn('run',command); self.assertNotIn('build',command)
-        self.assertEqual(command[-1],namespace.LABEL)
-        for flag in ('--batch','--disable_download','--repo_contents_cache=','--spawn_strategy=linux-sandbox','--disk_cache=',
-            '--repository_cache='+str(resident.REPOSITORY_CACHE),'--run_env=OMUX_RESIDENT_NAMESPACE_EPOCH='+run.name): self.assertIn(flag,command)
-        self.assertFalse(any(part.startswith('--repo_env=OMUX_CODEX_FRESH_RUNTIME_SELECTION=') and part.split('=',2)[-1] for part in command))
-        with self.assertRaises(ValueError): resident.command(bazel_command,'/nix/store/public/bin/bazel',run,['run',namespace.LABEL,'--'],admission,source_commit='1'*40,source_dirty='false')
+        # Only command assembly is modeled; no installation/runtime admission
+        # or provider capability is inferred from these synthetic fields.
+        for selected in (namespace,continuity):
+            scope=namespace.SCOPE if selected is namespace else 'resident-continuity'
+            admission=SimpleNamespace(facts={'scope':scope},manifest=Path('/public/input.json'),
+                environment=lambda:{'OMUX_RESIDENT_NAMESPACE_EPOCH':run.name},
+                fresh=SimpleNamespace(selection_path=Path('/public/fresh-runtime-selection.json'),
+                    selection_pin={'sha256':'2'*64,'bytes':123}))
+            for cache,nixpkgs in ((None,None),(resident.REPOSITORY_CACHE,resident.NIXPKGS)):
+                with self.subTest(profile=selected.PROFILE,cache=cache):
+                    command=resident.command(bazel_command,'/nix/store/public/bin/bazel',run,
+                        ['run',selected.LABEL],admission,source_commit='1'*40,source_dirty='false',
+                        repository_cache=cache,nixpkgs_source=nixpkgs)
+                    self.assertEqual(command.count('run'),1); self.assertNotIn('build',command)
+                    self.assertEqual(command[-1],selected.LABEL)
+                    self.assertNotIn('--disable_download',command)
+                    self.assertEqual(command.count('--repository_disable_download'),1)
+                    for flag in ('--batch','--spawn_strategy=linux-sandbox','--disk_cache=',
+                            '--sandbox_default_allow_network=false','--run_env=OMUX_RESIDENT_NAMESPACE_EPOCH='+run.name):
+                        self.assertIn(flag,command)
+                    if cache is None:
+                        self.assertNotIn('--repo_contents_cache=',command)
+                    else:
+                        self.assertIn('--repo_contents_cache=',command)
+                        self.assertIn('--repository_cache='+str(cache),command)
+                    for key,value in ((fresh.VARIABLE,str(admission.fresh.selection_path)),
+                            (fresh.SHA_VARIABLE,'2'*64),(fresh.BYTES_VARIABLE,'123')):
+                        rows=[part for part in command if part.startswith('--repo_env='+key+'=')]
+                        self.assertEqual(rows,['--repo_env='+key+'='+(value if selected is continuity else '')])
+            with self.assertRaises(ValueError):
+                resident.command(bazel_command,'/nix/store/public/bin/bazel',run,
+                    ['run',selected.LABEL,'--'],admission,source_commit='1'*40,source_dirty='false')
+            for cache,nixpkgs in ((resident.REPOSITORY_CACHE,None),(None,resident.NIXPKGS),
+                                  (Path('/foreign/cache'),resident.NIXPKGS)):
+                with self.assertRaises(ValueError):
+                    resident.command(bazel_command,'/nix/store/public/bin/bazel',run,
+                        ['run',selected.LABEL],admission,source_commit='1'*40,source_dirty='false',
+                        repository_cache=cache,nixpkgs_source=nixpkgs)
 
     def test_partial_or_foreign_resident_cli_refuses_before_immutable_tools(self):
         from execution_guard import main

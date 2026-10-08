@@ -118,7 +118,7 @@ def command(builder,bazel,run,arguments,admission,*,source_commit,source_dirty,r
     result[result.index('build')]='run'
     result[result.index('--spawn_strategy=sandboxed')]='--spawn_strategy=linux-sandbox'
     # Options precede the sole target; never caller-selected arbitrary labels.
-    result.insert(result.index(selected.LABEL),'--disable_download')
+    result.insert(result.index(selected.LABEL),'--repository_disable_download')
     if repository_cache is not None: result.insert(result.index(selected.LABEL),'--repo_contents_cache=')
     if selected.PROFILE=='resident-continuity':
         import guard_codex_fresh_live_profile as fresh

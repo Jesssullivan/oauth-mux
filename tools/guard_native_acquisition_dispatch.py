@@ -240,7 +240,7 @@ def command(builder,bazel,run,arguments,admission,*,source_commit,source_dirty,r
     result[result.index('build')] = 'run'
     result[result.index('--spawn_strategy=sandboxed')] = '--spawn_strategy=linux-sandbox'
     position = result.index(arguments[1])
-    additions = ['--disable_download','--repository_disable_download','--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=']
+    additions = ['--repository_disable_download','--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=']
     if repository_cache is not None:
         additions.append('--repo_contents_cache=')
     import guard_codex_login_profile as login

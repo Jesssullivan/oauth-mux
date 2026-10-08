@@ -95,10 +95,12 @@ class AcquisitionModels(unittest.TestCase):
         value = admitted()
         value.environment = lambda: {login.VARIABLE:login.DESTINATION}
         value.repository_cache,value.nixpkgs_source = acquisition.REPOSITORY_CACHE,acquisition.NIXPKGS
-        command = acquisition.command(guard.bazel_command,'/nix/store/bazel',value.run,
+        command = resident.command(guard.bazel_command,'/nix/store/bazel',value.run,
             ['run',login.LABEL],value,source_commit='a'*40,source_dirty='false',
             repository_cache=value.repository_cache,nixpkgs_source=value.nixpkgs_source)
-        for flag in ('--batch','--jobs=2','--host_jvm_args=-Xmx1536m','--disable_download',
+        self.assertNotIn('--disable_download',command)
+        self.assertEqual(command.count('--repository_disable_download'),1)
+        for flag in ('--batch','--jobs=2','--host_jvm_args=-Xmx1536m',
                 '--repository_disable_download','--repo_contents_cache=',
                 '--repository_cache='+str(acquisition.REPOSITORY_CACHE),
                 '--spawn_strategy=linux-sandbox','--sandbox_default_allow_network=false',
@@ -115,8 +117,14 @@ class AcquisitionModels(unittest.TestCase):
     def test_ui_command_clears_ambient_native_selector_and_contains_no_resident_action(self):
         value = admitted('native-login-ui')
         value.environment = lambda: {ui.VARIABLE:ui.DESTINATION}
-        command = acquisition.command(guard.bazel_command,'/nix/store/bazel',value.run,
+        command = resident.command(guard.bazel_command,'/nix/store/bazel',value.run,
             ['run',ui.LABEL],value,source_commit='a'*40,source_dirty='false')
+        self.assertNotIn('--disable_download',command)
+        self.assertEqual(command.count('--repository_disable_download'),1)
+        self.assertNotIn('--repo_contents_cache=',command)
+        self.assertEqual(command.count('run'),1)
+        self.assertNotIn('build',command)
+        self.assertEqual(command[-1],ui.LABEL)
         self.assertIn('--repo_env='+login.DIRECTORY_VARIABLE+'=',command)
         self.assertNotIn(login.LABEL,command)
         for field in ('source.connect','enrollment.start','resident-enrollment','auth.json'):
