@@ -111,6 +111,37 @@ python_binary(
     tags = ["manual", "no-remote", "no-cache"],
     target_compatible_with = ["@platforms//os:linux"],
 )
+# Exact standard/system TEST route. Stage bytes remain in the guarded epoch,
+# separately from Bazel's sealed public test-output copies. No runtime effects.
+python_test(
+    name = "dev_stage_complete_retained",
+    main = "dev_stage_complete_retained.py",
+    srcs = ["dev_stage.py", "dev_generation.py", "dev_stage_selected.py", "portable.py"],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file",
+                 "@omux_nix//:qt_runtime_libraries": "--qt-runtime-file",
+                 "@omux_nix//:qt_platform_plugins": "--qt-plugin"},
+    data = ["//:omux", "//:omuxd", "//clients/linux:control",
+            "//extensions:chromium_dev_package", ":chromium_dev_metadata",
+            ":native_runtime_resolution", "@omux_nix//:runtime_libraries",
+            "@omux_nix//:qt_runtime_libraries", "@omux_nix//:qt_platform_plugins",
+            "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
+    args = ["--core", "$(location //:omux)", "--daemon", "$(location //:omuxd)",
+            "--control", "$(location //clients/linux:control)",
+            "--extension", "$(location //extensions:chromium_dev_package)",
+            "--metadata", "$(location :chromium_dev_metadata)",
+            "--resolution-witness", "$(location :native_runtime_resolution)",
+            "--patchelf", "$(location @omux_nix//:patchelf)",
+            "--ca-bundle", "$(location @omux_nix//:ca_bundle)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "dev_stage_complete_retained_test",
+    main = "test_dev_stage_complete_retained.py",
+    srcs = ["dev_stage_complete_retained.py", "dev_stage.py", "dev_generation.py",
+            "dev_stage_selected.py", "portable.py", "test_dev_generation.py", "test_portable.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 python_binary(
     name = "yoga_payload",
     main = "yoga_payload.py",

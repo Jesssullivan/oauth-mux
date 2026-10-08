@@ -21,6 +21,81 @@ from execution_guard import validate_become_metadata, system_identity, selected_
 from execution_guard import await_startup
 
 
+class CompleteStageDispatchModels(unittest.TestCase):
+    def test_only_exact_standard_system_test_gets_original_entry_marker_without_run_widening(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        selected = ['test',guard.DEV_STAGE_LABEL]
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+10**9):
+            self.assertTrue(guard.dev_stage_request('standard','system',selected,False,entry,deadline))
+            run = Path('/owned/5102699b-2ebf-44f1-a454-62b098e49658')
+            baseline = guard.bazel_command('/bazel',run,selected)
+            command = guard.dev_stage_command(baseline,run,entry,deadline)
+            self.assertEqual([value for value in command if value.startswith('--test_env=OMUX_')],
+                ['--test_env=OMUX_EXECUTION_GUARD='+str(run),
+                 '--test_env=OMUX_DEV_STAGE_ENTRY_NS='+str(entry),
+                 '--test_env=OMUX_DEV_STAGE_DEADLINE_NS='+str(deadline)])
+            self.assertEqual(command[-1],guard.DEV_STAGE_LABEL)
+            self.assertEqual(baseline[-1],guard.DEV_STAGE_LABEL)
+            for profile,manager,args,reuse in (
+                ('standard','user',selected,False),('site','system',selected,False),
+                ('standard','system',['run',guard.DEV_STAGE_LABEL],False),
+                ('standard','system',['build',guard.DEV_STAGE_LABEL],False),
+                ('standard','system',selected+['//:docs_check'],False),
+                ('standard','system',selected+['--root=/arbitrary'],False),
+                ('standard','system',selected,True)):
+                with self.assertRaises(ValueError):
+                    guard.dev_stage_request(profile,manager,args,reuse,entry,deadline)
+            for label in ('//delivery:dev_stage','//delivery:dev_stage_complete'):
+                with self.assertRaises(ValueError): guard.bazel_command('/bazel',run,['run',label])
+            self.assertFalse(guard.dev_stage_request('standard','user',['test','//:docs_check'],True,entry,deadline))
+            self.assertEqual(guard.bazel_command('/bazel',run,['test','//:docs_check'])[-1],'//:docs_check')
+
+    def test_original_remaining_runtime_clamp_and_exclusive_graph_admission(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+100*10**9):
+            self.assertEqual(guard.dev_stage_budget(entry,deadline),1070)
+            with tempfile.TemporaryDirectory() as temporary:
+                run = Path(temporary)
+                guard.dev_stage_admission(run,'f'*64,entry,deadline)
+                raw = (run/'dev-stage-admission.json').read_bytes()
+                value = json.loads(raw)
+                self.assertEqual(value['entryMonotonicNs'],entry)
+                self.assertEqual(value['deadlineMonotonicNs'],deadline)
+                self.assertEqual(value['graphSha256'],'f'*64)
+                self.assertEqual((run/'dev-stage-admission.json').stat().st_mode & 0o777,0o600)
+                with self.assertRaises(FileExistsError): guard.dev_stage_admission(run,'f'*64,entry,deadline)
+                self.assertEqual((run/'dev-stage-admission.json').read_bytes(),raw)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError): guard.dev_stage_budget(entry,deadline)
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+1):
+            with self.assertRaises(ValueError): guard.dev_stage_budget(entry,deadline+1)
+            with self.assertRaises(ValueError): guard.dev_stage_budget(True,deadline)
+
+
+    def test_actual_final_source_readback_crossing_original_deadline_refuses(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        expected = ('a'*64,['fixed-source'])
+        calls = []
+        def readback():
+            calls.append('measured')
+            return expected
+        with patch.object(guard.time,'monotonic_ns',side_effect=[deadline-1,deadline]):
+            with self.assertRaises(ValueError):
+                guard.dev_stage_source_after(entry,deadline,expected,readback)
+        self.assertEqual(calls,['measured'])
+        calls.clear()
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline):
+            with self.assertRaises(ValueError):
+                guard.dev_stage_source_after(entry,deadline,expected,readback)
+        self.assertEqual(calls,[])
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-1):
+            self.assertTrue(guard.dev_stage_source_after(entry,deadline,expected,readback))
+            self.assertFalse(guard.dev_stage_source_after(entry,deadline,expected,lambda:('b'*64,[])))
+
+
 class FakeService:
     def __init__(self, root):
         self.root = root

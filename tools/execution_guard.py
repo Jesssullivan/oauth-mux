@@ -893,6 +893,64 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         raise ValueError('effective CPU quota rejected')
 
 
+DEV_STAGE_LABEL = '//delivery:dev_stage_complete_retained'
+DEV_STAGE_SCOPE = 'guarded-development-four-component-byte-stage-v1'
+
+
+def dev_stage_request(profile, manager, arguments, reuse, entry_ns, deadline_ns):
+    if DEV_STAGE_LABEL not in arguments:
+        return False
+    if (profile != 'standard' or manager != 'system' or arguments != ['test',DEV_STAGE_LABEL]
+            or reuse):
+        raise ValueError('complete stage requires exact standard/system TEST without cache reuse')
+    dev_stage_budget(entry_ns, deadline_ns)
+    return True
+
+
+def dev_stage_budget(entry_ns, deadline_ns, reserve_ns=30 * 10**9):
+    if (type(entry_ns) is not int or type(deadline_ns) is not int or entry_ns <= 0
+            or deadline_ns - entry_ns != 1200 * 10**9
+            or type(reserve_ns) is not int or reserve_ns not in (0,30 * 10**9)):
+        raise ValueError('complete stage exhausted original guardian deadline')
+    now = time.monotonic_ns()
+    if not entry_ns <= now < deadline_ns - reserve_ns:
+        raise ValueError('complete stage exhausted original guardian deadline')
+    return (deadline_ns - reserve_ns - now) / 10**9
+
+
+def dev_stage_source_after(entry_ns, deadline_ns, expected, readback):
+    dev_stage_budget(entry_ns,deadline_ns,reserve_ns=0)
+    observed = readback()
+    dev_stage_budget(entry_ns,deadline_ns,reserve_ns=0)
+    return observed == expected
+
+
+def dev_stage_command(command, run, entry_ns, deadline_ns):
+    dev_stage_budget(entry_ns, deadline_ns)
+    if command[-1:] != [DEV_STAGE_LABEL] or 'test' not in command or 'run' in command:
+        raise ValueError('complete stage command is not the fixed TEST')
+    result = list(command)
+    result[-1:-1] = ['--test_env=OMUX_EXECUTION_GUARD='+str(run),
+        '--test_env=OMUX_DEV_STAGE_ENTRY_NS='+str(entry_ns),
+        '--test_env=OMUX_DEV_STAGE_DEADLINE_NS='+str(deadline_ns)]
+    return result
+
+
+def dev_stage_admission(run, graph, entry_ns, deadline_ns):
+    dev_stage_budget(entry_ns, deadline_ns)
+    if type(graph) is not str or not re.fullmatch('[0-9a-f]{64}', graph):
+        raise ValueError('complete stage requires measured guardian graph')
+    value = {'schemaVersion':1,'scope':DEV_STAGE_SCOPE,'label':DEV_STAGE_LABEL,
+        'epoch':run.name,'entryMonotonicNs':entry_ns,'deadlineMonotonicNs':deadline_ns,
+        'graphSha256':graph}
+    descriptor = os.open(run/'dev-stage-admission.json',
+        os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(descriptor,'w') as output:
+        output.write(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n')
+        output.flush()
+        os.fsync(output.fileno())
+
+
 def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=None, source_dirty=None, nixpkgs_source=None, output_base=None, site_source=None, site_inventory=None, site_inventory_sha256=None, site_nixpkgs_source=None, codex_pack_directory=None, profile='standard', codex_recovery_source=None, codex_pristine_directory=None, codex_recovery_delta_directory=None, codex_owner_runtime_directory=None, codex_fresh_runtime_selection=None, codex_fresh_runtime_sha256=None, codex_fresh_runtime_bytes=None):
     format_base = ['run', '//:format', '--', 'src/main.zig', 'src/setup_collector.zig', 'src/setup_collector_tests.zig']
     sdk_export_run = profile=='standard' and arguments==['run','//tools:codex_retained_sdk_export_run']
@@ -1158,6 +1216,9 @@ def _main(argv, admission_resources):
     resident_output = None
     if args.worker:
         return worker(args.worker, arguments)
+    dev_stage_proof = dev_stage_request(args.profile,args.manager,arguments,args.reuse_owned_cache,
+        delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
+    dev_stage_verified_after = None
     sdk = None
     sdk_plan = None
     sdk_source_verified_after = None
@@ -1559,6 +1620,8 @@ def _main(argv, admission_resources):
                                 codex_fresh_runtime_sha256=args.codex_fresh_runtime_sha256,
                                 codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes)
         workload_cwd = args.site_source if site else Path.cwd()
+        if dev_stage_proof:
+            command = dev_stage_command(command,run,delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
         if native_sdk:
             # PATH and Bash are explicit immutable bootstrap closure inputs.
             locked_path = ':'.join(host['packages'][name]['out'] + '/bin' for name in ('bash', 'coreutils', 'python', 'git'))
@@ -1687,7 +1750,7 @@ def _main(argv, admission_resources):
                         raise ValueError('privileged controller operation rejected')
                     descriptor = become_descriptor(args.become_file)
                     parts = [sudo, '-S', '-p', '', '--'] + parts
-                if resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
+                if dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
                     deadline = min(deadline, delivery_entry_deadline_ns / 10**9) if deadline is not None else delivery_entry_deadline_ns / 10**9
                 if native_sdk and (phase != 'cleanup' or native_history is not None or native_cli is not None):
                     deadline = min(deadline, args.native_deadline) if deadline is not None else args.native_deadline
@@ -1809,6 +1872,8 @@ def _main(argv, admission_resources):
             with os.fdopen(descriptor, 'w') as output:
                 output.write(json.dumps({'id': identifier, 'pid': supervisor_pid,
                                          'start_ticks': supervisor_start_ticks}) + '\n')
+            if dev_stage_proof:
+                dev_stage_admission(run,graph_sha256,delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
             launch = [runner, manager_flag, '--no-block', '--unit=' + unit,
                       '--property=Type=exec',
                       '--property=StandardOutput=null', '--property=StandardError=null',
@@ -1850,6 +1915,9 @@ def _main(argv, admission_resources):
             settings.pop('RuntimeMaxUSec')
             settings.pop('TimeoutStopUSec')
             settings.update(CPUQuota='200%', RuntimeMaxSec='1200', TimeoutStopSec='10')
+            if dev_stage_proof:
+                delivery_runtime_seconds = dev_stage_budget(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
+                settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
             if resident_input is not None:
                 delivery_runtime_seconds = resident_input.runtime_seconds()
                 settings.update(MemoryMax=str(resident_settings.PROOF_MEMORY),TasksMax=str(resident_settings.PROOF_TASKS),
@@ -1969,6 +2037,8 @@ def _main(argv, admission_resources):
             epoch_start_ns = time.time_ns()
             if not yoga:
                 pids_observation.sample(cgroup_pin, 'baseline')
+                if dev_stage_proof:
+                    dev_stage_budget(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
                 if resident_input is not None:
                     resident_input.recheck()
                     resident_input.runtime_seconds()
@@ -1979,7 +2049,7 @@ def _main(argv, admission_resources):
                 deadline = (delivery_entry_deadline_ns - delivery_settings.CLEANUP_RESERVE_NS) / 10**9
             elif native_sdk:
                 deadline = args.native_deadline - 120
-            elif resident_input is not None or owner_input is not None or live_input is not None:
+            elif dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
                 pids_observation.sample(cgroup_pin, 'monitor')
@@ -2007,7 +2077,7 @@ def _main(argv, admission_resources):
                     cleanup_deadline = min(cleanup_deadline, native_cli.original_deadline_ns / 10**9)
                 if native_history is not None:
                     cleanup_deadline = min(cleanup_deadline, native_history.original_deadline_ns / 10**9)
-                if resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
+                if dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
                     cleanup_deadline = min(cleanup_deadline, delivery_entry_deadline_ns / 10**9)
                 if yoga:
                     cleanup_deadline = min(cleanup_deadline, args.yoga_deadline_monotonic_ns / 10**9)
@@ -2134,6 +2204,12 @@ def _main(argv, admission_resources):
                     site_source_verified_after = True
                 except (OSError, ValueError, KeyError, TypeError):
                     site_source_verified_after = False
+            if dev_stage_proof:
+                try:
+                    dev_stage_verified_after = dev_stage_source_after(delivery_entry_monotonic_ns,
+                        delivery_entry_deadline_ns,(graph_sha256,graph_inputs),lambda:graph_digest(Path.cwd()))
+                except (OSError,ValueError):
+                    dev_stage_verified_after = False
             if arguments[0] == 'test' and epoch_start_ns is not None and cleanup:
                 try:
                     manifest = capture_test_evidence(native_cli.lease.output_base if native_cli
@@ -2209,6 +2285,13 @@ def _main(argv, admission_resources):
                 except (OSError,ValueError,KeyError,TypeError,IndexError):
                     resident_verified_after = False
             final_status = result if fresh_input_verified_after is not False and cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
+            if dev_stage_proof:
+                try:
+                    dev_stage_budget(delivery_entry_monotonic_ns,delivery_entry_deadline_ns,reserve_ns=0)
+                except ValueError:
+                    dev_stage_verified_after = False
+                if dev_stage_verified_after is not True:
+                    final_status = 125
             if native_verified_after is False:
                 final_status = 125
             if resident_verified_after is False:
@@ -2327,6 +2410,11 @@ def _main(argv, admission_resources):
                        'bootstrap': 'pre-realized immutable tools; no Nix build',
                        'authority': 'AGENTS.md; R-N11; R-N13'}
             record_resident_lifecycle(receipt,resident_input)
+            if dev_stage_proof:
+                receipt['development_stage'] = {'scope':DEV_STAGE_SCOPE,'stage_child':'dev-stage-complete',
+                    'original_entry_monotonic_ns':delivery_entry_monotonic_ns,
+                    'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
+                    'source_verified_after_cleanup':dev_stage_verified_after}
             receipt_raw = json.dumps(receipt, sort_keys=True) + '\n'
             if native_fresh is not None:
                 receipt_raw = fresh_completion.terminal_receipt(native_fresh, receipt)
