@@ -248,9 +248,12 @@ def expression(wrapper, paths, hashes):
 
 def plan(tools, private, expr, drv=None):
     base = proof.common(tools["nix"], private) + ["--extra-experimental-features", "nix-command",
-        "--offline", "--option", "pure-eval", "true", "--eval-store", "local?root="+str(private)]
-    return base + (["eval", "--json", "--expr", expr] if drv is None else
-                   ["derivation", "show", "--recursive", store_path(drv, drv=True)])
+        "--offline", "--option", "pure-eval", "true"]
+    # MixEvalArgs belongs to the selected leaf command, not root NixArgs.
+    evaluation_store = ["--eval-store", "local?root="+str(private)]
+    return base + (["eval"] + evaluation_store + ["--json", "--expr", expr] if drv is None else
+                   ["derivation", "show"] + evaluation_store +
+                   ["--recursive", store_path(drv, drv=True)])
 
 
 def generated_objects(private, records, runtime_roots, target, graph, deadline):

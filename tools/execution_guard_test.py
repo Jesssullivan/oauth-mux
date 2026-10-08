@@ -1613,5 +1613,151 @@ class RetainedRuntimeCommandTests(unittest.TestCase):
             delivery.effective_runtime("20min", 1150)
 
 
+class ResidentEffectiveVerificationModels(unittest.TestCase):
+    isolation = {**SANDBOX, "ProtectSystem":"strict", "PrivateTmp":"yes"}
+
+    def resident_service(self,root,quota="1.900000s"):
+        from system_mask_policy import setting
+        from guard_resident_dispatch import unset_environment
+        service = FakeService(root)
+        service.actual.update(MemoryMax="4026531840",TasksMax="480",CPUQuotaPerSecUSec=quota,
+            RuntimeMaxUSec="19min 30s",ProtectSystem="strict",PrivateTmp="yes",
+            TemporaryFileSystem=setting(profile="standard"),
+            UnsetEnvironment=" ".join(unset_environment(DELEGATION_ENV)))
+        (root/"memory.max").write_text("4026531840")
+        (root/"pids.max").write_text("480")
+        (root/"cpu.max").write_text("190000 100000")
+        return service
+
+    def admit_resident(self,service):
+        verify(service.actual,service.root,manager="system",isolation=self.isolation,
+            profile="resident-enrollment",runtime_seconds=1170)
+
+    def test_resident_full_readback_accepts_exact_equivalent_cpu_duration_units(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for quota in ("1.900000s","1.900s","1.9s","1900ms","1900000us"):
+                with self.subTest(quota=quota):
+                    service = self.resident_service(Path(directory),quota)
+                    self.admit_resident(service)
+                    self.assertEqual(service.actual["MemoryMax"],"4026531840")
+                    self.assertEqual((service.root/"pids.max").read_text(),"480")
+
+    def test_resident_full_readback_refuses_nonexact_nonfinite_malformed_cpu_properties(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for quota in ("1.900001s","1.899999s","2s","1s","1900001us","1899999us",
+                    "NaNs","Infinitys","infinity","max","-1.9s","+1.9s","1.9e0s","1900000",
+                    "1.900000s extra"," 1.900000s","1.900000s ","9"*1000+"s",None,True,1900000):
+                with self.subTest(quota=quota):
+                    service = self.resident_service(Path(directory),quota)
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+
+    def test_resident_full_readback_refuses_kernel_memory_tasks_swap_and_cpu_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for key,value in (("memory.max","4026531841"),("memory.max","4026531839"),
+                    ("pids.max","481"),("pids.max","479"),("memory.swap.max","1"),
+                    ("memory.oom.group","0"),("cpu.max","190001 100000"),
+                    ("cpu.max","200000 100000"),("cpu.max","max 100000"),("cpu.max","0 100000")):
+                with self.subTest(key=key,value=value):
+                    service = self.resident_service(Path(directory))
+                    (service.root/key).write_text(value)
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+
+    def test_resident_normalized_cpu_does_not_bypass_other_properties_or_masks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for key,value in (("MemoryMax","4294967296"),("TasksMax","512"),("MemorySwapMax","1"),
+                    ("PrivateNetwork","no"),("ProtectSystem","no"),("PrivateTmp","no"),
+                    ("NoNewPrivileges","no"),("TemporaryFileSystem",""),
+                    ("UnsetEnvironment",""),("RuntimeMaxUSec","20min")):
+                with self.subTest(key=key,value=value):
+                    service = self.resident_service(Path(directory))
+                    service.actual[key] = value
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+            service = self.resident_service(Path(directory))
+            (service.root/"memory.oom.group").unlink()
+            with self.assertRaises(FileNotFoundError):
+                self.admit_resident(service)
+
+    def test_standard_and_native_existing_two_second_policy_remains_exact(self):
+        self.assertEqual(PROPERTIES["CPUQuotaPerSecUSec"],"2s")
+        self.assertEqual(PROPERTIES["MemoryMax"],"4294967296")
+        self.assertEqual(PROPERTIES["TasksMax"],"512")
+        with tempfile.TemporaryDirectory() as directory:
+            for profile in ("standard","codex-native"):
+                service = FakeService(Path(directory))
+                kwargs = {"profile":profile}
+                if profile == "codex-native":
+                    kwargs["runtime_seconds"] = 1200
+                verify(service.actual,service.root,**kwargs)
+                for quota in ("1.900000s","1900ms","1900000us","1s","2.000000s","2000ms","2.000001s"):
+                    with self.subTest(profile=profile,quota=quota):
+                        changed = {**service.actual,"CPUQuotaPerSecUSec":quota}
+                        with self.assertRaises(ValueError):
+                            verify(changed,service.root,**kwargs)
+
+
+
+class ResidentSetupIsolationModels(unittest.TestCase):
+    def setup_arguments(self, label):
+        import guard_resident_setup_dispatch as setup
+        import guard_resident_vault_profile as vault
+        is_vault = label in (vault.STANDARD_LABEL, vault.STANDARD_UNLOCK_LABEL)
+        return SimpleNamespace(profile=setup.PROFILE, manager="system",
+            resident_manifest=None, resident_enrollment_manifest=None if is_vault else Path("/owned/enrollment/input.json"),
+            resident_vault_manifest=Path("/owned/vault/input.json") if is_vault else None,
+            reuse_owned_cache=False, repository_cache=None, nixpkgs_source=None,
+            source_commit="a"*40, source_dirty="false")
+
+    def test_actual_dispatch_to_guard_isolation_resolves_each_exclusive_selected_manifest(self):
+        import execution_guard as guard
+        import guard_resident_dispatch as dispatch
+        import guard_resident_setup_dispatch as setup
+        for label in setup.LABELS:
+            with self.subTest(label=label):
+                args=self.setup_arguments(label)
+                arguments=["run",label]
+                selected=dispatch.select(args,arguments)
+                actual=guard.resident_isolation(selected,args,arguments)
+                self.assertIsNone(args.resident_manifest)
+                self.assertEqual(actual, {**guard.SANDBOX, "PrivateNetwork":"yes",
+                    "ProtectSystem":"strict", "PrivateTmp":"yes"})
+                with self.assertRaises(ValueError):
+                    selected.finite(arguments,args.manager,None,False)
+                with self.assertRaises(ValueError):
+                    selected.finite(arguments,args.manager,Path("/unrelated/input.json"),False)
+
+    def test_dispatch_refuses_absent_or_cross_profile_setup_authority_and_unselected_labels(self):
+        import guard_resident_dispatch as dispatch
+        import guard_resident_setup_dispatch as setup
+        import guard_resident_vault_profile as vault
+        for label in setup.LABELS:
+            args=self.setup_arguments(label)
+            for field,value in (
+                ("resident_enrollment_manifest",None), ("resident_vault_manifest",None),
+                ("resident_manifest",Path("/other/input.json")),
+                ("resident_enrollment_manifest",Path("/other/enrollment.json")),
+                ("resident_vault_manifest",Path("/other/vault.json")), ("manager","user"),
+                ("reuse_owned_cache",True), ("source_dirty","true")):
+                if getattr(args,field,None)==value or (field in setup.FIELDS
+                        and getattr(args,field,None) is not None and value is not None):
+                    continue
+                changed=SimpleNamespace(**vars(args))
+                setattr(changed,field,value)
+                with self.subTest(label=label,field=field),self.assertRaises(ValueError):
+                    dispatch.select(changed,["run",label])
+            for profile in ("standard","resident-continuity","resident-namespace","native-candidate"):
+                changed=SimpleNamespace(**vars(args))
+                changed.profile=profile
+                with self.subTest(label=label,profile=profile),self.assertRaises(ValueError):
+                    dispatch.select(changed,["run",label])
+        for label in (vault.LABEL,vault.UNLOCK_LABEL,"//delivery:resident_vault_metadata",
+                      "//delivery:resident_enrollment_extra"):
+            args=self.setup_arguments(setup.LABELS[0])
+            with self.subTest(label=label),self.assertRaises(ValueError):
+                dispatch.select(args,["run",label])
+
+
 if __name__ == '__main__':
     unittest.main()

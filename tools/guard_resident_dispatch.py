@@ -7,6 +7,7 @@ import uuid
 import guard_resident_observation as resident
 
 PROFILES=('resident-continuity','resident-namespace')
+SETUP_PROFILE='resident-enrollment'
 FIELDS=('resident_manifest','resident_epoch','resident_producer_sha256','resident_observer_sha256',
     'resident_runtime_selection','resident_runtime_sha256','resident_runtime_bytes','resident_native_version')
 REPOSITORY_CACHE=Path('/srv/fast-local/jess/state/codex/omux-bazel9-owner-coordinator-20261004/cache/repos/v1')
@@ -21,6 +22,10 @@ def module(profile):
     return selected
 
 def select(args,arguments):
+    import guard_resident_setup_dispatch as setup
+    installed = setup.select(args,arguments)
+    if installed is not None:
+        return installed
     values=tuple(getattr(args,key,None) for key in FIELDS)
     if args.profile not in PROFILES:
         resident.require(not any(value is not None for value in values))
@@ -57,6 +62,10 @@ def select(args,arguments):
 def admit(selected,args,source_root,systemctl,deadline):
     # Setup consumes the same original envelope and leaves its cleanup reserve.
     resident.require(type(deadline) is int)
+    if args.profile==SETUP_PROFILE:
+        import guard_resident_setup_dispatch as setup
+        arguments=args.arguments[1:] if args.arguments[:1]==['--'] else args.arguments
+        return setup.admit(selected,args,Path(pwd.getpwuid(os.getuid()).pw_dir),systemctl,deadline,arguments)
     if args.profile=='resident-continuity':
         from guard_fresh_native_runtime_input import Admission as FreshAdmission
         fresh=None
@@ -107,9 +116,13 @@ def proof_properties(properties):
         'CPUQuotaPerSecUSec':'1.9s'}
 
 def writable_bindings(admission,run):
+    if getattr(admission,'setup_profile',False):
+        return list(dict.fromkeys((*admission.writable_binding().split(),str(run)+':'+str(run))))
     return list(dict.fromkeys((admission.writable_binding(),str(run)+':'+str(run))))
 
 def verify_bindings(admission,actual,run,repository_cache=None):
+    if getattr(admission,'setup_profile',False):
+        return admission.verify_bindings(actual,run)
     projected=dict(actual)
     if repository_cache is not None:
         resident.require(repository_cache==REPOSITORY_CACHE)

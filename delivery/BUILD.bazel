@@ -368,7 +368,7 @@ python_binary(name = "runtime_audit", main = "runtime_audit.py", srcs = ["portab
               target_compatible_with = ["@platforms//os:linux"])
 native_resolution(name = "native_runtime_resolution", control = "//clients/linux:control",
                   target_compatible_with = ["@platforms//os:linux"])
-python_test(name = "delivery_test", main = "test_delivery.py", srcs = ["pack.py", "install.py", "portable.py", "test_portable.py"],
+python_test(name = "delivery_test", main = "test_delivery.py", srcs = ["pack.py", "install.py", "portable.py", "test_portable.py", "//tools:resident_owned_update_sources", "//tools:guard_resident_enrollment_profile.py"],
             data = ["services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
 python_test(name = "update_plan_test", main = "test_update_plan.py", srcs = ["update_plan.py"])
 python_test(
@@ -1162,3 +1162,135 @@ python_test(
     srcs = _RESIDENT_CODEX_LIVE_SOURCES,
     target_compatible_with = ["@platforms//os:linux"],
 )
+
+# Persistent owned setup; standard OS Unlock/Prompt stays separate from live proof.
+cc_binary(
+    name = "resident_vault_metadata_observer",
+    srcs = ["resident_vault_metadata.c"],
+    deps = ["@omux_nix//:glib"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+cc_binary(
+    name = "resident_vault_control_client",
+    srcs = ["resident_vault_control.c"],
+    deps = ["@omux_nix//:glib"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+cc_binary(
+    name = "resident_vault_broker_header_model",
+    srcs = ["resident_vault_metadata.c"],
+    copts = ["-DOMUX_VAULT_BROKER_HEADER_MODEL"],
+    deps = ["@omux_nix//:glib"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "resident_vault_models",
+    main = "test_resident_vault.py",
+    srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_control_client", ":resident_vault_metadata_observer", ":resident_vault_broker_header_model"],
+    args = ["$(location :resident_vault_control_client)", "$(location :resident_vault_metadata_observer)",
+            "$(location :resident_vault_broker_header_model)"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_binary(
+    name = "resident_standard_vault_metadata",
+    main = "resident_standard_vault.py",
+    srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_metadata_observer", ":resident_vault_control_client"],
+    args = ["observe", "$(location :resident_vault_metadata_observer)", "$(location :resident_vault_control_client)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_binary(
+    name = "resident_standard_vault_unlock",
+    main = "resident_standard_vault.py",
+    srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_metadata_observer", ":resident_vault_control_client"],
+    args = ["unlock", "$(location :resident_vault_metadata_observer)", "$(location :resident_vault_control_client)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "resident_standard_vault_models",
+    main = "test_resident_standard_vault.py",
+    srcs = ["resident_standard_vault.py", "resident_vault.py",
+            "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_control_client"],
+    args = ["$(location :resident_vault_control_client)"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+cc_binary(
+    name = "resident_session_services",
+    srcs = ["resident_session_services.c"],
+    deps = ["@omux_nix//:glib"],
+    tags = ["manual"],
+)
+
+python_binary(
+    name = "resident_owned_lifecycle",
+    main = "resident_owned_lifecycle.py",
+    srcs = ["resident_enrollment.py","resident_owned_start.py","install.py","pack.py","portable.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    data = ["@omux_nix//:systemctl"],
+    args = ["$(location @omux_nix//:systemctl)"],
+    tags = ["manual","no-remote","no-cache"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "resident_owned_lifecycle_contract_test",
+    main = "test_resident_owned_lifecycle.py",
+    srcs = ["resident_owned_lifecycle.py","resident_owned_start.py","resident_enrollment.py","install.py","pack.py","portable.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+
+python_binary(
+    name = "resident_codex_enrollment",
+    main = "resident_enrollment.py",
+    srcs = ["install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    data = [":default_instance_archive","@omux_nix//:systemctl",":resident_session_services"],
+    args = ["$(location :default_instance_archive)","$(location @omux_nix//:systemctl)",
+        "$(location :resident_session_services)"],
+    tags = ["manual","no-remote","no-cache","requires-network"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "resident_enrollment_contract_test",
+    main = "test_resident_enrollment.py",
+    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+)
+
+python_binary(
+    name = "resident_codex_existing_enrollment",
+    main = "resident_existing_enrollment.py",
+    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    data = ["@omux_nix//:systemctl",":resident_session_services"],
+    args = ["$(location @omux_nix//:systemctl)","$(location :resident_session_services)"],
+    tags = ["manual","no-remote","no-cache","requires-network"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "resident_existing_enrollment_contract_test",
+    main = "test_resident_existing_enrollment.py",
+    srcs = ["resident_existing_enrollment.py","resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+
+exports_files(["resident_enrollment.py", "resident_owned_start.py", "resident_owned_update.py"])

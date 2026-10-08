@@ -1052,7 +1052,8 @@ python_test(
 
 # Packaging entrypoint only: bootstrap containment uses the pre-realized
 # interpreter before admitting any Bazel invocation.
-_RESIDENT_GUARD_SOURCES = ['guard_resident_observation.py','guard_resident_continuity_profile.py',
+_RESIDENT_GUARD_SOURCES = ['guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py',
+    'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py']
 exports_files(['guard_resident_observation.py','guard_resident_continuity_profile.py','guard_resident_namespace_profile.py'])
@@ -1824,4 +1825,36 @@ python_test(
         "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES,
+)
+
+# Existing installed setup closure, independent of native compiler selectors.
+exports_files(["guard_resident_enrollment_profile.py", "guard_resident_vault_profile.py", "guard_resident_owned_update.py"])
+filegroup(
+    name = "resident_owned_update_sources",
+    srcs = ["guard_resident_owned_update.py", "//delivery:install.py", "//delivery:pack.py",
+        "//delivery:resident_enrollment.py", "//delivery:resident_owned_start.py", "//delivery:portable.py"],
+)
+
+python_test(
+    name = "guard_resident_owned_update_test",
+    main = "guard_resident_owned_update_test.py",
+    srcs = [":resident_owned_update_sources", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "guard_resident_standard_vault_test",
+    main = "guard_resident_standard_vault_test.py",
+    srcs = ["guard_resident_vault_profile.py", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "guard_resident_enrollment_profile_test",
+    main = "guard_resident_enrollment_profile_test.py",
+    srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+            "site_coordinator_closure_qualification.py",
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
 )

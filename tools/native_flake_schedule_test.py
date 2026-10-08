@@ -381,11 +381,26 @@ class ScheduleModels(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             private = Path(directory)
             tools={"nix":runtime_models.NIX+"/bin/nix"}
-            for command in (schedule.plan(tools,private,"fixed"),
-                            schedule.plan(tools,private,"fixed",DRV)):
+            for leaf, command in (
+                    ("eval", schedule.plan(tools,private,"fixed")),
+                    ("show", schedule.plan(tools,private,"fixed",DRV))):
                 self.assertIn("--offline",command)
-                self.assertIn("--eval-store",command)
-                self.assertEqual(command[command.index("--eval-store")+1],command[command.index("--store")+1])
+                self.assertEqual(command.count("--eval-store"),1)
+                # Pinned Nix selects MixEvalArgs only after the leaf token.
+                # Presence anywhere in argv did not catch the real root rejection.
+                index = command.index(leaf)
+                self.assertNotIn("--eval-store",command[:index+1])
+                self.assertEqual(command[index+1:index+3],
+                    ["--eval-store",command[command.index("--store")+1]])
+                self.assertEqual(command[:command.index("eval" if leaf == "eval" else "derivation")],
+                    schedule.proof.common(tools["nix"], private) +
+                    ["--extra-experimental-features","nix-command",
+                     "--offline","--option","pure-eval","true"])
+                if leaf == "eval":
+                    self.assertEqual(command[index+3:],["--json","--expr","fixed"])
+                else:
+                    self.assertEqual(command[index-1],"derivation")
+                    self.assertEqual(command[index+3:],["--recursive",DRV])
                 self.assertNotIn("build",command)
                 self.assertNotIn("--impure",command)
                 self.assertEqual(command[command.index("builders")+1],"")

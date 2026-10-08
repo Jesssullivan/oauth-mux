@@ -474,6 +474,8 @@ pub const Engine = struct {
     root_key: envelope.Key = @splat(0),
     root_id: ?[:0]u8 = null,
     poisoned: bool = false,
+    vault_locked: bool = false,
+    fixture_startup_vault_locked: bool = false,
     test_key: ?envelope.Key = null,
     state: domain.State,
     db: ?storage.Store = null,
@@ -547,15 +549,16 @@ pub const Engine = struct {
     }
 
     fn create(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection) !*Engine {
-        return createConfigured(io, allocator, state_dir, key, selection, null);
+        return createConfigured(io, allocator, state_dir, key, selection, null, false);
     }
 
     pub fn openWithMeasuredRootForTest(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key, root: []const u8) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
-        return createConfigured(io, allocator, state_dir, key, .default, root);
+        return createConfigured(io, allocator, state_dir, key, .default, root, false);
     }
 
-    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8) !*Engine {
+    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool) !*Engine {
+        if (locked_fixture and !builtin.is_test) return error.TestOnly;
         try paths.validateAbsolute(state_dir);
         const self = try allocator.create(Engine);
         errdefer allocator.destroy(self);
@@ -607,6 +610,7 @@ pub const Engine = struct {
             self.installation_service_status = observed.service_status;
             self.installation_probe_at = if (collection_timed_out) null else self.now();
         }
+        self.fixture_startup_vault_locked = locked_fixture;
         self.thread = try std.Thread.spawn(.{}, actor, .{self});
         self.mutex.lockUncancelable(io);
         while (!self.startup_complete) self.condition.waitUncancelable(io, &self.mutex);
@@ -754,6 +758,16 @@ pub const Engine = struct {
 
     fn actor(self: *Engine) void {
         self.bootstrap() catch |err| {
+            // Vault loading precedes database/network creation. Preserve a
+            // bounded local control plane for an ordinary platform unlock;
+            // never turn an unavailable wrapping key into fresh custody.
+            if (err == error.Locked and self.db == null and self.network == null) {
+                self.vault_locked = true;
+                self.poisoned = true;
+                std.crypto.secureZero(u8, &self.root_key);
+                self.lockedActor();
+                return;
+            }
             if (self.network) |client| client.deinit();
             if (self.db) |*db| db.close();
             self.mutex.lockUncancelable(self.io);
@@ -875,6 +889,54 @@ pub const Engine = struct {
         self.mutex.lockUncancelable(self.io);
         self.condition.broadcast(self.io);
         self.mutex.unlock(self.io);
+    }
+    fn lockedActor(self: *Engine) void {
+        self.mutex.lockUncancelable(self.io);
+        self.startup_complete = true;
+        self.condition.broadcast(self.io);
+        while (true) {
+            while (self.queue_count == 0 and !self.stopping) self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.queue_count == 0 and self.stopping) {
+                self.mutex.unlock(self.io);
+                return;
+            }
+            const item = self.queue[self.queue_head].?;
+            self.queue[self.queue_head] = null;
+            self.queue_head = (self.queue_head + 1) % self.queue.len;
+            self.queue_count -= 1;
+            const stopping = self.stopping;
+            self.mutex.unlock(self.io);
+            // No maintenance, source reads, provider work, native workers,
+            // mutation ledger admission or database access exists here.
+            const response = if (stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.lockedRequest(item.allocator, item.payload, item.channel);
+            self.finishInvocation(item, response);
+            self.mutex.lockUncancelable(self.io);
+        }
+    }
+
+    fn lockedRequest(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel) ![]u8 {
+        if (channel == .browser) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = @as(?[]const u8, null), .@"error" = .{ .code = "VaultLocked", .message = "Unlock the platform vault, then explicitly restart the daemon." } }, .{});
+        var request = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32600, "InvalidRequest");
+        defer request.deinit();
+        if (channel != .control) return control.failure(allocator, request.id, -32000, "VaultLocked");
+        if (eql(request.method, "system.handshake")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .service = "omuxd",
+            .channel = "control",
+            .custody_available = false,
+            .capabilities = .{ .credential_free_control = true, .native_launch = false, .live_handoff_proven = false },
+        });
+        if (eql(request.method, "system.health")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .status = "vault_locked",
+            .custody_available = false,
+            .metadata_loaded = false,
+            .provider_access = false,
+            .live_handoff_proven = false,
+            .recovery_action = "unlock_platform_vault_then_restart_daemon",
+        });
+        if (eql(request.method, "setup.readiness") or eql(request.method, "setup.evidence") or eql(request.method, "setup.plan")) return self.handleRequest(allocator, request, channel);
+        return control.failure(allocator, request.id, -32000, "VaultLocked");
     }
     fn finishInvocation(self: *Engine, item: *Invocation, response: anyerror![]u8) void {
         self.mutex.lockUncancelable(self.io);
@@ -1584,6 +1646,7 @@ pub const Engine = struct {
         self.root_id = if (existing) try storage.Store.readRootId(self.allocator, database_path) else try self.allocator.dupeSentinel(u8, self.instance_selection.vaultRoot(), 0);
         if (!eql(self.root_id.?, self.instance_selection.vaultRoot())) return error.InstanceCustodyMismatch;
         if (!existing) try validatePersistedAdmission(self.allocator, "{}", 0);
+        if (builtin.is_test and self.fixture_startup_vault_locked) return error.Locked;
         self.root_key = self.test_key orelse if (existing) try vault.Vault.loadRoot(self.root_id.?) else try vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false);
         self.db = try storage.Store.openRootWithSnapshotValidator(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission);
         var saved = try self.db.?.readSnapshot();
@@ -1846,9 +1909,12 @@ pub const Engine = struct {
             snapshot.artifact = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
             snapshot.service = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
         }
-        snapshot.vault = .{ .state = if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
+        snapshot.vault = .{ .state = if (self.vault_locked) .locked else if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
+        // A locked startup has not loaded retained source/account metadata.
+        if (self.vault_locked) return snapshot;
+        const timestamp = self.now();
         var connected = false;
-        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= self.now() and (source.authorized_until == null or source.authorized_until.? > self.now())) {
+        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= timestamp and (source.authorized_until == null or source.authorized_until.? > timestamp)) {
             connected = true;
         };
         snapshot.source = .{ .state = if (connected) .ready else .missing, .freshness = .current, .evidence = .diagnostic };
@@ -1859,9 +1925,18 @@ pub const Engine = struct {
         snapshot.identity = .{ .state = if (verified) .ready else .pending, .freshness = .current, .evidence = .diagnostic };
         var usable = false;
         for (self.state.grants.items) |grant| {
-            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= self.now()) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= self.now())) continue;
+            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= timestamp) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= timestamp)) continue;
             const account = self.state.account(grant.account_id) orelse continue;
             if (!account.identity.verified or account.lifecycle != .active) continue;
+            // The grant's exact source lineage must still authorize requests.
+            // Detached sources keep independently valid non-browser grants.
+            var source_authorized = false;
+            for (self.state.sources.items) |source| if (eql(source.id, grant.source_id)) {
+                source_authorized = source.status != .disconnected and source.authorized_at <= timestamp and
+                    (source.authorized_until == null or source.authorized_until.? > timestamp);
+                break;
+            };
+            if (!source_authorized) continue;
             for (grant.purposes) |purpose| if (purpose == .request) {
                 usable = true;
             };
@@ -5740,6 +5815,114 @@ fn sameDemand(a: anytype, b: @TypeOf(a)) bool {
     return true;
 }
 
+test "locked vault startup keeps bounded diagnostics and refuses all custody work" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, true);
+    defer current.deinit();
+    try std.testing.expect(current.vault_locked and current.poisoned);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    const cleared_key: envelope.Key = @splat(0);
+    try std.testing.expectEqualSlices(u8, &cleared_key, &current.root_key);
+    for ([_][]const u8{ "system.handshake", "system.health", "setup.readiness", "setup.evidence", "setup.plan" }) |method| {
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, .control);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+        if (eql(method, "system.health")) {
+            try std.testing.expectEqualStrings("vault_locked", try control.string(result, "status"));
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            try std.testing.expect(!try control.boolean(result, "metadata_loaded", true));
+            try std.testing.expectEqualStrings("unlock_platform_vault_then_restart_daemon", try control.string(result, "recovery_action"));
+        }
+        if (eql(method, "setup.readiness")) {
+            try std.testing.expect(!try control.boolean(result, "ready", true));
+            const findings = control.get(result, "findings").?.array.items;
+            try std.testing.expectEqualStrings("vault_locked", try control.string(findings[2], "reason"));
+            try std.testing.expectEqualStrings("unlock_vault", try control.string(findings[2], "action"));
+            try std.testing.expectEqualStrings("observation_unknown", try control.string(findings[3], "reason"));
+        }
+    }
+    for (control.methods) |method| {
+        if (eql(method.name, "system.handshake") or eql(method.name, "system.health") or eql(method.name, "setup.readiness") or eql(method.name, "setup.evidence") or eql(method.name, "setup.plan")) continue;
+        // Absent params is a valid envelope. An empty Zig tuple serializes
+        // as [], which the control wire contract correctly refuses first.
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 2, .method = method.name }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, method.channel);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(parsed.value, "error").?, "message"));
+    }
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":true}",
+    }) |malformed| {
+        const refusal = try current.dispatch(allocator, malformed, .control);
+        defer allocator.free(refusal);
+        var result = try std.json.parseFromSlice(std.json.Value, allocator, refusal, .{});
+        defer result.deinit();
+        const failure = control.get(result.value, "error").?;
+        try std.testing.expectEqualStrings("InvalidRequest", try control.string(failure, "message"));
+        try std.testing.expectEqual(@as(i64, -32600), control.get(failure, "code").?.integer);
+    }
+    const native_handshake = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"system.handshake\"}", .adapter);
+    defer allocator.free(native_handshake);
+    var native_result = try std.json.parseFromSlice(std.json.Value, allocator, native_handshake, .{});
+    defer native_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(native_result.value, "error").?, "message"));
+    const browser_reply = try current.dispatch(allocator, "untrusted browser payload", .browser);
+    defer allocator.free(browser_reply);
+    var browser_result = try std.json.parseFromSlice(std.json.Value, allocator, browser_reply, .{});
+    defer browser_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(browser_result.value, "error").?, "code"));
+    try std.testing.expectEqual(@as(usize, 0), current.state.sources.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectError(error.FileNotFound, directory.dir.statFile(io, "state.sqlite", .{ .follow_symlinks = false }));
+}
+
+test "locked existing custody retains its original database and key across explicit restart" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const key: envelope.Key = @splat(0x63);
+    const original = try Engine.openWithKey(io, allocator, path, key);
+    original.deinit();
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_before);
+    const locked = try Engine.createConfigured(io, allocator, path, null, .default, null, true);
+    try std.testing.expect(locked.vault_locked and locked.db == null);
+    locked.deinit();
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+    try std.testing.expectError(error.WrongKey, Engine.openWithKey(io, allocator, path, @splat(0x64)));
+    const reopened = try Engine.openWithKey(io, allocator, path, key);
+    defer reopened.deinit();
+    try std.testing.expect(!reopened.vault_locked and !reopened.poisoned);
+    try std.testing.expect(reopened.db != null);
+    // Synthetic supplied key only: this is not a real platform unlock proof.
+}
+
 test "snapshot maintenance float reserve covers decimal smallest subnormals" {
     const smallest: f64 = @bitCast(@as(u64, 1));
     const range = try scalarRange(f64);
@@ -5911,6 +6094,62 @@ test "public account identity exposes only provider and actual verification trut
         try std.testing.expect(std.mem.indexOf(u8, raw, "private-subject-model") == null);
         try std.testing.expect(std.mem.indexOf(u8, raw, "private-tenant-model") == null);
     }
+}
+
+test "setup usable authority follows its own source authorization and actual routing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    // Threadless synthetic state: direct model mutations have one owner.
+    // No actor maintenance, database, platform-vault or provider work exists.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    try std.testing.expect(current.thread == null and current.db == null and current.network == null);
+    const timestamp = current.now();
+    _ = try current.state.connectSource(.{ .id = "first-source", .kind = .native_store, .provider = "codex", .authorized_at = 0, .authorized_until = timestamp + 3600 });
+    _ = try current.state.connectSource(.{ .id = "unrelated-source", .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+    _ = try current.state.enroll(.{ .account_id = "first-account", .source_id = "first-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "fixture-subject", .verified = true } }, timestamp);
+    _ = try current.state.addGrant(.{ .id = "first-grant", .account_id = "first-account", .source_id = "first-source", .credential_kind = .oauth_access, .purposes = &.{.request}, .audience = "https://chatgpt.com", .provider_expires_at = timestamp + 7200, .custody_expires_at = timestamp + 7200, .generation = 7 });
+    const demand: domain.Demand = .{ .provider = "codex", .audience = "https://chatgpt.com", .resource = .{ .kind = "model", .target = "fixture" }, .now = timestamp };
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectEqual(@as(u64, 7), (try current.state.select(demand, null)).generation);
+    // Detachment does not revoke independent, still-authorized access authority.
+    current.state.sources.items[0].status = .detached;
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    _ = try current.state.select(demand, null);
+    // A different connected source cannot renew this grant's expired lineage.
+    current.state.sources.items[0].authorized_until = timestamp;
+    const expired = current.setupSnapshot(.{}, false);
+    try std.testing.expectEqual(onboarding.State.ready, expired.source.state);
+    try std.testing.expectEqual(onboarding.State.ready, expired.identity.state);
+    try std.testing.expectEqual(onboarding.State.missing, expired.grant.state);
+    try std.testing.expect(!onboarding.assess(expired).ready);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    // Future authorization and explicit disconnection use the same routing fence.
+    current.state.sources.items[0].authorized_at = timestamp + 3600;
+    current.state.sources.items[0].authorized_until = timestamp + 7200;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    current.state.sources.items[0].authorized_at = 0;
+    current.state.sources.items[0].status = .disconnected;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    try std.testing.expectEqual(@as(u64, 7), current.state.grants.items[0].generation);
 }
 
 test "Git route cache retires oldest idle context while preserving native and leased routes" {
