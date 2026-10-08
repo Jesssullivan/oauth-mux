@@ -8,6 +8,59 @@ import codex_protocol_history_source as history
 
 
 class NativeSourceTests(unittest.TestCase):
+    def parent_receipt_document(self):
+        # Metadata gate only: these are the actual fixed public C11 fields.
+        # This fixture has no source tree and cannot establish parent success.
+        return {"schema_version":1,"status":"verified-fresh-native-candidate",
+            "commit":source.COMMIT,"baseline_receipt_sha256":source.BASE_RECEIPT_SHA,
+            "baseline_inventory_sha256":source.BASE_INVENTORY,
+            "patch_sha256":history.PARENT_PATCHES,"inventory_sha256":history.PARENT_INVENTORY_SHA,
+            "graph_files":history.PARENT_GRAPH,"native_support":False,
+            "native_compile_passed":False,"provider_evaluation":False}
+
+    def test_retained_parent_metadata_reads_actual_fixed_sealed_mode_and_pin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);file=root/"source-receipt.json"
+            document=self.parent_receipt_document();raw=source.encoded(document)
+            file.write_bytes(raw);file.chmod(0o555)
+            with patch.object(history,"PARENT",root),\
+                    patch.object(history,"PARENT_RECEIPT_SHA",source.sha(raw)),\
+                    patch.object(source,"DEADLINE",None):
+                self.assertEqual(history.read_parent_receipt(),document)
+                # Metadata acceptance must not bypass full inventory/tree proof.
+                with self.assertRaises(KeyError):history.load_parent()
+
+    def test_retained_parent_metadata_rejects_other_modes_and_changed_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);file=root/"source-receipt.json"
+            raw=source.encoded(self.parent_receipt_document())
+            file.write_bytes(raw);file.chmod(0o555)
+            with patch.object(history,"PARENT",root),\
+                    patch.object(history,"PARENT_RECEIPT_SHA",source.sha(raw)),\
+                    patch.object(source,"DEADLINE",None):
+                for mode in (0o444,0o644,0o755,0o777):
+                    file.chmod(mode)
+                    with self.subTest(mode=mode),self.assertRaises(ValueError):
+                        history.read_parent_receipt()
+                file.chmod(0o600);file.write_bytes(raw+b"\n");file.chmod(0o555)
+                with self.assertRaises(ValueError):history.read_parent_receipt()
+
+    def test_retained_parent_metadata_refuses_symlink_and_rehashed_false_claim(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);file=root/"source-receipt.json";real=root/"public-model.json"
+            document=self.parent_receipt_document();raw=source.encoded(document)
+            real.write_bytes(raw);real.chmod(0o555);file.symlink_to(real.name)
+            with patch.object(history,"PARENT",root),\
+                    patch.object(history,"PARENT_RECEIPT_SHA",source.sha(raw)),\
+                    patch.object(source,"DEADLINE",None),self.assertRaises(OSError):
+                history.read_parent_receipt()
+            file.unlink();document["native_support"]=True;raw=source.encoded(document)
+            file.write_bytes(raw);file.chmod(0o555)
+            with patch.object(history,"PARENT",root),\
+                    patch.object(history,"PARENT_RECEIPT_SHA",source.sha(raw)),\
+                    patch.object(source,"DEADLINE",None),self.assertRaises(ValueError):
+                history.read_parent_receipt()
+
     def test_native_sha2_edge_is_explicit_and_version_pinned(self):
         name = "codex-rs/core/BUILD.bazel"
         files = {name: ("100644", b'    deps_extra = [":native-peer-bridge", "@crates//:sha2-0.10.9"],\n'),

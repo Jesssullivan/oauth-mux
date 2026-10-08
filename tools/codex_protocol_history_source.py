@@ -13,6 +13,8 @@ import time
 import codex_live_source as source
 
 PARENT = Path("/home/jess/.local/state/omux-execution-20261005/cache-v2-4689a690587ec00080acae0eb6ba13df894a284b47e0ce7a6ee828bed0cb8d9d/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_live_source_producer/test.outputs/codex-live-source")
+# Fixed current retained C11 public receipt custody; never chmod the input.
+PARENT_RECEIPT_MODE = 0o555
 PARENT_RECEIPT_SHA = "1e292ed6c2521b21a9d78d2c499df3cea70f6e0581e9daa946021eb83bbbd191"
 PARENT_INVENTORY_SHA = "5e7628d20807b41c795d08d2ed6f0e6107d394b718f25dd22e9705206c38cc69"
 PARENT_PATCHES = ["5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6","3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53","84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5"]
@@ -76,13 +78,14 @@ def order_history_imports(name, value):
     return b'\n\n'.join(blocks)
 
 
-def load_parent():
+def read_parent_receipt():
+    """Read the pinned current C11 metadata; full source proof follows separately."""
     root = source.directory(PARENT)
     try:
         raw, mode = source.read(root, 'source-receipt.json', source.MAX_METADATA)
     finally:
         os.close(root)
-    require(mode == 0o444 and source.sha(raw) == PARENT_RECEIPT_SHA)
+    require(mode == PARENT_RECEIPT_MODE and source.sha(raw) == PARENT_RECEIPT_SHA)
     receipt = json.loads(raw, object_pairs_hook=source.unique)
     require(type(receipt['schema_version']) is int and receipt['schema_version'] == 1
         and receipt['status'] == 'verified-fresh-native-candidate'
@@ -95,6 +98,11 @@ def load_parent():
         and receipt['native_support'] is False
         and receipt['native_compile_passed'] is False
         and receipt['provider_evaluation'] is False)
+    return receipt
+
+
+def load_parent():
+    receipt = read_parent_receipt()
     inventory = receipt['source_inventory']
     require(isinstance(inventory,dict) and len(inventory) == 8549
         and type(receipt['tracked_files']) is int and receipt['tracked_files'] == 8549
