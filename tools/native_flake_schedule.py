@@ -31,6 +31,9 @@ DIAGNOSTIC_ENTRY = None
 GRAPH_DOCUMENT_REASON = None
 GRAPH_PATH_SITE = None
 GRAPH_PATH_REFUSAL = None
+REGISTRATION_JOIN_REASON = None
+REGISTRATION_READBACK_PHASES = frozenset(("registration-readback-ascii", "registration-readback-wire",
+    "registration-readback-wire-hash", "registration-readback-parse"))
 GRAPH_PATH_SITES = frozenset(("derivation-key", "input-source", "input-derivation",
                               "output-path", "fixed-output-env"))
 MAX_WITNESS_MS = (MAX_SECONDS + 120) * 1000
@@ -47,7 +50,10 @@ def diagnostic_summary():
     return {"phase": PHASE, "phase_elapsed": PHASE_ELAPSED,
             "elapsed": elapsed_witness(DIAGNOSTIC_ENTRY) if DIAGNOSTIC_ENTRY is not None else None,
             "child": DIAGNOSTICS, "graph_document_reason": GRAPH_DOCUMENT_REASON,
-            "graph_path_site": GRAPH_PATH_SITE, "graph_path_refusal": GRAPH_PATH_REFUSAL}
+            "graph_path_site": GRAPH_PATH_SITE, "graph_path_refusal": GRAPH_PATH_REFUSAL,
+            "registration_readback_phase": proof.PHASE if PHASE == "generated-registration-records"
+                and proof.PHASE in REGISTRATION_READBACK_PHASES else None,
+            "registration_join_reason": REGISTRATION_JOIN_REASON}
 
 
 def require(value):
@@ -198,13 +204,20 @@ def derivations(raw, target):
 
 
 def same_records(left, right):
+    global REGISTRATION_JOIN_REASON
+    REGISTRATION_JOIN_REASON = "roots"
     require(set(left) == set(right))
     for logical in left:
         a, b = left[logical], right[logical]
-        require(seed.expected_hash(a["record"][1]) == seed.expected_hash(b["record"][1])
-            and int(a["record"][2]) == int(b["record"][2])
-            and a["record"][3] == b["record"][3]
-            and set(a["references"]) == set(b["references"]))
+        REGISTRATION_JOIN_REASON = "nar-hash"
+        require(seed.expected_hash(a["record"][1]) == seed.expected_hash(b["record"][1]))
+        REGISTRATION_JOIN_REASON = "nar-size"
+        require(int(a["record"][2]) == int(b["record"][2]))
+        REGISTRATION_JOIN_REASON = "deriver"
+        require(a["record"][3] == b["record"][3])
+        REGISTRATION_JOIN_REASON = "references"
+        require(set(a["references"]) == set(b["references"]))
+    REGISTRATION_JOIN_REASON = None
 
 
 def copy_tree(descriptor, destination, opener, deadline, *, durable=True):
@@ -341,11 +354,11 @@ def generated_objects(private, records, runtime_roots, target, graph, deadline):
 
 
 def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, parent, deadline, *, runner=proof.run, entry=None):
-    global PHASE, PHASE_ELAPSED, DIAGNOSTICS, DIAGNOSTIC_ENTRY, GRAPH_DOCUMENT_REASON, GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL
+    global PHASE, PHASE_ELAPSED, DIAGNOSTICS, DIAGNOSTIC_ENTRY, GRAPH_DOCUMENT_REASON, GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL, REGISTRATION_JOIN_REASON
     DIAGNOSTIC_ENTRY = float(time.monotonic()) if entry is None else entry
     require(type(DIAGNOSTIC_ENTRY) is float and DIAGNOSTIC_ENTRY <= time.monotonic())
     PHASE_ELAPSED, DIAGNOSTICS, GRAPH_DOCUMENT_REASON = [], None, None
-    GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL = None, None
+    GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL, REGISTRATION_JOIN_REASON = None, None, None
     def phase(name):
         global PHASE
         PHASE = name
@@ -437,16 +450,23 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
                 diagnostics=DIAGNOSTICS)
             phase("recursive-document")
             graph = derivations(raw_graph, target)
+            phase("generated-registration-dump")
+            DIAGNOSTICS = {}
             dumped = runner(legacy+["--dump-db"], proof.environment(root.path), root.path, deadline,
-                tool_fd=legacy_executable.fileno())
+                tool_fd=legacy_executable.fileno(), diagnostics=DIAGNOSTICS)
+            phase("generated-registration-ascii")
             lines = dumped.decode("ascii").splitlines()
+            phase("generated-registration-roots")
             roots, offset = [], 0
             while offset < len(lines):
                 require(offset+5 <= len(lines) and re.fullmatch("[0-9]{1,4}", lines[offset+4]) is not None)
                 roots.append(lines[offset])
                 offset += 5+int(lines[offset+4])
+            phase("generated-registration-records")
             records = proof.readback_records(dumped, roots, current_flake_paths=True)
+            phase("runtime-registration-roots")
             require(set(value["roots"]) <= set(records))
+            phase("runtime-registration-join")
             same_records({logical: records[logical] for logical in value["roots"]}, initial)
             phase("generated-byte-proof")
             objects, payloads = generated_objects(private, records, value["roots"], target, graph, deadline)

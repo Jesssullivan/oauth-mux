@@ -77,7 +77,13 @@ class Fixture:
             assert input_file.read() == self.runtime.value["registration"].encode()
             return b""
         if command[-1] == "--dump-db":
-            return self.registration(private)
+            raw = self.registration(private)
+            if diagnostics is not None:
+                diagnostics.update({"child_exit": 0, "stdout_bytes": len(raw), "stderr_bytes": 0,
+                    "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                    "transport_reason": "child-zero", "stderr_reason": "unclassified",
+                    "stderr_classification_truncated": False})
+            return raw
         if "--add-fixed" in command:
             physical = Path(command[-1])
             role = physical.parent.name
@@ -295,6 +301,105 @@ class ScheduleModels(unittest.TestCase):
                 self.assertEqual(seen, refused_dump)
                 self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
                 self.assertEqual(any("eval" in call[0] for call in model.calls), refused_dump == 2)
+
+    def test_post_graph_dump_uses_fresh_child_witness_on_transport_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            dumps = 0
+            def runner(*args, **kwargs):
+                nonlocal dumps
+                if args[0][-1] == "--dump-db":
+                    dumps += 1
+                    if dumps == 2:
+                        self.assertEqual(kwargs["diagnostics"], {})
+                        kwargs["diagnostics"].update({"child_exit": 1, "stdout_bytes": 0,
+                            "stderr_bytes": 0, "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                            "transport_reason": "child-nonzero", "stderr_reason": "unclassified",
+                            "stderr_classification_truncated": False})
+                        raise OSError("unselected-private-child-error")
+                return model.runner(*args, **kwargs)
+            with self.assertRaises(OSError):
+                model.operate(runner)
+            report = schedule.diagnostic_summary()
+            self.assertEqual(report["phase"], "generated-registration-dump")
+            self.assertEqual(report["child"]["child_exit"], 1)
+            self.assertEqual(report["child"]["stdout_bytes"], 0)
+            self.assertIsNone(report["graph_document_reason"])
+            self.assertIsNone(report["registration_readback_phase"])
+            self.assertIsNone(report["registration_join_reason"])
+            self.assertNotIn("unselected-private-child-error", json.dumps(report))
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_actual_post_graph_wire_parser_membership_and_retained_joins_have_finite_phases(self):
+        cases = (
+            ("ascii", "generated-registration-ascii", None, None),
+            ("wire", "generated-registration-roots", None, None),
+            ("wire-hash", "generated-registration-records", "registration-readback-wire-hash", None),
+            ("record", "generated-registration-records", "registration-readback-parse", None),
+            ("missing-root", "runtime-registration-roots", None, None),
+            ("nar-hash", "runtime-registration-join", None, "nar-hash"),
+            ("nar-size", "runtime-registration-join", None, "nar-size"),
+            ("deriver", "runtime-registration-join", None, "deriver"),
+            ("references", "runtime-registration-join", None, "references"))
+        for refused, phase, readback_phase, join_reason in cases:
+            with self.subTest(refused=refused), tempfile.TemporaryDirectory() as directory:
+                model = Fixture(directory)
+                dumps = 0
+                def runner(*args, **kwargs):
+                    nonlocal dumps
+                    raw = model.runner(*args, **kwargs)
+                    if args[0][-1] != "--dump-db":
+                        return raw
+                    dumps += 1
+                    if dumps != 2:
+                        return raw
+                    lines = raw.decode("ascii").splitlines()
+                    if refused == "ascii":
+                        changed = b"\xff"
+                    elif refused == "wire":
+                        changed = b"not-a-registration\n"
+                    else:
+                        if refused == "wire-hash":
+                            lines[1] = "sha256:"+lines[1]
+                        elif refused == "record":
+                            lines[2] = "0"
+                        elif refused == "missing-root":
+                            lines = lines[5+int(lines[4]):]
+                        elif refused == "nar-hash":
+                            lines[1] = "0"*64
+                        elif refused == "nar-size":
+                            lines[2] = str(int(lines[2])+1)
+                        elif refused == "deriver":
+                            lines[3] = CHILD
+                        else:
+                            self.assertEqual(lines[4], "1")
+                            lines[5] = CHILD
+                        changed = ("\n".join(lines)+"\n").encode("ascii")
+                    kwargs["diagnostics"]["stdout_bytes"] = len(changed)
+                    return changed
+                with self.assertRaises((ValueError, UnicodeError)):
+                    model.operate(runner)
+                report = schedule.diagnostic_summary()
+                self.assertEqual(report["phase"], phase)
+                self.assertEqual(report["registration_readback_phase"], readback_phase)
+                self.assertEqual(report["registration_join_reason"], join_reason)
+                self.assertEqual(report["child"]["child_exit"], 0)
+                self.assertIsNone(report["graph_document_reason"])
+                self.assertIsNone(report["graph_path_site"])
+                self.assertIsNone(report["graph_path_refusal"])
+                self.assertLessEqual(len(report["phase_elapsed"]), 24)
+                self.assertNotIn(str(model.root), json.dumps(report))
+                self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, _ = model.operate()
+            report = schedule.diagnostic_summary()
+            self.assertIsNone(report["registration_join_reason"])
+            self.assertIsNone(report["registration_readback_phase"])
+            self.assertLessEqual(len(report["phase_elapsed"]), 24)
+            self.assertTrue(result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"])
+            self.assertFalse(result["realized"])
 
     def test_old_json_or_bool_version_rejected(self):
         for value in ({"inputDrvs": {}, "inputSrcs":[]}, {"version": True,"derivations": {}}):
@@ -664,11 +769,12 @@ class ScheduleModels(unittest.TestCase):
             self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
             self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
 
-    def test_successful_recursive_document_witness_is_bounded_and_no_eval_carryover(self):
+    def test_successful_final_dump_witness_is_bounded_and_no_recursive_child_carryover(self):
         with tempfile.TemporaryDirectory() as directory:
             model = Fixture(directory)
             result, _ = model.operate()
-            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], len(model.raw_graph))
+            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], len(result["registration"].encode("ascii")))
+            self.assertIn("generated-registration-dump", {row["phase"] for row in schedule.PHASE_ELAPSED})
             self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
             self.assertEqual(result["derivation_json_sha256"], seed.sha(model.raw_graph))
             self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
