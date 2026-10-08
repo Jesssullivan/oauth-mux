@@ -12,6 +12,15 @@ import guard_owner_runtime_input as subject
 
 
 class ProfileTests(unittest.TestCase):
+    def test_device_api_qualification_is_offline_exact_consumer_only(self):
+        label = "//tools:codex_retained_device_api_qualification"
+        self.assertIn(label,subject.CONSUMERS)
+        subject.finite("standard",["test",label,"//tools:execution_guard_test"])
+        for profile,arguments in (("codex-login",["test",label]),
+                ("standard",["run",label]),("standard",["test",label,"//delivery:native_account_login"])):
+            with self.subTest(profile=profile,arguments=arguments),self.assertRaises(ValueError):
+                subject.finite(profile,arguments)
+
     def test_finite_retained_consumers_admitted(self):
         for label in subject.CONSUMERS:
             subject.finite("standard", ["test", label, "//tools:execution_guard_test"])

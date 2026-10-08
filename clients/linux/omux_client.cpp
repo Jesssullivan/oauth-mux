@@ -88,6 +88,8 @@ OmuxClient::OmuxClient(QString socketPath, QObject *parent)
                     disconnectWithReason("The service uses an unsupported control protocol.");
                     return;
                 }
+                enrollmentGeneration_ = result.value("capabilities").toObject().value("enrollment_generation_reply").isBool()
+                    && result.value("capabilities").toObject().value("enrollment_generation_reply").toBool();
                 ready_ = true;
                 publishConnection(true, "Connected");
                 reconcileOperations();
@@ -170,6 +172,7 @@ void OmuxClient::connectToDaemon() {
 
 void OmuxClient::disconnectWithReason(const QString &reason) {
     ready_ = false;
+    enrollmentGeneration_ = false;
     connecting_ = false;
     buffer_.clear();
     // Clear before abort: Qt can deliver disconnected synchronously.
@@ -198,6 +201,14 @@ void OmuxClient::request(const QString &method, QJsonObject params, Reply reply)
     }
     send(method, params, std::move(reply));
     if (method == "state.snapshot" && !uncertain_.isEmpty()) reconcileOperations();
+}
+
+void OmuxClient::recoverMutation(const QString &operationID) {
+    if (operationID.size()!=64) return;
+    for (const auto c:operationID)
+        if (!((c>='0' && c<='9') || (c>='a' && c<='f'))) return;
+    uncertain_.insert(operationID,"A retained enrollment intent needs its original operation outcome.");
+    if (ready_) reconcileOperations();
 }
 
 QString OmuxClient::uncertaintyMessage() const {

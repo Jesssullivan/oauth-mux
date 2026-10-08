@@ -59,6 +59,48 @@ codex_fresh_native_package_visibility_test(
 )
 
 # Finite copy of the existing declared retained proof input; no execution claim.
+# Separately qualified acquisition inputs; no native-candidate substitution.
+exports_files(["native_enrollment_repository.bzl", "native_login_ui_qualification.py",
+    "native_login_ui_qualification_test.py", "native_login_ui_prepare_remote.py",
+    "yoga_portal_carrier.py", "yoga_portal_worker.py", "yoga_delivery_settings.py",
+    "guard_yoga_delivery_profile.py", "yoga_controller_delivery.py", "yoga_executable_qualification.py",
+    "ssh_policy.py", "host_closure_transfer.py"])
+filegroup(
+    name = "yoga_portal_carrier_sources",
+    srcs = ["yoga_portal_carrier.py", "yoga_portal_worker.py", "yoga_controller_delivery.py",
+            "yoga_executable_qualification.py", "ssh_policy.py", "host_closure_transfer.py", "verify_cached_nars.py"],
+    visibility = ["//visibility:public"],
+)
+
+
+python_test(
+    name = "yoga_portal_carrier_test",
+    main = "yoga_portal_carrier_test.py",
+    srcs = [":yoga_portal_carrier_sources"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+
+python_test(
+    name = "codex_retained_device_api_qualification",
+    main = "codex_retained_device_api_qualification.py",
+    srcs = ["codex_owner_runtime_input.py", "guard_owner_runtime_input.py",
+        "//delivery:codex_runtime_selection.py", "//delivery:portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py"],
+    data = ["//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-manifest.json",
+        "//integrations/codex-owner-runtime:runtime-receipt.json"],
+    args = ["--archive", "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "--manifest", "$(location //integrations/codex-owner-runtime:runtime-manifest.json)",
+        "--receipt", "$(location //integrations/codex-owner-runtime:runtime-receipt.json)"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+
 python_test(
     name = "codex_owner_runtime_input_copy",
     main = "codex_owner_runtime_input.py",
@@ -76,6 +118,16 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "codex_retained_device_api_qualification_test",
+    main = "codex_retained_device_api_qualification_test.py",
+    srcs = ["codex_retained_device_api_qualification.py", "codex_owner_runtime_input.py", "guard_owner_runtime_input.py",
+        "//delivery:codex_runtime_selection.py", "//delivery:portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 python_test(
@@ -1050,16 +1102,42 @@ python_test(
     srcs = ["host_cleanup.py"],
 )
 
+# Acquisition-only sources: no daemon/resident effect dispatch.
+_NATIVE_ACQUISITION_GUARD_SOURCES = ['guard_native_acquisition_dispatch.py',
+    'guard_codex_login_profile.py','guard_native_login_ui_profile.py',
+    'guard_owner_runtime_input.py','codex_owner_runtime_input.py',
+    'cached_nix_inventory.py','yoga_delivery_settings.py','yoga_executable_qualification.py',
+    '//delivery:native_login_enrollment_selector.py']
+exports_files(['guard_codex_login_profile.py','guard_native_login_ui_profile.py'])
+filegroup(name='native_acquisition_guard_sources',srcs=_NATIVE_ACQUISITION_GUARD_SOURCES,
+    visibility=['//visibility:public'])
+
 # Packaging entrypoint only: bootstrap containment uses the pre-realized
 # interpreter before admitting any Bazel invocation.
+_CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.py",
+    "//delivery:codex_device_acquisition_component.py"]
+exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
+
 _RESIDENT_GUARD_SOURCES = ['guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
-    'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py']
+    'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
 exports_files(['guard_resident_observation.py','guard_resident_continuity_profile.py','guard_resident_namespace_profile.py'])
 filegroup(name='resident_continuity_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
 filegroup(name='resident_namespace_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
 python_test(name='guard_resident_observation_test',main='guard_resident_observation_test.py',srcs=_RESIDENT_GUARD_SOURCES)
+_NATIVE_ACQUISITION_MODEL_SOURCES = ['execution_guard.py','system_mask_policy.py','guard_cache.py',
+    'guard_test_evidence.py','guard_dependency_profile.py','guard_site_profile.py',
+    'site_coordinator_closure_qualification.py','site_coordinator_qualification.py','verify_cached_nars.py'
+    ] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES
+python_test(name='guard_codex_login_profile_test',main='guard_codex_login_profile_test.py',
+    srcs=_NATIVE_ACQUISITION_MODEL_SOURCES)
+python_test(name='guard_native_login_ui_profile_test',main='guard_native_login_ui_profile_test.py',
+    srcs=_NATIVE_ACQUISITION_MODEL_SOURCES)
+python_test(name='guard_native_acquisition_dispatch_test',main='guard_native_acquisition_dispatch_test.py',
+    srcs=_NATIVE_ACQUISITION_MODEL_SOURCES)
+python_test(name="guard_codex_device_component_profile_test",main="guard_codex_device_component_profile_test.py",
+    srcs=_NATIVE_ACQUISITION_MODEL_SOURCES+_CODEX_DEVICE_COMPONENT_GUARD_SOURCES)
 python_test(name='guard_resident_continuity_profile_test',main='guard_resident_continuity_profile_test.py',srcs=_RESIDENT_GUARD_SOURCES)
 python_test(name='guard_resident_namespace_profile_test',main='guard_resident_namespace_profile_test.py',srcs=_RESIDENT_GUARD_SOURCES)
 python_binary(

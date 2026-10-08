@@ -2505,7 +2505,9 @@ pub const Engine = struct {
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start")) {
             const job = try std.fmt.allocPrint(allocator, "reconcile-{s}", .{try control.string(params, "source_id")});
             defer allocator.free(job);
-            try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity" });
+            if (try control.boolean(params, "include_operation_generation", false)) {
+                try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity", .operation_generation = std.math.maxInt(u64), .admitted_revision = std.math.maxInt(u64) });
+            } else try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity" });
         } else if (eql(method, "repair.start")) {
             const account = self.state.account(try control.string(params, "account_id")) orelse return error.NotFound;
             var jobs: std.ArrayList([]const u8) = .empty;
@@ -3066,7 +3068,7 @@ pub const Engine = struct {
             .protocol_version = control.protocol_version,
             .service = "omuxd",
             .channel = @tagName(channel),
-            .capabilities = .{ .native_launch = true, .credential_free_control = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false },
+            .capabilities = .{ .native_launch = true, .credential_free_control = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true },
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);
@@ -3234,8 +3236,11 @@ pub const Engine = struct {
         }
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start")) {
             const source_id = try control.string(params, "source_id");
+            // Parse before reconciliation can perform external I/O. Generation
+            // is the admitted persisted job, never inferred from a later snapshot.
+            const include_generation = try control.boolean(params, "include_operation_generation", false);
             const operation = try self.reconcileSource(source_id);
-            return control.success(allocator, request.id, .{ .operation_id = operation, .status = if (operation != null) "verifying_identity" else "reconciled" });
+            return self.sourceReconcileReply(allocator, request.id, operation, include_generation);
         }
         if (eql(method, "repair.start")) {
             const account_id = try control.string(params, "account_id");
@@ -3799,6 +3804,19 @@ pub const Engine = struct {
             return error.NotFound;
         }
         return control.success(allocator, id, .{ .operation_id = operation, .status = "verifying_identity" });
+    }
+
+    fn sourceReconcileReply(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, operation: ?[]const u8, include_generation: bool) ![]u8 {
+        if (include_generation) {
+            if (operation) |job_id| {
+                for (self.state.jobs.items) |job| if (eql(job.id, job_id) and job.kind == .enrollment and job.operation_generation > 0) {
+                    return control.success(allocator, id, .{ .operation_id = job.id, .status = "verifying_identity", .operation_generation = job.operation_generation, .admitted_revision = self.revision });
+                };
+                return error.NotFound;
+            }
+            return control.success(allocator, id, .{ .operation_id = operation, .status = "reconciled", .operation_generation = @as(?u64, null), .admitted_revision = self.revision });
+        }
+        return control.success(allocator, id, .{ .operation_id = operation, .status = if (operation != null) "verifying_identity" else "reconciled" });
     }
 
     fn reconcileSource(self: *Engine, source_id: []const u8) !?[]const u8 {
@@ -6568,4 +6586,45 @@ test "identified setup refresh terminal authority replay busy uncertainty and di
     try std.testing.expect((try current.mutations.lookup(failed_params.operation_id)).?.state != .completed);
     const summary_after = try setup_verification.summarize(allocator, current.mutations.snapshot(), current.now());
     try std.testing.expectEqual(summary_before.verification_completed, summary_after.verification_completed);
+}
+
+test "source enrollment generation reply stays bound to the admitted job and preserves legacy shape" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const engine = try Engine.openWithKey(io, allocator, path, @splat(0x51));
+    defer engine.deinit();
+    _ = try engine.state.putJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .running, .operation_generation = 7 });
+    try engine.persist(&.{});
+    const admitted = try engine.sourceReconcileReply(allocator, .{ .integer = 1 }, "reconcile-fixture-source", true);
+    defer allocator.free(admitted);
+    var reply = try std.json.parseFromSlice(std.json.Value, allocator, admitted, .{});
+    defer reply.deinit();
+    const result = control.get(reply.value, "result").?;
+    try std.testing.expectEqual(@as(i64, 7), control.get(result, "operation_generation").?.integer);
+    const admitted_revision = control.get(result, "admitted_revision").?.integer;
+    try std.testing.expectEqual(@as(u64, @intCast(admitted_revision)), engine.revision);
+    _ = try engine.state.putJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .completed, .operation_generation = 7 });
+    _ = try engine.state.reopenJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .running, .operation_generation = 7 });
+    try engine.persist(&.{});
+    // The immutable original result retains generation7 despite later state.
+    try std.testing.expectEqual(@as(i64, 7), control.get(result, "operation_generation").?.integer);
+    const legacy = try engine.sourceReconcileReply(allocator, .{ .integer = 2 }, "reconcile-fixture-source", false);
+    defer allocator.free(legacy);
+    var old = try std.json.parseFromSlice(std.json.Value, allocator, legacy, .{});
+    defer old.deinit();
+    try std.testing.expectEqual(@as(usize, 2), control.get(old.value, "result").?.object.count());
+    var malformed = try std.json.parseFromSlice(std.json.Value, allocator,
+        "{\"source_id\":\"fixture-source\",\"include_operation_generation\":1}", .{});
+    defer malformed.deinit();
+    const before = engine.revision;
+    try std.testing.expectError(error.InvalidParams, engine.preflightMutationResult(allocator, "enrollment.start", malformed.value));
+    try std.testing.expectEqual(before, engine.revision);
+    try std.testing.expectError(error.NotFound, engine.sourceReconcileReply(allocator, .{ .integer = 3 }, "missing-job", true));
 }

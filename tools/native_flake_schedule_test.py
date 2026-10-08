@@ -702,5 +702,130 @@ class ScheduleModels(unittest.TestCase):
             self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
 
 
+    def test_pinned_store_names_accept_question_equals_at_all_json_path_sites(self):
+        drv = "/nix/store/" + "d"*32 + "-root?=.drv"
+        child = "/nix/store/" + "b"*32 + "-child?=.drv"
+        out = "/nix/store/" + "f"*32 + "-output?="
+        dependency = "/nix/store/" + "c"*32 + "-dependency?="
+        script = "/nix/store/" + "a"*32 + "-builder?=.sh"
+        graph = {"version": 4, "derivations": {
+            drv.rsplit("/", 1)[1]: row("root?=", out, children=[child], srcs=[script]),
+            child.rsplit("/", 1)[1]: row("child?=", dependency)}}
+        target = {"drvPath": drv, "outPath": out}
+        parsed = schedule.derivations(encoded(graph), target)
+        self.assertEqual(parsed[drv]["inputSrcs"], [script])
+        self.assertEqual(parsed[drv]["inputDrvs"], {child: ["out"]})
+        self.assertEqual(parsed[child]["outputs"]["out"]["path"], dependency)
+        selected = graph["derivations"][child.rsplit("/", 1)[1]]
+        selected["outputs"]["out"] = {"method": "nar:sha256", "hash": "public-model-hash"}
+        parsed = schedule.derivations(encoded(graph), target)
+        self.assertEqual(parsed[child]["outputs"]["out"]["path"], dependency)
+        self.assertIsNone(schedule.GRAPH_PATH_SITE)
+        self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+
+    def test_pinned_store_name_bounds_hash_alphabet_and_dot_prefix_are_exact(self):
+        prefix = "/nix/store/" + "a"*32 + "-"
+        for name in ("x", "x"*211, ".x", "..x", "...-", "?="):
+            self.assertEqual(schedule.store_path(prefix+name), prefix+name)
+        cases = [(prefix+"x"*212, "name-bound"),
+                 (prefix+".", "name-prefix"), (prefix+"..", "name-prefix"),
+                 (prefix+".-x", "name-prefix"), (prefix+"..-x", "name-prefix"),
+                 (prefix+"x:x", "name-characters"), (prefix+"x\\x", "name-characters"),
+                 (prefix+"x/x", "layout"), (prefix+"x\n", "name-characters"),
+                 ("/other/store/"+"a"*32+"-x", "layout"),
+                 ("/nix/store/"+"a"*32+"_x", "layout")]
+        cases.extend(("/nix/store/"+character*32+"-x", "hash")
+                     for character in ("e", "o", "u", "t", "A"))
+        for value, reason in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaises(ValueError):
+                    schedule.store_path(value, site="output-path")
+                self.assertEqual(schedule.GRAPH_PATH_REFUSAL, reason)
+        with self.assertRaises(ValueError):
+            schedule.base_path(17, site="input-source")
+        self.assertEqual(schedule.GRAPH_PATH_REFUSAL, "type")
+        with self.assertRaises(ValueError):
+            schedule.store_path(prefix+"x", drv=True, site="input-derivation")
+        self.assertEqual(schedule.GRAPH_PATH_REFUSAL, "derivation-suffix")
+
+    def test_actual_graph_path_sites_emit_only_fixed_tags_and_reset_after_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = json.loads(Fixture(directory).raw_graph)
+            for site in ("derivation-key", "input-source", "input-derivation",
+                         "output-path", "fixed-output-env"):
+                graph = copy.deepcopy(original)
+                selected = graph["derivations"][DRV.rsplit("/", 1)[1]]
+                if site == "derivation-key":
+                    graph["derivations"][DRV] = graph["derivations"].pop(DRV.rsplit("/", 1)[1])
+                elif site == "input-source":
+                    selected["inputs"]["srcs"] = [SCRIPT]
+                elif site == "input-derivation":
+                    selected["inputs"]["drvs"][CHILD] = selected["inputs"]["drvs"].pop(CHILD.rsplit("/", 1)[1])
+                elif site == "output-path":
+                    selected["outputs"]["out"]["path"] = OUT
+                else:
+                    selected["outputs"]["out"] = {"method": "nar:sha256", "hash": "public-model-hash"}
+                    selected["env"]["out"] = "non-store-private-value"
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "path")
+                self.assertEqual(schedule.GRAPH_PATH_SITE, site)
+                self.assertEqual(schedule.GRAPH_PATH_REFUSAL,
+                                 "layout" if site == "fixed-output-env" else "basename")
+                self.assertNotIn("non-store-private-value", json.dumps(schedule.diagnostic_summary()))
+            schedule.derivations(encoded(original), {"drvPath": DRV, "outPath": OUT})
+            self.assertIsNone(schedule.GRAPH_PATH_SITE)
+            self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+
+    def test_supported_graph_name_does_not_bypass_strict_generated_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = "/nix/store/" + "c"*32 + "-builder?=.sh"
+            # The real graph accepts this legal name; the unchanged shared seed
+            # registration parser still closes publication, never yielding proof.
+            with patch(__name__+".SCRIPT", script):
+                model = Fixture(directory)
+                with patch.object(schedule.proof, "readback_records",
+                                  wraps=schedule.proof.readback_records) as parsed:
+                    with self.assertRaises(ValueError):
+                        model.operate()
+                    self.assertEqual(parsed.call_count, 2)
+            self.assertTrue(any("derivation" in command for command, _, _ in model.calls))
+            self.assertEqual(schedule.PHASE, "recursive-document")
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+            self.assertIsNone(schedule.GRAPH_PATH_SITE)
+            self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+
+    def test_structured_fixed_output_retains_env_join_and_nonstring_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = json.loads(Fixture(directory).raw_graph)
+            selected = original["derivations"][CHILD.rsplit("/", 1)[1]]
+            # These are JSON-shape fixtures, not a computed fixed-output hash.
+            selected["outputs"]["out"] = {"method": "nar:sha256", "hash": "public-model-hash"}
+            selected["structuredAttrs"] = {"name": "dependency", "outputs": ["out"]}
+            accepted = schedule.derivations(encoded(original), {"drvPath": DRV, "outPath": OUT})
+            self.assertEqual(accepted[CHILD]["outputs"]["out"]["path"], DEPENDENCY)
+            for missing, value in ((True, None), (False, None), (False, False), (False, 17)):
+                graph = copy.deepcopy(original)
+                env = graph["derivations"][CHILD.rsplit("/", 1)[1]]["env"]
+                if missing:
+                    del env["out"]
+                else:
+                    env["out"] = value
+                # Nonstring values are rejected by the unchanged node envelope;
+                # an absent member reaches the fixed-output path-type predicate.
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+                if missing:
+                    self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "path")
+                    self.assertEqual(schedule.GRAPH_PATH_SITE, "fixed-output-env")
+                    self.assertEqual(schedule.GRAPH_PATH_REFUSAL, "type")
+                else:
+                    self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "node")
+                    self.assertIsNone(schedule.GRAPH_PATH_SITE)
+                    self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+
+
 if __name__ == "__main__":
     unittest.main()

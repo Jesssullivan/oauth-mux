@@ -19,7 +19,11 @@ public:
     ~OmuxClient() override;
     void connectToDaemon();
     void request(const QString &method, QJsonObject params, Reply reply);
+    // Recover a persisted mutation identity with read-only operation.status.
+    // Never reconstruct or resend its effect-bearing request.
+    void recoverMutation(const QString &operationID);
     bool ready() const { return ready_; }
+    bool supportsEnrollmentGeneration() const { return enrollmentGeneration_; }
     bool hasUncertainOperations() const { return !uncertain_.isEmpty(); }
     QString uncertaintyMessage() const;
     const QString &socketPath() const { return socketPath_; }
@@ -51,6 +55,7 @@ private:
     qint64 nextID_ = 1;
     qint64 connectDeadline_ = 0;
     bool ready_ = false;
+    bool enrollmentGeneration_ = false;
     bool connecting_ = false;
     static constexpr qsizetype maximumFrame = 1024 * 1024;
 };

@@ -28,6 +28,10 @@ PHASE_ELAPSED = []
 DIAGNOSTICS = None
 DIAGNOSTIC_ENTRY = None
 GRAPH_DOCUMENT_REASON = None
+GRAPH_PATH_SITE = None
+GRAPH_PATH_REFUSAL = None
+GRAPH_PATH_SITES = frozenset(("derivation-key", "input-source", "input-derivation",
+                              "output-path", "fixed-output-env"))
 MAX_WITNESS_MS = (MAX_SECONDS + 120) * 1000
 
 
@@ -41,22 +45,52 @@ def diagnostic_summary():
     """Only fixed phases/numeric timing and already-redacted child metadata."""
     return {"phase": PHASE, "phase_elapsed": PHASE_ELAPSED,
             "elapsed": elapsed_witness(DIAGNOSTIC_ENTRY) if DIAGNOSTIC_ENTRY is not None else None,
-            "child": DIAGNOSTICS, "graph_document_reason": GRAPH_DOCUMENT_REASON}
+            "child": DIAGNOSTICS, "graph_document_reason": GRAPH_DOCUMENT_REASON,
+            "graph_path_site": GRAPH_PATH_SITE, "graph_path_refusal": GRAPH_PATH_REFUSAL}
 
 
 def require(value):
     seed.require(value)
 
 
-def store_path(value, *, drv=False):
-    require(isinstance(value, str) and re.fullmatch(seed.STORE, value) is not None)
-    require(not drv or value.endswith(".drv"))
+def path_refused(site, reason):
+    global GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL
+    if site is not None:
+        require(isinstance(site, str) and site in GRAPH_PATH_SITES)
+        GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL = site, reason
+    raise ValueError("current-flake store path refused")
+
+
+def store_path(value, *, drv=False, site=None):
+    # Pinned Nix 2.34.6 path.cc checkName/StorePath and path.hh HashLen/MaxPathLen.
+    # This graph/target wire grammar does not alter the declared seed parser.
+    if not isinstance(value, str):
+        path_refused(site, "type")
+    if not value.startswith("/nix/store/"):
+        path_refused(site, "layout")
+    basename = value[len("/nix/store/"):]
+    if len(basename) < 34 or basename[32] != "-" or "/" in basename:
+        path_refused(site, "layout")
+    if re.fullmatch("[0123456789abcdfghijklmnpqrsvwxyz]{32}", basename[:32]) is None:
+        path_refused(site, "hash")
+    name = basename[33:]
+    if not 1 <= len(name) <= 211:
+        path_refused(site, "name-bound")
+    if name in {".", ".."} or name.startswith((".-", "..-")):
+        path_refused(site, "name-prefix")
+    if re.fullmatch("[A-Za-z0-9+._?=-]+", name) is None:
+        path_refused(site, "name-characters")
+    if drv and not name.endswith(".drv"):
+        path_refused(site, "derivation-suffix")
     return value
 
 
-def base_path(value, *, drv=False):
-    require(isinstance(value, str) and "/" not in value)
-    return store_path("/nix/store/" + value, drv=drv)
+def base_path(value, *, drv=False, site=None):
+    if not isinstance(value, str):
+        path_refused(site, "type")
+    if "/" in value:
+        path_refused(site, "basename")
+    return store_path("/nix/store/" + value, drv=drv, site=site)
 
 
 def parse(raw):
@@ -84,8 +118,8 @@ def target_document(raw):
 
 def derivations(raw, target):
     """Pinned Nix 2.34 JSON version4, with fixed redacted refusal families."""
-    global GRAPH_DOCUMENT_REASON
-    GRAPH_DOCUMENT_REASON = None
+    global GRAPH_DOCUMENT_REASON, GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL
+    GRAPH_DOCUMENT_REASON, GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL = None, None, None
     reason = "envelope"
     try:
         value = parse(raw)
@@ -97,7 +131,7 @@ def derivations(raw, target):
         required = {"name", "version", "outputs", "inputs", "system", "builder", "args", "env"}
         for basename, row in rows.items():
             reason = "path"
-            path = base_path(basename, drv=True)
+            path = base_path(basename, drv=True, site="derivation-key")
             reason = "node"
             require(isinstance(row, dict) and required <= set(row) <= required | {"structuredAttrs"}
                 and type(row["version"]) is int and row["version"] == 4
@@ -114,11 +148,11 @@ def derivations(raw, target):
                 and len(set(inputs["srcs"])) == len(inputs["srcs"])
                 and isinstance(inputs["drvs"], dict) and len(inputs["drvs"]) <= MAX_OBJECTS)
             reason = "path"
-            input_srcs = sorted(base_path(item) for item in inputs["srcs"])
+            input_srcs = sorted(base_path(item, site="input-source") for item in inputs["srcs"])
             input_drvs = {}
             for name, node in inputs["drvs"].items():
                 reason = "path"
-                child = base_path(name, drv=True)
+                child = base_path(name, drv=True, site="input-derivation")
                 reason = "inputs"
                 require(isinstance(node, dict) and set(node) == {"outputs", "dynamicOutputs"}
                     and isinstance(node["outputs"], list) and 0 < len(node["outputs"]) <= 32
@@ -137,7 +171,7 @@ def derivations(raw, target):
                     and isinstance(item, dict))
                 if set(item) == {"path"}:
                     reason = "path"
-                    expected = base_path(item["path"])
+                    expected = base_path(item["path"], site="output-path")
                     reason = "env"
                     require(row["env"].get(name) == expected)
                     selected[name] = {"kind": "input-addressed", "path": expected}
@@ -146,7 +180,7 @@ def derivations(raw, target):
                         and isinstance(item["hash"], str) and len(item["hash"]) <= 256)
                     reason = "path"
                     selected[name] = {"kind": "fixed-content", "method": item["method"], "hash": item["hash"],
-                                      "path": store_path(row["env"].get(name))}
+                                      "path": store_path(row["env"].get(name), site="fixed-output-env")}
                 elif not item:
                     # Preserve an unresolved obligation; never claim complete seed.
                     selected[name] = {"kind": "deferred", "path": None}
@@ -323,10 +357,11 @@ def generated_objects(private, records, runtime_roots, target, graph, deadline):
 
 
 def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, parent, deadline, *, runner=proof.run, entry=None):
-    global PHASE, PHASE_ELAPSED, DIAGNOSTICS, DIAGNOSTIC_ENTRY, GRAPH_DOCUMENT_REASON
+    global PHASE, PHASE_ELAPSED, DIAGNOSTICS, DIAGNOSTIC_ENTRY, GRAPH_DOCUMENT_REASON, GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL
     DIAGNOSTIC_ENTRY = float(time.monotonic()) if entry is None else entry
     require(type(DIAGNOSTIC_ENTRY) is float and DIAGNOSTIC_ENTRY <= time.monotonic())
     PHASE_ELAPSED, DIAGNOSTICS, GRAPH_DOCUMENT_REASON = [], None, None
+    GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL = None, None
     def phase(name):
         global PHASE
         PHASE = name

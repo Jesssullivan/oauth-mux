@@ -6,7 +6,8 @@ filegroup(name = "public_sources", srcs = glob(["*.cpp", "*.h", "*.bazel", "*.de
 
 cc_binary(
     name = "control",
-    srcs = ["main.cpp", "tray.cpp", "tray.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h"],
+    srcs = ["main.cpp", "tray.cpp", "tray.h", "codex_account_acquisition.cpp", "codex_account_acquisition.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h",
+            "device_code_dialog.cpp", "device_code_dialog.h"],
     copts = ["-std=c++20", "-fPIC"],
     deps = ["@omux_nix//:qt"],
     target_compatible_with = ["@platforms//os:linux"],
@@ -32,7 +33,28 @@ filegroup(name = "resources", srcs = ["omux.service", "omux-control.desktop"])
 
 cc_test(
     name = "setup_ui_test",
-    srcs = ["setup_ui_test.cpp", "tray.cpp", "tray.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h"],
+    srcs = ["setup_ui_test.cpp", "tray.cpp", "tray.h", "codex_account_acquisition.cpp", "codex_account_acquisition.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h", "device_code_dialog.cpp", "device_code_dialog.h"],
+    copts = ["-std=c++20", "-fPIC"],
+    deps = ["@omux_nix//:qt"],
+    data = ["@omux_nix//:qt_offscreen_plugin", "setup-test-fonts.conf"],
+    args = ["$(location @omux_nix//:qt_offscreen_plugin)", "$(location setup-test-fonts.conf)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+cc_test(
+    name = "codex_account_acquisition_test",
+    srcs = ["codex_account_acquisition.cpp", "codex_account_acquisition.h", "codex_account_acquisition_test.h",
+            "device_code_dialog.cpp", "device_code_dialog.h", "omux_client.cpp", "omux_client.h", "runtime_paths.cpp", "runtime_paths.h"],
+    copts = ["-std=c++20", "-fPIC", "-DOMUX_ACQUISITION_MODELS"],
+    deps = ["@omux_nix//:qt"],
+    data = ["@omux_nix//:qt_offscreen_plugin", "setup-test-fonts.conf"],
+    args = ["$(location @omux_nix//:qt_offscreen_plugin)", "$(location setup-test-fonts.conf)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+cc_test(
+    name = "device_code_dialog_test",
+    srcs = ["device_code_dialog_test.cpp", "device_code_dialog.cpp", "device_code_dialog.h"],
     copts = ["-std=c++20", "-fPIC"],
     deps = ["@omux_nix//:qt"],
     data = ["@omux_nix//:qt_offscreen_plugin", "setup-test-fonts.conf"],

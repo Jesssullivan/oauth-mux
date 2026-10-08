@@ -22,6 +22,13 @@ def module(profile):
     return selected
 
 def select(args,arguments):
+    import guard_codex_device_component_profile as component
+    packaging=component.select(args,arguments)
+    if packaging is not None:return packaging
+    import guard_native_acquisition_dispatch as acquisition
+    acquiring = acquisition.select(args,arguments)
+    if acquiring is not None:
+        return acquiring
     import guard_resident_setup_dispatch as setup
     installed = setup.select(args,arguments)
     if installed is not None:
@@ -62,6 +69,12 @@ def select(args,arguments):
 def admit(selected,args,source_root,systemctl,deadline):
     # Setup consumes the same original envelope and leaves its cleanup reserve.
     resident.require(type(deadline) is int)
+    if getattr(selected,'component_profile',False):
+        import guard_codex_device_component_profile as component
+        return component.admit(selected,args,source_root,deadline)
+    if getattr(selected,'acquisition_profile',False):
+        import guard_native_acquisition_dispatch as acquisition
+        return acquisition.admit(selected,args,source_root,deadline)
     if args.profile==SETUP_PROFILE:
         import guard_resident_setup_dispatch as setup
         arguments=args.arguments[1:] if args.arguments[:1]==['--'] else args.arguments
@@ -87,6 +100,14 @@ def admit(selected,args,source_root,systemctl,deadline):
         raise ValueError('resident-admission-refused') from None
 
 def command(builder,bazel,run,arguments,admission,*,source_commit,source_dirty,repository_cache=None,nixpkgs_source=None):
+    if getattr(admission,'component_profile',False):
+        import guard_codex_device_component_profile as component
+        return component.command(builder,bazel,run,arguments,admission,source_commit=source_commit,
+            source_dirty=source_dirty,repository_cache=repository_cache,nixpkgs_source=nixpkgs_source)
+    if getattr(admission,'acquisition_profile',False):
+        import guard_native_acquisition_dispatch as acquisition
+        return acquisition.command(builder,bazel,run,arguments,admission,source_commit=source_commit,
+            source_dirty=source_dirty,repository_cache=repository_cache,nixpkgs_source=nixpkgs_source)
     resident.require(admission.facts['scope'] in ('resident-continuity','provider_free_resident_namespace_qualification'))
     selected=module(admission.facts['scope'] if admission.facts['scope']=='resident-continuity' else 'resident-namespace')
     selected.finite(arguments,'system',admission.manifest,False)
@@ -111,16 +132,24 @@ def command(builder,bazel,run,arguments,admission,*,source_commit,source_dirty,r
         '--run_env='+key+'='+value for key,value in admission.environment().items()]
     return result
 
-def proof_properties(properties):
+def proof_properties(properties,settings=None):
+    if getattr(settings,'acquisition_profile',False):
+        return dict(properties)
     return {**properties,'MemoryMax':str(resident.PROOF_MEMORY),'TasksMax':str(resident.PROOF_TASKS),
         'CPUQuotaPerSecUSec':'1.9s'}
 
 def writable_bindings(admission,run):
+    if getattr(admission,'component_profile',False):return admission.writable_bindings(run)
+    if getattr(admission,'acquisition_profile',False):
+        return admission.writable_bindings(run)
     if getattr(admission,'setup_profile',False):
         return list(dict.fromkeys((*admission.writable_binding().split(),str(run)+':'+str(run))))
     return list(dict.fromkeys((admission.writable_binding(),str(run)+':'+str(run))))
 
 def verify_bindings(admission,actual,run,repository_cache=None):
+    if getattr(admission,'component_profile',False):return admission.verify_bindings(actual,run,repository_cache)
+    if getattr(admission,'acquisition_profile',False):
+        return admission.verify_bindings(actual,run,repository_cache)
     if getattr(admission,'setup_profile',False):
         return admission.verify_bindings(actual,run)
     projected=dict(actual)
