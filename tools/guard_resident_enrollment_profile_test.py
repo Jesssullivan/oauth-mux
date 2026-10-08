@@ -1,5 +1,6 @@
 """Provider-free resident admission and complementary reservation predicates."""
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -30,6 +31,154 @@ def systemctl_bind_readback(configured):
         else value if value.endswith(":rbind") else value+":rbind" for value in configured)
 
 class ResidentModels(unittest.TestCase):
+    def test_actual_socket_refusal_identifies_fixed_peer_role_preserves_order_and_early_cleanup(self):
+        # Every directory/socket is synthetic and private. Route only the fixed
+        # host peer selectors to these owned fixtures; never contact a host bus.
+        for failed_role in ("bus","manager"):
+            with self.subTest(role=failed_role),tempfile.TemporaryDirectory() as temporary:
+                fixture=Path(temporary)
+                namespace=fixture/"inputs"
+                runtime=fixture/"runtime"
+                namespace.mkdir(mode=0o700)
+                runtime.mkdir(mode=0o700)
+                (runtime/"systemd").mkdir(mode=0o700)
+                (namespace/"input.json").write_bytes(b"{}")
+                (namespace/"input.json").chmod(0o600)
+                actual_runtime=Path("/run/user")/str(os.getuid())
+                peer_paths={actual_runtime/"bus":runtime/"bus",
+                    actual_runtime/"systemd/private":runtime/"systemd/private"}
+                directory_paths={actual_runtime:runtime,actual_runtime/"systemd":runtime/"systemd"}
+                allowed={namespace,namespace/"systemd",runtime,runtime/"systemd"}
+                opened=[]
+                contacted=[]
+                original_witness=resident.socket_witness
+                def fixture_directory(path,private=False):
+                    selected=directory_paths.get(Path(path),Path(path))
+                    self.assertIn(selected,allowed)
+                    descriptor=os.open(selected,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+                    opened.append(descriptor)
+                    info=os.fstat(descriptor)
+                    self.assertEqual(info.st_uid,os.getuid())
+                    self.assertEqual(stat.S_IMODE(info.st_mode),0o700)
+                    return descriptor
+                def fixture_peer(path):
+                    self.assertIn(path,peer_paths)
+                    contacted.append(path)
+                    return original_witness(peer_paths[path])
+                with resident.socket.socket(resident.socket.AF_UNIX,resident.socket.SOCK_STREAM) as bus, \
+                        resident.socket.socket(resident.socket.AF_UNIX,resident.socket.SOCK_STREAM) as manager:
+                    bus.bind(str(runtime/"bus"))
+                    manager.bind(str(runtime/"systemd/private"))
+                    (runtime/"bus").chmod(0o600)
+                    (runtime/"systemd/private").chmod(0o600)
+                    if failed_role != "bus":
+                        bus.listen(2)
+                    if failed_role != "manager":
+                        manager.listen(2)
+                    instance=resident.Admission.__new__(resident.Admission)
+                    with patch.object(resident,"open_directory",side_effect=fixture_directory), \
+                            patch.object(resident,"socket_witness",side_effect=fixture_peer):
+                        with self.assertRaises(OSError) as caught:
+                            instance.__init__(namespace/"input.json",HOME,10**18)
+                        phase="session-bus-peer" if failed_role == "bus" else "session-manager-peer"
+                        self.assertEqual(resident.diagnostic_projection(caught.exception),
+                            {"phase":phase,"errno":"ECONNREFUSED"})
+                        expected=[actual_runtime/"bus"]+([actual_runtime/"systemd/private"] if failed_role == "manager" else [])
+                        self.assertEqual(contacted,expected)
+                        self.assertEqual(list(namespace.iterdir()),[namespace/"input.json"])
+                        self.assertEqual(instance.held,[])
+                        self.assertEqual(instance.created_sockets,[])
+                        for descriptor in opened:
+                            with self.assertRaises(OSError) as closed:
+                                os.fstat(descriptor)
+                            self.assertEqual(closed.exception.errno,errno.EBADF)
+                        self.assertTrue(stat.S_ISSOCK((runtime/"bus").stat(follow_symlinks=False).st_mode))
+                        self.assertTrue(stat.S_ISSOCK((runtime/"systemd/private").stat(follow_symlinks=False).st_mode))
+                        # Recheck uses the same helper and real refused socket;
+                        # its existing outer decorator retains the refined tag.
+                        failed_path=expected[-1]
+                        recheck=resident.diagnostic_method(lambda self:self.session_peer_witness(failed_path,recheck=True))
+                        with self.assertRaises(OSError) as caught_again:
+                            recheck(instance)
+                        self.assertEqual(resident.diagnostic_projection(caught_again.exception),
+                            {"phase":phase+"-recheck","errno":"ECONNREFUSED"})
+
+    def test_diagnostics_are_closed_and_never_render_underlying_messages_paths_or_errno_values(self):
+        from execution_guard import rejection_diagnostic
+        class Sensitive(OSError):
+            def __str__(self):
+                raise AssertionError("private exception rendering forbidden")
+        class Failure:
+            diagnostic_phase = "retained-lock"
+            @resident.diagnostic_method
+            def fail(self):
+                raise Sensitive(errno.EACCES,"private credential text","/private/factor-or-source")
+        with self.assertRaises(OSError) as caught:
+            Failure().fail()
+        self.assertEqual(resident.diagnostic_projection(caught.exception),{"phase":"retained-lock","errno":"EACCES"})
+        self.assertEqual(rejection_diagnostic(caught.exception,"operatorinputs"),
+            "execution containment rejected; stage=operatorinputs; exception=OSError; resident_phase=retained-lock; resident_errno=EACCES")
+        self.assertEqual(resident.rejection(caught.exception),"resident-enrollment-admission-refused;phase=retained-lock;errno=EACCES")
+        self.assertIsNone(resident.diagnostic_projection(Sensitive(errno.EACCES,"private")))
+        arbitrary = resident.ResidentAdmissionOSError("private/path/value",123456789)
+        self.assertEqual(resident.diagnostic_projection(arbitrary),{"phase":"unknown","errno":"other"})
+        self.assertEqual(resident.diagnostic_projection(resident.ResidentAdmissionValueError("manifest-schema")),
+            {"phase":"manifest-schema","errno":"none"})
+
+    def test_actual_admission_namespace_open_failure_retains_errno_category_and_cleanup(self):
+        with patch.object(resident,"open_directory",side_effect=OSError(errno.EACCES,"private","/private/input")), \
+                patch.object(resident.Admission,"close") as cleanup:
+            with self.assertRaises(OSError) as caught:
+                resident.Admission("/private/input/input.json",HOME,10**18)
+            cleanup.assert_called_once_with()
+        self.assertEqual(resident.diagnostic_projection(caught.exception),{"phase":"namespace-directory","errno":"EACCES"})
+
+    def test_actual_service_query_failure_is_closed_and_never_admits(self):
+        admission = resident.Admission.__new__(resident.Admission)
+        admission.deadline_ns = 30000000001
+        admission.selected = {"action":"start-existing","ownership":"omux-installation"}
+        with patch.object(resident.time,"monotonic_ns",return_value=1), \
+                patch.object(resident.subprocess,"run",side_effect=OSError(errno.ENOTSOCK,"private transport")):
+            with self.assertRaises(OSError) as caught:
+                admission.service_observation("/declared/systemctl",starting=True)
+        self.assertEqual(resident.diagnostic_projection(caught.exception),{"phase":"manager-query","errno":"ENOTSOCK"})
+
+    def test_first_start_qualification_open_failure_is_preserved_through_outer_admission_tag(self):
+        import guard_resident_owned_update as owned
+        selected={"start":{}}
+        selection={"qualification":{"path":"/public/receipt.json"}}
+        with patch.object(owned,"start_pins",return_value=selection), \
+                patch.object(owned,"PublicFile",side_effect=OSError(errno.ENOENT,"private input")):
+            with self.assertRaises(OSError) as caught:
+                owned.OwnedFirstStart(selected,HOME,10**18)
+        self.assertEqual(resident.diagnostic_projection(caught.exception),{"phase":"qualification-open","errno":"ENOENT"})
+        class Outer:
+            diagnostic_phase="owned-first-start"
+            @resident.diagnostic_method
+            def fail(self):
+                raise caught.exception
+        with self.assertRaises(OSError) as nested:
+            Outer().fail()
+        self.assertIs(nested.exception,caught.exception)
+
+    def test_inactive_cgroup_open_failure_is_not_reclassified_as_absent_or_admitted(self):
+        import guard_resident_owned_update as owned
+        from unittest.mock import Mock
+        admission = resident.Admission.__new__(resident.Admission)
+        admission.deadline_ns=30000000001
+        admission.selected={"action":"start-existing","ownership":"omux-installation"}
+        admission.owned_start=Mock()
+        values={name:"" for name in owned.IDLE_PROPERTIES}
+        values.update(LoadState="loaded",ActiveState="inactive",SubState="dead",MainPID="0")
+        response=SimpleNamespace(returncode=0,stderr=b"",stdout="\n".join(key+"="+value for key,value in values.items()).encode())
+        with patch.object(resident.time,"monotonic_ns",return_value=1), \
+                patch.object(resident.subprocess,"run",return_value=response), \
+                patch.object(owned,"inactive_installation",return_value=None), \
+                patch.object(owned,"inactive_cgroup",side_effect=OSError(errno.EACCES,"private cgroup")):
+            with self.assertRaises(OSError) as caught:
+                admission.service_observation("/declared/systemctl",starting=True)
+        self.assertEqual(resident.diagnostic_projection(caught.exception),{"phase":"inactive-cgroup","errno":"EACCES"})
+
     def test_fixed_sum_and_valid_bounds(self):
         self.assertEqual(resident.PROOF_MEMORY+resident.RESIDENT_MEMORY,4294967296)
         self.assertEqual(resident.PROOF_TASKS+resident.RESIDENT_TASKS,512)

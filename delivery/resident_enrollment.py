@@ -135,7 +135,7 @@ def absolute(value):
 
 
 def validate_manifest(value):
-    if isinstance(value,dict) and value.get("action") == "update-existing":
+    if isinstance(value,dict) and value.get("action") in ("update-existing","start-existing","observe-existing","stop-idle-owned"):
         return resident_guard.manifest_schema(value,Path(os.environ["HOME"]))
     require(isinstance(value, dict) and set(value) == {"schema_version", "ownership", "action", "instance",
             "prefix", "records", "runtime_state", "service_path", "native_context", "permissions"}
@@ -174,7 +174,7 @@ def identity(info):
             info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def private_manifest():
+def private_manifest(*, validator=validate_manifest):
     require(os.environ.get("OMUX_RESIDENT_ENROLLMENT_MANIFEST") == MANIFEST)
     root = parent = fd = None
     try:
@@ -201,7 +201,7 @@ def private_manifest():
         require(identity(before_parent) == identity(os.fstat(parent))
                 == identity(os.stat("omux-resident-inputs", dir_fd=root, follow_symlinks=False))
                 and identity(root_before) == identity(os.fstat(root)))
-        return validate_manifest(json.loads(raw, object_pairs_hook=strict_object))
+        return validator(json.loads(raw, object_pairs_hook=strict_object))
     finally:
         for descriptor in (fd, parent, root):
             if descriptor is not None:
@@ -414,14 +414,36 @@ def selected_source(snapshot, source_path):
     return ids[0]
 
 
+def source_authority(snapshot, source_id, now):
+    require(type(now) is int and 0 <= now < 2**63
+            and type(source_id) is str and re.fullmatch(r"[0-9a-f]{64}", source_id)
+            and type(snapshot["sources"]) is list
+            and all(type(row) is dict for row in snapshot["sources"]))
+    sources = [row for row in snapshot["sources"] if row.get("id") == source_id]
+    require(len(sources) == 1)
+    source = sources[0]
+    require(set(source) == {"id", "provider", "label", "kind", "status",
+                            "authorized_at", "authorized_until"}
+            and source["provider"] == "codex" and source["kind"] == "native_store"
+            and type(source["label"]) is str and source["status"] in ("connected", "detached")
+            and type(source["authorized_at"]) is int and -(2**63) <= source["authorized_at"] <= now
+            and (source["authorized_until"] is None or
+                 (type(source["authorized_until"]) is int and now < source["authorized_until"] < 2**63)))
+    # Domain routing permits independently valid non-browser grants after detachment.
+    return source
+
+
 def enrolled_authority(snapshot, source_id, now):
+    source_authority(snapshot, source_id, now)
     accounts = [account for account in snapshot["accounts"] if source_id in account["source_ids"]]
     if not accounts:
         require(not any(job["status"] == "failed" for job in snapshot["jobs"]
                         if job["id"] == "reconcile-" + source_id))
         return None
-    require(len(accounts) == 1 and accounts[0]["identity"] == {"provider": "codex"}
-            and accounts[0]["lifecycle"] == "active")
+    require(len(accounts) == 1 and accounts[0]["lifecycle"] == "active")
+    identity = accounts[0]["identity"]
+    require(type(identity) is dict and set(identity) == {"provider", "verified"}
+            and identity["provider"] == "codex" and identity["verified"] is True)
     grants = [grant for grant in snapshot["grants"] if grant["source_id"] == source_id]
     require(len(grants) == 1)
     grant = grants[0]
@@ -445,6 +467,10 @@ def execute(bundle, systemctl, session_probe, manifest):
     prefix, records, state, service_path = (absolute(manifest[key]) for key in
                                           ("prefix", "records", "runtime_state", "service_path"))
     unit = service_path.name
+    if manifest["action"] == "start-existing":
+        PHASE = "activation"
+        import resident_owned_start
+        return resident_owned_start.execute_start(bundle,systemctl,manifest,environment,bounded,remaining,DEADLINE_NS)
     if manifest["action"] == "update-existing":
         PHASE = "installation"
         import resident_owned_update

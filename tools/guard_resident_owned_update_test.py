@@ -60,6 +60,247 @@ def fixture_directory(path,private=False):
         raise
 
 class UpdateModels(unittest.TestCase):
+    def start_manifest(self):
+        value = manifest()
+        value["action"] = "start-existing"
+        value["permissions"]["activate_service"] = True
+        update_value = value.pop("update")
+        value["start"] = {key:update_value[key] for key in
+            ("archive_path","archive_sha256","archive_bytes","manifest_sha256","qualification")}
+        return value
+
+    def test_first_start_is_owned_context_free_and_refuses_source_factor_or_restart(self):
+        value = self.start_manifest()
+        self.assertEqual(resident.manifest_schema(value,HOME),value)
+        changes = (("ownership","home-manager"),("native_context",{"codex_home":"/private/native"}),
+            ("factor","/private/factor"))
+        for key,field in changes:
+            bad = copy.deepcopy(value)
+            bad[key] = field
+            with self.assertRaises(ValueError):
+                resident.manifest_schema(bad,HOME)
+        for key,field in (("connect_source",True),("restart_daemon",True),("activate_service",False)):
+            bad = copy.deepcopy(value)
+            bad["permissions"][key] = field
+            with self.assertRaises(ValueError):
+                resident.manifest_schema(bad,HOME)
+
+    def test_first_start_active_properties_refuse_wrong_unit_or_limits(self):
+        selected = self.start_manifest()
+        values = idle(selected)
+        uid = os.getuid()
+        values.update(ActiveState="active",SubState="running",MainPID="10",
+            ControlGroup="/user.slice/user-"+str(uid)+".slice/user@"+str(uid)+".service/app.slice/ai.xoxd.omux.service")
+        with mock.patch.object(resident,"resolve_owned_unit_fragment",return_value=Path(selected["service_path"])):
+            self.assertEqual(update.active_start_properties(values,selected)[0],10)
+        for key,value in (("MemoryMax","268435457"),("ControlGroup","/foreign"),("ExecStart","foreign"),
+            ("UnitFileState","disabled"),("SubState","auto-restart"),("MainPID","0")):
+            bad = dict(values)
+            bad[key] = value
+            with self.assertRaises(ValueError):
+                update.active_start_properties(bad,selected)
+
+    def test_first_start_stale_qualification_refuses_before_archive_or_state_io(self):
+        selected=self.start_manifest()
+        receipt=self.actual_test_receipt()
+        receipt.update(id=EPOCH,artifact_epoch=EPOCH,verb="build",targets=["//delivery:default_instance_archive"])
+        # Deliberately stale source; the public receipt hash itself still matches.
+        raw=json.dumps(receipt).encode()
+        q=selected["start"]["qualification"]
+        q.update(sha256=hashlib.sha256(raw).hexdigest(),bytes=len(raw))
+        public=mock.Mock(raw=raw)
+        with mock.patch.object(update,"PublicFile",return_value=public) as files, \
+                mock.patch.object(update.os,"open",side_effect=AssertionError("no private or archive IO")):
+            with self.assertRaises(ValueError):
+                update.OwnedFirstStart(selected,HOME,time.monotonic_ns()+30*10**9)
+        files.assert_called_once_with(q["path"],mock.ANY,8*1024*1024)
+        public.close.assert_called_once_with()
+
+    def test_first_start_control_peer_requires_private_socket_and_same_process(self):
+        peer=((1,2,stat.S_IFSOCK|0o600,os.getuid(),os.getgid()),10,20)
+        with mock.patch.object(resident,"start_ticks",return_value=20):
+            update.start_control_peer(peer,10)
+            for bad in (((1,2,stat.S_IFSOCK|0o666,os.getuid(),os.getgid()),10,20),
+                    (peer[0],11,20),(peer[0],10,21)):
+                with self.assertRaises(ValueError):
+                    update.start_control_peer(bad,10)
+
+    def test_lifecycle_roles_refuse_implicit_stop_start_source_or_factor(self):
+        for action in ("observe-existing","stop-idle-owned"):
+            value=self.start_manifest()
+            value["action"]=action
+            value["permissions"]["activate_service"]=False
+            if action == "stop-idle-owned":
+                value["permissions"]["stop_service"]=True
+            self.assertEqual(resident.manifest_schema(value,HOME),value)
+            for key in ("connect_source","activate_service","restart_daemon"):
+                bad=copy.deepcopy(value)
+                bad["permissions"][key]=True
+                with self.assertRaises(ValueError):
+                    resident.manifest_schema(bad,HOME)
+            bad=copy.deepcopy(value)
+            bad["factor"]="/private/factor"
+            with self.assertRaises(ValueError):
+                resident.manifest_schema(bad,HOME)
+            bad=copy.deepcopy(value)
+            if action == "stop-idle-owned":
+                bad["permissions"]["stop_service"]=False
+            else:
+                bad["permissions"]["stop_service"]=True
+            with self.assertRaises(ValueError):
+                resident.manifest_schema(bad,HOME)
+
+    def test_lifecycle_carrier_action_join_preserves_old_target_and_refuses_mixed_purposes(self):
+        for action in ("observe-existing","stop-idle-owned"):
+            resident.carrier_purpose(resident.LIFECYCLE_LABEL,action)
+            with self.assertRaises(ValueError):
+                resident.carrier_purpose(resident.LABEL,action)
+        for label in (resident.LABEL,resident.LIFECYCLE_LABEL):
+            resident.carrier_purpose(label,"start-existing")
+        for action in ("update-existing","enroll-existing","install-and-enroll","activate-existing-and-enroll"):
+            resident.carrier_purpose(resident.LABEL,action)
+            with self.assertRaises(ValueError):
+                resident.carrier_purpose(resident.LIFECYCLE_LABEL,action)
+        with self.assertRaises(ValueError):
+            resident.carrier_purpose("//delivery:arbitrary","stop-idle-owned")
+        for label in (resident.LABEL,resident.LIFECYCLE_LABEL):
+            with self.assertRaises(ValueError):
+                resident.carrier_purpose(label,"restart-arbitrary")
+
+    def test_idle_stop_requires_unloaded_locked_actor_and_disabled_native_admission(self):
+        health={"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
+            "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
+        handshake={"protocol_version":2,"service":"omuxd","channel":"control","custody_available":False,
+            "capabilities":{"credential_free_control":True,"native_launch":False,"live_handoff_proven":False}}
+        self.assertTrue(update.locked_idle_metadata(health,handshake)["vault_locked"])
+        for key in ("custody_available","metadata_loaded","provider_access"):
+            with self.assertRaises(ValueError):
+                update.locked_idle_metadata(dict(health,**{key:True}),handshake)
+        for key in ("native_launch","live_handoff_proven"):
+            bad=copy.deepcopy(handshake)
+            bad["capabilities"][key]=True
+            with self.assertRaises(ValueError):
+                update.locked_idle_metadata(health,bad)
+        with self.assertRaises(ValueError):
+            update.locked_idle_metadata({"protocol_version":2,"status":"ready","custody_available":True,"revision":0,"live_handoff_proven":False},handshake)
+
+    def test_locked_control_plane_truth_never_claims_usable_custody(self):
+        value = {"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
+            "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
+        self.assertEqual(update.start_health(value),{"control_plane_ready":True,"custody_available":False,"vault_locked":True})
+        for key in ("custody_available","metadata_loaded","provider_access","live_handoff_proven"):
+            bad = dict(value)
+            bad[key] = True
+            with self.assertRaises(ValueError):
+                update.start_health(bad)
+        with self.assertRaises(ValueError):
+            update.start_health({"protocol_version":2,"status":"repair_required","custody_available":False,"live_handoff_proven":False})
+
+    def test_public_control_protocol_two_health_accepts_actual_source_shapes_only(self):
+        # Public src/control.zig declares version2; Engine health projects it in
+        # both credential-free Locked and ordinary Ready paths. This is source
+        # contract coverage, never a live custody or account fixture claim.
+        ready={"protocol_version":2,"status":"ready","revision":0,"custody_available":True,
+            "metrics_available":True,"live_handoff_proven":False}
+        locked={"protocol_version":2,"status":"vault_locked","custody_available":False,
+            "metadata_loaded":False,"provider_access":False,"live_handoff_proven":False,
+            "recovery_action":"unlock_platform_vault_then_restart_daemon"}
+        self.assertTrue(update.start_health(ready)["custody_available"])
+        self.assertFalse(update.start_health(locked)["custody_available"])
+        for shape in (ready,locked):
+            for version in (1,True,"2",None):
+                bad=dict(shape,protocol_version=version)
+                with self.assertRaises(ValueError):
+                    update.start_health(bad)
+            bad=dict(shape)
+            del bad["protocol_version"]
+            with self.assertRaises(ValueError):
+                update.start_health(bad)
+
+    def test_first_start_recheck_refuses_actual_modified_owned_unit(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root=Path(temporary)
+            root.chmod(0o700)
+            home=root/"home"
+            selected={"ownership":"omux-installation",**{key:str(path) for key,path in resident.fixed_paths(home).items()}}
+            records=Path(selected["records"])
+            unit=Path(selected["service_path"])
+            records.mkdir(mode=0o700,parents=True)
+            unit.parent.mkdir(mode=0o700,parents=True)
+            unit.write_bytes(b"public owned unit")
+            unit.chmod(0o600)
+            record={"schemaVersion":1,"prefix":selected["prefix"],"product":{},"userService":str(unit),
+                "serviceActivated":False,"artifact":{"archiveSha256":"a"*64},
+                "files":[{"path":str(unit),"sha256":hashlib.sha256(unit.read_bytes()).hexdigest(),"mode":0o600}]}
+            (records/"install.json").write_text(json.dumps(record))
+            (records/"install.json").chmod(0o600)
+            state=Path(selected["runtime_state"])
+            state.mkdir(mode=0o700)
+            (state/"daemon.lock").write_bytes(b"")
+            (state/"daemon.lock").chmod(0o600)
+            witness=update.OwnedFirstStart.__new__(update.OwnedFirstStart)
+            witness.deadline=time.monotonic_ns()+30*10**9
+            witness.files=[]
+            witness.unit=resident.OwnedUnitCustody(selected)
+            witness.state=state
+            witness.directory=fixture_directory(state,private=True)
+            witness.root_identity=resident.stable(os.fstat(witness.directory))
+            witness.lock=os.open(state/"daemon.lock",os.O_PATH|os.O_NOFOLLOW)
+            witness.lock_identity=resident.file_identity(os.fstat(witness.lock))
+            try:
+                witness.pristine()
+                unit.write_bytes(b"modified owned unit")
+                with self.assertRaises(ValueError):
+                    witness.recheck()
+            finally:
+                witness.close()
+
+    def test_retained_zero_lock_metadata_does_not_hold_exclusion_or_read_private_bytes(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            state = Path(temporary)
+            state.chmod(0o700)
+            (state/"daemon.lock").write_bytes(b"")
+            (state/"daemon.lock").chmod(0o600)
+            witness = update.OwnedFirstStart.__new__(update.OwnedFirstStart)
+            witness.deadline=time.monotonic_ns()+30*10**9
+            witness.files=[]
+            witness.unit=mock.Mock()
+            witness.state=state
+            witness.directory=fixture_directory(state,private=True)
+            witness.root_identity=resident.stable(os.fstat(witness.directory))
+            witness.lock=os.open(state/"daemon.lock",os.O_PATH|os.O_NOFOLLOW)
+            witness.lock_identity=resident.file_identity(os.fstat(witness.lock))
+            try:
+                with mock.patch.object(update.os,"read",side_effect=AssertionError("no private bytes")), \
+                        mock.patch.object(update.os,"pread",side_effect=AssertionError("no private bytes")):
+                    witness.pristine()
+                other=os.open(state/"daemon.lock",os.O_RDWR|os.O_NOFOLLOW)
+                try:
+                    fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                finally:
+                    os.close(other)
+                for name in ("state.sqlite","factor"):
+                    (state/name).write_bytes(b"synthetic private bytes")
+                    (state/name).chmod(0o600)
+                    with self.assertRaises(ValueError):
+                        witness.pristine()
+                    (state/name).unlink()
+                normal=("state.sqlite","state.sqlite.authority","state.sqlite.authority.lock")
+                for name in normal:
+                    (state/name).write_bytes(b"synthetic initialized custody")
+                    (state/name).chmod(0o600)
+                witness.recheck()
+                with self.assertRaises(ValueError):
+                    witness.pristine()
+                for name in normal:
+                    (state/name).unlink()
+                (state/"daemon.lock").unlink()
+                (state/"daemon.lock").write_bytes(b"")
+                (state/"daemon.lock").chmod(0o600)
+                with self.assertRaises(ValueError):
+                    witness.recheck()
+            finally:
+                witness.close()
     def setUp(self):
         patcher = mock.patch.object(resident,"open_directory",side_effect=fixture_directory)
         patcher.start()

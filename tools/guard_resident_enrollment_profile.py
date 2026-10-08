@@ -1,5 +1,6 @@
 """Exact persistent enrollment lane with a complementary resident reservation."""
 import errno
+from functools import wraps
 import hashlib
 import json
 import os
@@ -13,6 +14,8 @@ import subprocess
 import time
 
 LABEL = "//delivery:resident_codex_enrollment"
+LIFECYCLE_LABEL = "//delivery:resident_owned_lifecycle"
+EXISTING_ENROLLMENT_LABEL = "//delivery:resident_codex_existing_enrollment"
 PROFILE = "resident-enrollment"
 DESTINATION = "/omux-resident-inputs"
 VARIABLE = "OMUX_RESIDENT_ENROLLMENT_MANIFEST"
@@ -23,13 +26,60 @@ RESIDENT_CPU_PERCENT = 10
 PROOF_MEMORY = 4294967296 - RESIDENT_MEMORY
 PROOF_TASKS = 512 - RESIDENT_TASKS
 PROOF_CPU_PERCENT = 200 - RESIDENT_CPU_PERCENT
+DIAGNOSTIC_PHASES = frozenset(("unknown","arguments","namespace-directory","namespace-placeholders",
+    "session-bus-peer","session-manager-peer","session-bus-peer-recheck","session-manager-peer-recheck",
+    "runtime-directory","session-parents","session-peers","private-manifest","manifest-schema",
+    "control-directory","control-placeholder","product-directories","owned-unit","owned-update",
+    "owned-first-start","existing-enrollment","namespace-recheck","manifest-recheck","placeholder-recheck",
+    "session-peer-recheck","parent-recheck","manager-query","manager-readback","owned-custody-recheck",
+    "inactive-unit","inactive-cgroup","active-unit","active-process","active-cgroup","control-peer",
+    "qualification-open","qualification-validate","archive-open","archive-validate","installed-unit-open",
+    "installed-inventory","installed-payload-open","installed-alias","retained-state-open","retained-lock",
+    "retained-pristine","installed-unit-recheck","installed-file-recheck","retained-state-recheck"))
+DIAGNOSTIC_ERRNOS = frozenset(("EACCES","EPERM","ENOENT","ENOTDIR","ELOOP","EEXIST","EBADF",
+    "EMFILE","ENFILE","EIO","EINVAL","ENOTSOCK","ECONNREFUSED","ETIMEDOUT","ENOSPC","EROFS"))
+
+class ResidentAdmissionOSError(OSError):
+    def __init__(self,phase,number):
+        self.resident_phase = phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else "unknown"
+        super().__init__(number if type(number) is int else None,"resident-enrollment-admission-refused")
+
+class ResidentAdmissionValueError(ValueError):
+    def __init__(self,phase):
+        self.resident_phase = phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else "unknown"
+        super().__init__("resident-enrollment-admission-refused")
+
+def diagnostic_projection(error):
+    # Accept only our exact tagged types; never stringify arbitrary exceptions.
+    if type(error) not in (ResidentAdmissionOSError,ResidentAdmissionValueError):
+        return None
+    phase = error.resident_phase
+    phase = phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else "unknown"
+    number = error.errno if type(error) is ResidentAdmissionOSError else None
+    symbol = errno.errorcode.get(number,"other") if type(number) is int else "none"
+    symbol = symbol if symbol in DIAGNOSTIC_ERRNOS or symbol == "none" else "other"
+    return {"phase":phase,"errno":symbol}
+
+def diagnostic_method(method):
+    @wraps(method)
+    def invoke(self,*arguments,**keywords):
+        try:
+            return method(self,*arguments,**keywords)
+        except (OSError,ValueError) as error:
+            if type(error) in (ResidentAdmissionOSError,ResidentAdmissionValueError):
+                raise
+            phase = getattr(self,"diagnostic_phase","unknown")
+            if isinstance(error,OSError):
+                raise ResidentAdmissionOSError(phase,error.errno) from None
+            raise ResidentAdmissionValueError(phase) from None
+    return invoke
 
 def require(value):
     if not value:
         raise ValueError("resident-enrollment-admission-refused")
 
 def finite(arguments,manager,manifest,reuse,unrelated=()):
-    require(arguments == ["run",LABEL] and manager == "system" and manifest is not None
+    require(arguments in (["run",LABEL],["run",LIFECYCLE_LABEL],["run",EXISTING_ENROLLMENT_LABEL]) and manager == "system" and manifest is not None
         and not reuse and not any(unrelated))
     return {"PrivateNetwork":"yes","ProtectSystem":"strict","PrivateTmp":"yes"}
 
@@ -45,6 +95,12 @@ def repository_inputs(repository_cache,nixpkgs_source):
     require(isinstance(repository_cache,Path) and isinstance(nixpkgs_source,Path)
         and repository_cache == REPOSITORY_CACHE and nixpkgs_source == NIXPKGS_SOURCE)
     return [str(REPOSITORY_CACHE)+":"+str(REPOSITORY_CACHE)]
+
+def carrier_purpose(label,action,selected_archive=False):
+    require(type(selected_archive) is bool and label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL)
+        and ((label == EXISTING_ENROLLMENT_LABEL and action == "enroll-existing" and selected_archive)
+            or (not selected_archive and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","stop-idle-owned"))
+            or (label == LABEL and action in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing"))))))
 
 def canonical(value):
     require(type(value) is str and value.startswith("/") and len(value) <= 4096
@@ -78,12 +134,15 @@ def fixed_paths(home,instance="default"):
         "service_path":prefix/"units/ai.xoxd.omux.service"}
 
 def manifest_schema(value,home):
+    existing_enrollment = type(value) is dict and "existing_archive" in value
     updating = type(value) is dict and value.get("action") == "update-existing"
+    starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","stop-idle-owned")
+    stopping = type(value) is dict and value.get("action") == "stop-idle-owned"
     require(type(value) is dict and set(value) == {"schema_version","ownership","action","instance",
-        "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else set())
+        "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else {"start"} if starting else set()) | ({"existing_archive"} if existing_enrollment else set())
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
-        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing")
+        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing","observe-existing","stop-idle-owned")
         and value["instance"] == "default")
     expected = fixed_paths(home)
     for key in ("records","runtime_state"):
@@ -96,9 +155,17 @@ def manifest_schema(value,home):
             and len(prefix.parts) == 4 and re.fullmatch(r"[a-z0-9]{32}[-][A-Za-z0-9+._-]+",prefix.name)
             and unit == canonical(str(home/".config/systemd/user/ai.xoxd.omux.service")))
     permissions = value["permissions"]
-    require(type(permissions) is dict and set(permissions) == {"connect_source","activate_service","restart_daemon"}
+    require(type(permissions) is dict and set(permissions) == {"connect_source","activate_service","restart_daemon"} | ({"stop_service"} if stopping else set())
         and all(type(v) is bool for v in permissions.values()))
-    if updating:
+    if starting:
+        expected_permissions={"connect_source":False,"activate_service":value["action"] == "start-existing","restart_daemon":False}
+        if stopping:
+            expected_permissions["stop_service"]=True
+        require(value["ownership"] == "omux-installation" and value["native_context"] is None
+            and permissions == expected_permissions)
+        import guard_resident_owned_update as update
+        update.start_pins(value["start"],home)
+    elif updating:
         require(value["ownership"] == "omux-installation" and value["native_context"] is None
             and not any(permissions.values()))
         import guard_resident_owned_update as update
@@ -113,6 +180,11 @@ def manifest_schema(value,home):
         require(permissions["connect_source"]
             and (value["action"] not in ("install-and-enroll","activate-existing-and-enroll") or permissions["activate_service"])
             and (value["ownership"] != "home-manager" or not permissions["activate_service"]))
+    if existing_enrollment:
+        require(value["action"] == "enroll-existing" and value["ownership"] == "omux-installation"
+            and permissions["connect_source"] is True and permissions["activate_service"] is False)
+        import guard_resident_owned_update as update
+        update.start_pins(value["existing_archive"],home)
     return value
 
 def quota_us(value):
@@ -208,7 +280,11 @@ def projection(actual,verified=False):
     return result
 
 def rejection(error):
-    return "resident-enrollment-admission-refused"
+    result = "resident-enrollment-admission-refused"
+    diagnostic = diagnostic_projection(error)
+    if diagnostic is not None:
+        result += ";phase="+diagnostic["phase"]+";errno="+diagnostic["errno"]
+    return result
 
 def stable(info):
     return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid)
@@ -433,8 +509,14 @@ def recovery_loaded_properties(values):
         and values["TasksMax"] == str(RESIDENT_TASKS) and quota_us(values["CPUQuotaPerSecUSec"]) == 100000)
 
 class Admission:
-    def __init__(self,manifest,home,deadline_ns):
+    @diagnostic_method
+    def __init__(self,manifest,home,deadline_ns,*,label=LABEL):
+        self.diagnostic_phase = "arguments"
         self.deadline_ns = deadline_ns
+        require(label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL))
+        self.label=label
+        self.lifecycle_identity=None
+        self.lifecycle_peer=None
         self.manifest = canonical(str(manifest))
         require(self.manifest.name == "input.json")
         self.root = self.manifest.parent
@@ -445,10 +527,14 @@ class Admission:
         self.owned_unit = None
         self.recovery_empty = []
         self.installation_update = None
+        self.owned_start = None
+        self.existing_enrollment = None
         try:
+            self.diagnostic_phase = "namespace-directory"
             self.directory = open_directory(self.root,private=True)
             self.held.append(self.directory)
             require(os.listdir(self.directory) == ["input.json"])
+            self.diagnostic_phase = "namespace-placeholders"
             os.mkdir("systemd",0o700,dir_fd=self.directory)
             self.created_manager = True
             self.created_manager_identity = stable((self.root/"systemd").stat(follow_symlinks=False))
@@ -469,15 +555,18 @@ class Admission:
                 self.root/"systemd/private":Path("/run/user/"+str(os.getuid())+"/systemd/private")}
             self.source_parents = []
             runtime = Path("/run/user/"+str(os.getuid()))
+            self.diagnostic_phase = "runtime-directory"
             runtime_fd = open_directory(runtime,private=True)
             self.held.append(runtime_fd)
             self.source_parents.append((runtime,runtime_fd,stable(os.fstat(runtime_fd))))
             for path in self.sources.values():
+                self.diagnostic_phase = "session-parents"
                 fd = open_directory(path.parent)
                 require(os.fstat(fd).st_uid == os.getuid())
                 self.held.append(fd)
                 self.source_parents.append((path.parent,fd,stable(os.fstat(fd))))
-            self.socket_identities = {path:socket_witness(path) for path in self.sources.values()}
+            self.socket_identities = {path:self.session_peer_witness(path) for path in self.sources.values()}
+            self.diagnostic_phase = "private-manifest"
             self.file = os.open("input.json",os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.directory)
             self.held.append(self.file)
             info = os.fstat(self.file)
@@ -486,16 +575,20 @@ class Admission:
             self.file_identity = tuple(getattr(info,n) for n in ("st_dev","st_ino","st_uid","st_mode","st_nlink","st_size","st_mtime_ns","st_ctime_ns"))
             self.raw = os.pread(self.file,65537,0)
             require(len(self.raw) == info.st_size)
+            self.diagnostic_phase = "manifest-schema"
             self.selected = manifest_schema(json.loads(self.raw,object_pairs_hook=unique),home)
+            carrier_purpose(label,self.selected["action"],"existing_archive" in self.selected)
             self.control_child = runtime_child(self.selected["runtime_state"])
             self.control_source = runtime/self.control_child
+            self.diagnostic_phase = "control-directory"
             control_source_fd = open_directory(self.control_source,private=True)
             self.held.append(control_source_fd)
             self.source_parents.append((self.control_source,control_source_fd,stable(os.fstat(control_source_fd))))
-            if self.selected["action"] in ("install-and-enroll","activate-existing-and-enroll"):
+            if self.selected["action"] in ("install-and-enroll","activate-existing-and-enroll","start-existing"):
                 require(not os.listdir(control_source_fd))
             if self.selected["action"] == "activate-existing-and-enroll":
                 self.recovery_empty.append(control_source_fd)
+            self.diagnostic_phase = "control-placeholder"
             os.mkdir(self.control_child,0o700,dir_fd=self.directory)
             control_placeholder = self.root/self.control_child
             self.created_control = (control_placeholder,stable(control_placeholder.stat(follow_symlinks=False)))
@@ -504,6 +597,7 @@ class Admission:
             self.source_parents.append((control_placeholder,control_placeholder_fd,self.created_control[1]))
             self.product_directories = []
             for name in ("records","runtime_state")+ (("prefix",) if self.selected["ownership"] == "omux-installation" else ()):
+                self.diagnostic_phase = "product-directories"
                 path = canonical(self.selected[name])
                 fd = open_directory(path,private=True)
                 self.held.append(fd)
@@ -514,18 +608,37 @@ class Admission:
                     require(not os.listdir(fd))
                     self.recovery_empty.append(fd)
             if self.selected["action"] == "activate-existing-and-enroll":
+                self.diagnostic_phase = "owned-unit"
                 self.owned_unit = OwnedUnitCustody(self.selected)
                 selected_unit = canonical(self.selected["service_path"])
                 self.owned_unit.verify_fragment(selected_unit.parents[4]/".config/systemd/user"/selected_unit.name)
             if self.selected["action"] == "update-existing":
+                self.diagnostic_phase = "owned-update"
                 import guard_resident_owned_update as update
                 self.installation_update = update.InstallationUpdate(self.selected,home,deadline_ns)
+            if self.selected["action"] in ("start-existing","observe-existing","stop-idle-owned"):
+                self.diagnostic_phase = "owned-first-start"
+                import guard_resident_owned_update as update
+                self.owned_start = update.OwnedFirstStart(self.selected,home,deadline_ns)
+            if "existing_archive" in self.selected:
+                self.diagnostic_phase = "existing-enrollment"
+                import guard_resident_owned_update as update
+                self.existing_enrollment = update.QualifiedExistingEnrollment(self.selected,home,deadline_ns)
             self.facts = self.recheck()
         except BaseException:
             self.close()
             raise
 
+    def session_peer_witness(self,path,*,recheck=False):
+        # The roles come only from the two fixed source bindings. No pathname
+        # or caller value is emitted, and the witness/connection is unchanged.
+        role = "session-manager-peer" if path == self.sources[self.root/"systemd/private"] else "session-bus-peer"
+        self.diagnostic_phase = role+"-recheck" if recheck else role
+        return socket_witness(path)
+
+    @diagnostic_method
     def recheck(self):
+        self.diagnostic_phase = "namespace-recheck"
         require(time.monotonic_ns() < self.deadline_ns)
         require(stable(os.fstat(self.directory)) == self.root_identity == stable(self.root.stat(follow_symlinks=False))
             and stable(os.fstat(self.manager_directory)) == self.manager_identity
@@ -533,20 +646,31 @@ class Admission:
             and set(os.listdir(self.directory)) == {"input.json","bus","systemd",self.control_child}
             and os.listdir(self.manager_directory) == ["private"])
         require(not os.listdir(self.root/self.control_child))
+        self.diagnostic_phase = "manifest-recheck"
         info = os.fstat(self.file)
         identity = tuple(getattr(info,n) for n in ("st_dev","st_ino","st_uid","st_mode","st_nlink","st_size","st_mtime_ns","st_ctime_ns"))
         require(identity == self.file_identity and os.pread(self.file,65537,0) == self.raw)
         named = os.stat("input.json",dir_fd=self.directory,follow_symlinks=False)
         require(tuple(getattr(named,n) for n in ("st_dev","st_ino","st_uid","st_mode","st_nlink","st_size","st_mtime_ns","st_ctime_ns")) == identity)
         for path,(descriptor,witness) in self.placeholder.items():
+            self.diagnostic_phase = "placeholder-recheck"
             require(regular_mountpoint_witness(path,descriptor) == witness)
         for path,witness in self.socket_identities.items():
-            require(socket_witness(path) == witness)
+            require(self.session_peer_witness(path,recheck=True) == witness)
         for path,fd,witness in self.source_parents+self.product_directories:
+            self.diagnostic_phase = "parent-recheck"
             require(stable(os.fstat(fd)) == witness == stable(path.stat(follow_symlinks=False)))
         if getattr(self,"installation_update",None) is not None:
+            self.diagnostic_phase = "owned-update"
             self.installation_update.recheck()
+        if getattr(self,"owned_start",None) is not None:
+            self.diagnostic_phase = "owned-first-start"
+            self.owned_start.recheck()
+        if getattr(self,"existing_enrollment",None) is not None:
+            self.diagnostic_phase = "existing-enrollment"
+            self.existing_enrollment.recheck()
         if self.owned_unit is not None:
+            self.diagnostic_phase = "owned-unit"
             self.owned_unit.recheck()
         facts = {"scope":"resident-enrollment","source_contents_read":False,
             "resident_memory":RESIDENT_MEMORY,"resident_tasks":RESIDENT_TASKS,"resident_cpu_percent":RESIDENT_CPU_PERCENT,
@@ -560,7 +684,10 @@ class Admission:
         return facts
 
     def bindings(self):
-        return list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[
+        starting = getattr(self,"owned_start",None) or getattr(self,"existing_enrollment",None)
+        extra = ([str(path)+":"+str(path) for path,_,_ in self.product_directories]+[
+            str(public.path)+":"+str(public.path)+":norbind" for public in starting.files[:2]]) if starting is not None else []
+        return extra+list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[
             str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))+":norbind"
             for target,source in self.sources.items()] + [runtime_binding(self.selected["runtime_state"],os.getuid())] + (
             [self.selected["runtime_state"]+":"+self.selected["runtime_state"]]+[
@@ -569,6 +696,8 @@ class Admission:
             if getattr(self,"installation_update",None) is not None else [])
 
     def writable_binding(self):
+        if getattr(self,"owned_start",None) is not None or getattr(self,"existing_enrollment",None) is not None:
+            return ""
         return " ".join(str(path)+":"+str(path) for path,_,_ in self.product_directories
             if getattr(self,"installation_update",None) is None or str(path) != self.selected["runtime_state"])
 
@@ -578,6 +707,10 @@ class Admission:
             expected_rw.append(str(run)+":"+str(run))
         leaves = [str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))
             for target,source in self.sources.items()]
+        if getattr(self,"owned_start",None) is not None:
+            leaves += [str(public.path)+":"+str(public.path) for public in self.owned_start.files[:2]]
+        if getattr(self,"existing_enrollment",None) is not None:
+            leaves += [str(public.path)+":"+str(public.path) for public in self.existing_enrollment.files[:2]]
         if getattr(self,"installation_update",None) is not None:
             leaves += [str(file.path)+":"+str(file.path) for file in
                 (self.installation_update.archive,self.installation_update.previous_archive,self.installation_update.qualification)]
@@ -586,22 +719,25 @@ class Admission:
         require(len(ro) == len(expected_ro) and set(ro) == set(expected_ro)
             and len(rw) == len(expected_rw) and set(rw) == set(expected_rw))
 
+    @diagnostic_method
     def service_observation(self,systemctl,starting=False):
+        self.diagnostic_phase = "manager-query"
         env = {"HOME":pwd.getpwuid(os.getuid()).pw_dir,"LC_ALL":"C",
             "XDG_RUNTIME_DIR":"/run/user/"+str(os.getuid()),
             "DBUS_SESSION_BUS_ADDRESS":"unix:path=/run/user/"+str(os.getuid())+"/bus"}
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
-        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing")
+        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","stop-idle-owned")
         properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
         if recovering_action:
             properties += ",UnitFileState"
-        if self.selected["action"] == "update-existing":
+        if self.selected["action"] in ("update-existing","start-existing","observe-existing","stop-idle-owned"):
             import guard_resident_owned_update as update
             properties = ",".join(sorted(update.IDLE_PROPERTIES))
         result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
             "ai.xoxd.omux.service"],env=env,stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=remaining,check=False)
+        self.diagnostic_phase = "manager-readback"
         require(type(starting) is bool)
         starting_new = starting and self.selected["action"] == "install-and-enroll" \
             and self.selected["ownership"] == "omux-installation"
@@ -610,14 +746,67 @@ class Admission:
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
             "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set())
-            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] == "update-existing" else set()))
+            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","stop-idle-owned") else set()))
+        if self.selected["action"] in ("start-existing","observe-existing","stop-idle-owned"):
+            self.diagnostic_phase = "owned-custody-recheck"
+            require(self.owned_start is not None)
+            self.owned_start.recheck()
+            action=self.selected["action"]
+            if starting and action == "start-existing":
+                self.owned_start.pristine()
+                self.diagnostic_phase = "inactive-unit"
+                update.inactive_installation(values,self.selected)
+                self.diagnostic_phase = "inactive-cgroup"
+                update.inactive_cgroup(self.deadline_ns)
+                return {"active":False,"owned_first_start_admitted":True,"bounded":True}
+            if action == "stop-idle-owned" and not starting:
+                require(self.lifecycle_identity is not None)
+                self.diagnostic_phase = "inactive-unit"
+                update.inactive_installation(values,self.selected)
+                self.diagnostic_phase = "inactive-cgroup"
+                update.inactive_cgroup(self.deadline_ns)
+                self.owned_start.pristine()
+                require(not os.listdir(self.control_source))
+                update.original_process_exited(self.lifecycle_identity[0])
+                return {"active":False,"owned_idle_stop_observed":True,"bounded":True,
+                    "resident_service_disposition":"stopped_explicitly_custody_retained",
+                    "custody_claim_requires_controller_success":True}
+            self.diagnostic_phase = "active-unit"
+            pid,group = update.active_start_properties(values,self.selected)
+            # Reuse the declared public process/cgroup projection, never raw state.
+            from resident_enrollment import process_identity,cgroup_observation
+            self.diagnostic_phase = "active-process"
+            identity = process_identity(pid)
+            self.diagnostic_phase = "active-cgroup"
+            caps,cgroup = cgroup_observation(group,pid)
+            check_resident_bounds(values,caps)
+            require(process_identity(pid) == identity)
+            path = Path("/run/user")/str(os.getuid())/self.control_child/"control.sock"
+            self.diagnostic_phase = "control-peer"
+            peer = socket_witness(path)
+            update.start_control_peer(peer,pid)
+            if action in ("observe-existing","stop-idle-owned"):
+                self.owned_start.pristine()
+                current=(identity,cgroup)
+                if starting:
+                    self.lifecycle_identity=current
+                    self.lifecycle_peer=peer
+                else:
+                    require(current == self.lifecycle_identity and peer == self.lifecycle_peer)
+                return {"active":True,"owned_existing_observation_verified":True,"bounded":True,
+                    "service_mutation_requested":action == "stop-idle-owned",
+                    "control_plane_health_requires_controller_success":True,"custody_claim_requires_controller_success":True}
+            return {"active":True,"owned_first_start_observed":True,"bounded":True,
+                "control_plane_health_requires_controller_success":True,"custody_claim_requires_controller_success":True}
         if starting_new:
             require(values["LoadState"] == "not-found" and values["ActiveState"] == "inactive"
                 and values["SubState"] == "dead" and values["MainPID"] == "0"
                 and values["FragmentPath"] == "" and values["ControlGroup"] == "")
             return {"active":False,"new_owned_service_admitted":True}
         if self.selected["action"] == "update-existing":
+            self.diagnostic_phase = "inactive-unit"
             update.inactive_installation(values,self.selected)
+            self.diagnostic_phase = "inactive-cgroup"
             update.inactive_cgroup(self.deadline_ns)
             require(self.installation_update is not None)
             self.installation_update.verify_fragment(values["FragmentPath"])
@@ -625,6 +814,7 @@ class Admission:
                 "installation_update_completed":self.installation_update.finished}
         recovering = starting and self.selected["action"] == "activate-existing-and-enroll"
         if recovering:
+            self.diagnostic_phase = "inactive-unit"
             recovery_loaded_properties(values)
             require(self.selected["ownership"] == "omux-installation"
                 and self.selected["permissions"]["activate_service"]
@@ -633,6 +823,7 @@ class Admission:
             return {"active":False,"owned_partial_install_admitted":True,"bounded":True}
         require(values["LoadState"] == "loaded" and values["ActiveState"] == "active"
             and values["SubState"] == "running" and values["MainPID"].isdecimal())
+        self.diagnostic_phase = "active-unit"
         fragment = canonical(values["FragmentPath"])
         selected = canonical(self.selected["service_path"])
         if self.selected["ownership"] == "omux-installation":
@@ -642,11 +833,13 @@ class Admission:
         else:
             require(fragment == selected or fragment.resolve(strict=True) == selected.resolve(strict=True))
         pid = int(values["MainPID"])
+        self.diagnostic_phase = "active-process"
         ticks = start_ticks(pid)
         name = values["ControlGroup"]
         require(name.startswith("/") and ".." not in Path(name).parts
             and Path(name).name == "ai.xoxd.omux.service")
         cgroup = Path("/sys/fs/cgroup")/name.lstrip("/")
+        self.diagnostic_phase = "active-cgroup"
         fd = open_directory(cgroup)
         try:
             witness = stable(os.fstat(fd))
@@ -687,6 +880,12 @@ class Admission:
         return int(remaining)
 
     def close(self):
+        if getattr(self,"existing_enrollment",None) is not None:
+            self.existing_enrollment.close()
+            self.existing_enrollment = None
+        if getattr(self,"owned_start",None) is not None:
+            self.owned_start.close()
+            self.owned_start = None
         if getattr(self,"installation_update",None) is not None:
             self.installation_update.close()
             self.installation_update = None

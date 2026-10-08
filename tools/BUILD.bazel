@@ -1600,11 +1600,19 @@ python_test(
 
 filegroup(
     name = "resident_owned_update_sources",
-    srcs = ["guard_resident_owned_update.py", "//delivery:install.py", "//delivery:pack.py"],
+    srcs = ["guard_resident_owned_update.py", "//delivery:install.py", "//delivery:pack.py",
+        "//delivery:resident_enrollment.py", "//delivery:resident_owned_start.py", "//delivery:portable.py"],
 )
 python_test(
     name = "guard_resident_owned_update_test",
     main = "guard_resident_owned_update_test.py",
     srcs = [":resident_owned_update_sources", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "guard_resident_standard_vault_test",
+    main = "guard_resident_standard_vault_test.py",
+    srcs = ["guard_resident_vault_profile.py", "guard_resident_enrollment_profile.py"],
     target_compatible_with = ["@platforms//os:linux"],
 )

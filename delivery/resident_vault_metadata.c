@@ -12,6 +12,7 @@
 #define LOGIN "/org/freedesktop/secrets/collection/login"
 #define GNOME_EXE "/nix/store/x1199bxd4ia75dd1nmh0xnnpfzxz1785-gnome-keyring-48.0/bin/.gnome-keyring-daemon-wrapped"
 static gint64 until;
+static int standard_metadata;
 static const char *predicate="observer-arguments";
 static int refused(void) {
     /* Only source-literal predicate names; no errors, paths or owner data. */
@@ -55,6 +56,13 @@ static int identity(guint32 pid, Identity *out) {
     identity_predicate="observer-identity-start-value";
     char *end=NULL; out->start=strtoull(cursor,&end,10);
     if (end == cursor || !out->start || (*end && *end!=' ')) return 0;
+    /* Standard local-service role is authenticated by peer/registry credentials.
+       The legacy proprietary GNOME control mode retains its executable witness. */
+    if (standard_metadata) {
+        out->uid=getuid(); out->pid=pid;
+        identity_predicate="observer-identity-deadline";
+        return remaining();
+    }
     snprintf(path,sizeof(path),"/proc/%u/exe",pid);
     identity_predicate="observer-identity-exe-readlink";
     ssize_t length = readlink(path,out->exe,sizeof(out->exe)-1);
@@ -137,17 +145,18 @@ static int locked(GDBusConnection *bus,const char *name,const char *path,int *ou
     g_variant_unref(value); return ok;
 }
 static void print_identity(const Identity *value,const char *name) {
-    printf("{\"uid\":%u,\"pid\":%u,\"start_ticks\":%llu,\"exe\":\"%s\"",
-        value->uid,value->pid,value->start,value->exe);
+    printf("{\"uid\":%u,\"pid\":%u,\"start_ticks\":%llu",
+        value->uid,value->pid,value->start);
+    if (!standard_metadata) printf(",\"exe\":\"%s\"",value->exe);
     if (name) printf(",\"owner\":\"%s\"",name);
     printf("}");
 }
 #ifndef OMUX_VAULT_BROKER_HEADER_MODEL
 int main(int argc,char **argv) {
-    (void)argv;
+    standard_metadata=argc==2 && !strcmp(argv[1],"--standard-service-metadata");
     const char *address=getenv("DBUS_SESSION_BUS_ADDRESS");
     const char *deadline=getenv("OMUX_RESIDENT_ORIGINAL_DEADLINE_NS");
-    if (argc!=1 || !address || strcmp(address,ADDRESS) || !deadline || !*deadline || strlen(deadline)>20) return refused();
+    if ((argc!=1 && !standard_metadata) || !address || strcmp(address,ADDRESS) || !deadline || !*deadline || strlen(deadline)>20) return refused();
     predicate="observer-deadline";
     for (const char *p=deadline;*p;p++) if (!g_ascii_isdigit(*p)) return refused();
     char *end=NULL; unsigned long long ns=strtoull(deadline,&end,10);
@@ -187,7 +196,7 @@ int main(int argc,char **argv) {
         ok=owned(bus,secret_name,&secret);
         gnome=ok && !strcmp(secret.exe,GNOME_EXE);
         /* Identity/provider witness precedes any collection operation. */
-        if (gnome) {
+        if (ok && (gnome || standard_metadata)) {
             predicate="observer-default-alias";
             path=alias(bus,secret_name); ok=path!=NULL;
             if (ok) {
@@ -212,7 +221,7 @@ int main(int argc,char **argv) {
     if (present) ok=ok && secret_again && !strcmp(secret_name,secret_again)
         && owned(bus,secret_again,&secret_after) && !memcmp(&secret,&secret_after,sizeof(secret));
     else ok=ok && absent(bus,"org.freedesktop.secrets");
-    if (ok && gnome) {
+    if (ok && (gnome || (standard_metadata && present))) {
         predicate="observer-alias-stability";
         char *again=alias(bus,secret_name); int after=-1;
         ok=again && !strcmp(path,again) && (!exists || (locked(bus,secret_name,again,&after) && after==state));
@@ -220,12 +229,19 @@ int main(int argc,char **argv) {
     }
     if (ok) predicate="observer-deadline";
     if (ok && remaining()) {
-        printf("{\"schema\":\"omux-existing-vault-metadata-v1\",\"broker\":"); print_identity(&broker,NULL);
+        printf("{\"schema\":\"%s\",\"broker\":",standard_metadata
+            ? "omux-existing-vault-metadata-v2" : "omux-existing-vault-metadata-v1"); print_identity(&broker,NULL);
         printf(",\"manager\":"); print_identity(&manager,manager_name);
         printf(",\"secret_service\":"); if (present) print_identity(&secret,secret_name); else printf("null");
-        printf(",\"provider\":\"%s\",\"default_exists\":%s,\"default_is_login\":%s,\"locked\":",
-            !present?"absent":gnome?"gnome-keyring-48.0":"unqualified-existing-provider",
-            gnome?(exists?"true":"false"):"null",gnome?(login?"true":"false"):"null");
+        if (standard_metadata) {
+            printf(",\"provider\":\"%s\",\"default_collection\":",present?"standard-secret-service":"absent");
+            if (present) printf("\"%s\"",path); else printf("null");
+            printf(",\"default_exists\":%s,\"locked\":",present?(exists?"true":"false"):"null");
+        } else {
+            printf(",\"provider\":\"%s\",\"default_exists\":%s,\"default_is_login\":%s,\"locked\":",
+                !present?"absent":gnome?"gnome-keyring-48.0":"unqualified-existing-provider",
+                gnome?(exists?"true":"false"):"null",gnome?(login?"true":"false"):"null");
+        }
         if (state<0) printf("null"); else printf("%s",state?"true":"false");
         printf(",\"items_read\":false,\"secrets_read\":false,\"provider_invocation\":false}\n");
     } else ok=0;

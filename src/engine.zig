@@ -1912,8 +1912,9 @@ pub const Engine = struct {
         snapshot.vault = .{ .state = if (self.vault_locked) .locked else if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
         // A locked startup has not loaded retained source/account metadata.
         if (self.vault_locked) return snapshot;
+        const timestamp = self.now();
         var connected = false;
-        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= self.now() and (source.authorized_until == null or source.authorized_until.? > self.now())) {
+        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= timestamp and (source.authorized_until == null or source.authorized_until.? > timestamp)) {
             connected = true;
         };
         snapshot.source = .{ .state = if (connected) .ready else .missing, .freshness = .current, .evidence = .diagnostic };
@@ -1924,9 +1925,18 @@ pub const Engine = struct {
         snapshot.identity = .{ .state = if (verified) .ready else .pending, .freshness = .current, .evidence = .diagnostic };
         var usable = false;
         for (self.state.grants.items) |grant| {
-            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= self.now()) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= self.now())) continue;
+            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= timestamp) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= timestamp)) continue;
             const account = self.state.account(grant.account_id) orelse continue;
             if (!account.identity.verified or account.lifecycle != .active) continue;
+            // The grant's exact source lineage must still authorize requests.
+            // Detached sources keep independently valid non-browser grants.
+            var source_authorized = false;
+            for (self.state.sources.items) |source| if (eql(source.id, grant.source_id)) {
+                source_authorized = source.status != .disconnected and source.authorized_at <= timestamp and
+                    (source.authorized_until == null or source.authorized_until.? > timestamp);
+                break;
+            };
+            if (!source_authorized) continue;
             for (grant.purposes) |purpose| if (purpose == .request) {
                 usable = true;
             };
@@ -6074,6 +6084,49 @@ test "public account identity exposes only provider and actual verification trut
         try std.testing.expect(std.mem.indexOf(u8, raw, "private-subject-model") == null);
         try std.testing.expect(std.mem.indexOf(u8, raw, "private-tenant-model") == null);
     }
+}
+
+test "setup usable authority follows its own source authorization and actual routing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    // Supplied synthetic key; no real platform-vault or provider observation.
+    const current = try Engine.openWithKey(io, allocator, path, @splat(4));
+    defer current.deinit();
+    const timestamp = current.now();
+    _ = try current.state.connectSource(.{ .id = "first-source", .kind = .native_store, .provider = "codex", .authorized_at = 0, .authorized_until = timestamp + 3600 });
+    _ = try current.state.connectSource(.{ .id = "unrelated-source", .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+    _ = try current.state.enroll(.{ .account_id = "first-account", .source_id = "first-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "fixture-subject", .verified = true } }, timestamp);
+    _ = try current.state.addGrant(.{ .id = "first-grant", .account_id = "first-account", .source_id = "first-source", .credential_kind = .oauth_access, .purposes = &.{.request}, .audience = "https://chatgpt.com", .provider_expires_at = timestamp + 7200, .custody_expires_at = timestamp + 7200, .generation = 7 });
+    const demand: domain.Demand = .{ .provider = "codex", .audience = "https://chatgpt.com", .resource = .{ .kind = "model", .target = "fixture" }, .now = timestamp };
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectEqual(@as(u64, 7), (try current.state.select(demand, null)).generation);
+    // Detachment does not revoke independent, still-authorized access authority.
+    current.state.sources.items[0].status = .detached;
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    _ = try current.state.select(demand, null);
+    // A different connected source cannot renew this grant's expired lineage.
+    current.state.sources.items[0].authorized_until = timestamp;
+    const expired = current.setupSnapshot(.{}, false);
+    try std.testing.expectEqual(onboarding.State.ready, expired.source.state);
+    try std.testing.expectEqual(onboarding.State.ready, expired.identity.state);
+    try std.testing.expectEqual(onboarding.State.missing, expired.grant.state);
+    try std.testing.expect(!onboarding.assess(expired).ready);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    // Future authorization and explicit disconnection use the same routing fence.
+    current.state.sources.items[0].authorized_at = timestamp + 3600;
+    current.state.sources.items[0].authorized_until = timestamp + 7200;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    current.state.sources.items[0].authorized_at = 0;
+    current.state.sources.items[0].status = .disconnected;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    try std.testing.expectEqual(@as(u64, 7), current.state.grants.items[0].generation);
 }
 
 test "Git route cache retires oldest idle context while preserving native and leased routes" {

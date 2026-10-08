@@ -30,6 +30,89 @@ class ModelSelector:
 
 
 class ResidentContract(unittest.TestCase):
+    def test_first_start_refuses_already_active_before_start_or_other_manager_mutation(self):
+        import resident_owned_start as start
+        payload,manifest_raw=b"public archive",b"public manifest"
+        selection={"archive_bytes":len(payload),"archive_sha256":resident.hashlib.sha256(payload).hexdigest(),
+            "manifest_sha256":resident.hashlib.sha256(manifest_raw).hexdigest()}
+        value=self.manifest()
+        value.update(action="start-existing",native_context=None,start=selection)
+        properties={name:"" for name in start.owned.IDLE_PROPERTIES}
+        properties.update(LoadState="loaded",ActiveState="active",SubState="running",MainPID="10")
+        raw="\n".join(key+"="+field for key,field in properties.items()).encode()
+        bounded=mock.Mock(return_value=raw)
+        witness=mock.Mock()
+        with mock.patch.object(start.owned,"start_pins",return_value=selection), \
+                mock.patch.object(start.pack,"read_bundle",return_value=payload), \
+                mock.patch.object(start.pack,"verify_bundle",return_value=({}, {"release-manifest.json":manifest_raw})), \
+                mock.patch.object(start.owned,"OwnedFirstStart",return_value=witness):
+            with self.assertRaises(ValueError):
+                start.execute_start(resident.Path("/public/archive"),resident.Path("/public/systemctl"),value,
+                    {"HOME":"/home/jess"},bounded,lambda maximum=20:maximum,resident.time.monotonic_ns()+120*10**9)
+        self.assertEqual(len(bounded.call_args_list),1)
+        self.assertIn("show",bounded.call_args.args[0])
+        witness.close.assert_called_once_with()
+
+    def test_first_start_locked_readiness_uses_only_named_start_show_and_health(self):
+        import resident_owned_start as start
+        payload,manifest_raw=b"public archive",b"public manifest"
+        selection={"archive_bytes":len(payload),"archive_sha256":resident.hashlib.sha256(payload).hexdigest(),
+            "manifest_sha256":resident.hashlib.sha256(manifest_raw).hexdigest()}
+        value=self.manifest()
+        value.update(action="start-existing",native_context=None,start=selection)
+        group="/user.slice/user-"+str(start.os.getuid())+".slice/user@"+str(start.os.getuid())+".service/app.slice/ai.xoxd.omux.service"
+        health={"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
+            "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
+        started=False
+        commands=[]
+        def bounded(command,environment,data=None):
+            nonlocal started
+            commands.append(command)
+            if "start" in command:
+                self.assertEqual(command[-2:],["start","ai.xoxd.omux.service"])
+                started=True
+                return b""
+            if "show" in command:
+                return b""
+            self.assertEqual(command[-3:],["rpc","system.health","-"])
+            self.assertEqual(data,b"{}")
+            return json.dumps({"jsonrpc":"2.0","id":"opaque","result":health}).encode()
+        witness=mock.Mock()
+        with mock.patch.object(start.owned,"start_pins",return_value=selection), \
+                mock.patch.object(start.pack,"read_bundle",return_value=payload), \
+                mock.patch.object(start.pack,"verify_bundle",return_value=({}, {"release-manifest.json":manifest_raw})), \
+                mock.patch.object(start.owned,"OwnedFirstStart",return_value=witness), \
+                mock.patch.object(start.owned,"inactive_installation"), \
+                mock.patch.object(start.owned,"inactive_cgroup"), \
+                mock.patch.object(start.owned,"active_start_properties",return_value=(10,group)), \
+                mock.patch.object(start.resident,"process_identity",return_value=(10,20,30,40)), \
+                mock.patch.object(start.resident,"cgroup_observation",return_value=({},(50,60))), \
+                mock.patch.object(start.guard,"check_resident_bounds"), \
+                mock.patch.object(start.guard,"socket_witness",return_value=((1,2,resident.stat.S_IFSOCK|0o600,start.os.getuid(),start.os.getgid()),10,20)), \
+                mock.patch.object(start.guard,"start_ticks",return_value=20):
+            result=start.execute_start(resident.Path("/public/archive"),resident.Path("/public/systemctl"),value,
+                {"HOME":"/home/jess","XDG_RUNTIME_DIR":"/omux-resident-inputs"},bounded,
+                lambda maximum=20:maximum,resident.time.monotonic_ns()+120*10**9)
+        self.assertTrue(started and result["control_plane_ready"] and result["vault_locked"])
+        self.assertFalse(result["custody_available"] or result["enrollment_verified"] or result["source_connected"])
+        self.assertEqual(sum("start" in command for command in commands),1)
+        self.assertTrue(all("show" in command or "start" in command or "rpc" in command for command in commands))
+        witness.pristine.assert_called_once_with()
+        witness.close.assert_called_once_with()
+
+    def test_first_start_dispatch_never_reads_source_or_observes_os_vault(self):
+        value=self.manifest()
+        value.update(action="start-existing",native_context=None,start={})
+        value["permissions"]={"connect_source":False,"activate_service":True,"restart_daemon":False}
+        with mock.patch.object(resident,"original_deadline",return_value=resident.time.monotonic_ns()+120*10**9), \
+                mock.patch.object(resident,"validate_manifest",return_value=value), \
+                mock.patch.object(resident,"hold_source_metadata",side_effect=AssertionError("no source")), \
+                mock.patch.object(resident.resident_guard,"observe_existing_session_services",side_effect=AssertionError("no vault")):
+            import resident_owned_start
+            with mock.patch.object(resident_owned_start,"execute_start",return_value={"control_plane_ready":True}) as start:
+                self.assertEqual(resident.execute(resident.Path("/declared/archive"),resident.Path("/declared/systemctl"),
+                    resident.Path("/declared/probe"),value),{"control_plane_ready":True})
+                start.assert_called_once()
     def test_update_dispatch_never_reads_native_source_or_observes_vault(self):
         value = self.manifest()
         value.update(action="update-existing",native_context=None,update={})
@@ -366,6 +449,95 @@ class ResidentContract(unittest.TestCase):
         snapshot["source_descriptions"] *= 2
         with self.assertRaises(ValueError):
             resident.selected_source(snapshot, resident.Path("/native/context/auth.json"))
+
+    def verified_authority_snapshot(self):
+        # Public metadata shape emitted by Engine.publicAccountView/publicSnapshot.
+        # Synthetic opaque handles only; no credential or raw identity fixture.
+        return {"sources": [{"id": "a" * 64, "provider": "codex", "label": "Synthetic source",
+                              "kind": "native_store", "status": "connected",
+                              "authorized_at": 900, "authorized_until": 1200}],
+                "accounts": [{"id": "b" * 64, "source_ids": ["a" * 64], "lifecycle": "active",
+                              "identity": {"provider": "codex", "verified": True}}],
+                "grants": [{"id": "c" * 64, "account_id": "b" * 64, "source_id": "a" * 64,
+                            "credential_kind": "oauth_access", "ownership": "external", "status": "ready",
+                            "audience": "https://chatgpt.com", "purposes": ["request", "account_read"],
+                            "provider_expires_at": None, "custody_expires_at": 1300, "generation": 7}],
+                "jobs": []}
+
+    def test_retained_grant_requires_its_current_source_authorization_at_captured_time(self):
+        snapshot = self.verified_authority_snapshot()
+        original = resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        # Native disappearance does not revoke independent, still-authorized access.
+        snapshot["sources"][0]["status"] = "detached"
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000), original)
+        snapshot["sources"][0]["authorized_until"] = None
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000), original)
+        # Signed i64 authorization timestamps retain the actual domain comparison.
+        snapshot["sources"][0]["authorized_at"] = -1
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000), original)
+        # Expiry is exclusive and is rechecked without changing grant generation.
+        snapshot["sources"][0]["authorized_until"] = 1000
+        with self.assertRaises(ValueError):
+            resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        self.assertEqual(snapshot["grants"][0]["generation"], 7)
+
+    def test_expired_selected_source_is_not_replaced_by_unrelated_connected_source(self):
+        snapshot = self.verified_authority_snapshot()
+        other = copy.deepcopy(snapshot["sources"][0])
+        other["id"] = "d" * 64
+        snapshot["sources"].append(other)
+        snapshot["sources"][0]["authorized_until"] = 1000
+        with self.assertRaises(ValueError):
+            resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        snapshot["sources"] = [other]
+        with self.assertRaises(ValueError):
+            resident.enrolled_authority(snapshot, "a" * 64, 1000)
+
+    def test_source_shape_provider_status_and_typed_times_refuse_before_enrollment_success(self):
+        for key, value in (("provider", "github"), ("kind", "explicit"),
+                           ("status", "disconnected"), ("status", "ready"), ("status", True),
+                           ("authorized_at", 1001), ("authorized_at", -(2**63)-1),
+                           ("authorized_at", True), ("authorized_at", 900.0),
+                           ("authorized_until", 1000), ("authorized_until", -1),
+                           ("authorized_until", True), ("authorized_until", 1200.0),
+                           ("authorized_until", "1200"), ("authorized_until", 2**63)):
+            snapshot = self.verified_authority_snapshot()
+            snapshot["sources"][0][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                resident.enrolled_authority(snapshot, "a" * 64, 1000)
+        for now in (True, 1000.0, "1000", -1, 2**63):
+            with self.subTest(now=now), self.assertRaises(ValueError):
+                resident.enrolled_authority(self.verified_authority_snapshot(), "a" * 64, now)
+        for mutation in ("missing", "extra", "duplicate"):
+            snapshot = self.verified_authority_snapshot()
+            if mutation == "missing":del snapshot["sources"][0]["authorized_at"]
+            elif mutation == "extra":snapshot["sources"][0]["credential"] = "not-a-source-field"
+            else:snapshot["sources"].append(copy.deepcopy(snapshot["sources"][0]))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                resident.enrolled_authority(snapshot, "a" * 64, 1000)
+
+    def test_enrolled_authority_requires_strict_verified_public_identity(self):
+        snapshot = self.verified_authority_snapshot()
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000),
+                         {"source_handle": "a" * 64, "account_handle": "b" * 64,
+                          "grant_handle": "c" * 64, "grant_generation": 7})
+        for identity in ({"provider": "codex", "verified": False}, {"provider": "codex"},
+                         {"provider": "codex", "verified": 1}, {"provider": "codex", "verified": "true"},
+                         {"provider": "other", "verified": True}):
+            bad = copy.deepcopy(snapshot)
+            bad["accounts"][0]["identity"] = identity
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                resident.enrolled_authority(bad, "a" * 64, 1000)
+
+    def test_verified_identity_does_not_waive_external_ready_unexpired_access_authority(self):
+        snapshot = self.verified_authority_snapshot()
+        for key, value in (("ownership", "omux"), ("status", "quarantined"),
+                           ("credential_kind", "oauth_refresh"), ("custody_expires_at", 1000),
+                           ("provider_expires_at", 1000), ("generation", True)):
+            bad = copy.deepcopy(snapshot)
+            bad["grants"][0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                resident.enrolled_authority(bad, "a" * 64, 1000)
 
 
 if __name__ == "__main__":

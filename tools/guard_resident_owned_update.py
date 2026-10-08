@@ -89,6 +89,179 @@ def qualification_output(receipt,qualification):
     resident.require(resident.canonical(receipt["output_base"]) == expected)
     return expected
 
+def start_pins(value,home):
+    resident.require(type(value) is dict and set(value) == {
+        "archive_path","archive_sha256","archive_bytes","manifest_sha256","qualification"})
+    for name in ("archive_sha256","manifest_sha256"):
+        resident.require(type(value[name]) is str and re.fullmatch(r"[0-9a-f]{64}",value[name]))
+    resident.require(type(value["archive_bytes"]) is int and 0 < value["archive_bytes"] <= pack.MAX_BYTES)
+    q = value["qualification"]
+    resident.require(type(q) is dict and set(q) == {"path","sha256","bytes","source_commit","graph_sha256"})
+    for name,width in (("sha256",64),("graph_sha256",64),("source_commit",40)):
+        resident.require(type(q[name]) is str and re.fullmatch(r"[0-9a-f]{"+str(width)+"}",q[name]))
+    resident.require(type(q["bytes"]) is int and 0 < q["bytes"] <= 8*1024*1024)
+    path = resident.canonical(q["path"])
+    resident.require(path.name == "receipt.json" and str(uuid.UUID(path.parent.name)) == path.parent.name)
+    output = archive_namespace(resident.canonical(value["archive_path"]),home)
+    resident.require(output.parent.parent == path.parent.parent)
+    return value
+
+def active_start_properties(values,selected):
+    resident.require(set(values) == IDLE_PROPERTIES and values["LoadState"] == "loaded"
+        and values["ActiveState"] == "active" and values["SubState"] == "running"
+        and values["MainPID"].isdigit() and int(values["MainPID"]) > 1)
+    uid = os.getuid()
+    group = "/user.slice/user-"+str(uid)+".slice/user@"+str(uid)+".service/app.slice/ai.xoxd.omux.service"
+    resident.require(values["ControlGroup"] == group)
+    inactive = dict(values)
+    inactive.update(ActiveState="inactive",SubState="dead",MainPID="0",ControlGroup="")
+    inactive_installation(inactive,selected)
+    return int(values["MainPID"]),group
+
+def start_control_peer(peer,pid):
+    resident.require(stat.S_IMODE(peer[0][2]) == 0o600 and peer[1] == pid
+        and peer[2] == resident.start_ticks(pid))
+
+def start_health(value):
+    # Version-bound control metadata, matching src/control.zig protocol_version.
+    resident.require(type(value) is dict and value.get("protocol_version") == 2
+        and type(value.get("protocol_version")) is int and value.get("live_handoff_proven") is False)
+    if value.get("status") == "vault_locked":
+        resident.require(value.get("custody_available") is False and value.get("metadata_loaded") is False
+            and value.get("provider_access") is False
+            and value.get("recovery_action") == "unlock_platform_vault_then_restart_daemon")
+        return {"control_plane_ready":True,"custody_available":False,"vault_locked":True}
+    resident.require(value.get("status") == "ready" and value.get("custody_available") is True
+        and type(value.get("revision")) is int and value["revision"] >= 0)
+    return {"control_plane_ready":True,"custody_available":True,"vault_locked":False}
+
+def locked_idle_metadata(health,handshake):
+    result=start_health(health)
+    resident.require(result["vault_locked"] and type(handshake) is dict
+        and type(handshake.get("protocol_version")) is int and handshake["protocol_version"] == 2
+        and handshake.get("service") == "omuxd" and handshake.get("channel") == "control"
+        and handshake.get("custody_available") is False
+        and type(handshake.get("capabilities")) is dict
+        and handshake["capabilities"].get("credential_free_control") is True
+        and handshake["capabilities"].get("native_launch") is False
+        and handshake["capabilities"].get("live_handoff_proven") is False)
+    return result
+
+def original_process_exited(identity):
+    from resident_enrollment import process_identity
+    try:
+        current=process_identity(identity[0])
+    except FileNotFoundError:
+        return True
+    resident.require(current != identity)
+    return True
+
+class OwnedFirstStart:
+    """Qualified first start with only the existing zero-byte lock; no DB recovery."""
+    @resident.diagnostic_method
+    def __init__(self,selected,home,deadline):
+        self.diagnostic_phase = "owned-first-start"
+        self.selected,self.deadline = selected,deadline
+        self.files,self.unit,self.directory,self.lock = [],None,None,None
+        try:
+            self.selection = start_pins(selected["start"],home)
+            q = self.selection["qualification"]
+            self.diagnostic_phase = "qualification-open"
+            qualification = PublicFile(q["path"],deadline,8*1024*1024)
+            self.files.append(qualification)
+            self.diagnostic_phase = "qualification-validate"
+            resident.require(len(qualification.raw) == q["bytes"] and hashlib.sha256(qualification.raw).hexdigest() == q["sha256"])
+            receipt = json.loads(qualification.raw,object_pairs_hook=resident.unique)
+            output = qualification_output(receipt,q)
+            resident.require(Path(self.selection["archive_path"]) == output/ARCHIVE_RELATIVE)
+            self.diagnostic_phase = "archive-open"
+            self.archive = PublicFile(self.selection["archive_path"],deadline,pack.MAX_BYTES)
+            self.files.append(self.archive)
+            self.diagnostic_phase = "archive-validate"
+            resident.require(len(self.archive.raw) == self.selection["archive_bytes"]
+                and hashlib.sha256(self.archive.raw).hexdigest() == self.selection["archive_sha256"])
+            files,_ = pack.archive_contents(self.archive.raw)
+            resident.require(hashlib.sha256(files["release-manifest.json"]).hexdigest() == self.selection["manifest_sha256"])
+            manifest = json.loads(files["release-manifest.json"],object_pairs_hook=resident.unique)
+            resident.require(manifest["channel"] == "release" and manifest["distribution"] == "portable-linux"
+                and manifest["target"] == "x86_64-linux" and manifest["provenance"] == {"sourceRevision":None,"sourceDirty":True})
+            plan = install.installation_plan(manifest,files,Path(selected["prefix"]),Path(selected["records"]),
+                Path(selected["service_path"]),"linux",daemon_state_dir=Path(selected["runtime_state"]))
+            expected = {str(path):{"sha256":hashlib.sha256(raw).hexdigest(),"mode":mode} for path,raw,mode in plan}
+            self.diagnostic_phase = "installed-unit-open"
+            self.unit = resident.OwnedUnitCustody(selected)
+            self.diagnostic_phase = "installed-inventory"
+            record = json.loads(self.unit.files[0][4],object_pairs_hook=resident.unique)
+            resident.require(record["product"] == manifest["product"] and record["artifact"] == {
+                "channel":manifest["channel"],"target":manifest["target"],"distribution":manifest["distribution"],
+                "provenance":manifest["provenance"],"archiveSha256":self.selection["archive_sha256"],
+                "manifestSha256":self.selection["manifest_sha256"]}
+                and len(record["files"]) == len(expected)
+                and {row["path"]:{"sha256":row["sha256"],"mode":row["mode"]} for row in record["files"]} == expected)
+            for row in record["files"]:
+                self.diagnostic_phase = "installed-payload-open"
+                public = PublicFile(row["path"],deadline,128*1024*1024,owned=True)
+                self.files.append(public)
+                resident.require(stat.S_IMODE(os.fstat(public.fd).st_mode) == row["mode"]
+                    and hashlib.sha256(public.raw).hexdigest() == row["sha256"])
+            unit = Path(selected["service_path"])
+            self.diagnostic_phase = "installed-alias"
+            self.unit.verify_fragment(unit.parents[4]/".config/systemd/user"/unit.name)
+            self.state = Path(selected["runtime_state"])
+            self.diagnostic_phase = "retained-state-open"
+            self.directory = resident.open_directory(self.state,private=True)
+            self.root_identity = resident.stable(os.fstat(self.directory))
+            self.diagnostic_phase = "retained-lock"
+            self.lock = os.open("daemon.lock",os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.directory)
+            info = os.fstat(self.lock)
+            resident.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and info.st_size == 0)
+            self.lock_identity = resident.file_identity(info)
+            self.pristine()
+        except BaseException:
+            self.close()
+            raise
+    @resident.diagnostic_method
+    def pristine(self):
+        self.recheck()
+        self.diagnostic_phase = "retained-pristine"
+        resident.require(os.listdir(self.directory) == ["daemon.lock"])
+    @resident.diagnostic_method
+    def recheck(self):
+        self.diagnostic_phase = "installed-unit-recheck"
+        tick(self.deadline)
+        self.unit.recheck()
+        for public in self.files:
+            self.diagnostic_phase = "installed-file-recheck"
+            public.recheck()
+        self.diagnostic_phase = "retained-state-recheck"
+        resident.require(resident.stable(os.fstat(self.directory)) == self.root_identity
+            == resident.stable(self.state.stat(follow_symlinks=False))
+            and resident.file_identity(os.fstat(self.lock)) == self.lock_identity
+            == resident.file_identity(os.stat("daemon.lock",dir_fd=self.directory,follow_symlinks=False)))
+        # Fresh startup may create encrypted SQLite and its custody metadata.
+        # This never reads contents and never authorizes pre-existing DB recovery.
+        names = os.listdir(self.directory)
+        resident.require(set(names) <= {"daemon.lock","state.sqlite","state.sqlite.authority","state.sqlite.authority.lock",
+            "state.sqlite-wal","state.sqlite-shm","state.sqlite-journal"})
+        for name in names:
+            info = os.stat(name,dir_fd=self.directory,follow_symlinks=False)
+            resident.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+    def close(self):
+        if self.lock is not None:
+            os.close(self.lock)
+            self.lock = None
+        if self.directory is not None:
+            os.close(self.directory)
+            self.directory = None
+        if self.unit is not None:
+            self.unit.close()
+            self.unit = None
+        for public in reversed(self.files):
+            public.close()
+        self.files = []
+
 IDLE_PROPERTIES = {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
     "UnitFileState","Slice","ExecStart","DropInPaths","NeedDaemonReload","MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"}
 
@@ -182,6 +355,64 @@ class PublicFile:
             if value is not None:
                 os.close(value)
                 setattr(self,name,None)
+
+class QualifiedExistingEnrollment:
+    """Public archive/installed-software authority; never open private custody."""
+    def __init__(self,selected,home,deadline):
+        self.deadline = deadline
+        self.files,self.unit = [],None
+        try:
+            self.selection = start_pins(selected["existing_archive"],home)
+            q = self.selection["qualification"]
+            qualification = PublicFile(q["path"],deadline,8*1024*1024)
+            self.files.append(qualification)
+            resident.require(len(qualification.raw) == q["bytes"]
+                and hashlib.sha256(qualification.raw).hexdigest() == q["sha256"])
+            receipt = json.loads(qualification.raw,object_pairs_hook=resident.unique)
+            output = qualification_output(receipt,q)
+            resident.require(Path(self.selection["archive_path"]) == output/ARCHIVE_RELATIVE)
+            archive = PublicFile(self.selection["archive_path"],deadline,pack.MAX_BYTES)
+            self.files.append(archive)
+            resident.require(len(archive.raw) == self.selection["archive_bytes"]
+                and hashlib.sha256(archive.raw).hexdigest() == self.selection["archive_sha256"])
+            files,_ = pack.archive_contents(archive.raw)
+            resident.require(hashlib.sha256(files["release-manifest.json"]).hexdigest() == self.selection["manifest_sha256"])
+            manifest = json.loads(files["release-manifest.json"],object_pairs_hook=resident.unique)
+            resident.require(manifest["channel"] == "release" and manifest["distribution"] == "portable-linux"
+                and manifest["target"] == "x86_64-linux" and manifest["provenance"] == {"sourceRevision":None,"sourceDirty":True})
+            plan = install.installation_plan(manifest,files,Path(selected["prefix"]),Path(selected["records"]),
+                Path(selected["service_path"]),"linux",daemon_state_dir=Path(selected["runtime_state"]))
+            expected = {str(path):{"sha256":hashlib.sha256(raw).hexdigest(),"mode":mode} for path,raw,mode in plan}
+            self.unit = resident.OwnedUnitCustody(selected)
+            record = json.loads(self.unit.files[0][4],object_pairs_hook=resident.unique)
+            resident.require(record["product"] == manifest["product"] and record["artifact"] == {
+                "channel":manifest["channel"],"target":manifest["target"],"distribution":manifest["distribution"],
+                "provenance":manifest["provenance"],"archiveSha256":self.selection["archive_sha256"],
+                "manifestSha256":self.selection["manifest_sha256"]}
+                and len(record["files"]) == len(expected)
+                and {row["path"]:{"sha256":row["sha256"],"mode":row["mode"]} for row in record["files"]} == expected)
+            for row in record["files"]:
+                public = PublicFile(row["path"],deadline,128*1024*1024,owned=True)
+                self.files.append(public)
+                resident.require(stat.S_IMODE(os.fstat(public.fd).st_mode) == row["mode"]
+                    and hashlib.sha256(public.raw).hexdigest() == row["sha256"])
+            self.unit.verify_fragment(Path(home)/".config/systemd/user"/Path(selected["service_path"]).name)
+            self.recheck()
+        except BaseException:
+            self.close()
+            raise
+    def recheck(self):
+        tick(self.deadline)
+        self.unit.recheck()
+        for public in self.files:
+            public.recheck()
+    def close(self):
+        if self.unit is not None:
+            self.unit.close()
+            self.unit = None
+        for public in reversed(self.files):
+            public.close()
+        self.files = []
 
 class RuntimeFence:
     """Hold existing singleton lock and exact named/held metadata; read no private bytes."""
