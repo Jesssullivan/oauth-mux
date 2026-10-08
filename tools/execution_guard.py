@@ -918,6 +918,13 @@ def dev_stage_budget(entry_ns, deadline_ns, reserve_ns=30 * 10**9):
     return (deadline_ns - reserve_ns - now) / 10**9
 
 
+def dev_stage_runtime(entry_ns, deadline_ns):
+    seconds = int(dev_stage_budget(entry_ns, deadline_ns))
+    if seconds <= 0:
+        raise ValueError('complete stage exhausted original guardian deadline')
+    return seconds
+
+
 def dev_stage_source_after(entry_ns, deadline_ns, expected, readback):
     dev_stage_budget(entry_ns,deadline_ns,reserve_ns=0)
     observed = readback()
@@ -1916,7 +1923,7 @@ def _main(argv, admission_resources):
             settings.pop('TimeoutStopUSec')
             settings.update(CPUQuota='200%', RuntimeMaxSec='1200', TimeoutStopSec='10')
             if dev_stage_proof:
-                delivery_runtime_seconds = dev_stage_budget(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
+                delivery_runtime_seconds = dev_stage_runtime(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
                 settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
             if resident_input is not None:
                 delivery_runtime_seconds = resident_input.runtime_seconds()

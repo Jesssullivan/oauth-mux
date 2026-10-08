@@ -308,6 +308,44 @@ def builder_output(private, raw):
     return {"logical_path": logical, "sha256": seed.sha(payload), "bytes": len(payload), "mode": 0o444}
 
 
+
+def readback_records(raw, roots):
+    """Pinned opDumpDB emits unprefixed base16; declared seed parsing stays strict."""
+    global PHASE
+    PHASE = "registration-readback-ascii"
+    seed.require(isinstance(raw, bytes) and len(raw) <= MAX_OUTPUT)
+    lines = raw.decode("ascii").splitlines()
+    offset = 0
+    while offset < len(lines):
+        PHASE = "registration-readback-wire"
+        seed.require(offset+5 <= len(lines) and re.fullmatch("[0-9]{1,4}", lines[offset+4]) is not None)
+        count = int(lines[offset+4])
+        seed.require(count <= 4096 and offset+5+count <= len(lines))
+        PHASE = "registration-readback-wire-hash"
+        seed.require(re.fullmatch("[0-9a-f]{64}", lines[offset+1]) is not None)
+        lines[offset+1] = "sha256:"+lines[offset+1]
+        offset += 5+count
+    PHASE = "registration-readback-parse"
+    return seed.registrations("\n".join(lines)+"\n", roots)
+
+
+def compare_readback(expected, actual):
+    """Exact fields remain mandatory; only fixed predicate names are diagnostic."""
+    global PHASE
+    PHASE = "registration-readback-roots"
+    seed.require(set(expected) == set(actual))
+    for name in expected:
+        left, right = expected[name], actual[name]
+        PHASE = "registration-readback-hash"
+        seed.require(seed.expected_hash(left["record"][1]) == seed.expected_hash(right["record"][1]))
+        PHASE = "registration-readback-size"
+        seed.require(int(left["record"][2]) == int(right["record"][2]))
+        PHASE = "registration-readback-deriver"
+        seed.require(left["record"][3] == right["record"][3])
+        PHASE = "registration-readback-references"
+        seed.require(set(left["references"]) == set(right["references"]))
+
+
 def _qualify(value, seed_raw, parent, source_pins, deadline, opener, tool_fds, *, runner=run):
     global PHASE
     tick(deadline)
@@ -337,16 +375,10 @@ def _qualify(value, seed_raw, parent, source_pins, deadline, opener, tool_fds, *
             seed.require(runner(import_cmd, environment(root.path), root.path, deadline,
                                 input_file=stream, tool_fd=tool_fds["nix_store"]) == b"")
         root.recheck()
-        PHASE = "registration-readback"
+        PHASE = "registration-readback-child"
         dumped = runner(readback_cmd, environment(root.path), root.path, deadline, tool_fd=tool_fds["nix_store"])
-        actual_records = seed.registrations(dumped.decode("ascii"), value["roots"])
-        for name in records:
-            expected = records[name]
-            actual = actual_records[name]
-            seed.require(seed.expected_hash(expected["record"][1]) == seed.expected_hash(actual["record"][1])
-                and int(expected["record"][2]) == int(actual["record"][2])
-                and expected["record"][3] == actual["record"][3]
-                and set(expected["references"]) == set(actual["references"]))
+        actual_records = readback_records(dumped, value["roots"])
+        compare_readback(records, actual_records)
         PHASE = "namespace-build"
         raw = runner(build_cmd, environment(root.path), root.path, deadline, tool_fd=tool_fds["nix"])
         PHASE = "builder-result"

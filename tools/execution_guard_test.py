@@ -74,6 +74,38 @@ class CompleteStageDispatchModels(unittest.TestCase):
             with self.assertRaises(ValueError): guard.dev_stage_budget(True,deadline)
 
 
+    def test_fractional_stage_budget_produces_integer_service_limit_verified_against_actual_bounds(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+100*10**9+194687000):
+            budget = guard.dev_stage_budget(entry,deadline)
+            maximum = guard.dev_stage_runtime(entry,deadline)
+            self.assertIs(type(maximum),int)
+            self.assertEqual(maximum,1069)
+            self.assertLessEqual(maximum,budget)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                service = FakeService(root)
+                service.actual['TemporaryFileSystem'] = guard.system_masks()
+                service.actual['RuntimeMaxUSec'] = str(maximum)+'s'
+                guard.verify(service.actual,root,manager='system',profile='standard',runtime_seconds=maximum)
+                with self.assertRaisesRegex(ValueError,'delivery-effective-runtime-invalid'):
+                    guard.verify(service.actual,root,manager='system',profile='standard',runtime_seconds=budget)
+                for value in ('1070s','20min','1069.000001s'):
+                    with self.subTest(value=value),self.assertRaises(ValueError):
+                        guard.verify({**service.actual,'RuntimeMaxUSec':value},root,
+                            manager='system',profile='standard',runtime_seconds=maximum)
+                with self.assertRaises(ValueError):
+                    guard.verify({**service.actual,'MemoryMax':'4294967297'},root,
+                        manager='system',profile='standard',runtime_seconds=maximum)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9-1):
+            self.assertGreater(guard.dev_stage_budget(entry,deadline),0)
+            with self.assertRaises(ValueError): guard.dev_stage_runtime(entry,deadline)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9-10**9):
+            self.assertEqual(guard.dev_stage_runtime(entry,deadline),1)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError): guard.dev_stage_runtime(entry,deadline)
+
     def test_actual_final_source_readback_crossing_original_deadline_refuses(self):
         import execution_guard as guard
         entry,deadline = 10,10+1200*10**9

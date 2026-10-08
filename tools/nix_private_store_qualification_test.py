@@ -24,6 +24,18 @@ EXTRA = "/nix/store/" + "5" * 32 + "-unselected"
 OUT = "/nix/store/" + "4" * 32 + "-" + proof.OUTPUT_NAME
 
 
+
+def dump_db_wire(value):
+    # Exact pinned makeValidityRegistration(Base16, false); no algorithm prefix.
+    records = seed.registrations(value["registration"], value["roots"])
+    lines = []
+    for logical in value["roots"]:
+        row = list(records[logical]["record"])
+        row[1] = seed.expected_hash(row[1])
+        lines.extend(row)
+    return ("\n".join(lines)+"\n").encode()
+
+
 class Fixture:
     def __init__(self, root):
         self.root = Path(root)
@@ -71,7 +83,7 @@ class Fixture:
             assert input_file.read() == self.value["registration"].encode()
             return b""
         if command[-1] == "--dump-db":
-            return self.value["registration"].encode()
+            return dump_db_wire(self.value)
         private = Path(command[command.index("--store") + 1].removeprefix("local?root="))
         path = private / "nix/store" / OUT.rsplit("/", 1)[1]
         path.write_bytes(proof.RESULT)
@@ -92,6 +104,74 @@ class Fixture:
 
 
 class PrivateStoreModels(unittest.TestCase):
+
+
+    def test_pinned_unprefixed_dump_parses_without_relaxing_declared_seed_parser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            raw = dump_db_wire(model.value)
+            with self.assertRaises(ValueError):
+                seed.registrations(raw.decode("ascii"), model.value["roots"])
+            actual = proof.readback_records(raw, model.value["roots"])
+            expected = seed.registrations(model.value["registration"], model.value["roots"])
+            proof.compare_readback(expected, actual)
+            result = model.qualify()
+            self.assertTrue(result["seed_rechecked_after_build"])
+            self.assertEqual(len(model.calls), 3)
+
+    def test_readback_wire_rejects_nonhex_prefix_bad_ascii_or_unclosed_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            raw = dump_db_wire(model.value)
+            lines = raw.decode("ascii").splitlines()
+            prefixed = list(lines)
+            prefixed[1] = "sha256:"+prefixed[1]
+            upper = list(lines)
+            upper[1] = "A"*64
+            for changed in (b"\xff", ("\n".join(prefixed)+"\n").encode(),
+                            ("\n".join(upper)+"\n").encode(), raw+raw):
+                with self.assertRaises((ValueError, UnicodeError)):
+                    proof.readback_records(changed, model.value["roots"])
+            with self.assertRaises(ValueError):
+                proof.readback_records(raw, model.value["roots"][:-1])
+
+    def test_readback_field_mismatches_remain_distinct_and_stop_before_builder(self):
+        for field in ("hash", "size", "deriver", "references"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                model = Fixture(directory)
+                def runner(*args, **kwargs):
+                    raw = model.runner(*args, **kwargs)
+                    if args[0][-1] != "--dump-db":
+                        return raw
+                    lines = raw.decode("ascii").splitlines()
+                    if field == "hash":
+                        lines[1] = ("0" if lines[1][0] != "0" else "1")+lines[1][1:]
+                    elif field == "size":
+                        lines[2] = str(int(lines[2])+1)
+                    elif field == "deriver":
+                        lines[3] = "/nix/store/"+"6"*32+"-changed.drv"
+                    else:
+                        self.assertEqual(lines[4], "1")
+                        lines[5] = lines[0]
+                    return ("\n".join(lines)+"\n").encode()
+                with self.assertRaises(ValueError):
+                    model.qualify(runner)
+                self.assertEqual(proof.PHASE, "registration-readback-"+field)
+                self.assertEqual(len(model.calls), 2)
+                self.assertEqual(list(Path(directory).glob("nix-private-build-*")), [])
+
+    def test_readback_child_refusal_is_distinct_and_preserved_through_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                if args[0][-1] == "--dump-db":
+                    raise ValueError("modeled owned child refusal")
+                return model.runner(*args, **kwargs)
+            with self.assertRaises(ValueError):
+                model.qualify(runner)
+            self.assertEqual(proof.PHASE, "registration-readback-child")
+            self.assertEqual(len(model.calls), 1)
+            self.assertEqual(list(Path(directory).glob("nix-private-build-*")), [])
 
     def test_finite_reachable_seed_includes_shared_runtime_and_logical_companion(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -187,7 +267,7 @@ class PrivateStoreModels(unittest.TestCase):
             model = Fixture(directory)
             def runner(*args, **kwargs):
                 result = model.runner(*args, **kwargs)
-                return result.replace(b"sha256:", b"sha257:") if args[0][-1] == "--dump-db" else result
+                return result.replace(b"\n", b"\nsha257:", 1) if args[0][-1] == "--dump-db" else result
             with self.assertRaises(ValueError):
                 model.qualify(runner)
             self.assertEqual(len(model.calls), 2)
