@@ -76,7 +76,7 @@ python_binary(name = "uninstall", main = "install.py", srcs = ["pack.py", "porta
 python_binary(
     name = "dev_stage",
     main = "dev_stage.py",
-    srcs = ["portable.py"],
+    srcs = ["portable.py", "dev_generation.py", "dev_stage_selected.py"],
     file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
     data = ["//:omux", "//:omuxd", "//extensions:chromium_dev_package", ":chromium_dev_metadata",
             "@omux_nix//:runtime_libraries", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
@@ -87,6 +87,30 @@ python_binary(
             "--ca-bundle", "$(location @omux_nix//:ca_bundle)"],
 )
 python_test(name = "dev_stage_test", main = "test_dev_stage.py", srcs = ["dev_stage.py", "extension_metadata.py", "portable.py"])
+# Complete Linux development component stage, separate from historical core-only
+# retained routes. One declared graph; no registration/browser/service actions.
+python_binary(
+    name = "dev_stage_complete",
+    main = "dev_stage.py",
+    srcs = ["portable.py", "dev_generation.py", "dev_stage_selected.py"],
+    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file",
+                 "@omux_nix//:qt_runtime_libraries": "--qt-runtime-file",
+                 "@omux_nix//:qt_platform_plugins": "--qt-plugin"},
+    data = ["//:omux", "//:omuxd", "//clients/linux:control",
+            "//extensions:chromium_dev_package", ":chromium_dev_metadata",
+            ":native_runtime_resolution", "@omux_nix//:runtime_libraries",
+            "@omux_nix//:qt_runtime_libraries", "@omux_nix//:qt_platform_plugins",
+            "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
+    args = ["--select-generation", "--core", "$(location //:omux)", "--daemon", "$(location //:omuxd)",
+            "--control", "$(location //clients/linux:control)",
+            "--extension", "$(location //extensions:chromium_dev_package)",
+            "--metadata", "$(location :chromium_dev_metadata)",
+            "--resolution-witness", "$(location :native_runtime_resolution)",
+            "--patchelf", "$(location @omux_nix//:patchelf)",
+            "--ca-bundle", "$(location @omux_nix//:ca_bundle)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 python_binary(
     name = "yoga_payload",
     main = "yoga_payload.py",

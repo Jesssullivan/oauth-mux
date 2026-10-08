@@ -122,7 +122,7 @@ def inventory(directory):
     result, selected, witnesses, runtime_files = {}, {}, {}, {}
     entries, total = 0, 0
     retained = {"chromium/manifest.json", "chromium/shared/channel.mjs"}
-    commands = {"bin/" + name for name in ("omux", "omux-native-host", "omuxd")}
+    commands = {"bin/" + name for name in ("omux", "omux-native-host", "omuxd", "omux-control")}
 
     def walk(descriptor, prefix, depth):
         nonlocal entries, total
@@ -164,9 +164,9 @@ def inventory(directory):
                     elif relative in commands:
                         require(len(data) <= 4096, "launcher-byte-bound")
                         selected[relative] = data
-                    elif relative in ("source/core", "source/daemon"):
+                    elif relative in ("source/core", "source/daemon", "source/control"):
                         selected[relative] = data[:4]
-                    elif relative in ("lib/omux", "lib/omux-native-host", "lib/omuxd"):
+                    elif relative in ("lib/omux", "lib/omux-native-host", "lib/omuxd", "lib/omux-control"):
                         # Portable wrappers are tiny; fixture binaries remain
                         # hash-bound without keeping another large copy.
                         selected[relative] = data if len(data) <= 4096 else None
@@ -234,6 +234,7 @@ class SelectedGeneration:
     extension_version: str
     distribution: str
     artifact_sha256: tuple
+    control: Path | None = None
 
 
 def select_generation(root, generation, receipt_sha256, *, expected_artifacts=None, require_portable=False):
@@ -268,7 +269,8 @@ def select_generation(root, generation, receipt_sha256, *, expected_artifacts=No
                 and metadata.get("instance") == "dev" and metadata.get("native_host") == HOST,
                 "receipt-channel")
         artifacts = receipt.get("artifacts")
-        require(type(artifacts) is dict and set(artifacts) == {"core", "daemon", "extension"}
+        require(type(artifacts) is dict and set(artifacts) in (
+                {"core", "daemon", "extension"}, {"core", "daemon", "extension", "control"})
                 and all(type(value) is str and SHA256.fullmatch(value) for value in artifacts.values()),
                 "receipt-artifact-shape")
         require(expected_artifacts is None or expected_artifacts == artifacts, "source-artifact-mismatch")
@@ -282,22 +284,33 @@ def select_generation(root, generation, receipt_sha256, *, expected_artifacts=No
         portable = receipt.get("distribution") == "portable-linux"
         require(not require_portable or portable, "portable-generation-required")
         require(receipt.get("distribution") in (None, "portable-linux"), "generation-distribution")
+        has_control = "control" in artifacts
+        require(not has_control or portable, "control-portable-required")
         if portable:
             runtime = receipt.get("runtime")
             require(type(runtime) is dict and runtime.get("target") in ("x86_64-linux", "aarch64-linux")
                     and type(runtime.get("details")) is dict, "portable-runtime-shape")
             loader = runtime["details"].get("loader")
+            require(has_control == ("qt" in runtime["details"]), "control-runtime-binding")
             require(type(loader) is str and re.fullmatch(r"lib/omux/lib/[A-Za-z0-9+._-]{1,255}", loader)
                     and actual.get("runtime/" + loader, {}).get("mode") == 0o700
                     and selected.get("source/core") == b"\x7fELF"
                     and selected.get("source/daemon") == b"\x7fELF", "portable-runtime-binding")
+            if has_control:
+                qt = runtime["details"]["qt"]
+                require(type(qt) is dict and type(qt.get("loader")) is str
+                    and actual.get("runtime/"+qt["loader"], {}).get("mode") == 0o700
+                    and selected.get("source/control") == b"\x7fELF", "control-runtime-binding")
             from portable import verify_linux_runtime
             try:
                 verify_linux_runtime(runtime_files, {"target": runtime["target"], "runtime": runtime["details"],
                                                      "channel": "development"})
             except (ValueError, TypeError, KeyError) as error:
                 raise GenerationError("portable-runtime-invalid") from error
-        for name, source in (("omux", "core"), ("omux-native-host", "core"), ("omuxd", "daemon")):
+        commands = [("omux", "core"), ("omux-native-host", "core"), ("omuxd", "daemon")]
+        if has_control:
+            commands.append(("omux-control", "control"))
+        for name, source in commands:
             for executable in ("bin/" + name, "lib/" + name):
                 require(actual.get(executable, {}).get("mode") == 0o700, "generation-command-missing")
             source_path = "source/" + source if portable else "lib/" + name
@@ -339,7 +352,8 @@ def select_generation(root, generation, receipt_sha256, *, expected_artifacts=No
                                   directory / "bin/omux-native-host", directory / "bin/omuxd",
                                   directory / "chromium", identity, extension["version"],
                                   "portable-linux" if portable else "fixture",
-                                  tuple(sorted(artifacts.items())))
+                                  tuple(sorted(artifacts.items())),
+                                  directory / "bin/omux-control" if has_control else None)
     except GenerationError:
         raise
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError) as error:

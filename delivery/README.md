@@ -36,6 +36,26 @@ The development extension's public key is pinned; its extension identity is
 passed development staging predicates with empty descendants. That fixture
 does not prove manual Chromium loading or installed development/release coexistence.
 
+Source proposal `//delivery:dev_stage_complete` stages the CLI, native host,
+daemon and genuine Linux `omux-control` thin client together, with independently
+declared CLI/Qt closures, plugins and native resolution witness. It retains the
+control source digest and executable Qt loader in the selected generation; owned
+updates preserve its stable launcher and refuse removal through a core-only
+replacement. The complete target selects the captured transaction-local generation
+through the existing producer and emits its exact digest/all-four artifact pins;
+it does not recover identity from mutable `current`. Historical core-only routes
+and three-artifact receipts retain their
+scope. Complete-component staging and its models are unqualified until a fresh
+declared invocation passes. Manual Chromium reload, explicit daemon restart and
+their exact-generation join still require observed evidence; no ID-DEVLOOP or
+fleet acceptance is promoted by these declarations.
+The existing explicit private restart carrier also accepts an independently
+selected `--control-sha256` with the other three pins. It verifies/copies the
+complete retained generation and rechecks its control/Qt bytes before private
+process startup and readiness RPCs. Omitting that optional pin preserves the
+historical three-artifact contract. It does not launch the control client or
+browser, and its restart output retains the explicit native/reload exclusions.
+
 Declared `//delivery:chromium_dev_metadata` derives artifact digest, channel,
 extension identity and unsigned/proof limits from archive bytes. It requires
 explicit `--define=OMUX_SOURCE_COMMIT=<full commit>` and
