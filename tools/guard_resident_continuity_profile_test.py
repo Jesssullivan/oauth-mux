@@ -317,13 +317,23 @@ class LifecycleProducerModels(unittest.TestCase):
         admission,final,outer = self.final_and_outer()
         for key,value in (("same_process",False),("accepted_work_repeated",True),
             ("resident_installation_preserved",False),("resident_lifecycle_changed",True),
-            ("selected_current_grants_verified",1),("controller_exited",False)):
+            ("selected_current_grants_verified",1),("controller_exited",False),
+            ("scope",guard.NATIVE_FIXED["scope"]),("scope","unscoped")):
             changed = {**final,key:value}
             digest = guard.hashlib.sha256(guard.encoded(changed)).hexdigest()
             admission.completed_receipt = guard.encoded(changed),digest
             rewritten = copy.deepcopy(outer)
             rewritten["resident_continuity"]["output"]["sha256"] = digest
             with self.assertRaises(ValueError): admission.lifecycle_attempt(rewritten,210)
+
+    def test_native_input_scope_cannot_use_the_final_resident_envelope_scope(self):
+        _,final,_ = self.final_and_outer()
+        observation = {key:final[key] for key in (
+            "resident_daemon_same_process","resident_installation_preserved",
+            "resident_service_active_after_controller","resident_lifecycle_changed",
+            "resident_vault_owner_preserved")}
+        with self.assertRaises(ValueError):
+            guard.final_receipt({**native(),"scope":guard.SCOPE},observation,context())
 
     def test_valid_shape_changed_provenance_cannot_borrow_original_final_digest(self):
         _,final,outer = self.final_and_outer()
@@ -381,6 +391,7 @@ class ObserverModels(unittest.TestCase):
     def test_account_drain_is_exact_A_once_and_lost_ack_cannot_reissue(self):
         instance = guard.ControllerContext.__new__(guard.ControllerContext)
         instance.drain_account_handle = "b"*64
+        instance.deadline = 100*10**9
         instance.mutations = set()
         instance.recheck = lambda:None
         instance.observer = object()

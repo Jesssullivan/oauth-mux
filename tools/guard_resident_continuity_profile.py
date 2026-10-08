@@ -567,7 +567,11 @@ def joined_native_receipt(final,outer,digest,context):
         and encoded({key:final[key] for key in CONTEXT_FIELDS}) == encoded(context))
     require(type(digest) is str and HEX.fullmatch(digest)
         and hashlib.sha256(encoded(final)).hexdigest() == digest)
+    # final_receipt replaces the native scope in its flat envelope. Require
+    # that envelope scope before restoring the native validator's fixed scope.
+    require(final["scope"] == SCOPE)
     native = {key:final[key] for key in set(NATIVE_FIXED)|NATIVE_VARIABLE}
+    native["scope"] = NATIVE_FIXED["scope"]
     validate_native(native,context)
     observation = {key:final[key] for key in (
         "resident_daemon_same_process","resident_installation_preserved",
