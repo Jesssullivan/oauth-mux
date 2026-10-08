@@ -1833,6 +1833,7 @@ filegroup(
     name = "resident_owned_update_sources",
     srcs = ["guard_resident_owned_update.py", "//delivery:install.py", "//delivery:pack.py",
         "//delivery:resident_enrollment.py", "//delivery:resident_owned_start.py", "//delivery:portable.py"],
+    visibility = ["//delivery:__pkg__"],
 )
 
 python_test(
