@@ -12,6 +12,7 @@ load(":codex_fresh_runtime_repository_selector_test.bzl", "codex_fresh_runtime_r
 load(":codex_fresh_native_package_visibility_test.bzl", "codex_fresh_native_package_visibility_test")
 
 _CODEX_SDK_SOURCES = [
+    "codex_protocol_history_package_consumer.py",
     "codex_staged_native_package_consumer.py",
     "codex_native_candidate_cache.py",
     "codex_native_fresh_completion.py",
@@ -21,6 +22,13 @@ _CODEX_SDK_SOURCES = [
     "fetch_codex_archives.py", "restore_pristine_inputs.py",
     "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py",
     "//integrations/codex-upstream:restore_source.py", "//integrations/codex-adapter-delivery:retirement_delta.py",
+]
+
+_CODEX_PROTOCOL_HISTORY_SOURCES = [
+    "codex_protocol_history_native.py", "codex_protocol_history_completed_inputs.py",
+    "codex_protocol_history_cli.py", "codex_protocol_history_source.py",
+    "codex_protocol_history_metadata.py", "codex_protocol_history_metadata_producer.py",
+    "codex_protocol_history_sdk_export.py",
 ]
 
 _CODEX_GIT_INPUT_SOURCES = _CODEX_SDK_SOURCES + [
@@ -1049,7 +1057,7 @@ python_binary(
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"],
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"],
     visibility = ["//visibility:public"],
 )
 
@@ -1059,7 +1067,7 @@ python_test(
     srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
 )
 
 python_test(
@@ -1460,6 +1468,53 @@ python_test(
     timeout = "long",
 )
 
+
+# Fixed metadata-only regeneration; instantiate its inputs only after an actual
+# independent protocol-history source receipt exists. No native build is run.
+python_test(
+    name = "codex_protocol_history_metadata_producer",
+    main = "codex_protocol_history_metadata_producer.py",
+    srcs = ["codex_live_source.py", "codex_protocol_history_source.py",
+            "codex_protocol_history_metadata.py", "codex_retained_sdk_export.py"],
+    data = ["@omux_codex_protocol_history_source_inputs//:inputs",
+            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:all_tools"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+python_test(
+    name = "codex_protocol_history_metadata_test",
+    main = "codex_protocol_history_metadata_test.py",
+    srcs = ["codex_live_source.py", "codex_live_source_test.py",
+            "codex_protocol_history_source.py", "codex_protocol_history_metadata.py",
+            "codex_protocol_history_metadata_producer.py", "codex_retained_sdk_export.py"],
+)
+
+# Separate full selected-graph copy. It regenerates its own hub first; no caller
+# supplied success receipt and no change to the historical retained exporter.
+python_test(
+    name = "codex_protocol_history_sdk_export_producer",
+    main = "codex_protocol_history_sdk_export.py",
+    srcs = ["codex_live_source.py", "codex_protocol_history_source.py",
+            "codex_protocol_history_metadata.py", "codex_protocol_history_metadata_producer.py",
+            "codex_retained_sdk_export.py"],
+    data = ["@omux_codex_protocol_history_source_inputs//:inputs",
+            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:all_tools"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+python_test(
+    name = "codex_protocol_history_sdk_export_test",
+    main = "codex_protocol_history_sdk_export_test.py",
+    srcs = ["codex_live_source.py", "codex_live_source_test.py",
+            "codex_protocol_history_source.py", "codex_protocol_history_metadata.py",
+            "codex_protocol_history_metadata_producer.py", "codex_protocol_history_metadata_test.py",
+            "codex_retained_sdk_export.py", "codex_protocol_history_sdk_export.py"],
+)
+
+exports_files(["codex_protocol_history_metadata_inputs.bzl"])
+
 # Finite public read-only retained SDK producer. Manual, local, never remote.
 # Arguments come from the root-selected finite metadata repository.
 python_test(
@@ -1504,7 +1559,7 @@ python_test(
         "guard_cache.py",
         "//integrations/codex-owner-runtime:runtime_package.py",
         "//delivery:portable.py",
-    ] + _CODEX_SDK_SOURCES,
+    ] + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
     data = [
         "@omux_fresh_native_package_data//:inputs",
         ":fresh_native_runtime_files",
@@ -1530,7 +1585,7 @@ python_test(
     name = "codex_staged_native_package_consumer_test",
     main = "codex_staged_native_package_consumer_test.py",
     srcs = ["codex_fresh_native_runtime.py", "codex_native_staged_compilation_test.py", "guard_cache.py", "//delivery:portable.py",
-        "//integrations/codex-owner-runtime:runtime_package.py"] + _CODEX_SDK_SOURCES,
+        "//integrations/codex-owner-runtime:runtime_package.py"] + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
 )
 python_test(
     name = "codex_fresh_native_runtime_test",
@@ -1540,7 +1595,7 @@ python_test(
         "codex_fresh_native_runtime.py",
         "//integrations/codex-owner-runtime:runtime_package.py",
         "//delivery:portable.py",
-    ] + _CODEX_SDK_SOURCES,
+    ] + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
 )
 python_test(
     name = "codex_private_import_test",
@@ -1553,7 +1608,7 @@ python_test(
 filegroup(
     name = "codex_fresh_live_support",
     srcs = ["codex_fresh_native_runtime.py","guard_fresh_native_runtime_input.py","guard_cache.py",
-        "//integrations/codex-owner-runtime:runtime_package.py","//delivery:portable.py"] + _CODEX_SDK_SOURCES,
+        "//integrations/codex-owner-runtime:runtime_package.py","//delivery:portable.py"] + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
     visibility = ["//visibility:public"],
 )
 exports_files(["codex_live_fresh_runtime_repository.bzl","codex_live_fresh_runtime_repository_input.py"])
@@ -1569,4 +1624,58 @@ python_test(
     srcs = ["guard_codex_fresh_live_profile.py","guard_codex_live_profile.py","codex_live_fresh_runtime_repository_input.py",
         "execution_guard.py","guard_cache.py","guard_test_evidence.py","guard_dependency_profile.py","system_mask_policy.py",
         "guard_owner_runtime_input.py","codex_owner_runtime_input.py"],
+)
+
+python_test(
+    name = "codex_protocol_history_package_consumer_test",
+    main = "codex_protocol_history_package_consumer_test.py",
+    srcs = [
+        "codex_fresh_native_runtime.py", "guard_cache.py",
+        "codex_protocol_history_completed_inputs_test.py", "codex_protocol_history_cli_test.py",
+        "codex_protocol_history_native_test.py", "codex_protocol_history_sdk_export_test.py",
+        "codex_protocol_history_metadata_test.py", "codex_live_source_test.py",
+        "//integrations/codex-owner-runtime:runtime_package.py", "//delivery:portable.py",
+    ] + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
+)
+
+# Selected SDK inventory and whole-chain models; never dispatch native tools.
+python_test(
+    name = "codex_protocol_history_native_test",
+    main = "codex_protocol_history_native_test.py",
+    srcs = ["codex_protocol_history_sdk_export_test.py", "codex_protocol_history_metadata_test.py",
+        "codex_live_source_test.py", "execution_guard.py", "guard_cache.py", "guard_test_evidence.py",
+        "system_mask_policy.py", "guard_dependency_profile.py", "guard_site_profile.py",
+        "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
+        "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
+        "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"]
+        + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
+        + _YOGA_DELIVERY_GUARD_SOURCES,
+)
+
+# Completed-record/one-shot CLI models do not launch native or provider work.
+python_test(
+    name = "codex_protocol_history_completed_inputs_test",
+    main = "codex_protocol_history_completed_inputs_test.py",
+    srcs = ["codex_protocol_history_cli_test.py", "codex_protocol_history_native_test.py",
+        "codex_protocol_history_sdk_export_test.py", "codex_protocol_history_metadata_test.py",
+        "codex_live_source_test.py", "execution_guard.py", "guard_cache.py", "guard_test_evidence.py",
+        "system_mask_policy.py", "guard_dependency_profile.py", "guard_site_profile.py",
+        "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
+        "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
+        "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"]
+        + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
+        + _YOGA_DELIVERY_GUARD_SOURCES,
+)
+
+python_test(
+    name = "codex_protocol_history_cli_test",
+    main = "codex_protocol_history_cli_test.py",
+    srcs = ["codex_protocol_history_native_test.py", "codex_protocol_history_sdk_export_test.py",
+        "codex_protocol_history_metadata_test.py", "codex_live_source_test.py", "execution_guard.py",
+        "guard_cache.py", "guard_test_evidence.py", "system_mask_policy.py", "guard_dependency_profile.py",
+        "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
+        "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
+        "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"]
+        + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
+        + _YOGA_DELIVERY_GUARD_SOURCES,
 )

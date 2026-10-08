@@ -131,16 +131,28 @@ class Admission:
         graph_inputs = producer_run['graph_inputs']
         fresh.require('tools/codex_fresh_native_runtime.py' in graph_inputs
             and fresh.HASH.fullmatch(selected['producer_source_sha256']))
+        if package.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+            from codex_protocol_history_package_consumer import validate_producer_graph
+            validate_producer_graph(graph_inputs)
+            fresh.require(type(producer_run['exit']) is int and producer_run['exit'] == 0
+                and type(producer_run['workload_exit']) is int and producer_run['workload_exit'] == 0
+                and producer_run['manager'] == 'system' and producer_run['cleanup']['state'] == 'empty'
+                and producer_run['source_dirty'] == 'false',
+                'protocol-history package needs an actual successful owned producer')
         if package.get('kind') == 'omux-staged-native-package-selection-v1':
             from codex_staged_native_package_consumer import validate_producer_graph
             validate_producer_graph(graph_inputs)
         fresh.require(set(package['files']) == fresh.package_roles(package))
         staged_values = None
+        if package.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+            from codex_protocol_history_package_consumer import load_inputs
+            values,protocol_values,staged_values = load_inputs(package,
+                lambda role,pin,maximum:read(pin,maximum))
         if package.get('kind') == 'omux-staged-native-package-selection-v1':
             from codex_staged_native_package_consumer import load_inputs
             values,protocol_values,staged_values = load_inputs(package,
                 lambda role,pin,maximum:read(pin,maximum))
-        else:
+        elif staged_values is None:
             values = {name:read(pin, fresh.runtime.MAX_ORIGINAL_BYTES if name == 'codex'
                 else fresh.MAX_METADATA) for name,pin in package['files'].items()}
         protocol = package['protocol_schema_files']

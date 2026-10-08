@@ -147,6 +147,10 @@ codex_live_inputs(name = "omux_codex_live_source_inputs")
 codex_protocol_history_inputs = use_repo_rule("//tools:codex_protocol_history_source_inputs.bzl", "codex_protocol_history_source_inputs")
 codex_protocol_history_inputs(name = "omux_codex_protocol_history_source_inputs")
 
+# No instance or future source pin: root may instantiate this finite declaration
+# only after actual source production and independent operator JSON readback.
+codex_protocol_history_metadata_inputs = use_repo_rule("//tools:codex_protocol_history_metadata_inputs.bzl", "codex_protocol_history_metadata_inputs")
+
 # Exact successful, independently selected public SDK qualification output.
 sdk_selection = use_repo_rule("//tools:codex_sdk_selection_repository.bzl", "codex_sdk_selection_repository")
 sdk_selection(

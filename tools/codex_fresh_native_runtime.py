@@ -199,6 +199,9 @@ def validate_export_producer(selection, exported):
 
 def validate_selection_paths(selection):
     """Refuse reads outside the exact public producer/guard output namespaces."""
+    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        from codex_protocol_history_package_consumer import validate_paths
+        return validate_paths(selection)
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
         from codex_staged_native_package_consumer import validate_paths
         return validate_paths(selection)
@@ -239,6 +242,9 @@ def validate_selection_paths(selection):
 
 def validate_protocol_inventory(selection):
     """Enumerate only the complete two declared public JSON schema subtrees."""
+    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        from codex_protocol_history_package_consumer import validate_protocol_inventory as verify
+        return verify(selection)
     roots = selection['protocol_schema_roots']
     require(set(roots) == {'stable','experimental'}, 'fresh protocol JSON root modes differ')
     observed = set()
@@ -521,6 +527,9 @@ def validate_combined_cli(group, selection, values, receipt, source, exported):
         'combined actual CLI bytes differ from post-cleanup artifact evidence')
 
 def package_roles(selection):
+    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        from codex_protocol_history_package_consumer import ROLES as protocol_roles
+        return protocol_roles
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
         from codex_staged_native_package_consumer import ROLES as staged_roles
         return staged_roles
@@ -530,6 +539,10 @@ def package_roles(selection):
 
 def validate_chain(selection, values, protocol_values, staged_values=None):
     """Consume independently selected source/build/test/schema evidence bytes."""
+    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        from codex_protocol_history_package_consumer import validate_chain as verify
+        require(isinstance(staged_values,dict), 'protocol-history declared actual evidence required')
+        return verify(selection,values,protocol_values,staged_values)
     validate_selection_paths(selection)
     roles = package_roles(selection)
     require(set(selection['files']) == roles and set(values) == roles,
@@ -829,6 +842,12 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
         after = read_extra(selection,envelopes(selection,values,receipts),receipts)
         require(validate_chain(selection,values,protocol_values,after) == chain,
             'staged complete chain/output rehash changed after packaging cleanup')
+    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        from codex_protocol_history_package_consumer import load_inputs
+        after_values,after_protocol,after_extra = load_inputs(selection,
+            lambda role,pin,maximum:read_selected(canonical_path(pin['path']),pin,maximum))
+        require(validate_chain(selection,after_values,after_protocol,after_extra) == chain,
+            'protocol-history full completed chain changed after packaging')
     validate_protocol_inventory(selection)
     output_file(output, 'fresh-native-runtime.tar.gz', payload, 0o444)
     output_file(output, 'runtime-manifest.json', encoded(manifest), 0o444)
@@ -863,6 +882,8 @@ def main():
     entries = {**selection['files'],
         **{'protocol/'+n:p for n,p in selection['protocol_schema_files'].items()}}
     staged_values = None
+    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        entries.update({'protocol-history/'+name:pin for name,pin in selection['protocol_history_artifact_files'].items()})
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
         entries.update({'staged/'+name:pin for name,pin in selection['staged_artifact_files'].items()})
     require(set(aliases) == set(entries), 'fresh runtime declared input aliases differ')
@@ -874,6 +895,10 @@ def main():
         path = alias.resolve(strict=True)
         require(str(path) == pin['path'], 'fresh runtime declared alias resolution differs')
         return path
+    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        from codex_protocol_history_package_consumer import load_inputs
+        values,protocol_values,staged_values = load_inputs(selection,
+            lambda role,pin,maximum:read_selected(selected_alias(role,pin),pin,maximum),selected_alias)
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
         from codex_staged_native_package_consumer import load_inputs
         values,protocol_values,staged_values = load_inputs(selection,
@@ -895,7 +920,7 @@ def main():
     receipt = package(selection,values,protocol_values,runtime_files,args,output,staged_values)
     # Prove all selected original inputs remain byte-identical after packaging.
     for role,pin in entries.items():
-        if role.startswith('staged/'):
+        if role.startswith(('staged/','protocol-history/')):
             continue  # read_extra streamed and rehashed each declared library/log after cleanup.
         read_selected(canonical_path(pin['path']),pin,
             runtime.MAX_ORIGINAL_BYTES if role=='codex' else MAX_METADATA)

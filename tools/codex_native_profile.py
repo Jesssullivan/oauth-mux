@@ -199,23 +199,34 @@ def command(args, run, locked_path, bash, candidate=None):
     if args.native_mode == PRODUCTION_LIBRARIES_MODE:
         production_libraries_admission(args, candidate)
     source_io.DEADLINE = args.native_deadline
-    receipt, exported = verify_inputs(args)
+    return command_from_verified_inputs(args, run, locked_path, bash, candidate,
+        verify_inputs(args), MODES,
+        QUALIFICATION_GATES if args.native_mode in ('qualification', COMBINED_MODE) else None)
+
+
+def command_from_verified_inputs(args, run, locked_path, bash, candidate,
+        qualified, modes, gates=None, *, prepare=True):
+    """Shared immutable argv builder; selection/admission remains in each owner."""
+    require(type(prepare) is bool, 'native preparation flag must be literal')
+    receipt, exported = qualified
     # validate_export has already qualified every explicitly selected public
     # registry metadata byte against the retained MODULE lock's exact hashes.
     registry_cache = exported['registry_cache']
     require(Path(registry_cache) == args.native_export_root / 'registry-cache',
             'registry cache must remain in the sealed qualified export')
     source = candidate.source if candidate is not None else copy_source(args.native_source_root, receipt, run)
-    for name in ('home', 'home/cache', 'home/config', 'home/state'):
-        (run / name).mkdir(mode=0o700)
+    if prepare:
+        for name in ('home', 'home/cache', 'home/config', 'home/state'):
+            (run / name).mkdir(mode=0o700)
     status = run / 'native-workspace-status'
     require(re.fullmatch(r'/nix/store/[a-z0-9]{32}-bash-[^/\s]+/bin/bash', bash), 'immutable Bash required')
-    with status.open('xb') as stream:
-        stream.write(('#!' + bash + '\nprintf "STABLE_GIT_COMMIT ' + COMMIT + '\\n"\n').encode())
-        stream.flush()
-        os.fchmod(stream.fileno(), 0o500)
-        os.fsync(stream.fileno())
-    verb, targets, test_filter = MODES[args.native_mode]
+    if prepare:
+        with status.open('xb') as stream:
+            stream.write(('#!' + bash + '\nprintf "STABLE_GIT_COMMIT ' + COMMIT + '\\n"\n').encode())
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o500)
+            os.fsync(stream.fileno())
+    verb, targets, test_filter = modes[args.native_mode]
     argv = [BAZEL, '--batch', '--output_user_root=' + str(run / 'user-root'), '--output_base=' + str(candidate.lease.output_base if candidate is not None else run / 'output-base'),
         '--host_jvm_args=-Xmx768m', '--host_jvm_args=-XX:ActiveProcessorCount=1', '--ignore_all_rc_files', verb,
         '--compilation_mode=opt', '--lockfile_mode=error', '--repository_disable_download',
@@ -244,9 +255,9 @@ def command(args, run, locked_path, bash, candidate=None):
         argv += ['--local_test_jobs=1', '--test_sharding_strategy=disabled', '--test_timeout=1200', '--test_env=RUST_TEST_THREADS=1',
             '--test_env=RUST_MIN_STACK=8388608', '--test_env=PATH=' + locked_path, '--nocache_test_results',
             '--nozip_undeclared_test_outputs', '--test_output=errors']
-        if args.native_mode in ('qualification', COMBINED_MODE):
+        if gates is not None:
             argv += ['--test_arg=--exact', '--test_arg=--format=pretty', '--test_arg=--color=never']
-            argv += ['--test_arg=' + name for names in QUALIFICATION_GATES.values() for name in names]
+            argv += ['--test_arg=' + name for names in gates.values() for name in names]
         else:
             argv.append('--test_filter=' + test_filter)
     return {'argv': argv + list(targets), 'cwd': str(source), 'source_inventory_sha256': receipt['inventory_sha256'],

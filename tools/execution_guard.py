@@ -1090,6 +1090,11 @@ def _main(argv, admission_resources):
     parser.add_argument('--native-staged-compilation', type=Path)
     parser.add_argument('--native-staged-compilation-sha256')
     parser.add_argument('--native-stage', type=int)
+    parser.add_argument('--native-protocol-history', type=Path)
+    parser.add_argument('--native-protocol-history-sha256')
+    parser.add_argument('--native-protocol-stage', type=int)
+    parser.add_argument('--native-protocol-cli', type=Path)
+    parser.add_argument('--native-protocol-cli-sha256')
     parser.add_argument('--yoga-delivery-epoch')
     parser.add_argument('--yoga-qualification', type=Path)
     parser.add_argument('--yoga-qualification-sha256')
@@ -1128,9 +1133,20 @@ def _main(argv, admission_resources):
     native_cache = None
     native_fresh = None
     native_staged = None
+    native_history = None
+    native_cli = None
     native_inputs = (args.native_mode, args.native_source_root, args.native_source_sha256,
                      args.native_export_root, args.native_export_sha256, args.native_patch_sha256)
     if args.profile == 'codex-native':
+        cli_selected = any(value is not None for value in (args.native_protocol_cli, args.native_protocol_cli_sha256))
+        if cli_selected:
+            import codex_protocol_history_cli as cli_profile
+            cli_selected = cli_profile.selected(args)
+        history_selected = any(value is not None for value in (args.native_protocol_history,
+            args.native_protocol_history_sha256, args.native_protocol_stage))
+        if history_selected:
+            import codex_protocol_history_native as history_profile
+            history_selected = history_profile.selected(args)
         import codex_native_fresh_completion as fresh_completion
         import codex_native_staged_compilation as staged_compilation
         fresh_completion_selected = fresh_completion.selected(args)
@@ -1155,8 +1171,13 @@ def _main(argv, admission_resources):
             raise ValueError('native phase2 restricted to exact completion retry and independent schema')
         if args.native_cache_attempt is not None and not 1 <= args.native_cache_attempt <= (7 if phase2_selected else 6):
             raise ValueError('native continuation exceeds explicitly selected finite phase')
-        args.native_aggregate_seconds = 3600 if phase2_selected or fresh_completion_selected or staged_compilation_selected else 1200
-        import codex_native_profile as native_sdk
+        args.native_aggregate_seconds = 3600 if phase2_selected or fresh_completion_selected or staged_compilation_selected or history_selected or cli_selected else 1200
+        if cli_selected:
+            native_sdk = cli_profile
+        elif history_selected:
+            native_sdk = history_profile
+        else:
+            import codex_native_profile as native_sdk
         args.native_deadline = delivery_entry_deadline_ns / 10**9
         if arguments or args.native_mode not in native_sdk.MODES or any(v is None for v in native_inputs):
             raise ValueError('native profile requires finite mode and independent receipts')
@@ -1175,7 +1196,7 @@ def _main(argv, admission_resources):
         if args.state_dir != native_sdk.STATE:
             raise ValueError('native profile requires fixed fresh fast state')
         arguments = [native_sdk.MODES[args.native_mode][0], *native_sdk.MODES[args.native_mode][1]]
-    elif any(v is not None for v in native_inputs) or args.native_owned_candidate_cache or args.native_cache_attempt is not None or args.native_cache_transition is not None or args.native_cache_transition_sha256 is not None or args.native_cache_phase2 is not None or args.native_cache_phase2_sha256 is not None or args.native_fresh_completion is not None or args.native_fresh_completion_sha256 is not None or args.native_global_attempt is not None or args.native_staged_compilation is not None or args.native_staged_compilation_sha256 is not None or args.native_stage is not None:
+    elif any(v is not None for v in native_inputs) or args.native_owned_candidate_cache or args.native_cache_attempt is not None or args.native_cache_transition is not None or args.native_cache_transition_sha256 is not None or args.native_cache_phase2 is not None or args.native_cache_phase2_sha256 is not None or args.native_fresh_completion is not None or args.native_fresh_completion_sha256 is not None or args.native_global_attempt is not None or args.native_staged_compilation is not None or args.native_staged_compilation_sha256 is not None or args.native_stage is not None or args.native_protocol_history is not None or args.native_protocol_history_sha256 is not None or args.native_protocol_stage is not None or args.native_protocol_cli is not None or args.native_protocol_cli_sha256 is not None:
         raise ValueError('native inputs are exclusive to native profile')
     site = None
     site_qualification = None
@@ -1497,7 +1518,7 @@ def _main(argv, admission_resources):
             locked_path = ':'.join(host['packages'][name]['out'] + '/bin' for name in ('bash', 'coreutils', 'python', 'git'))
             bash = immutable(Path(host['packages']['bash']['out']) / 'bin/bash')
             native_controller_graph = graph_digest(Path.cwd())
-            if args.native_owned_candidate_cache or fresh_completion_selected or staged_compilation_selected:
+            if args.native_owned_candidate_cache or fresh_completion_selected or staged_compilation_selected or history_selected or cli_selected:
                 from codex_native_candidate_cache import Candidate
                 def previous_empty(previous):
                     if previous['manager'] != args.manager:
@@ -1528,7 +1549,15 @@ def _main(argv, admission_resources):
                         pin.close()
                 tools = {'bazel': bazel, 'python': python, 'systemd_run': runner, 'systemctl': control,
                     'bootstrap': str(bootstrap), 'closure': str(closure), 'java': str(java), 'bash': bash}
-                if staged_compilation_selected:
+                if cli_selected:
+                    native_cli = cli_profile.Admission(args, run, tools, native_controller_graph,
+                        locked_path, args.manager, previous_empty, delivery_entry_monotonic_ns)
+                    resources.callback(native_cli.close)
+                elif history_selected:
+                    native_history = history_profile.Admission(args, run, tools, native_controller_graph,
+                        locked_path, args.manager, previous_empty, delivery_entry_monotonic_ns)
+                    resources.callback(native_history.close)
+                elif staged_compilation_selected:
                     native_staged = staged_compilation.Admission(args, run, tools, native_controller_graph,
                         locked_path, args.manager, previous_empty)
                     resources.callback(native_staged.close)
@@ -1541,9 +1570,10 @@ def _main(argv, admission_resources):
                         args.manager, previous_empty)
                     resources.callback(native_cache.close)
             args.native_deadline = native_sdk.completion_deadline(args,
-                delivery_entry_monotonic_ns, native_staged or native_fresh or native_cache)
-            args.native_original_deadline_ns = delivery_entry_monotonic_ns + args.native_aggregate_seconds * 10**9
-            native_plan = native_sdk.command(args, run, locked_path, bash, native_staged or native_fresh or native_cache)
+                delivery_entry_monotonic_ns, native_cli or native_history or native_staged or native_fresh or native_cache)
+            args.native_original_deadline_ns = (native_cli.original_deadline_ns if native_cli else native_history.original_deadline_ns if native_history
+                else delivery_entry_monotonic_ns + args.native_aggregate_seconds * 10**9)
+            native_plan = native_sdk.command(args, run, locked_path, bash, native_cli or native_history or native_staged or native_fresh or native_cache)
             command = native_plan['argv']
             workload_cwd = Path(native_plan['cwd'])
             environment.update(native_plan['environment'])
@@ -1613,7 +1643,7 @@ def _main(argv, admission_resources):
                     parts = [sudo, '-S', '-p', '', '--'] + parts
                 if delivery_settings or owner_input is not None or live_input is not None:
                     deadline = min(deadline, delivery_entry_deadline_ns / 10**9) if deadline is not None else delivery_entry_deadline_ns / 10**9
-                if native_sdk and phase != 'cleanup':
+                if native_sdk and (phase != 'cleanup' or native_history is not None or native_cli is not None):
                     deadline = min(deadline, args.native_deadline) if deadline is not None else args.native_deadline
                 return controller_run(parts, operation=operation, phase=phase, diagnose=diagnose,
                     stdin=descriptor if descriptor is not None else subprocess.DEVNULL,
@@ -1747,8 +1777,8 @@ def _main(argv, admission_resources):
                 launch += ['--property=BindReadOnlyPaths=' + yoga_admission['witness']['source'] + ':' + yoga_admission['witness']['destination']]
             if native_sdk:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(native_sdk.readonly_paths(args, native_plan))]
-                if native_cache is not None or native_fresh is not None or native_staged is not None:
-                    launch += ['--property=BindPaths=' + str((native_staged or native_fresh or native_cache).lease.output_base)]
+                if native_cache is not None or native_fresh is not None or native_staged is not None or native_history is not None or native_cli is not None:
+                    launch += ['--property=BindPaths=' + str((native_cli or native_history or native_staged or native_fresh or native_cache).lease.output_base)]
             if live_input is not None:
                 live_binds = fresh_live.readonly_bindings(fresh_input,live_input.binding()) if fresh_input else [live_input.binding()]
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(live_binds)]
@@ -1818,7 +1848,9 @@ def _main(argv, admission_resources):
                    runtime_seconds=delivery_runtime_seconds,
                    native_phase2=(native_cache is not None and native_cache.phase2_verified_before_launch is True)
                        or (native_fresh is not None and native_fresh.fresh_verified_before_launch is True)
-                       or (native_staged is not None and native_staged.staged_verified_before_launch is True))
+                       or (native_staged is not None and native_staged.staged_verified_before_launch is True)
+                       or (native_history is not None and native_history.verified_before_launch is True)
+                       or (native_cli is not None and native_cli.verified_before_launch is True))
             if native_sdk:
                 native_sdk.verify_readonly(actual, args, native_plan)
             if live_input is not None:
@@ -1906,6 +1938,10 @@ def _main(argv, admission_resources):
                     except (OSError, ValueError):
                         delivery_lock_verified_before_cleanup = False
                 cleanup_deadline = time.monotonic() + CLEANUP_SECONDS
+                if native_cli is not None:
+                    cleanup_deadline = min(cleanup_deadline, native_cli.original_deadline_ns / 10**9)
+                if native_history is not None:
+                    cleanup_deadline = min(cleanup_deadline, native_history.original_deadline_ns / 10**9)
                 if delivery_settings or owner_input is not None or live_input is not None:
                     cleanup_deadline = min(cleanup_deadline, delivery_entry_deadline_ns / 10**9)
                 if yoga:
@@ -1982,6 +2018,10 @@ def _main(argv, admission_resources):
                         native_fresh.verify_after_cleanup(verified_native_inputs)
                     if native_staged is not None:
                         native_staged.verify_after_cleanup(verified_native_inputs)
+                    if native_history is not None:
+                        native_history.verify_after_cleanup(verified_native_inputs)
+                    if native_cli is not None:
+                        native_cli.verify_after_cleanup(verified_native_inputs)
                     native_verified_after = True
                 except (OSError, ValueError, KeyError, TypeError):
                     native_verified_after = False
@@ -2031,14 +2071,16 @@ def _main(argv, admission_resources):
                     site_source_verified_after = False
             if arguments[0] == 'test' and epoch_start_ns is not None and cleanup:
                 try:
-                    manifest = capture_test_evidence(native_staged.lease.output_base if native_staged
+                    manifest = capture_test_evidence(native_cli.lease.output_base if native_cli
+                        else native_history.lease.output_base if native_history
+                        else native_staged.lease.output_base if native_staged
                         else native_fresh.lease.output_base if native_fresh
                         else lease.output_base if lease else run / 'output-base',
                                                      run, arguments[1:], result, epoch_start_ns)
                     if native_sdk:
                         qualification_context = None
                         if args.native_mode == 'qualification-cli':
-                            selected_native = native_staged or native_fresh or native_cache
+                            selected_native = native_cli or native_history or native_staged or native_fresh or native_cache
                             if selected_native is None or native_plan['candidate_output_base'] is None:
                                 raise ValueError('combined qualification requires exact owned output base')
                             qualification_context = {
@@ -2105,7 +2147,7 @@ def _main(argv, admission_resources):
                        'profile': args.profile, 'coordination_directory': str(coordination),
                        'native_sdk': {'mode': args.native_mode, 'plan': native_plan,
                            'aggregate_seconds': args.native_aggregate_seconds,
-                           'original_entry_monotonic_ns': delivery_entry_monotonic_ns,
+                           'original_entry_monotonic_ns': native_cli.original_entry_ns if native_cli else native_history.original_entry_ns if native_history else delivery_entry_monotonic_ns,
                            'original_deadline_monotonic_ns': args.native_original_deadline_ns,
                            'source_receipt_sha256': args.native_source_sha256,
                            'export_receipt_sha256': args.native_export_sha256,
@@ -2113,6 +2155,8 @@ def _main(argv, admission_resources):
                        'native_candidate_cache': native_cache.facts() if native_cache is not None else None,
                        'native_fresh_completion': native_fresh.facts() if native_fresh is not None else None,
                        'native_staged_compilation': native_staged.facts() if native_staged is not None else None,
+                       'native_protocol_history': native_history.facts() if native_history is not None else None,
+                       'native_protocol_history_cli': native_cli.facts() if native_cli is not None else None,
                        'codex_live_input': {'verified_after_cleanup': live_input_verified_after,
                            'selected_sources': live_input.count, 'source_content_read_by_guard': False} if live_input else None,
                        'codex_live_binding_readback': live_binding_readback,
@@ -2166,7 +2210,8 @@ def _main(argv, admission_resources):
                        'cache_policy': 2 if args.reuse_owned_cache else None,
                        'cache_profile': cache_profile,
                        'graph_inputs': graph_inputs,
-                       'output_base': str(native_staged.lease.output_base if native_staged
+                       'output_base': str(native_cli.lease.output_base if native_cli else native_history.lease.output_base if native_history
+                           else native_staged.lease.output_base if native_staged
                            else native_fresh.lease.output_base if native_fresh
                            else lease.output_base if lease else run / 'output-base'),
                        'artifact_epoch': identifier,
@@ -2200,6 +2245,12 @@ def _main(argv, admission_resources):
                 final_status = receipt['exit']
             if native_staged is not None:
                 receipt_raw = staged_compilation.terminal_receipt(native_staged, receipt)
+                final_status = receipt['exit']
+            if native_history is not None:
+                receipt_raw = history_profile.terminal_receipt(native_history, receipt)
+                final_status = receipt['exit']
+            if native_cli is not None:
+                receipt_raw = cli_profile.terminal_receipt(native_cli, receipt)
                 final_status = receipt['exit']
             descriptor = os.open(run / 'receipt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(descriptor, 'w') as output:

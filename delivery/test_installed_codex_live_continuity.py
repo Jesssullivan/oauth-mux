@@ -195,12 +195,30 @@ def fresh_runtime_bundle(candidate, receipt, pin_path, verifier=None):
             "fresh manifest differs from independently admitted input")
     return manifest, files
 
+# This distinct fourth delta is a public source identity, not a live claim.
+PROTOCOL_HISTORY_PATCHES = ["5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6","3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53","84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5","b4dd868ac11d863f65e9fe3031d83b8fb7164a5551abca20dc46424c0465c48c"]
+
+def validate_fresh_patches(pins):
+    require(type(pins) is list and (
+        len(pins) == 3 and all(type(pin) is str and re.fullmatch(r"[0-9a-f]{64}",pin) for pin in pins)
+        or pins == PROTOCOL_HISTORY_PATCHES),
+        "fresh runtime patch chain differs")
+
 def runtime_identity(manifest, kind):
     if kind == "retained":
         return {"upstream_commit": manifest["candidate"]["upstream_commit"],
                 "candidate_patch_sha256": manifest["candidate"]["patch_sha256"]}
     require(kind == "fresh" and manifest.get("kind") == FRESH_KIND,
             "runtime identity kind differs")
+    validate_fresh_patches(manifest["chain"]["patch_sha256"])
+    if len(manifest["chain"]["patch_sha256"]) == 4:
+        proof = manifest["chain"].get("native_protocol_history")
+        require(type(proof) is dict and set(proof) == {"protocol","schema","cli","artifact_envelopes","artifact_files"}
+                and proof["protocol"]["kind"] == proof["schema"]["kind"] == "omux-protocol-history-native-checks-v1"
+                and proof["protocol"]["stage"] == 1 and type(proof["protocol"]["stage"]) is int
+                and proof["schema"]["stage"] == 2 and type(proof["schema"]["stage"]) is int
+                and proof["cli"]["kind"] == "omux-protocol-history-cli-qualification-v1",
+                "fresh protocol-history runtime omitted its admitted actual chain")
     return {"runtime_kind": FRESH_KIND, "upstream_commit": manifest["chain"]["upstream_commit"],
             "candidate_patch_sha256s": manifest["chain"]["patch_sha256"]}
 
@@ -280,9 +298,7 @@ def validate_receipt(value):
             "redacted reasoning effort differs")
     if fresh:
         pins = value["candidate_patch_sha256s"]
-        require(isinstance(pins, list) and len(pins) == 3
-                and all(isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins),
-                "fresh runtime patch chain differs")
+        validate_fresh_patches(pins)
     for key, width in (("upstream_commit", 40),
                        ("runtime_archive_sha256", 64)):
         require(isinstance(value[key], str)

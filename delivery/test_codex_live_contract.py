@@ -196,6 +196,32 @@ class LiveContractTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             fixture.validate_receipt({**value, "candidate_patch_sha256": "b" * 64})
 
+    def test_protocol_history_receipt_accepts_only_the_exact_new_four_patch_identity(self):
+        value = receipt()
+        del value["candidate_patch_sha256"]
+        value.update(runtime_kind=fixture.FRESH_KIND,
+                     candidate_patch_sha256s=list(fixture.PROTOCOL_HISTORY_PATCHES))
+        fixture.validate_receipt(value)
+        for pins in (["b"*64]*4, list(reversed(fixture.PROTOCOL_HISTORY_PATCHES)),
+                     fixture.PROTOCOL_HISTORY_PATCHES+["c"*64]):
+            with self.subTest(pins=pins), self.assertRaises(ValueError):
+                fixture.validate_receipt({**value,"candidate_patch_sha256s":pins})
+
+    def test_protocol_history_runtime_identity_requires_its_distinct_chain(self):
+        chain = {"upstream_commit":"a"*40,"patch_sha256":list(fixture.PROTOCOL_HISTORY_PATCHES)}
+        with self.assertRaises(ValueError):
+            fixture.runtime_identity({"kind":fixture.FRESH_KIND,"chain":chain},"fresh")
+        chain["native_protocol_history"] = {
+            "protocol":{"kind":"omux-protocol-history-native-checks-v1","stage":1},
+            "schema":{"kind":"omux-protocol-history-native-checks-v1","stage":2},
+            "cli":{"kind":"omux-protocol-history-cli-qualification-v1"},
+            "artifact_envelopes":{},"artifact_files":{}}
+        self.assertEqual(fixture.runtime_identity({"kind":fixture.FRESH_KIND,"chain":chain},"fresh")
+                         ["candidate_patch_sha256s"],fixture.PROTOCOL_HISTORY_PATCHES)
+        chain["native_protocol_history"]["protocol"]["stage"] = True
+        with self.assertRaises(ValueError):
+            fixture.runtime_identity({"kind":fixture.FRESH_KIND,"chain":chain},"fresh")
+
     def test_runtime_selection_preserves_default_and_refuses_implicit_or_duplicate_fresh_kind(self):
         self.assertEqual(fixture.runtime_arguments(["bundle", "candidate", "receipt"]),
                          ("retained", None, ["bundle", "candidate", "receipt"]))

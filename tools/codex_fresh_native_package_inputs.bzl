@@ -43,6 +43,141 @@ def receipt_producer(role, path):
         return None
     return "//tools:" + suffix[0]
 
+
+_PROTOCOL_ROLES = _ROLES + ["protocol_run","protocol_artifacts","schema_artifacts","cli_artifacts"]
+_FAST = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/"
+
+def _protocol_producer(role, source):
+    roots = [root for root in [_HOME, _FAST] if source.startswith(root)]
+    if len(roots) != 1:
+        return False
+    parts = source[len(roots[0]):].split("/")
+    if not parts or not (_receipt_uuid(parts[0]) or (parts[0].startswith("cache-v2-") and _hash(parts[0][9:]))):
+        return False
+    prefix = ["output-base","execroot","_main","bazel-out"]
+    target = "codex_protocol_history_source_producer" if role == "source" else "codex_protocol_history_sdk_export_producer"
+    output = ["protocol-history-source","source-receipt.json"] if role == "source" else ["protocol-history-sdk-export","receipt.json"]
+    return len(parts) == 12 and parts[1:5] == prefix and parts[5] and all([c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for c in parts[5].elems()]) and parts[6:] == ["testlogs","tools",target,"test.outputs"] + output
+
+def _protocol_output(source, prefix, tail):
+    if not source.startswith(_NATIVE):
+        return False
+    parts = source[len(_NATIVE):].split("/")
+    return len(parts) >= 8 and parts[0].startswith(prefix) and _hash(parts[0][len(prefix):]) and parts[1:5] == ["output-base","execroot","_main","bazel-out"] and parts[5].endswith("-opt") and all([c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-" for c in parts[5].elems()]) and parts[6] == "bin" and "/".join(parts[7:]) == tail
+
+def _protocol_run(source, leaf):
+    if not source.startswith(_NATIVE):
+        return False
+    parts = source[len(_NATIVE):].split("/")
+    return len(parts) == 2 and _receipt_uuid(parts[0]) and parts[1] == leaf
+
+def _protocol_selected(ctx, raw, value):
+    if sorted(value.keys()) != sorted(["kind","source_root","export_root","patch_sha256","files","protocol_schema_files","protocol_schema_roots","native_cli_selection","protocol_history_artifact_files"]) or sorted(value.get("files",{}).keys()) != sorted(_PROTOCOL_ROLES):
+        fail("protocol-history package requires exact thirteen-role document")
+    if value["files"]["source"].get("path") != value["source_root"]+"/source-receipt.json" or value["files"]["export"].get("path") != value["export_root"]+"/receipt.json":
+        fail("protocol-history source SDK roots differ")
+    if type(value["patch_sha256"]) != "list" or len(value["patch_sha256"]) != 4 or not all([type(pin) == "string" and _hash(pin) for pin in value["patch_sha256"]]):
+        fail("protocol-history package requires four pinned transformations")
+    extra = value["protocol_history_artifact_files"]
+    pins = value["protocol_schema_files"]
+    roots = value["protocol_schema_roots"]
+    if type(extra) != "dict" or len(extra) != 7 or type(pins) != "dict" or not pins or len(pins) > 4096 or sorted(roots.keys()) != ["experimental","stable"]:
+        fail("protocol-history exact evidence and complete schema bounds differ")
+    entries = dict(value["files"])
+    for path,pin in extra.items():
+        if path != pin.get("path"):
+            fail("protocol-history explicit evidence map key differs")
+        entries["protocol-history/"+path] = pin
+    for name,pin in pins.items():
+        parts = name.split("/")
+        if len(parts) < 3 or parts[0] not in ["stable","experimental"] or parts[1] != "json" or any([part in ["",".",".."] for part in parts]) or not name.endswith(".json"):
+            fail("protocol-history schema name differs")
+        entries["protocol/"+name] = pin
+    checked = {}
+    total_schema_bytes = 0
+    for role,pin in entries.items():
+        mode = role.startswith("protocol-history/")
+        keys = ["bytes","mode","path","sha256"] if mode else ["bytes","path","sha256"]
+        if type(pin) != "dict" or sorted(pin.keys()) != keys or type(pin["path"]) != "string" or not _path(pin["path"]) or type(pin["sha256"]) != "string" or not _hash(pin["sha256"]) or type(pin["bytes"]) != "int" or pin["bytes"] <= 0 or pin["bytes"] > (536870912 if role == "codex" else (268435456 if role in ["source","export"] else 8388608)):
+            fail("protocol-history bounded literal input pin differs")
+        source = pin["path"]
+        if role in ["source","export"]:
+            if not _protocol_producer(role,source):
+                fail("protocol-history receipt leaves exact declared producer")
+        elif role in ["protocol_run","compile","qualification_run","schema_run"]:
+            if not _protocol_run(source,"receipt.json"):
+                fail("protocol-history receipt leaves actual guard epoch")
+        elif role in ["protocol_artifacts","schema_artifacts","cli_artifacts"]:
+            if not _protocol_run(source,"protocol-history-cli-artifacts.json" if role == "cli_artifacts" else "protocol-history-native-artifacts.json"):
+                fail("protocol-history artifact envelope leaves actual epoch")
+        elif role in ["qualification","qualification_xml"]:
+            if not _protocol_run(source,"native-qualification.json" if role == "qualification" else "native-qualification.xml"):
+                fail("protocol-history qualification leaves actual CLI epoch")
+        elif mode:
+            if type(pin["mode"]) != "int" or pin["mode"] not in [256,288,292,384,416,420] or not source.startswith(_NATIVE):
+                fail("protocol-history copied evidence custody differs")
+            parts = source[len(_NATIVE):].split("/")
+            if not ((len(parts) == 2 and _receipt_uuid(parts[0]) and parts[1] == "test-evidence.json") or (len(parts) == 3 and _receipt_uuid(parts[0]) and parts[1] == "test-evidence" and parts[2].endswith(".evidence") and _hash(parts[2][:-9]))):
+                fail("protocol-history evidence leaves finite actual copied logs")
+        elif role == "codex":
+            if not _protocol_output(source,"protocol-history-cli-","codex-rs/cli/codex"):
+                fail("protocol-history CLI leaves selected new one-shot output")
+        elif role == "config_schema":
+            if not _protocol_output(source,"protocol-history-checks-","bazel/schema/native-config.schema.json"):
+                fail("protocol-history config leaves selected successful schema action")
+        elif role.startswith("protocol/"):
+            parts = role[len("protocol/"):].split("/")
+            if not _protocol_output(source,"protocol-history-checks-","bazel/schema/public-schema-bundle."+parts[0]+"/"+"/".join(parts[1:])):
+                fail("protocol-history JSON leaves selected successful schema action")
+            total_schema_bytes += pin["bytes"]
+        leaf = ctx.path(source)
+        if not leaf.exists or leaf.is_dir or str(leaf.realpath) != source:
+            fail("protocol-history selected input must be physical regular public leaf")
+        checked[role] = leaf
+    if total_schema_bytes > 67108864:
+        fail("protocol-history total JSON bytes bound")
+    # Qualify all selected trees before admitting any input aliases into Bazel.
+    pending, observed = [], []
+    for mode in ["stable","experimental"]:
+        root = roots[mode]
+        if type(root) != "string" or not _path(root) or not _protocol_output(root,"protocol-history-checks-","bazel/schema/public-schema-bundle."+mode+"/json"):
+            fail("protocol-history schema root scope differs")
+        node = ctx.path(root)
+        if not node.exists or not node.is_dir or str(node.realpath) != root:
+            fail("protocol-history schema root may not redirect")
+        pending.append((node,mode+"/json/"))
+    for unused in range(4097):
+        if not pending:
+            break
+        parent,prefix = pending.pop()
+        for member in parent.readdir():
+            name = str(member).split("/")[-1]
+            if str(member.realpath) != str(member):
+                fail("protocol-history schema member may not redirect")
+            if member.is_dir:
+                pending.append((member,prefix+name+"/"))
+            else:
+                key = prefix+name
+                if not name.endswith(".json") or key not in pins or pins[key]["path"] != str(member):
+                    fail("protocol-history schema member differs from finite pin")
+                observed.append(key)
+            if len(observed)+len(pending) > 4096:
+                fail("protocol-history schema count bound")
+    if pending or sorted(observed) != sorted(pins.keys()):
+        fail("protocol-history JSON inventory must be complete")
+    names, aliases = [], {}
+    for index,role in enumerate(sorted(checked)):
+        alias = "input-"+str(index)
+        ctx.watch(checked[role])
+        ctx.symlink(checked[role],alias)
+        names.append(alias)
+        aliases[role] = ctx.name+"/"+alias
+    ctx.file("package-selection.json",raw,executable=False)
+    ctx.file("package-selection.sha256",ctx.attr.sha256+"\n",executable=False)
+    ctx.file("input-aliases.json",json.encode(aliases)+"\n",executable=False)
+    names += ["package-selection.json","package-selection.sha256","input-aliases.json"]
+    ctx.file("BUILD.bazel","exports_files("+repr(names)+")\nfilegroup(name='inputs',srcs="+repr(names)+",visibility=['//visibility:public'])\n")
+
 def _selected_impl(ctx):
     path = ctx.attr.selection
     if not _path(path) or not path.endswith("/package-selection.json") or not _hash(ctx.attr.sha256):
@@ -56,6 +191,9 @@ def _selected_impl(ctx):
     if len(raw) > 16 * 1024 * 1024:
         fail("fresh package selection exceeds finite metadata bound")
     value = json.decode(raw)
+    if value.get("kind") == "omux-protocol-history-native-package-selection-v1":
+        _protocol_selected(ctx, raw, value)
+        return
     staged = value.get("kind") == "omux-staged-native-package-selection-v1"
     roles = _STAGED_ROLES if staged else _ROLES
     if (not staged and value.get("kind") != "omux-fresh-native-package-selection-v1") or sorted(value.get("files", {}).keys()) != sorted(roles):
