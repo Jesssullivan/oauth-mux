@@ -208,7 +208,14 @@ def installation_plan(manifest, files, prefix, state_dir, user_service=None, pla
 
 def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                    user_service: Path | None = None, platform: str = "linux",
-                   *, daemon_state_dir: Path | None = None, _owned_update=None) -> dict:
+                   *, daemon_state_dir: Path | None = None, _owned_update=None, _owned_prepare=None) -> dict:
+    if _owned_prepare is not None and _owned_update is not None:
+        raise ValueError("owned installation purposes overlap")
+    bounded_owned = _owned_update is not None or _owned_prepare is not None
+    if _owned_prepare is not None:
+        before_prepare, after_prepare, deadline_ns = _owned_prepare
+        if type(deadline_ns) is not int or time.monotonic_ns() >= deadline_ns:
+            raise ValueError("owned preparation deadline expired")
     manifest, files = verify_bundle(payload)
     destinations = installation_plan(manifest, files, prefix, state_dir, user_service, platform,
                                     daemon_state_dir=daemon_state_dir)
@@ -221,9 +228,13 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
         for other in planned[index + 1:] + controls:
             if path == other or path in other.parents or other in path.parents:
                 raise ValueError("installation file paths collide")
-    with _directory_lock(state_dir, "install.lock", private=True, nonblocking=_owned_update is not None), \
-            _directory_lock(prefix, ".omux-install.lock", private=False, nonblocking=_owned_update is not None):
+    with _directory_lock(state_dir, "install.lock", private=True, nonblocking=bounded_owned), \
+            _directory_lock(prefix, ".omux-install.lock", private=False, nonblocking=bounded_owned):
         previous = _record(prefix, state_dir)
+        if _owned_prepare is not None:
+            if previous is not None or time.monotonic_ns() >= deadline_ns:
+                raise ValueError("owned preparation requires new unrecorded placement")
+            before_prepare()
         if previous and previous["userService"] != (str(user_service) if user_service else None):
             raise ValueError("remove the owned installation before changing service placement")
         if _owned_update is not None:
@@ -237,6 +248,8 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
         owned = {item["path"]: item for item in previous["files"]} if previous else {}
         # Preflight all targets before writing any executable or service file.
         for path, _, _ in destinations:
+            if _owned_prepare is not None and time.monotonic_ns() >= deadline_ns:
+                raise ValueError("owned preparation deadline expired")
             if path.exists() or path.is_symlink():
                 if str(path) not in owned or not _matches(path, owned[str(path)]):
                     raise ValueError("refusing to overwrite an unowned or modified file")
@@ -267,8 +280,8 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
         }
         try:
             for path, data, mode in destinations:
-                if _owned_update is not None and time.monotonic_ns() >= deadline_ns:
-                    raise ValueError("owned update deadline expired")
+                if bounded_owned and time.monotonic_ns() >= deadline_ns:
+                    raise ValueError("owned installation deadline expired")
                 _write(path, data, mode)
                 written.append(path)
             for path in obsolete:
@@ -276,11 +289,15 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                     raise ValueError("owned update deadline expired")
                 path.unlink()
                 removed.append(path)
-            if _owned_update is not None and time.monotonic_ns() >= deadline_ns:
-                raise ValueError("owned update deadline expired")
+            if bounded_owned and time.monotonic_ns() >= deadline_ns:
+                raise ValueError("owned installation deadline expired")
             _write(state_dir / RECORD, json_bytes(result), 0o600)
             if _owned_update is not None:
                 after_replace(result)
+            if _owned_prepare is not None:
+                after_prepare(result)
+                if time.monotonic_ns() >= deadline_ns:
+                    raise ValueError("owned preparation deadline expired")
         except Exception:
             for path in removed:
                 data, mode = originals[str(path)]
@@ -297,6 +314,17 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                 (state_dir / RECORD).unlink()
             raise
         return result
+
+
+def prepare_bundle(payload, prefix, records, service, runtime_state, before_prepare, after_prepare,
+                   *, deadline_ns):
+    """One new owned placement; finite locks/writes, no start or registration."""
+    if type(deadline_ns) is not int or not time.monotonic_ns() < deadline_ns <= time.monotonic_ns()+1200*10**9:
+        raise ValueError("owned preparation original deadline invalid")
+    if service is None or runtime_state is None:
+        raise ValueError("owned preparation requires exact service and state placement")
+    return install_bundle(payload,prefix,records,service,"linux",daemon_state_dir=runtime_state,
+        _owned_prepare=(before_prepare,after_prepare,deadline_ns))
 
 
 def update_bundle(payload, prefix, records, service, runtime_state, previous_archive_sha256,
@@ -359,3 +387,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

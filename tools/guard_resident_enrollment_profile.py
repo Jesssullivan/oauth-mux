@@ -16,6 +16,7 @@ import time
 LABEL = "//delivery:resident_codex_enrollment"
 LIFECYCLE_LABEL = "//delivery:resident_owned_lifecycle"
 EXISTING_ENROLLMENT_LABEL = "//delivery:resident_codex_existing_enrollment"
+PREPARE_LABEL = "//delivery:resident_owned_prepare"
 PROFILE = "resident-enrollment"
 DESTINATION = "/omux-resident-inputs"
 VARIABLE = "OMUX_RESIDENT_ENROLLMENT_MANIFEST"
@@ -79,7 +80,7 @@ def require(value):
         raise ValueError("resident-enrollment-admission-refused")
 
 def finite(arguments,manager,manifest,reuse,unrelated=()):
-    require(arguments in (["run",LABEL],["run",LIFECYCLE_LABEL],["run",EXISTING_ENROLLMENT_LABEL]) and manager == "system" and manifest is not None
+    require(arguments in (["run",LABEL],["run",LIFECYCLE_LABEL],["run",EXISTING_ENROLLMENT_LABEL],["run",PREPARE_LABEL]) and manager == "system" and manifest is not None
         and not reuse and not any(unrelated))
     return {"PrivateNetwork":"yes","ProtectSystem":"strict","PrivateTmp":"yes"}
 
@@ -97,8 +98,9 @@ def repository_inputs(repository_cache,nixpkgs_source):
     return [str(REPOSITORY_CACHE)+":"+str(REPOSITORY_CACHE)]
 
 def carrier_purpose(label,action,selected_archive=False):
-    require(type(selected_archive) is bool and label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL)
-        and ((label == EXISTING_ENROLLMENT_LABEL and action == "enroll-existing" and selected_archive)
+    require(type(selected_archive) is bool and label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL,PREPARE_LABEL)
+        and ((label == PREPARE_LABEL and action == "prepare-owned" and not selected_archive)
+            or (label == EXISTING_ENROLLMENT_LABEL and action == "enroll-existing" and selected_archive)
             or (not selected_archive and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"))
             or (label == LABEL and action in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing"))))))
 
@@ -134,6 +136,9 @@ def fixed_paths(home,instance="default"):
         "service_path":prefix/"units/ai.xoxd.omux.service"}
 
 def manifest_schema(value,home):
+    if type(value) is dict and value.get("action") == "prepare-owned":
+        import guard_resident_owned_prepare as prepare
+        return prepare.schema(value,home)
     existing_enrollment = type(value) is dict and "existing_archive" in value
     updating = type(value) is dict and value.get("action") == "update-existing"
     starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","observe-inactive","stop-idle-owned")
@@ -521,8 +526,9 @@ class Admission:
         self.diagnostic_phase = "arguments"
         self.deadline_ns = deadline_ns
         self.original_deadline_ns = deadline_ns
-        require(label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL))
+        require(label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL,PREPARE_LABEL))
         self.label=label
+        self.preparing_label = label == PREPARE_LABEL
         self.lifecycle_identity=None
         self.lifecycle_peer=None
         self.manifest = canonical(str(manifest))
@@ -535,6 +541,7 @@ class Admission:
         self.owned_unit = None
         self.recovery_empty = []
         self.installation_update = None
+        self.installation_prepare = None
         self.owned_start = None
         self.existing_enrollment = None
         try:
@@ -586,8 +593,8 @@ class Admission:
             self.diagnostic_phase = "manifest-schema"
             self.selected = manifest_schema(json.loads(self.raw,object_pairs_hook=unique),home)
             carrier_purpose(label,self.selected["action"],"existing_archive" in self.selected)
-            if self.selected["action"] == "observe-inactive":
-                # Setup, IPC, readback and collection share the original budget.
+            if self.selected["action"] in ("observe-inactive","prepare-owned"):
+                # Setup and work retain the immutable original cleanup reserve.
                 self.deadline_ns = deadline_ns-30*10**9
                 require(time.monotonic_ns() < self.deadline_ns)
             self.control_child = runtime_child(self.selected["runtime_state"])
@@ -596,7 +603,7 @@ class Admission:
             control_source_fd = open_directory(self.control_source,private=True)
             self.held.append(control_source_fd)
             self.source_parents.append((self.control_source,control_source_fd,stable(os.fstat(control_source_fd))))
-            if self.selected["action"] in ("install-and-enroll","activate-existing-and-enroll","start-existing"):
+            if self.selected["action"] in ("install-and-enroll","activate-existing-and-enroll","start-existing","prepare-owned"):
                 require(not os.listdir(control_source_fd))
             if self.selected["action"] == "activate-existing-and-enroll":
                 self.recovery_empty.append(control_source_fd)
@@ -614,7 +621,7 @@ class Admission:
                 fd = open_directory(path,private=True)
                 self.held.append(fd)
                 self.product_directories.append((path,fd,stable(os.fstat(fd))))
-                if self.selected["action"] == "install-and-enroll":
+                if self.selected["action"] == "install-and-enroll" or (self.selected["action"] == "prepare-owned" and name in ("prefix","records")):
                     require(not os.listdir(fd))
                 elif self.selected["action"] == "activate-existing-and-enroll" and name == "runtime_state":
                     require(not os.listdir(fd))
@@ -624,6 +631,9 @@ class Admission:
                 self.owned_unit = OwnedUnitCustody(self.selected)
                 selected_unit = canonical(self.selected["service_path"])
                 self.owned_unit.verify_fragment(selected_unit.parents[4]/".config/systemd/user"/selected_unit.name)
+            if self.selected["action"] == "prepare-owned":
+                import guard_resident_owned_prepare as prepare
+                self.installation_prepare = prepare.InstallationPrepare(self.selected,home,self.deadline_ns)
             if self.selected["action"] == "update-existing":
                 self.diagnostic_phase = "owned-update"
                 import guard_resident_owned_update as update
@@ -649,7 +659,7 @@ class Admission:
         self.diagnostic_phase = role+"-recheck" if recheck else role
         if not hasattr(self,"selected"):
             require(time.monotonic_ns()+2*10**9 < self.original_deadline_ns-30*10**9)
-        elif self.selected["action"] == "observe-inactive":
+        elif self.selected["action"] in ("observe-inactive","prepare-owned"):
             require(time.monotonic_ns()+2*10**9 < self.deadline_ns)
         return socket_witness(path)
 
@@ -677,6 +687,8 @@ class Admission:
         for path,fd,witness in self.source_parents+self.product_directories:
             self.diagnostic_phase = "parent-recheck"
             require(stable(os.fstat(fd)) == witness == stable(path.stat(follow_symlinks=False)))
+        if getattr(self,"installation_prepare",None) is not None:
+            self.installation_prepare.recheck()
         if getattr(self,"installation_update",None) is not None:
             self.diagnostic_phase = "owned-update"
             self.installation_update.recheck()
@@ -698,12 +710,18 @@ class Admission:
                 previous_archive_sha256=self.selected["update"]["previous_archive_sha256"],
                 qualification_guard_sha256=self.selected["update"]["qualification"]["sha256"],
                 runtime_metadata_preserved=True,service_started=False,source_connected=False)
+        if getattr(self,"installation_prepare",None) is not None:
+            facts.update(action="prepare-owned",installation_prepared=self.installation_prepare.finished,
+                service_started=False,source_connected=False,custody_verified=False)
         return facts
 
     def bindings(self):
         starting = getattr(self,"owned_start",None) or getattr(self,"existing_enrollment",None)
         extra = ([str(path)+":"+str(path) for path,_,_ in self.product_directories]+[
             str(public.path)+":"+str(public.path)+":norbind" for public in starting.files[:2]]) if starting is not None else []
+        if getattr(self,"installation_prepare",None) is not None:
+            extra += [self.selected["runtime_state"]+":"+self.selected["runtime_state"]] + [
+                str(public.path)+":"+str(public.path)+":norbind" for public in self.installation_prepare.files]
         return extra+list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[
             str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))+":norbind"
             for target,source in self.sources.items()] + [runtime_binding(self.selected["runtime_state"],os.getuid())] + (
@@ -716,7 +734,8 @@ class Admission:
         if getattr(self,"owned_start",None) is not None or getattr(self,"existing_enrollment",None) is not None:
             return ""
         return " ".join(str(path)+":"+str(path) for path,_,_ in self.product_directories
-            if getattr(self,"installation_update",None) is None or str(path) != self.selected["runtime_state"])
+            if (getattr(self,"installation_update",None) is None and getattr(self,"installation_prepare",None) is None)
+                or str(path) != self.selected["runtime_state"])
 
     def verify_bindings(self,actual,run=None):
         expected_rw = normalize_binds(self.writable_binding())
@@ -731,6 +750,8 @@ class Admission:
         if getattr(self,"installation_update",None) is not None:
             leaves += [str(file.path)+":"+str(file.path) for file in
                 (self.installation_update.archive,self.installation_update.previous_archive,self.installation_update.qualification)]
+        if getattr(self,"installation_prepare",None) is not None:
+            leaves += [str(public.path)+":"+str(public.path) for public in self.installation_prepare.files]
         expected_ro = normalize_binds(" ".join(self.bindings()),leaves)
         ro,rw = normalize_binds(actual.get("BindReadOnlyPaths",""),leaves,readback=True),normalize_binds(actual.get("BindPaths",""),readback=True)
         require(len(ro) == len(expected_ro) and set(ro) == set(expected_ro)
@@ -744,11 +765,12 @@ class Admission:
             "DBUS_SESSION_BUS_ADDRESS":"unix:path=/run/user/"+str(os.getuid())+"/bus"}
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
-        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned")
+        preparing = self.selected["action"] == "prepare-owned"
+        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") or (preparing and not starting)
         properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
         if recovering_action:
             properties += ",UnitFileState"
-        if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned"):
+        if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") or (preparing and not starting):
             import guard_resident_owned_update as update
             properties = ",".join(sorted(update.IDLE_PROPERTIES))
         result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
@@ -756,14 +778,30 @@ class Admission:
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=remaining,check=False)
         self.diagnostic_phase = "manager-readback"
         require(type(starting) is bool)
-        starting_new = starting and self.selected["action"] == "install-and-enroll" \
+        starting_new = starting and self.selected["action"] in ("install-and-enroll","prepare-owned") \
             and self.selected["ownership"] == "omux-installation"
         require(result.returncode in ((0,4) if starting_new else (0,))
             and not result.stderr and len(result.stdout) <= 16384)
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
             "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set())
-            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") else set()))
+            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") or (preparing and not starting) else set()))
+        if preparing:
+            import guard_resident_owned_prepare as prepare
+            require(self.installation_prepare is not None)
+            self.installation_prepare.recheck()
+            if starting:
+                prepare.absent_service(values)
+            else:
+                require(self.installation_prepare.finished)
+                update.inactive_installation(values,self.selected)
+            import guard_resident_owned_update as update
+            population=update.inactive_cgroup(self.deadline_ns)
+            require(not os.listdir(self.control_source))
+            return {"active":False,"new_owned_service_admitted":starting,
+                "installation_prepared":not starting,"enabled_for_future_login":not starting,
+                "future_login_activation_possible":not starting,"service_started":False,
+                "source_connected":False,"custody_verified":False,"bounded":True,**population}
         if self.selected["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"):
             self.diagnostic_phase = "owned-custody-recheck"
             require(self.owned_start is not None)
@@ -889,6 +927,18 @@ class Admission:
             "resident_memory":RESIDENT_MEMORY,"resident_tasks":RESIDENT_TASKS,"resident_cpu_percent":RESIDENT_CPU_PERCENT,
             "ownership":self.selected["ownership"],"custody_claim_requires_controller_success":True}
 
+    def complete_owned_prepare(self,workload_status,cleaned):
+        require(self.installation_prepare is not None and type(workload_status) is int
+            and workload_status == 0 and cleaned is True)
+        # Only independent successful owned cleanup opens final collection up to
+        # the SAME original deadline. It never starts a new clock or retry.
+        self.deadline_ns=self.original_deadline_ns
+        self.installation_prepare.deadline=self.original_deadline_ns
+        self.installation_prepare.runtime.deadline=self.original_deadline_ns
+        for public in self.installation_prepare.files:
+            public.deadline=self.original_deadline_ns
+        return self.installation_prepare.installed()
+
     def complete_owned_update(self,workload_status,cleaned):
         require(self.installation_update is not None and type(workload_status) is int
             and workload_status == 0 and cleaned is True)
@@ -908,7 +958,7 @@ class Admission:
         return int(remaining)
 
     def close(self):
-        if getattr(self,"selected",{}).get("action") == "observe-inactive":
+        if getattr(self,"preparing_label",False) or getattr(self,"selected",{}).get("action") in ("observe-inactive","prepare-owned"):
             failure = None
             def attempt(operation):
                 nonlocal failure
@@ -917,6 +967,9 @@ class Admission:
                 except BaseException as error:
                     if failure is None:
                         failure = error
+            preparation,self.installation_prepare = getattr(self,"installation_prepare",None),None
+            if preparation is not None:
+                attempt(preparation.close)
             witness,self.owned_start = self.owned_start,None
             if witness is not None:
                 attempt(witness.close)

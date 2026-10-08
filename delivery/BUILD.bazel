@@ -1318,6 +1318,30 @@ python_test(
 
 exports_files(["resident_enrollment.py", "resident_owned_start.py", "resident_owned_update.py"])
 
+# Exact install/prepare is independently selected; never compiles an archive here.
+python_binary(
+    name = "resident_owned_prepare",
+    main = "resident_owned_prepare.py",
+    srcs = ["resident_enrollment.py", "install.py", "pack.py", "portable.py",
+        "//tools:guard_resident_enrollment_profile.py", "//tools:guard_resident_owned_update.py",
+        "//tools:guard_resident_owned_prepare.py"],
+    data = ["@omux_nix//:systemctl"],
+    args = ["$(location @omux_nix//:systemctl)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "resident_owned_prepare_test",
+    main = "test_resident_owned_prepare.py",
+    srcs = ["resident_owned_prepare.py", "resident_enrollment.py", "install.py", "pack.py", "portable.py",
+        "test_delivery.py", "test_portable.py", "//tools:guard_resident_owned_prepare.py",
+        "//tools:guard_resident_enrollment_profile.py", "//tools:guard_resident_owned_update.py",
+        "//tools:guard_resident_setup_dispatch.py", "//tools:guard_resident_vault_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+
 # Independently admitted native acquisition; no resident/fresh-runtime proof reuse.
 python_binary(
     name = "native_login_ui_qualification",

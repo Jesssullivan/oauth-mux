@@ -1118,7 +1118,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py',
+_RESIDENT_GUARD_SOURCES = ['guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -1914,10 +1914,10 @@ python_test(
 )
 
 # Existing installed setup closure, independent of native compiler selectors.
-exports_files(["guard_resident_enrollment_profile.py", "guard_resident_vault_profile.py", "guard_resident_owned_update.py"])
+exports_files(["guard_resident_enrollment_profile.py", "guard_resident_vault_profile.py", "guard_resident_owned_update.py", "guard_resident_owned_prepare.py", "guard_resident_setup_dispatch.py"])
 filegroup(
     name = "resident_owned_update_sources",
-    srcs = ["guard_resident_owned_update.py", "//delivery:install.py", "//delivery:pack.py",
+    srcs = ["guard_resident_owned_update.py", "guard_resident_owned_prepare.py", "//delivery:install.py", "//delivery:pack.py",
         "//delivery:resident_enrollment.py", "//delivery:resident_owned_start.py", "//delivery:portable.py"],
     visibility = ["//delivery:__pkg__"],
 )

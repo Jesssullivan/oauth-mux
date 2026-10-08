@@ -8,7 +8,7 @@ import guard_resident_vault_profile as vault
 
 PROFILE = "resident-enrollment"
 FIELDS = ("resident_enrollment_manifest", "resident_vault_manifest")
-LABELS = (enrollment.LABEL, enrollment.LIFECYCLE_LABEL, enrollment.EXISTING_ENROLLMENT_LABEL,
+LABELS = (enrollment.LABEL, enrollment.LIFECYCLE_LABEL, enrollment.EXISTING_ENROLLMENT_LABEL, enrollment.PREPARE_LABEL,
           vault.STANDARD_LABEL, vault.STANDARD_UNLOCK_LABEL)
 PROOF_MEMORY, PROOF_TASKS, PROOF_CPU_PERCENT = (
     enrollment.PROOF_MEMORY, enrollment.PROOF_TASKS, enrollment.PROOF_CPU_PERCENT)
@@ -104,13 +104,17 @@ class Admission:
         enrollment.require(self.run is not None and self.run.name == epoch)
         if getattr(self.inner, "installation_update", None) is not None:
             self.inner.complete_owned_update(status, cleaned)
+        preparing = getattr(self.inner,"selected",{}).get("action") == "prepare-owned"
+        if preparing:
+            self.inner.complete_owned_prepare(status,cleaned)
         inactive = getattr(self.inner,"selected",{}).get("action") == "observe-inactive"
         if inactive:
             enrollment.require(type(status) is int and status == 0 and cleaned is True
                 and type(graph_sha256) is str and re.fullmatch(r"[0-9a-f]{64}",graph_sha256))
         self.inner.recheck()
         result = self.inner.service_observation(self.systemctl)
-        if inactive:
+        if inactive or preparing:
+            enrollment.require(type(graph_sha256) is str and re.fullmatch(r"[0-9a-f]{64}",graph_sha256))
             result = {**result,"action_epoch":epoch,"source_graph_sha256":graph_sha256,
                 "verified_after_cleanup":True}
         return result
