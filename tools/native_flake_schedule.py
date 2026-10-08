@@ -310,7 +310,8 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
     bundle = json.loads(descriptor_raw, object_pairs_hook=seed.unique)
     physical_roots = metadata_alias_roots(descriptor_path)
     label_root = Path(descriptor_path).absolute().parent
-    before_sources = sources.verify(project["flake.lock"], descriptor_raw, label_root, physical_roots, deadline=deadline)
+    # Admit every locked role/label and the exact wire-size bound before any copy.
+    _, _, _, _, source_bytes = sources.admit(project["flake.lock"], descriptor_raw, deadline=deadline)
     seed.validate(value)
     opener = proof.source_opener(value, {row["source"] for row in value["files"]})
     canonical = {name: seed.resolve_member(value, value["tools"][name]) for name in ("nix", "nix_store")}
@@ -337,14 +338,18 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
         try:
             root.recheck()
             require(os.statvfs(root.path).f_bavail * os.statvfs(root.path).f_frsize >=
-                2*(seed_bytes+before_sources["verifiedNarBytes"])+proof.FREE_FLOOR)
+                2*(seed_bytes+source_bytes)+proof.FREE_FLOOR)
             for name in ("private-store", "home", "config", "tmp", "sources"):
                 (root.path/name).mkdir(mode=0o700)
             private = root.path/"private-store"
             phase("seed-copy")
             proof.copy_seed(value, private, pinned, deadline)
             phase("source-copy")
-            paths, hashes = copied_sources(bundle, label_root, physical_roots, root.path/"sources", deadline)
+            before_sources = sources.verify(project["flake.lock"], descriptor_raw, label_root,
+                physical_roots, deadline=deadline, copy_directory=root.path/"sources")
+            require(before_sources["verifiedNarBytes"] == source_bytes)
+            paths = {role: root.path/"sources"/role/"source" for role in sources.ROLES}
+            hashes = {row["role"]: row["narHash"][7:] for row in before_sources["sources"]}
             (root.path/"project").mkdir(mode=0o700)
             paths["project"] = root.path/"project/source"
             hashes["project"] = project_copy(project, paths["project"], deadline)

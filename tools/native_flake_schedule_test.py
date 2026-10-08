@@ -357,9 +357,10 @@ class ScheduleModels(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             model = Fixture(directory)
             (model.labels/"regular/00000000").write_bytes(b"BAD")
-            with patch.object(schedule.proof,"OwnedRoot",side_effect=AssertionError("root created")), self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "native-source-nar-mismatch"):
                 model.operate()
             self.assertEqual(model.calls,[])
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
 
     def test_non_declared_source_alias_is_not_followed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -497,6 +498,42 @@ class ScheduleModels(unittest.TestCase):
                     schedule.proof.run(["fixed"],{},Path("/"),float(time.monotonic()+10),
                                        tool_fd=777,output_limit=limit)
         spawn.assert_not_called()
+
+
+    def test_fused_source_proof_and_copy_complete_before_first_child_same_original_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            deadline = float(time.monotonic()+60)
+            opens = []
+            original = schedule.sources.open_declared
+            def opened(*args):
+                opens.append(str(args[0]))
+                return original(*args)
+            def runner(command, environment, root, selected_deadline, **kwargs):
+                self.assertEqual(selected_deadline, deadline)
+                if not model.calls:
+                    self.assertEqual(len(opens), len(model.data))
+                    for item in model.bundle["sources"]:
+                        leaf = root/"sources"/item["role"]/"source/data"
+                        self.assertEqual(leaf.read_bytes(), model.data[item["regularInputs"]["data"]])
+                        self.assertEqual(os.lstat(leaf).st_mode & 0o777, 0o444)
+                return model.runner(command, environment, root, selected_deadline, **kwargs)
+            with patch.object(schedule.sources, "open_declared", side_effect=opened):
+                result, _ = model.operate(runner, deadline)
+            self.assertEqual(len(opens), 2*len(model.data))  # Fused before + unchanged final original proof.
+            self.assertTrue(result["source_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+
+    def test_source_metadata_admission_precedes_owned_root_and_runtime_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            model.bundle["sources"][1]["regularInputs"]["data"] = "regular/00000000"
+            model.descriptors = encoded(model.bundle)
+            with patch.object(schedule.proof, "OwnedRoot", side_effect=AssertionError("root")), \
+                 patch.object(schedule.proof, "verify_nars", side_effect=AssertionError("runtime bytes")):
+                with self.assertRaises(ValueError):
+                    model.operate()
+            self.assertEqual(model.calls, [])
 
 
 if __name__ == "__main__":

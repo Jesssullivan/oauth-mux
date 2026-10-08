@@ -6,6 +6,7 @@ Source proof does not authorize execution or establish a complete build seed.
 """
 import argparse
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -15,7 +16,7 @@ import re
 import stat
 import time
 
-from nar_descriptor import MAX_ENTRIES, MAX_METADATA_BYTES, describe, hash_descriptor, validate_descriptor
+from nar_descriptor import MAX_ENTRIES, MAX_METADATA_BYTES, describe, hash_descriptor, open_regular, serialized_size, validate_descriptor
 from nix_source_probe import native_source_hashes
 from verify_declared_nars import metadata_alias_roots, open_declared
 
@@ -89,7 +90,7 @@ def generate(lock_bytes, sources, repository):
             "descriptorBytes": len(encoded) + 1, "contentRehashed": False}
 
 
-def verify(lock_bytes, descriptor_bytes, label_root, physical_roots, *, deadline=None):
+def admit(lock_bytes, descriptor_bytes, *, deadline=None):
     now = time.monotonic()
     if deadline is None:
         deadline = now + MAX_SECONDS
@@ -137,6 +138,57 @@ def verify(lock_bytes, descriptor_bytes, label_root, physical_roots, *, deadline
             raise ValueError("native-source-aggregate-bound")
         items[role] = (item, nodes)
     validate_selection(sources)
+    nar_bytes = sum(serialized_size(items[role][0]["descriptor"], deadline=deadline) for role in ROLES)
+    if nar_bytes > MAX_SOURCE_BYTES:
+        raise ValueError("native-source-aggregate-bound")
+    return locked, bundle, items, labels, nar_bytes
+
+
+@contextmanager
+def copying_stream(original, destination, node):
+    """Copy exactly the bytes consumed by the canonical original NAR proof."""
+    with original as stream:
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            output_stream = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with output_stream as output:
+            class Reader:
+                def read(self, count):
+                    data = stream.read(count)
+                    if output.write(data) != len(data):
+                        raise OSError("native-source-copy-short-write")
+                    return data
+            yield Reader()
+            # Disposable copies retain flush/readback, with no crash-durability claim.
+            output.flush()
+            os.fchmod(output.fileno(), 0o555 if node["executable"] else 0o444)
+
+
+def copy_skeleton(descriptor, destination, deadline):
+    nodes, _ = validate_descriptor(descriptor)
+    for name in sorted(nodes, key=lambda path: (len(path.split("/")) if path else 0, path)):
+        if time.monotonic() >= deadline:
+            raise ValueError("native-source-deadline")
+        node = nodes[name]
+        path = destination / name if name else destination
+        if node["type"] == "directory":
+            path.mkdir(mode=0o700)
+        elif node["type"] == "symlink":
+            path.symlink_to(node["target"])
+
+
+def verify(lock_bytes, descriptor_bytes, label_root, physical_roots, *, deadline=None, copy_directory=None):
+    if deadline is None:
+        deadline = time.monotonic() + MAX_SECONDS
+    locked, bundle, items, labels, expected_nar_bytes = admit(
+        lock_bytes, descriptor_bytes, deadline=deadline)
+    if copy_directory is not None:
+        copy_directory = Path(copy_directory)
+        if not copy_directory.is_absolute() or not stat.S_ISDIR(os.lstat(copy_directory).st_mode):
+            raise ValueError("native-source-copy-directory")
     results, total = [], 0
     for role in ROLES:
         if time.monotonic() >= deadline:
@@ -144,22 +196,40 @@ def verify(lock_bytes, descriptor_bytes, label_root, physical_roots, *, deadline
         item, nodes = items[role]
         root = item["descriptor"]["root"]
         mapping = item["regularInputs"]
+        destination = None
+        if copy_directory is not None:
+            (copy_directory / role).mkdir(mode=0o700)
+            destination = copy_directory / role / "source"
+            copy_skeleton(item["descriptor"], destination, deadline)
         def opener(selected_root, path):
             if selected_root != root or path not in mapping:
                 raise ValueError("native-source-undeclared-file")
             label = mapping[path]
-            return open_declared(Path(label_root) / label,
-                                 [Path(physical) / label for physical in physical_roots],
-                                 str(Path(root) / path), nodes[path])
+            original = open_declared(Path(label_root) / label,
+                                     [Path(physical) / label for physical in physical_roots],
+                                     str(Path(root) / path), nodes[path])
+            return original if destination is None else copying_stream(
+                original, destination / path, nodes[path])
         result = hash_descriptor(item["descriptor"], opener=opener, deadline=deadline)
         if result["narHash"] != locked[role]["narHash"]:
             raise ValueError("native-source-nar-mismatch")
+        if destination is not None:
+            copied_descriptor = describe(destination)
+            copied_descriptor["root"] = root
+            if copied_descriptor != item["descriptor"]:
+                raise ValueError("native-source-copy-metadata")
+            copied = hash_descriptor(copied_descriptor,
+                opener=lambda _, name: open_regular(str(destination), name), deadline=deadline)
+            if copied != result:
+                raise ValueError("native-source-copy-nar-mismatch")
         total += result["narSize"]
         if total > MAX_SOURCE_BYTES:
             raise ValueError("native-source-aggregate-bound")
         results.append({"role": role, **locked[role], "source": root, "narSize": result["narSize"]})
     if time.monotonic() >= deadline:
         raise ValueError("native-source-deadline")
+    if total != expected_nar_bytes:
+        raise ValueError("native-source-wire-size")
     return {"schemaVersion": 1, "passed": True, "scope": "locked-native-flake-source-bytes",
             "lockSha256": bundle["lockSha256"],
             "descriptorSha256": hashlib.sha256(descriptor_bytes).hexdigest(),
