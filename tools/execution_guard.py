@@ -2138,7 +2138,7 @@ def _main(argv, admission_resources):
                     for progress in yoga_launch.read_progress(yoga_support):
                         print(json.dumps(progress, sort_keys=True), flush=True)
                     yoga.pump_event(yoga_admission, yoga_support, yoga_operator_writer)
-            result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--all', unit],
+            result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--property=ActiveState,Result,ExecMainStatus', unit],
                 operation='unit-readback', phase='monitor')), deadline, iteration)
         except (ValueError, OSError) as error:
             rejection = (resident_settings.rejection(error) if resident_settings else live.rejection_category(error) if args.profile == 'codex-live'
