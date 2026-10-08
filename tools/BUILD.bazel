@@ -1945,3 +1945,83 @@ python_test(
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with = ["@platforms//os:linux"],
 )
+
+
+# Source-only restored-plan contracts; external Nix child work is injected.
+python_test(
+    name = "native_flake_seed_plan_test",
+    main = "native_flake_seed_plan_test.py",
+    srcs = _NATIVE_FLAKE_SCHEDULE_SOURCES + [
+        "native_flake_seed_plan.py", "native_flake_missing_plan.py",
+        "native_flake_schedule_test.py", "native_flake_sources_test.py",
+        "nix_private_store_qualification_test.py",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# Append after _NATIVE_FLAKE_SCHEDULE_SOURCES. The reviewed primitive/model
+# additions are separately applied from unchanged patch 2742516e.
+exports_files([
+    "native_flake_seed_plan_repository.bzl", "native_flake_seed_plan_inputs.py",
+    "native_flake_seed_plan_qualification.py", "native_flake_seed_plan.py",
+    "native_flake_schedule.py", "native_flake_sources.py", "native_flake_missing_plan.py",
+    "nix_private_store_qualification.py", "verify_declared_nars.py", "nix_source_probe.py",
+    "native_flake_schedule.nix",
+])
+
+_NATIVE_FLAKE_SEED_PLAN_SOURCES = _NATIVE_FLAKE_SCHEDULE_SOURCES + [
+    "native_flake_seed_plan.py", "native_flake_missing_plan.py",
+    "native_flake_seed_plan_inputs.py",
+]
+
+python_test(
+    name = "native_flake_seed_plan_carrier_test",
+    main = "native_flake_seed_plan_carrier_test.py",
+    srcs = _NATIVE_FLAKE_SEED_PLAN_SOURCES + [
+        "native_flake_seed_plan_qualification.py", "native_flake_seed_plan_test.py",
+        "native_flake_schedule_test.py", "native_flake_sources_test.py",
+        "nix_private_store_qualification_test.py",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# Data-only repository is deliberately unselected until independently pinned
+# successful obligations exist. Manual target requests then fail before IO.
+python_test(
+    name = "native_flake_seed_plan_qualification",
+    main = "native_flake_seed_plan_qualification.py",
+    srcs = _NATIVE_FLAKE_SEED_PLAN_SOURCES,
+    data = [
+        "@omux_native_flake_seed_plan//:inputs",
+        "@omux_native_flake_seed_plan//:selection.json", "@omux_native_flake_seed_plan//:selection.sha256",
+        "@omux_native_flake_seed_plan//:inputs.json", "@omux_native_flake_seed_plan//:inputs.sha256",
+        "@omux_private_store_host//:private_store_seed",
+        "@omux_private_store_host//:private-store-seed.json",
+        "@omux_private_store_host//:native.json", "@omux_private_store_host//:store-paths",
+        "@omux_private_store_host//:registration", "@omux_private_store_host//:file-inventory.json",
+        "@omux_native_flake_sources//:byteproof_inputs",
+        "@omux_native_flake_sources//:source-descriptors.json",
+        "//:flake.nix", "//:flake.lock", "zig-index.json", "codex_upstream_archives.json",
+        "native_flake_schedule.nix",
+    ],
+    args = [
+        "--selection", "$(location @omux_native_flake_seed_plan//:selection.json)",
+        "--sha256-file", "$(location @omux_native_flake_seed_plan//:selection.sha256)",
+        "--mapping", "$(location @omux_native_flake_seed_plan//:inputs.json)",
+        "--mapping-sha256-file", "$(location @omux_native_flake_seed_plan//:inputs.sha256)",
+        "--seed", "$(location @omux_private_store_host//:private-store-seed.json)",
+        "--native", "$(location @omux_private_store_host//:native.json)",
+        "--paths", "$(location @omux_private_store_host//:store-paths)",
+        "--registration", "$(location @omux_private_store_host//:registration)",
+        "--inventory", "$(location @omux_private_store_host//:file-inventory.json)",
+        "--descriptors", "$(location @omux_native_flake_sources//:source-descriptors.json)",
+        "--flake", "$(location //:flake.nix)", "--lock", "$(location //:flake.lock)",
+        "--zig-index", "$(location :zig-index.json)",
+        "--archives", "$(location :codex_upstream_archives.json)",
+        "--wrapper", "$(location :native_flake_schedule.nix)",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)

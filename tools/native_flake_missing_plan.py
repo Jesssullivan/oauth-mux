@@ -11,7 +11,8 @@ import nix_private_store_seed as seed
 
 MAX_PATHS = 4096
 MAX_LINE = 4096
-DRV = r"/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9._+-]+[.]drv"
+# Pinned Nix StorePath name grammar, including the final .drv within 211 characters.
+DRV = r"/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-(?![.]($|-)|[.][.]($|-))[A-Za-z0-9+._?=-]{0,207}[.]drv"
 ADVISORY = ("warning: you did not specify '--add-root'; the result might be "
             "removed by the garbage collector")
 UNKNOWN = frozenset({

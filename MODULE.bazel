@@ -202,3 +202,9 @@ host_repository(
 # Exact selected retained009 acquisition bytes only; fresh candidates unchanged.
 native_enrollment_inputs = use_repo_rule("//tools:native_enrollment_repository.bzl", "native_enrollment_repository")
 native_enrollment_inputs(name = "omux_native_enrollment")
+
+
+# Append without any actual selection or future artifact digest. Bazel only
+# evaluates this data repository when its exact manual consumer is requested.
+native_flake_seed_plan = use_repo_rule("//tools:native_flake_seed_plan_repository.bzl", "native_flake_seed_plan_repository")
+native_flake_seed_plan(name = "omux_native_flake_seed_plan")
