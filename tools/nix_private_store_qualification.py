@@ -1,6 +1,7 @@
 """Manual, local-only Bash build in a freshly seeded private Nix store."""
 import argparse
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -149,16 +150,42 @@ def commands(tools, private):
                 "--expr", expression(tools["bash"])])
 
 
-def run(command, env, cwd, deadline, *, input_file=None, tool_fd=None, output_limit=MAX_OUTPUT):
+def stderr_reason(prefix):
+    """Closed hints from bounded public Nix stderr, never payload output."""
+    seed.require(type(prefix) is bytes and len(prefix) <= 65536)
+    if b"error:" not in prefix:
+        return "unclassified"
+    patterns = (
+        (b"not allowed in pure evaluation mode", "pure-evaluation-builtin"),
+        (b"forbidden in pure evaluation mode", "pure-evaluation-path"),
+        (b"store path mismatch", "source-store-path-mismatch"),
+        (b"hash mismatch", "source-hash-mismatch"),
+        (b"does not exist", "path-unavailable"),
+    )
+    found = {reason for text, reason in patterns if text in prefix}
+    return next(iter(found)) if len(found) == 1 else "unclassified"
+
+
+def run(command, env, cwd, deadline, *, input_file=None, tool_fd=None,
+        output_limit=MAX_OUTPUT, capture_stderr=False, diagnostics=None):
     """Every post-Popen operation is inside own-client cleanup."""
     tick(deadline)
     seed.require(type(output_limit) is int and 0 < output_limit <= 32 * 1024**2)
+    seed.require(type(capture_stderr) is bool)
+    seed.require(diagnostics is None or (type(diagnostics) is dict and not diagnostics))
     seed.require(type(tool_fd) is int and tool_fd >= 0)
     info = os.fstat(tool_fd)
     seed.require(stat.S_ISREG(info.st_mode) and bool(info.st_mode & stat.S_IXUSR))
     selected = selectors.DefaultSelector()
     process = None
     output = bytearray()
+    stderr = bytearray() if capture_stderr else None
+    stderr_digest = hashlib.sha256() if diagnostics is not None else None
+    stderr_prefix = bytearray()
+    stdout_bytes = stderr_bytes = 0
+    child_exit = None
+    streams_complete = False
+    reason = "transport-incomplete"
     count = 0
     cleanup_errors = []
     try:
@@ -178,14 +205,37 @@ def run(command, env, cwd, deadline, *, input_file=None, tool_fd=None, output_li
                     selected.unregister(key.fileobj)
                     continue
                 count += len(chunk)
+                if key.data == "stdout":
+                    stdout_bytes += len(chunk)
+                else:
+                    stderr_bytes += len(chunk)
+                    if stderr_digest is not None:
+                        stderr_digest.update(chunk)
+                        stderr_prefix.extend(chunk[:max(0, 65536-len(stderr_prefix))])
+                if count > output_limit:
+                    reason = "transport-limit"
                 seed.require(count <= output_limit)
                 if key.data == "stdout":
                     output.extend(chunk)
-                # stderr is bounded and discarded, never retained or printed.
+                elif stderr is not None:
+                    stderr.extend(chunk)
+                # Default callers discard stderr. Opt-in bytes remain bounded
+                # by the same combined stdout/stderr limit, never printed.
+        streams_complete = True
         tick(deadline)
         code = process.wait(timeout=deadline-time.monotonic())
+        child_exit = code if type(code) is int and -128 <= code <= 255 else None
+        reason = "child-zero" if type(code) is int and code == 0 else (
+            "child-exit" if child_exit is not None else "invalid-child-status")
         seed.require(type(code) is int and code == 0)
-        return bytes(output)
+        return (bytes(output), bytes(stderr)) if capture_stderr else bytes(output)
+    except subprocess.TimeoutExpired:
+        reason = "child-wait-timeout"
+        raise
+    except (ValueError, OSError, KeyboardInterrupt):
+        if reason == "transport-incomplete":
+            reason = "transport-deadline" if time.monotonic() >= deadline else "transport-refusal"
+        raise
     finally:
         if process is not None:
             try:
@@ -219,6 +269,14 @@ def run(command, env, cwd, deadline, *, input_file=None, tool_fd=None, output_li
             selected.close()
         except BaseException as error:
             cleanup_errors.append(error)
+        if diagnostics is not None:
+            diagnostics.update({
+                "child_exit": child_exit, "stdout_bytes": stdout_bytes, "stderr_bytes": stderr_bytes,
+                "stderr_sha256": stderr_digest.hexdigest(), "streams_complete": streams_complete,
+                "transport_reason": "owned-client-cleanup-failure" if cleanup_errors else reason,
+                "stderr_reason": stderr_reason(bytes(stderr_prefix)),
+                "stderr_classification_truncated": stderr_bytes > len(stderr_prefix),
+            })
         if cleanup_errors:
             raise ValueError("private-store owned-client cleanup") from None
 

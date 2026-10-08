@@ -1714,6 +1714,15 @@ python_test(
         + _YOGA_DELIVERY_GUARD_SOURCES,
 )
 
+# Pinned missing-plan grammar and held-FD stream models; no Nix execution.
+python_test(
+    name = "native_flake_missing_plan_test",
+    main = "native_flake_missing_plan_test.py",
+    srcs = ["native_flake_missing_plan.py", "nix_private_store_qualification.py",
+            "nix_private_store_seed.py", "nar_descriptor.py", "nix_interpreter_closure.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 # Fixed offline evaluation only: actual derivations/obligations, never realization.
 _NATIVE_FLAKE_SCHEDULE_SOURCES = [
     "native_flake_schedule.py", "native_flake_sources.py", "nar_descriptor.py",

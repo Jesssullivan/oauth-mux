@@ -24,6 +24,23 @@ MAX_ARTIFACT_BYTES = 64 * 1024**2
 MAX_OBJECTS = 4096
 PROJECT_FILES = ("flake.nix", "flake.lock", "tools/zig-index.json", "tools/codex_upstream_archives.json")
 PHASE = "admission"
+PHASE_ELAPSED = []
+DIAGNOSTICS = None
+DIAGNOSTIC_ENTRY = None
+MAX_WITNESS_MS = (MAX_SECONDS + 120) * 1000
+
+
+def elapsed_witness(entry):
+    require(type(entry) is float)
+    elapsed = max(0, int((time.monotonic()-entry)*1000))
+    return {"elapsed_ms": min(elapsed, MAX_WITNESS_MS), "clamped": elapsed > MAX_WITNESS_MS}
+
+
+def diagnostic_summary():
+    """Only fixed phases/numeric timing and already-redacted child metadata."""
+    return {"phase": PHASE, "phase_elapsed": PHASE_ELAPSED,
+            "elapsed": elapsed_witness(DIAGNOSTIC_ENTRY) if DIAGNOSTIC_ENTRY is not None else None,
+            "child": DIAGNOSTICS}
 
 
 def require(value):
@@ -146,8 +163,9 @@ def same_records(left, right):
             and set(a["references"]) == set(b["references"]))
 
 
-def copy_tree(descriptor, destination, opener, deadline):
+def copy_tree(descriptor, destination, opener, deadline, *, durable=True):
     """Reuse the seed copier; source descriptors gain no host-link execution."""
+    require(type(durable) is bool)
     for node in sorted(descriptor["nodes"], key=lambda row: (len(row["path"].split("/")) if row["path"] else 0, row["path"])):
         proof.tick(deadline)
         path = destination / node["path"] if node["path"] else destination
@@ -167,7 +185,8 @@ def copy_tree(descriptor, destination, opener, deadline):
                     remaining -= len(data)
                 require(original.read(1) == b"")
                 output.flush()
-                os.fsync(output.fileno())
+                if durable:
+                    os.fsync(output.fileno())
                 os.fchmod(output.fileno(), 0o555 if node["executable"] else 0o444)
     actual = proof.describe_root(descriptor["root"], destination)
     require(seed.encoded(actual) == seed.encoded(descriptor))
@@ -191,7 +210,8 @@ def copied_sources(bundle, label_root, physical_roots, directory, deadline):
                 str(Path(root) / relative), nodes[relative])
         (directory / role).mkdir(mode=0o700)
         path = directory / role / "source"
-        copied = copy_tree(descriptor, path, opener, deadline)
+        # Disposable inputs are rehashed before import, with no crash promise.
+        copied = copy_tree(descriptor, path, opener, deadline, durable=False)
         require(copied["narHash"] == item["narHash"])
         paths[role], hashes[role] = path, copied["narHash"][7:]
     return paths, hashes
@@ -273,8 +293,17 @@ def generated_objects(private, records, runtime_roots, target, graph, deadline):
     return objects, payloads
 
 
-def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, parent, deadline, *, runner=proof.run):
-    global PHASE
+def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, parent, deadline, *, runner=proof.run, entry=None):
+    global PHASE, PHASE_ELAPSED, DIAGNOSTICS, DIAGNOSTIC_ENTRY
+    DIAGNOSTIC_ENTRY = float(time.monotonic()) if entry is None else entry
+    require(type(DIAGNOSTIC_ENTRY) is float and DIAGNOSTIC_ENTRY <= time.monotonic())
+    PHASE_ELAPSED, DIAGNOSTICS = [], None
+    def phase(name):
+        global PHASE
+        PHASE = name
+        require(len(PHASE_ELAPSED) < 24)
+        PHASE_ELAPSED.append({"phase": name, **elapsed_witness(DIAGNOSTIC_ENTRY)})
+    phase("source-verify")
     bundle = json.loads(descriptor_raw, object_pairs_hook=seed.unique)
     physical_roots = metadata_alias_roots(descriptor_path)
     label_root = Path(descriptor_path).absolute().parent
@@ -298,6 +327,7 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
             return os.fdopen(os.dup(streams[path].fileno()), "rb")
         executable = streams[canonical["nix"]]
         legacy_executable = streams[canonical["nix_store"]]
+        phase("runtime-seed-byte-proof")
         seed_bytes = proof.verify_nars(value, pinned, deadline)
         root = proof.OwnedRoot(parent)
         result = None
@@ -308,8 +338,9 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
             for name in ("private-store", "home", "config", "tmp", "sources"):
                 (root.path/name).mkdir(mode=0o700)
             private = root.path/"private-store"
-            PHASE = "seed-copy"
+            phase("seed-copy")
             proof.copy_seed(value, private, pinned, deadline)
+            phase("source-copy")
             paths, hashes = copied_sources(bundle, label_root, physical_roots, root.path/"sources", deadline)
             (root.path/"project").mkdir(mode=0o700)
             paths["project"] = root.path/"project/source"
@@ -319,15 +350,17 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
             os.chmod(reg, 0o400)
             # The explicit companion resolves within the same held seed.
             legacy = proof.common(value["tools"]["nix_store"], private)
+            phase("registration-import")
             with nar.open_regular(str(reg), "") as stream:
                 require(runner(legacy+["--load-db"], proof.environment(root.path), root.path, deadline,
                     input_file=stream, tool_fd=legacy_executable.fileno()) == b"")
+            phase("registration-readback")
             initial_dump = runner(legacy+["--dump-db"], proof.environment(root.path), root.path, deadline,
                 tool_fd=legacy_executable.fileno())
             initial = proof.readback_records(initial_dump, value["roots"])
             expected = seed.registrations(value["registration"], value["roots"])
             same_records(initial, expected)
-            PHASE = "source-store-import"
+            phase("source-store-import")
             imported = {}
             for role in sorted(paths):
                 raw_path = runner(legacy+["--add-fixed", "--recursive", "sha256", str(paths[role])],
@@ -336,12 +369,15 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
                 require(raw_path == (logical+"\n").encode() and logical.endswith("-source"))
                 imported[role] = Path(store_path(logical))
             expr = expression(wrapper, imported, hashes)
-            PHASE = "current-flake-evaluation"
+            phase("current-flake-evaluation")
+            DIAGNOSTICS = {}
             raw_target = runner(plan(value["tools"], private, expr), proof.environment(root.path), root.path,
-                deadline, tool_fd=executable.fileno(), output_limit=MAX_GRAPH_BYTES)
+                deadline, tool_fd=executable.fileno(), output_limit=MAX_GRAPH_BYTES, diagnostics=DIAGNOSTICS)
+            phase("target-document")
             target = target_document(raw_target)
+            phase("imported-source-join")
             require(target["sourcePaths"] == {role: str(path) for role, path in imported.items()})
-            PHASE = "recursive-obligations"
+            phase("recursive-obligations")
             raw_graph = runner(plan(value["tools"], private, expr, target["drvPath"]), proof.environment(root.path),
                 root.path, deadline, tool_fd=executable.fileno(), output_limit=MAX_GRAPH_BYTES)
             graph = derivations(raw_graph, target)
@@ -356,7 +392,7 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
             records = proof.readback_records(dumped, roots)
             require(set(value["roots"]) <= set(records))
             same_records({logical: records[logical] for logical in value["roots"]}, initial)
-            PHASE = "generated-byte-proof"
+            phase("generated-byte-proof")
             objects, payloads = generated_objects(private, records, value["roots"], target, graph, deadline)
             for role, path in target["sourcePaths"].items():
                 require(objects[path]["narHash"] == "sha256:"+hashes[role])
@@ -383,7 +419,7 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
                 "scheduler_pruned_plan": False, "outer_guard_success_and_owned_empty_required": True}
         finally:
             failed_phase = PHASE
-            PHASE = "private-cleanup"
+            phase("private-cleanup")
             root.close(deadline+proof.CLEANUP_SECONDS)
             PHASE = failed_phase
         require(not os.path.lexists(root.path))
@@ -448,7 +484,7 @@ def main():
     descriptors = seed.metadata(descriptor_path.resolve(strict=True), nar.MAX_METADATA_BYTES)
     wrapper = seed.metadata(Path(args.wrapper).resolve(strict=True), 65536).decode("ascii")
     result, payloads = operate(value, seed_raw, descriptors, descriptor_path, project, wrapper,
-        os.environ["TEST_TMPDIR"], deadline)
+        os.environ["TEST_TMPDIR"], deadline, entry=entry)
     result["platform"], result["guard_epoch"] = platform, Path(marker).name
     result["seed_file_inventory_sha256"] = inventory_sha256
     result["source_descriptors_sha256"] = seed.sha(descriptors)
@@ -469,4 +505,5 @@ if __name__ == "__main__":
         main()
     except (ValueError, OSError, KeyError, TypeError, UnicodeError, subprocess.SubprocessError, KeyboardInterrupt):
         print("native flake obligations refused at "+PHASE, file=sys.stderr)
+        print("native flake public diagnostic "+json.dumps(diagnostic_summary(), sort_keys=True), file=sys.stderr)
         raise SystemExit(1) from None

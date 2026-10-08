@@ -68,7 +68,7 @@ class Fixture:
                               str(len(refs)), *refs])+"\n"
         return text.encode()
 
-    def runner(self, command, environment, root, deadline, *, tool_fd, input_file=None, output_limit=None):
+    def runner(self, command, environment, root, deadline, *, tool_fd, input_file=None, output_limit=None, diagnostics=None):
         self.calls.append((command, deadline, output_limit))
         assert os.fstat(tool_fd).st_mode & 0o100
         assert environment["NIX_REMOTE"] == "" and environment["PATH"] == ""
@@ -95,14 +95,20 @@ class Fixture:
                 physical.write_bytes(b"public-generated-"+logical.rsplit("/",1)[1].encode())
                 os.chmod(physical,0o444)
             self.extra.update({DRV: [CHILD,SCRIPT], CHILD: [], SCRIPT: []})
-            return encoded({"drvPath": DRV, "outPath": OUT, "system": "x86_64-linux",
-                            "sourcePaths": self.imports})
+            raw = encoded({"drvPath": DRV, "outPath": OUT, "system": "x86_64-linux",
+                           "sourcePaths": self.imports})
+            if diagnostics is not None:
+                diagnostics.update({"child_exit": 0, "stdout_bytes": len(raw), "stderr_bytes": 0,
+                    "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                    "transport_reason": "child-zero", "stderr_reason": "unclassified",
+                    "stderr_classification_truncated": False})
+            return raw
         if "derivation" in command:
             assert "--recursive" in command
             return self.raw_graph
         raise AssertionError("unexpected operation")
 
-    def operate(self, runner=None, deadline=None):
+    def operate(self, runner=None, deadline=None, entry=None):
         def describe(logical, physical=None):
             actual = self.runtime.physical[logical] if physical is None else physical
             value = nar.describe(actual)
@@ -113,10 +119,116 @@ class Fixture:
             return schedule.operate(self.runtime.value, encoded(self.runtime.value), self.descriptors,
                 self.descriptor_path, self.project, "{ projectSource, nixpkgsSource, utilsSource, systemsSource }: {}",
                 self.root, float(time.monotonic()+60) if deadline is None else deadline,
-                runner=self.runner if runner is None else runner)
+                runner=self.runner if runner is None else runner, entry=entry)
 
 
 class ScheduleModels(unittest.TestCase):
+
+    def test_failed_target_json_is_separate_from_actual_zero_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "eval" in args[0]:
+                    kwargs["diagnostics"]["stdout_bytes"] = len(b"not JSON")
+                    return b"not JSON"
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "target-document")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(schedule.DIAGNOSTICS["transport_reason"], "child-zero")
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_imported_role_join_is_separate_from_valid_target_document(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "eval" in args[0]:
+                    value = json.loads(raw)
+                    value["sourcePaths"]["systems"] = SCRIPT
+                    raw = encoded(value)
+                    if kwargs.get("diagnostics") is not None:
+                        kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                    return raw
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "imported-source-join")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_fixed_elapsed_witness_uses_entry_without_changing_original_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            entry = float(time.monotonic()-1)
+            deadline = float(time.monotonic()+60)
+            model.operate(deadline=deadline, entry=entry)
+            self.assertEqual({call[1] for call in model.calls}, {deadline})
+            report = schedule.diagnostic_summary()
+            phases = {row["phase"] for row in report["phase_elapsed"]}
+            self.assertTrue({"source-verify", "source-copy", "source-store-import",
+                             "current-flake-evaluation", "target-document", "imported-source-join"} <= phases)
+            ticks = [row["elapsed_ms"] for row in report["phase_elapsed"]]
+            self.assertEqual(ticks, sorted(ticks))
+            self.assertGreaterEqual(ticks[0], 1000)
+            self.assertTrue(all(type(tick) is int and 0 <= tick <= schedule.MAX_WITNESS_MS for tick in ticks))
+            self.assertNotIn(str(model.root), json.dumps(report))
+
+    def test_disposable_source_copy_rehashes_without_per_file_fsync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.mkdir()
+            (original / "payload").write_bytes(b"declared-copy-bytes\n")
+            descriptor = nar.describe(original)
+            with patch.object(schedule.os, "fsync", side_effect=AssertionError("disposable copy fsync")):
+                result = schedule.copy_tree(descriptor, Path(directory) / "copied",
+                    nar.open_regular, float(time.monotonic() + 10), durable=False)
+            self.assertEqual(result, nar.hash_descriptor(descriptor))
+            self.assertEqual((Path(directory) / "copied/payload").read_bytes(), b"declared-copy-bytes\n")
+
+    def test_published_generated_copy_retains_payload_and_receipt_fsync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.write_bytes(b"generated")
+            descriptor = nar.describe(original)
+            proof = nar.hash_descriptor(descriptor)
+            output = Path(directory) / "output"
+            output.mkdir()
+            item = {"descriptor": descriptor, "artifact_root": "generated/00000000", **proof}
+            with patch.object(schedule.os, "fsync", wraps=schedule.os.fsync) as sync:
+                schedule.persist({"generated": {str(original): item}},
+                    {("generated/00000000", ""): b"generated"}, output,
+                    float(time.monotonic() + 10))
+            self.assertEqual(sync.call_count, 2)
+            self.assertEqual((output / "generated/00000000").read_bytes(), b"generated")
+            self.assertTrue((output / "native-flake-obligations.json").is_file())
+
+    def test_disposable_source_copy_flush_failure_propagates(self):
+        class FlushFailure:
+            def __init__(self, stream):
+                self.stream = stream
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.stream.close()
+            def write(self, data):
+                return self.stream.write(data)
+            def flush(self):
+                raise OSError("modeled public flush failure")
+            def fileno(self):
+                return self.stream.fileno()
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.write_bytes(b"copy")
+            descriptor = nar.describe(original)
+            fdopen = schedule.os.fdopen
+            with patch.object(schedule.os, "fdopen", side_effect=lambda *args: FlushFailure(fdopen(*args))), self.assertRaises(OSError):
+                schedule.copy_tree(descriptor, Path(directory) / "copied",
+                    lambda *_: io.BytesIO(b"copy"), float(time.monotonic() + 10),
+                    durable=False)
+
     def test_actual_copy_import_graph_generated_nars_and_cleanup_preserve_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             model = Fixture(directory)
@@ -233,7 +345,10 @@ class ScheduleModels(unittest.TestCase):
                 if "eval" in args[0]:
                     value = json.loads(raw)
                     value["sourcePaths"]["systems"] = SCRIPT
-                    return encoded(value)
+                    raw = encoded(value)
+                    if kwargs.get("diagnostics") is not None:
+                        kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                    return raw
                 return raw
             with self.assertRaises(ValueError):
                 model.operate(runner)
