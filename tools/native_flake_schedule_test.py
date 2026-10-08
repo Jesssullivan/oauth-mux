@@ -105,6 +105,11 @@ class Fixture:
             return raw
         if "derivation" in command:
             assert "--recursive" in command
+            if diagnostics is not None:
+                diagnostics.update({"child_exit": 0, "stdout_bytes": len(self.raw_graph), "stderr_bytes": 0,
+                    "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                    "transport_reason": "child-zero", "stderr_reason": "unclassified",
+                    "stderr_classification_truncated": False})
             return self.raw_graph
         raise AssertionError("unexpected operation")
 
@@ -295,6 +300,7 @@ class ScheduleModels(unittest.TestCase):
         for value in ({"inputDrvs": {}, "inputSrcs":[]}, {"version": True,"derivations": {}}):
             with self.assertRaises(ValueError):
                 schedule.derivations(encoded(value),{"drvPath":DRV,"outPath":OUT})
+            self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
 
     def test_incomplete_extra_or_output_substituted_recursive_graph_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -311,6 +317,8 @@ class ScheduleModels(unittest.TestCase):
                     graph["derivations"][DRV.rsplit("/",1)[1]]["inputs"]["drvs"][CHILD.rsplit("/",1)[1]]["outputs"] = ["wrong"]
                 with self.assertRaises(ValueError):
                     schedule.derivations(encoded(graph),{"drvPath":DRV,"outPath":OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON,
+                    "env" if kind == "output" else "reachability")
 
     def test_dynamic_or_impure_obligations_not_silently_dropped(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -324,6 +332,7 @@ class ScheduleModels(unittest.TestCase):
                     row_value["outputs"]["out"] = {"method":"nar","hashAlgo":"sha256","impure":True}
                 with self.assertRaises(ValueError):
                     schedule.derivations(encoded(graph),{"drvPath":DRV,"outPath":OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "inputs" if kind == "dynamic" else "output")
 
     def test_failed_evaluation_preserves_phase_and_removes_only_owned_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -590,6 +599,107 @@ class ScheduleModels(unittest.TestCase):
             self.assertTrue(schedule.DIAGNOSTICS["streams_complete"])
             self.assertFalse(any("derivation" in call[0] for call in model.calls))
             self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+
+    def test_recursive_child_refusal_replaces_successful_evaluation_witness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            deadline = float(time.monotonic()+60)
+            seen = []
+            def runner(command, environment, root, selected_deadline, **kwargs):
+                self.assertEqual(selected_deadline, deadline)
+                if "derivation" in command:
+                    witness = kwargs["diagnostics"]
+                    self.assertEqual(witness, {})
+                    self.assertIsNot(witness, seen[0])
+                    self.assertGreater(seen[0]["stdout_bytes"], 0)
+                    witness.update({"child_exit": 1, "stdout_bytes": 0, "stderr_bytes": 7,
+                        "stderr_sha256": seed.sha(b"refused"), "streams_complete": True,
+                        "transport_reason": "child-exit", "stderr_reason": "unclassified",
+                        "stderr_classification_truncated": False})
+                    raise ValueError("modeled actual recursive child refusal")
+                raw = model.runner(command, environment, root, selected_deadline, **kwargs)
+                if "eval" in command:
+                    seen.append(kwargs["diagnostics"])
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner, deadline)
+            self.assertEqual(schedule.PHASE, "recursive-obligations")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 1)
+            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], 0)
+            self.assertEqual(schedule.DIAGNOSTICS["stderr_bytes"], 7)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_zero_recursive_child_bad_document_has_its_own_phase_and_witness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "derivation" in args[0]:
+                    raw = b"{}"
+                    kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "recursive-document")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], 2)
+            self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
+            self.assertTrue(schedule.DIAGNOSTICS["streams_complete"])
+            self.assertEqual(schedule.DIAGNOSTICS["stderr_bytes"], 0)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_recursive_transport_refusal_cannot_retain_eval_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                if "derivation" in args[0]:
+                    self.assertEqual(kwargs["diagnostics"], {})
+                    raise OSError("modeled pre-child held transport refusal")
+                return model.runner(*args, **kwargs)
+            with self.assertRaises(OSError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "recursive-obligations")
+            self.assertEqual(schedule.DIAGNOSTICS, {})
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_successful_recursive_document_witness_is_bounded_and_no_eval_carryover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, _ = model.operate()
+            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], len(model.raw_graph))
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(result["derivation_json_sha256"], seed.sha(model.raw_graph))
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+            self.assertIn("recursive-document", {row["phase"] for row in schedule.PHASE_ELAPSED})
+            self.assertTrue(result["source_rechecked"] and result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"])
+
+
+    def test_actual_parser_closed_node_path_and_target_tags_reset_after_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = json.loads(Fixture(directory).raw_graph)
+            for kind in ("node", "path", "target-join"):
+                graph = copy.deepcopy(original)
+                selected = graph["derivations"][DRV.rsplit("/", 1)[1]]
+                if kind == "node":
+                    selected["version"] = True
+                elif kind == "path":
+                    selected["inputs"]["srcs"] = ["unselected-private-path"]
+                else:
+                    selected["outputs"]["out"] = {}
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, kind)
+                self.assertEqual(schedule.diagnostic_summary()["graph_document_reason"], kind)
+                self.assertNotIn("unselected-private-path", json.dumps(schedule.diagnostic_summary()))
+            with self.assertRaises(ValueError):
+                schedule.derivations(b"not JSON", {"drvPath": DRV, "outPath": OUT})
+            self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
+            accepted = schedule.derivations(encoded(original), {"drvPath": DRV, "outPath": OUT})
+            self.assertEqual(set(accepted), {DRV, CHILD})
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
 
 
 if __name__ == "__main__":

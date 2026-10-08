@@ -27,6 +27,7 @@ PHASE = "admission"
 PHASE_ELAPSED = []
 DIAGNOSTICS = None
 DIAGNOSTIC_ENTRY = None
+GRAPH_DOCUMENT_REASON = None
 MAX_WITNESS_MS = (MAX_SECONDS + 120) * 1000
 
 
@@ -40,7 +41,7 @@ def diagnostic_summary():
     """Only fixed phases/numeric timing and already-redacted child metadata."""
     return {"phase": PHASE, "phase_elapsed": PHASE_ELAPSED,
             "elapsed": elapsed_witness(DIAGNOSTIC_ENTRY) if DIAGNOSTIC_ENTRY is not None else None,
-            "child": DIAGNOSTICS}
+            "child": DIAGNOSTICS, "graph_document_reason": GRAPH_DOCUMENT_REASON}
 
 
 def require(value):
@@ -82,79 +83,100 @@ def target_document(raw):
 
 
 def derivations(raw, target):
-    """Pinned Nix 2.34 JSON version4, not the obsolete inputDrvs format."""
-    value = parse(raw)
-    require(isinstance(value, dict) and set(value) == {"version", "derivations"}
-        and type(value["version"]) is int and value["version"] == 4)
-    rows = value["derivations"]
-    require(isinstance(rows, dict) and 0 < len(rows) <= MAX_OBJECTS)
-    result = {}
-    required = {"name", "version", "outputs", "inputs", "system", "builder", "args", "env"}
-    for basename, row in rows.items():
-        path = base_path(basename, drv=True)
-        require(isinstance(row, dict) and required <= set(row) <= required | {"structuredAttrs"}
-            and type(row["version"]) is int and row["version"] == 4
-            and isinstance(row["name"], str) and len(row["name"]) <= 256
-            and isinstance(row["system"], str) and len(row["system"]) <= 128
-            and isinstance(row["builder"], str) and len(row["builder"]) <= 4096
-            and isinstance(row["args"], list) and all(isinstance(arg, str) for arg in row["args"])
-            and isinstance(row["env"], dict) and all(isinstance(key, str) and isinstance(item, str)
-                for key, item in row["env"].items()))
-        inputs = row["inputs"]
-        require(isinstance(inputs, dict) and set(inputs) == {"srcs", "drvs"}
-            and isinstance(inputs["srcs"], list) and len(inputs["srcs"]) <= MAX_OBJECTS
-            and len(set(inputs["srcs"])) == len(inputs["srcs"])
-            and isinstance(inputs["drvs"], dict) and len(inputs["drvs"]) <= MAX_OBJECTS)
-        input_srcs = sorted(base_path(item) for item in inputs["srcs"])
-        input_drvs = {}
-        for name, node in inputs["drvs"].items():
-            child = base_path(name, drv=True)
-            require(isinstance(node, dict) and set(node) == {"outputs", "dynamicOutputs"}
-                and isinstance(node["outputs"], list) and 0 < len(node["outputs"]) <= 32
-                and len(set(node["outputs"])) == len(node["outputs"])
-                and all(isinstance(output, str) and re.fullmatch("[A-Za-z0-9_+-]{1,64}", output)
-                    for output in node["outputs"])
-                and isinstance(node["dynamicOutputs"], dict) and not node["dynamicOutputs"])
-            input_drvs[child] = sorted(node["outputs"])
-        outputs = row["outputs"]
-        require(isinstance(outputs, dict) and 0 < len(outputs) <= 32)
-        selected = {}
-        for name, item in outputs.items():
-            require(isinstance(name, str) and re.fullmatch("[A-Za-z0-9_+-]{1,64}", name)
-                and isinstance(item, dict))
-            if set(item) == {"path"}:
-                expected = base_path(item["path"])
-                require(row["env"].get(name) == expected)
-                selected[name] = {"kind": "input-addressed", "path": expected}
-            elif set(item) == {"method", "hash"}:
-                require(isinstance(item["method"], str) and len(item["method"]) <= 64
-                    and isinstance(item["hash"], str) and len(item["hash"]) <= 256)
-                selected[name] = {"kind": "fixed-content", "method": item["method"], "hash": item["hash"],
-                                  "path": store_path(row["env"].get(name))}
-            elif not item:
-                # Preserve an unresolved obligation; never claim complete seed.
-                selected[name] = {"kind": "deferred", "path": None}
-            else:
-                raise ValueError("unsupported floating/dynamic/impure derivation")
-        result[path] = {"name": row["name"], "system": row["system"], "builder": row["builder"],
-            "outputs": selected, "inputDrvs": input_drvs, "inputSrcs": input_srcs,
-            "json_sha256": seed.sha(seed.encoded(row))}
-    require(target["drvPath"] in result
-        and result[target["drvPath"]]["outputs"].get("out", {}).get("path") == target["outPath"])
-    pending, seen = [target["drvPath"]], set()
-    while pending:
-        path = pending.pop()
-        if path in seen:
-            continue
-        require(path in result)
-        seen.add(path)
-        row = result[path]
-        for child, outputs in row["inputDrvs"].items():
-            require(child in result and all(output in result[child]["outputs"] for output in outputs))
-            pending.append(child)
-        pending.extend(item for item in row["inputSrcs"] if item.endswith(".drv"))
-    require(seen == set(result))
-    return result
+    """Pinned Nix 2.34 JSON version4, with fixed redacted refusal families."""
+    global GRAPH_DOCUMENT_REASON
+    GRAPH_DOCUMENT_REASON = None
+    reason = "envelope"
+    try:
+        value = parse(raw)
+        require(isinstance(value, dict) and set(value) == {"version", "derivations"}
+            and type(value["version"]) is int and value["version"] == 4)
+        rows = value["derivations"]
+        require(isinstance(rows, dict) and 0 < len(rows) <= MAX_OBJECTS)
+        result = {}
+        required = {"name", "version", "outputs", "inputs", "system", "builder", "args", "env"}
+        for basename, row in rows.items():
+            reason = "path"
+            path = base_path(basename, drv=True)
+            reason = "node"
+            require(isinstance(row, dict) and required <= set(row) <= required | {"structuredAttrs"}
+                and type(row["version"]) is int and row["version"] == 4
+                and isinstance(row["name"], str) and len(row["name"]) <= 256
+                and isinstance(row["system"], str) and len(row["system"]) <= 128
+                and isinstance(row["builder"], str) and len(row["builder"]) <= 4096
+                and isinstance(row["args"], list) and all(isinstance(arg, str) for arg in row["args"])
+                and isinstance(row["env"], dict) and all(isinstance(key, str) and isinstance(item, str)
+                    for key, item in row["env"].items()))
+            reason = "inputs"
+            inputs = row["inputs"]
+            require(isinstance(inputs, dict) and set(inputs) == {"srcs", "drvs"}
+                and isinstance(inputs["srcs"], list) and len(inputs["srcs"]) <= MAX_OBJECTS
+                and len(set(inputs["srcs"])) == len(inputs["srcs"])
+                and isinstance(inputs["drvs"], dict) and len(inputs["drvs"]) <= MAX_OBJECTS)
+            reason = "path"
+            input_srcs = sorted(base_path(item) for item in inputs["srcs"])
+            input_drvs = {}
+            for name, node in inputs["drvs"].items():
+                reason = "path"
+                child = base_path(name, drv=True)
+                reason = "inputs"
+                require(isinstance(node, dict) and set(node) == {"outputs", "dynamicOutputs"}
+                    and isinstance(node["outputs"], list) and 0 < len(node["outputs"]) <= 32
+                    and len(set(node["outputs"])) == len(node["outputs"])
+                    and all(isinstance(output, str) and re.fullmatch("[A-Za-z0-9_+-]{1,64}", output)
+                        for output in node["outputs"])
+                    and isinstance(node["dynamicOutputs"], dict) and not node["dynamicOutputs"])
+                input_drvs[child] = sorted(node["outputs"])
+            reason = "output"
+            outputs = row["outputs"]
+            require(isinstance(outputs, dict) and 0 < len(outputs) <= 32)
+            selected = {}
+            for name, item in outputs.items():
+                reason = "output"
+                require(isinstance(name, str) and re.fullmatch("[A-Za-z0-9_+-]{1,64}", name)
+                    and isinstance(item, dict))
+                if set(item) == {"path"}:
+                    reason = "path"
+                    expected = base_path(item["path"])
+                    reason = "env"
+                    require(row["env"].get(name) == expected)
+                    selected[name] = {"kind": "input-addressed", "path": expected}
+                elif set(item) == {"method", "hash"}:
+                    require(isinstance(item["method"], str) and len(item["method"]) <= 64
+                        and isinstance(item["hash"], str) and len(item["hash"]) <= 256)
+                    reason = "path"
+                    selected[name] = {"kind": "fixed-content", "method": item["method"], "hash": item["hash"],
+                                      "path": store_path(row["env"].get(name))}
+                elif not item:
+                    # Preserve an unresolved obligation; never claim complete seed.
+                    selected[name] = {"kind": "deferred", "path": None}
+                else:
+                    raise ValueError("unsupported floating/dynamic/impure derivation")
+            result[path] = {"name": row["name"], "system": row["system"], "builder": row["builder"],
+                "outputs": selected, "inputDrvs": input_drvs, "inputSrcs": input_srcs,
+                "json_sha256": seed.sha(seed.encoded(row))}
+        reason = "target-join"
+        require(target["drvPath"] in result
+            and result[target["drvPath"]]["outputs"].get("out", {}).get("path") == target["outPath"])
+        reason = "reachability"
+        pending, seen = [target["drvPath"]], set()
+        while pending:
+            path = pending.pop()
+            if path in seen:
+                continue
+            require(path in result)
+            seen.add(path)
+            row = result[path]
+            for child, outputs in row["inputDrvs"].items():
+                require(child in result and all(output in result[child]["outputs"] for output in outputs))
+                pending.append(child)
+            pending.extend(item for item in row["inputSrcs"] if item.endswith(".drv"))
+        require(seen == set(result))
+        return result
+    except (ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+        # Literals above only: never retain input values, paths or exception text.
+        GRAPH_DOCUMENT_REASON = reason
+        raise
 
 
 def same_records(left, right):
@@ -301,10 +323,10 @@ def generated_objects(private, records, runtime_roots, target, graph, deadline):
 
 
 def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, parent, deadline, *, runner=proof.run, entry=None):
-    global PHASE, PHASE_ELAPSED, DIAGNOSTICS, DIAGNOSTIC_ENTRY
+    global PHASE, PHASE_ELAPSED, DIAGNOSTICS, DIAGNOSTIC_ENTRY, GRAPH_DOCUMENT_REASON
     DIAGNOSTIC_ENTRY = float(time.monotonic()) if entry is None else entry
     require(type(DIAGNOSTIC_ENTRY) is float and DIAGNOSTIC_ENTRY <= time.monotonic())
-    PHASE_ELAPSED, DIAGNOSTICS = [], None
+    PHASE_ELAPSED, DIAGNOSTICS, GRAPH_DOCUMENT_REASON = [], None, None
     def phase(name):
         global PHASE
         PHASE = name
@@ -390,8 +412,11 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
             phase("imported-source-join")
             require(target["sourcePaths"] == {role: str(path) for role, path in imported.items()})
             phase("recursive-obligations")
+            DIAGNOSTICS = {}
             raw_graph = runner(plan(value["tools"], private, expr, target["drvPath"]), proof.environment(root.path),
-                root.path, deadline, tool_fd=executable.fileno(), output_limit=MAX_GRAPH_BYTES)
+                root.path, deadline, tool_fd=executable.fileno(), output_limit=MAX_GRAPH_BYTES,
+                diagnostics=DIAGNOSTICS)
+            phase("recursive-document")
             graph = derivations(raw_graph, target)
             dumped = runner(legacy+["--dump-db"], proof.environment(root.path), root.path, deadline,
                 tool_fd=legacy_executable.fileno())
