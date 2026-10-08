@@ -46,6 +46,26 @@ const sql_api = @import("c");
 
 pub const Channel = control.Channel;
 const Policy = struct { sticky_routes: bool = true, warm_alternatives: bool = true };
+const PublicAccountView = struct {
+    id: []const u8,
+    label: []const u8,
+    account_type: []const u8,
+    lifecycle: domain.AccountLifecycle,
+    identity: struct { provider: []const u8, verified: bool },
+    source_ids: []const []const u8,
+};
+
+fn publicAccountView(account: domain.Account) PublicAccountView {
+    return .{
+        .id = account.id,
+        .label = account.label,
+        .account_type = account.account_type,
+        .lifecycle = account.lifecycle,
+        .identity = .{ .provider = account.identity.provider, .verified = account.identity.verified },
+        .source_ids = account.source_ids,
+    };
+}
+
 const SourceDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8 = "", path: []const u8 = "" };
 const OutcomeIntent = struct {
     key: snapshot_admission.Key,
@@ -3261,17 +3281,9 @@ pub const Engine = struct {
     }
 
     fn publicSnapshot(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value) ![]u8 {
-        const AccountView = struct { id: []const u8, label: []const u8, account_type: []const u8, lifecycle: domain.AccountLifecycle, identity: struct { provider: []const u8 }, source_ids: []const []const u8 };
-        const accounts = try allocator.alloc(AccountView, self.state.accounts.items.len);
+        const accounts = try allocator.alloc(PublicAccountView, self.state.accounts.items.len);
         defer allocator.free(accounts);
-        for (self.state.accounts.items, accounts) |account, *view| view.* = .{
-            .id = account.id,
-            .label = account.label,
-            .account_type = account.account_type,
-            .lifecycle = account.lifecycle,
-            .identity = .{ .provider = account.identity.provider },
-            .source_ids = account.source_ids,
-        };
+        for (self.state.accounts.items, accounts) |account, *view| view.* = publicAccountView(account);
         const Capacity = struct { provider: []const u8, issuer: []const u8, complete: bool, resource: domain.Resource, window_start: i64, window_end: i64, remaining: f64, limit: ?f64, buckets: usize, unknown_buckets: usize };
         var capacities: std.ArrayList(Capacity) = .empty;
         defer capacities.deinit(allocator);
@@ -5858,6 +5870,37 @@ test "actor state survives restart and control cannot materialize credentials" {
     defer allocator.free(snapshot);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "work") != null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "access_token") == null);
+}
+
+test "public account identity exposes only provider and actual verification truth" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ true, false }) |verified| {
+        // Threadless DTO model reports the stored identity bit. The same
+        // projector is used by the actor's actual publicSnapshot serializer.
+        const account: domain.Account = .{
+            .id = "public-account-model",
+            .identity = .{
+                .provider = "codex",
+                .issuer = "private-issuer-model",
+                .subject = "private-subject-model",
+                .tenant = "private-tenant-model",
+                .verified = verified,
+            },
+            .source_ids = &.{"public-source-model"},
+        };
+        const raw = try std.json.Stringify.valueAlloc(allocator, publicAccountView(account), .{});
+        defer allocator.free(raw);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+        defer parsed.deinit();
+        const identity = control.get(parsed.value, "identity").?;
+        try std.testing.expectEqual(@as(usize, 2), identity.object.count());
+        try std.testing.expectEqualStrings("codex", try control.string(identity, "provider"));
+        try std.testing.expectEqual(verified, control.get(identity, "verified").?.bool);
+        for ([_][]const u8{ "issuer", "subject", "tenant" }) |field| try std.testing.expect(control.get(identity, field) == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-issuer-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-subject-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-tenant-model") == null);
+    }
 }
 
 test "Git route cache retires oldest idle context while preserving native and leased routes" {

@@ -35,6 +35,10 @@ The current local control protocol is version 2, defined by
 local channels with bounded framing and peer-user checks. This is a fresh local
 API, not the deleted managed-harness JSON-RPC contract. General control replies
 contain redacted metadata and opaque handles, never credential payloads.
+Account snapshots expose the stored `identity.verified` boolean alongside
+`identity.provider`; issuer, subject and tenant remain private. Consumers must
+require boolean `true` before treating an account as verified. Installed runtime
+support for this field requires qualification of the exact delivered bytes.
 
 | Surface | Implemented methods and limits |
 | --- | --- |
