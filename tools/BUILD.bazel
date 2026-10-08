@@ -1348,6 +1348,27 @@ python_test(
     timeout = "short",
 )
 
+python_test(
+    name = "native_flake_sources_test",
+    main = "native_flake_sources_test.py",
+    srcs = ["native_flake_sources.py", "nar_descriptor.py", "nix_source_probe.py",
+            "verify_declared_nars.py", "verify_cached_nars.py"],
+)
+
+# All source bytes are declared labels. No DB query, source fetch, Nix
+# evaluation or builder runs here; a pass is not a complete native build seed.
+python_test(
+    name = "native_flake_source_byte_verification",
+    main = "native_flake_sources.py",
+    srcs = ["nar_descriptor.py", "nix_source_probe.py", "verify_declared_nars.py", "verify_cached_nars.py"],
+    data = ["//:flake.lock", "@omux_native_flake_sources//:byteproof_inputs",
+            "@omux_native_flake_sources//:source-descriptors.json"],
+    args = ["verify", "--lock", "$(location //:flake.lock)",
+            "--descriptors", "$(location @omux_native_flake_sources//:source-descriptors.json)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
 [python_test(
     name = "execution_probe_" + phase.replace("-", "_"),
     main = "execution_guard_probe.py",

@@ -80,6 +80,18 @@ host_repository(
 evaluation_source = use_repo_rule("//tools:nix_evaluation_source.bzl", "nix_evaluation_source")
 evaluation_source(name = "omux_eval_source")
 
+# Finite cached source candidates from the qualified read-only locator. This
+# lazy manual repository declares bytes; its action must prove all lock hashes.
+native_flake_sources = use_repo_rule("//tools:native_flake_sources_repository.bzl", "native_flake_sources_repository")
+native_flake_sources(
+    name = "omux_native_flake_sources",
+    sources = {
+        "nixpkgs": "/nix/store/75bkaivfbwq3x8cs7155hag7hs1chjcx-source",
+        "flake-utils": "/nix/store/01x5k4nlxcpyd85nnr0b9gm89rm8ff4x-source",
+        "systems": "/nix/store/yj1wxm9hh8610iyzqnz75kvs6xl8j3my-source",
+    },
+)
+
 site_inputs = use_repo_rule("//tools:site_inputs_repository.bzl", "site_inputs_repository")
 site_inputs(name = "omux_site_inputs")
 
