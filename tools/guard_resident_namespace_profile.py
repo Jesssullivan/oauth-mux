@@ -96,10 +96,12 @@ class PublicFile:
             os.close(named_parent)
 
     def close(self):
+        held=[]
         for name in ("fd", "parent"):
-            if getattr(self, name, None) is not None:
-                os.close(getattr(self, name))
-                setattr(self, name, None)
+            fd=getattr(self,name,None)
+            setattr(self,name,None)
+            if fd is not None: held.append(fd)
+        resident.close_owned_resources(held)
 
 def write_new(directory, name, value):
     require(name in ("context-pin.json", HANDOFF, OUTPUT))

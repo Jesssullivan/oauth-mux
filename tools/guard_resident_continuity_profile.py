@@ -141,12 +141,9 @@ class PublicFile:
             require(os.pread(self.fd,self.limit+1,0) == self.raw)
 
     def close(self):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
-        if self.parent is not None:
-            os.close(self.parent)
-            self.parent = None
+        fd,parent=self.fd,self.parent
+        self.fd=self.parent=None
+        resident.close_owned_resources([value for value in (fd,parent) if value is not None])
 
 def create_file(directory,name,value):
     require(name in (HANDOFF,OUTPUT,"runtime-pin.json","context-pin.json"))
@@ -428,13 +425,12 @@ class ResidentObserver:
             "resident_vault_owner_preserved":True}
 
     def close(self):
-        for item in reversed(getattr(self,"resources",[])):
-            item.close()
-        self.resources = []
+        items,self.resources=getattr(self,"resources",[]),[]
         for name in ("pidfd","runtime_fd","bus_parent"):
-            if getattr(self,name,None) is not None:
-                os.close(getattr(self,name))
-                setattr(self,name,None)
+            fd=getattr(self,name,None)
+            setattr(self,name,None)
+            if fd is not None: items.append(fd)
+        resident.close_owned_resources(items)
 
 def control_request(observer,method,params,*,deadline=None):
     bound = observer.deadline if deadline is None else min(observer.deadline,deadline)

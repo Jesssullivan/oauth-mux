@@ -1120,9 +1120,16 @@ exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","cod
 
 _RESIDENT_GUARD_SOURCES = ['guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
-    'guard_resident_namespace_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
+    'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
-exports_files(['guard_resident_observation.py','guard_resident_continuity_profile.py','guard_resident_namespace_profile.py'])
+exports_files(['guard_resident_observation.py','guard_resident_continuity_profile.py','guard_resident_namespace_profile.py','guard_resident_sources_profile.py'])
+filegroup(name='resident_sources_guard_sources',srcs=_RESIDENT_GUARD_SOURCES+_YOGA_GUARD_SOURCES+['system_mask_policy.py'],visibility=['//visibility:public'])
+python_test(name='guard_resident_sources_profile_test',main='guard_resident_sources_profile_test.py',
+    srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py','guard_dependency_profile.py',
+        'guard_site_profile.py','guard_owner_runtime_input.py','codex_owner_runtime_input.py','site_coordinator_closure_qualification.py',
+        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py','//delivery:portable.py']
+        +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES+_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    target_compatible_with=['@platforms//os:linux'])
 filegroup(name='resident_continuity_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
 filegroup(name='resident_namespace_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
 python_test(name='guard_resident_observation_test',main='guard_resident_observation_test.py',srcs=_RESIDENT_GUARD_SOURCES)

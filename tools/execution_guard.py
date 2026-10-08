@@ -333,7 +333,7 @@ class PidsObservation:
 
 def workload_pids_observation(settings, profile):
     return PidsObservation(settings.PROOF_TASKS
-        if profile in ('resident-enrollment','codex-device-component-reserved') else 512)
+        if profile in ('resident-enrollment','resident-sources','codex-device-component-reserved') else 512)
 
 
 def observe_pids_before_cleanup(observation, pin, primary=None, *, prior_failure=False):
@@ -1206,7 +1206,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved'), default='standard')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1825,7 +1825,7 @@ def _main(argv, admission_resources):
                     descriptor = become_descriptor(args.become_file)
                     parts = [sudo, '-S', '-p', '', '--'] + parts
                 if dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
-                    bound = delivery_entry_deadline_ns - (30*10**9 if getattr(resident_input,'acquisition_profile',False) and phase != 'cleanup' else 0)
+                    bound = delivery_entry_deadline_ns - (30*10**9 if (getattr(resident_input,'acquisition_profile',False) or getattr(resident_input,'sources_profile',False)) and phase != 'cleanup' else 0)
                     deadline = min(deadline, bound / 10**9) if deadline is not None else bound / 10**9
                 if native_sdk and (phase != 'cleanup' or native_history is not None or native_cli is not None):
                     deadline = min(deadline, args.native_deadline) if deadline is not None else args.native_deadline
@@ -2413,6 +2413,12 @@ def _main(argv, admission_resources):
                            'original_entry_monotonic_ns':delivery_entry_monotonic_ns,
                            'original_deadline_monotonic_ns':delivery_entry_deadline_ns
                        } if resident_input is not None and args.profile=='resident-namespace' else None,
+                       'resident_sources': {'budget':resident_input.facts,'output':resident_output,
+                           'verified_after_cleanup':resident_verified_after,'success_requires_matching_outer_receipt':True,
+                           'original_entry_monotonic_ns':delivery_entry_monotonic_ns,
+                           'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
+                           'enrollment_verified':False,'same_process_handoff_proven':False
+                       } if resident_input is not None and args.profile=='resident-sources' else None,
                        'native_acquisition': {'input':resident_input.facts,'output':resident_output,
                            'verified_after_cleanup':resident_verified_after,'success_requires_matching_outer_receipt':True,
                            'original_entry_monotonic_ns':delivery_entry_monotonic_ns,

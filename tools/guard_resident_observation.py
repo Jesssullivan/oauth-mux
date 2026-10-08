@@ -22,6 +22,17 @@ def require(value):
     if not value:
         raise ValueError("resident-observation-refused")
 
+def close_owned_resources(items):
+    """Detach at the owner first; a close fault never skips later held resources."""
+    failure = None
+    for item in reversed(tuple(items)):
+        try:
+            if isinstance(item,int): os.close(item)
+            else: item.close()
+        except BaseException as error:
+            if failure is None: failure = error
+    if failure is not None: raise failure
+
 def canonical(value):
     require(type(value) is str and value.startswith("/") and len(value)<=4096
         and not any(c.isspace() or c in ":\\\0" for c in value)
@@ -232,8 +243,8 @@ class OwnedUnitCustody:
                 and os.readlink(path.name,dir_fd=parent)==self.selected["service_path"])
 
     def close(self):
-        for fd in reversed(self.held): os.close(fd)
-        self.held=[]
+        held,self.held=self.held,[]
+        close_owned_resources(held)
 
 class Admission:
     """Private observation adapter only; never a profile admission/dispatcher."""
@@ -323,9 +334,12 @@ class PinnedMetadata:
         finally: os.close(current)
         require(file_identity(os.fstat(self.fd))==self.identity==file_identity(os.stat(self.path.name,dir_fd=self.parent,follow_symlinks=False)))
     def close(self):
+        held=[]
         for key in ('fd','parent'):
             fd=getattr(self,key,None)
-            if fd is not None: os.close(fd); setattr(self,key,None)
+            setattr(self,key,None)
+            if fd is not None: held.append(fd)
+        close_owned_resources(held)
 
 def rendered_installation(manifest,files,selected):
     """Same existing owned-resident placement; no filesystem mutation."""
@@ -375,8 +389,8 @@ class InstallationWitness:
     def recheck(self):
         for resource in self.resources: resource.recheck()
     def close(self):
-        for resource in reversed(self.resources): resource.close()
-        self.resources=[]
+        resources,self.resources=self.resources,[]
+        close_owned_resources(resources)
 
 def qualification(q,pins):
     """Producer's actual canonical string and cache-pointer schema, before archive IO."""

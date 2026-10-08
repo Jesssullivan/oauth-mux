@@ -6,7 +6,7 @@ import re
 import uuid
 import guard_resident_observation as resident
 
-PROFILES=('resident-continuity','resident-namespace')
+PROFILES=('resident-continuity','resident-namespace','resident-sources')
 SETUP_PROFILE='resident-enrollment'
 FIELDS=('resident_manifest','resident_epoch','resident_producer_sha256','resident_observer_sha256',
     'resident_runtime_selection','resident_runtime_sha256','resident_runtime_bytes','resident_native_version')
@@ -17,6 +17,8 @@ def module(profile):
     resident.require(profile in PROFILES)
     if profile=='resident-continuity':
         import guard_resident_continuity_profile as selected
+    elif profile=='resident-sources':
+        import guard_resident_sources_profile as selected
     else:
         import guard_resident_namespace_profile as selected
     return selected
@@ -108,8 +110,8 @@ def command(builder,bazel,run,arguments,admission,*,source_commit,source_dirty,r
         import guard_native_acquisition_dispatch as acquisition
         return acquisition.command(builder,bazel,run,arguments,admission,source_commit=source_commit,
             source_dirty=source_dirty,repository_cache=repository_cache,nixpkgs_source=nixpkgs_source)
-    resident.require(admission.facts['scope'] in ('resident-continuity','provider_free_resident_namespace_qualification'))
-    selected=module(admission.facts['scope'] if admission.facts['scope']=='resident-continuity' else 'resident-namespace')
+    resident.require(admission.facts['scope'] in ('resident-continuity','resident-sources','provider_free_resident_namespace_qualification'))
+    selected=module(admission.facts['scope'] if admission.facts['scope'] in ('resident-continuity','resident-sources') else 'resident-namespace')
     selected.finite(arguments,'system',admission.manifest,False)
     resident.require((repository_cache is None and nixpkgs_source is None) or
         (repository_cache==REPOSITORY_CACHE and nixpkgs_source==NIXPKGS))

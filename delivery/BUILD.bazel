@@ -31,6 +31,13 @@ python_binary(
     tags = ["manual", "no-remote", "no-cache"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+python_binary(
+    name = "resident_installed_sources",
+    main = "resident_installed_sources.py",
+    srcs = ["//tools:resident_sources_guard_sources", "pack.py", "portable.py", "codex_device_acquisition_component.py"],
+    tags = ["manual", "no-remote", "no-cache", "requires-network"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
 filegroup(name = "public_sources", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
 exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
