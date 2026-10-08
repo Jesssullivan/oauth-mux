@@ -1740,7 +1740,7 @@ python_test(
         "--archives", "$(location :codex_upstream_archives.json)",
     ],
     env_inherit = ["OMUX_EXECUTION_GUARD"],
-    tags = ["manual", "no-remote", "no-cache", "local"],
+    tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
