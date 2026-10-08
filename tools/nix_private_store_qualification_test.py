@@ -158,9 +158,18 @@ class PrivateStoreModels(unittest.TestCase):
     def test_corrupt_source_nar_stops_before_store_or_child_creation(self):
         with tempfile.TemporaryDirectory() as directory:
             model = Fixture(directory)
-            (model.physical[LIB]/"lib/libc.so").write_bytes(b"corrupt")
-            with self.assertRaises(ValueError), patch.object(proof, "OwnedRoot", side_effect=AssertionError("root created")):
-                model.qualify()
+            source = model.physical[LIB]/"lib/libc.so"
+            source_mode = source.stat().st_mode & 0o777
+            source_size = source.stat().st_size
+            source.chmod(source_mode | 0o200)
+            try:
+                source.write_bytes(b"x" * source_size)
+            finally:
+                source.chmod(source_mode)
+            with patch.object(nar, "hash_descriptor", wraps=nar.hash_descriptor) as hashes:
+                with self.assertRaises(ValueError), patch.object(proof, "OwnedRoot", side_effect=AssertionError("root created")):
+                    model.qualify()
+            self.assertTrue(any(call.args[0]["root"] == LIB for call in hashes.call_args_list))
             self.assertEqual(model.calls, [])
 
     def test_original_link_metadata_drift_stops_before_store_or_child(self):
