@@ -1714,6 +1714,37 @@ python_test(
         + _YOGA_DELIVERY_GUARD_SOURCES,
 )
 
+
+# Manual private-store platform qualification only; no native flake realization.
+exports_files(["nix_private_store_seed.py"])
+python_test(
+    name = "nix_private_store_qualification_test",
+    main = "nix_private_store_qualification_test.py",
+    srcs = ["nix_private_store_qualification.py", "nix_private_store_seed.py",
+            "nar_descriptor.py", "nix_interpreter_closure.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "nix_private_store_build_qualification",
+    main = "nix_private_store_qualification.py",
+    srcs = ["nix_private_store_seed.py", "nar_descriptor.py", "nix_interpreter_closure.py"],
+    data = ["@omux_private_store_host//:private_store_seed",
+            "@omux_private_store_host//:private-store-seed.json",
+            "//:flake.nix", "//:flake.lock", "zig-index.json", "codex_upstream_archives.json"],
+    args = [
+        "--seed", "$(location @omux_private_store_host//:private-store-seed.json)",
+        "--flake", "$(location //:flake.nix)",
+        "--lock", "$(location //:flake.lock)",
+        "--zig-index", "$(location :zig-index.json)",
+        "--archives", "$(location :codex_upstream_archives.json)",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache", "local"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
 # Completed-record/one-shot CLI models do not launch native or provider work.
 python_test(
     name = "codex_protocol_history_completed_inputs_test",

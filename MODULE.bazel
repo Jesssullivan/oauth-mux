@@ -181,3 +181,11 @@ fresh_native_package = use_repo_rule("//tools:codex_fresh_native_package_inputs.
 
 # Instantiate only after a successful independently pinned package run.
 fresh_live_runtime_inputs = use_repo_rule("//tools:codex_live_fresh_runtime_repository.bzl", "codex_live_fresh_runtime_repository")
+
+
+# Independent Linux private-store proof; ordinary evaluator capabilities unchanged.
+host_repository(
+    name = "omux_private_store_host",
+    requested_tools = ["python", "bash", "nix", "nix_store"],
+    require_ca = False,
+)
