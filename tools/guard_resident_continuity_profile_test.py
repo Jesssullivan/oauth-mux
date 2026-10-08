@@ -262,6 +262,107 @@ class ReceiptModels(unittest.TestCase):
             with self.assertRaises(ValueError):
                 guard.validate_guard_join(result,{**outer,key:value},"c"*64)
 
+class LifecycleProducerModels(unittest.TestCase):
+    def final_and_outer(self):
+        observation = {"resident_daemon_same_process":True,"resident_installation_preserved":True,
+            "resident_service_active_after_controller":True,"resident_lifecycle_changed":False,
+            "resident_vault_owner_preserved":True}
+        final = guard.final_receipt(native(),observation,context())
+        final.update(guard_graph_sha256="b"*64,requires_successful_guard_receipt=True)
+        digest = guard.hashlib.sha256(guard.encoded(final)).hexdigest()
+        outer = {"id":EPOCH,"profile":guard.PROFILE,"verb":"run","targets":[guard.LABEL],
+            "exit":0,"workload_exit":0,"descendants_empty":True,"cleanup":{"state":"empty"},
+            "controller_failure":None,"graph_sha256":"b"*64,"resident_continuity":{
+                "verified_after_cleanup":True,"original_entry_monotonic_ns":10,
+                "original_deadline_monotonic_ns":10+1200*10**9,"output":{
+                    "sha256":digest,"basename":guard.OUTPUT,"verified_after_controller_exit":True}}}
+        admission = guard.Admission.__new__(guard.Admission)
+        admission.context = context()
+        admission.action_epoch,admission.deadline_ns = EPOCH,10+1200*10**9
+        admission.completed_receipt = guard.encoded(final),digest
+        return admission,final,outer
+
+    def test_actual_admission_method_joins_native_and_outer_then_exposes_only_scoped_timing(self):
+        admission,final,outer = self.final_and_outer()
+        outer["resident_continuity"]["lifecycle_attempt"] = admission.lifecycle_attempt(outer,210)
+        guard.validate_lifecycle_guard_join(final,outer,outer["resident_continuity"]["output"]["sha256"])
+        fact = outer["resident_continuity"]["lifecycle_attempt"]
+        self.assertEqual(fact["outcome"],"success")
+        self.assertEqual(fact["timing"]["observed_guardian_elapsed_ns"],200)
+        for key in ("user_request_elapsed_ns","local_work_ns","user_provider_wait_ns"):
+            self.assertIsNone(fact["timing"][key])
+        self.assertFalse(fact["coverage"]["complete_supported_demand_coverage"])
+        self.assertFalse(fact["achieved_slo"])
+        self.assertNotIn("account_handle",guard.encoded(fact).decode())
+
+    def test_failure_safe_refusal_and_unresolved_are_not_interchangeable(self):
+        admission,_,outer = self.final_and_outer()
+        for status,empty,failure,outcome,cause in (
+            (124,True,None,"failed_admitted","workload_timeout"),
+            (1,True,None,"failed_admitted","workload_failed"),
+            (0,True,None,"failed_admitted","post_exit_validation_failed"),
+            (0,False,None,"unresolved","owned_cleanup_or_controller_unresolved"),
+            (1,True,{"phase":"failed"},"unresolved","owned_cleanup_or_controller_unresolved")):
+            changed = copy.deepcopy(outer)
+            changed.update(exit=125,workload_exit=status,descendants_empty=empty,controller_failure=failure)
+            changed["cleanup"]["state"] = "empty" if empty else "unproved"
+            changed["resident_continuity"]["verified_after_cleanup"] = False
+            fact = admission.lifecycle_attempt(changed,210)
+            self.assertEqual((fact["outcome"],fact["cause"]),(outcome,cause))
+            self.assertFalse(fact["native_proof_admitted"])
+            self.assertFalse(fact["safe_refusal_proven"])
+            self.assertFalse(fact["side_effect_outcome_inferred"])
+
+    def test_self_consistent_false_native_or_resident_predicate_cannot_supply_success(self):
+        admission,final,outer = self.final_and_outer()
+        for key,value in (("same_process",False),("accepted_work_repeated",True),
+            ("resident_installation_preserved",False),("resident_lifecycle_changed",True),
+            ("selected_current_grants_verified",1),("controller_exited",False)):
+            changed = {**final,key:value}
+            digest = guard.hashlib.sha256(guard.encoded(changed)).hexdigest()
+            admission.completed_receipt = guard.encoded(changed),digest
+            rewritten = copy.deepcopy(outer)
+            rewritten["resident_continuity"]["output"]["sha256"] = digest
+            with self.assertRaises(ValueError): admission.lifecycle_attempt(rewritten,210)
+
+    def test_valid_shape_changed_provenance_cannot_borrow_original_final_digest(self):
+        _,final,outer = self.final_and_outer()
+        changed = {**final,"upstream_commit":"6"*40}
+        changed_context = {**context(),"upstream_commit":"6"*40}
+        with self.assertRaises(ValueError):
+            guard.joined_native_receipt(changed,outer,
+                outer["resident_continuity"]["output"]["sha256"],changed_context)
+
+    def test_measurement_rewrite_missing_fields_bool_clocks_and_foreign_epoch_refuse(self):
+        admission,final,outer = self.final_and_outer()
+        outer["resident_continuity"]["lifecycle_attempt"] = admission.lifecycle_attempt(outer,210)
+        for rewrite in (
+            lambda value:value["resident_continuity"]["lifecycle_attempt"]["timing"].update(observed_guardian_elapsed_ns=201),
+            lambda value:value["resident_continuity"]["lifecycle_attempt"]["coverage"].update(complete_supported_demand_coverage=True),
+            lambda value:value["resident_continuity"]["lifecycle_attempt"].update(achieved_slo=0),
+            lambda value:value["resident_continuity"]["lifecycle_attempt"].pop("safe_refusal_proven"),
+            lambda value:value["resident_continuity"].update(original_entry_monotonic_ns=True),
+            lambda value:value.update(id="22222222-2222-4222-8222-222222222222")):
+            changed = copy.deepcopy(outer)
+            rewrite(changed)
+            with self.assertRaises((ValueError,KeyError)): guard.validate_lifecycle_guard_join(final,changed,outer["resident_continuity"]["output"]["sha256"])
+        for moment in (True,9,2**63):
+            with self.assertRaises(ValueError): admission.lifecycle_attempt(outer,moment)
+        for path,value in (("verified_after_cleanup",False),("output",None)):
+            changed = copy.deepcopy(outer)
+            changed["resident_continuity"][path] = value
+            with self.assertRaises((ValueError,TypeError)): admission.lifecycle_attempt(changed,210)
+
+    def test_stored_interval_rechecks_without_using_a_new_process_clock(self):
+        admission,final,outer = self.final_and_outer()
+        outer["resident_continuity"]["lifecycle_attempt"] = admission.lifecycle_attempt(outer,210)
+        restored = json.loads(guard.encoded(outer),object_pairs_hook=resident.unique)
+        with patch.object(guard.time,"monotonic_ns",side_effect=AssertionError("new process clock consulted")):
+            guard.validate_lifecycle_guard_join(final,restored,outer["resident_continuity"]["output"]["sha256"])
+        late = admission.lifecycle_attempt({**outer,"exit":125,"workload_exit":124},1200*10**9+11)
+        self.assertFalse(late["timing"]["deadline_met"])
+        self.assertEqual(late["outcome"],"failed_admitted")
+
 class ObserverModels(unittest.TestCase):
     def test_wrong_control_peer_refuses_before_send_and_no_secret_output(self):
         observer = SimpleNamespace(quick=lambda:None,deadline=100*10**9,
@@ -430,7 +531,7 @@ class PostExitModels(unittest.TestCase):
                     "resident_vault_owner_preserved":True}
                 admission = guard.Admission.__new__(guard.Admission)
                 admission.context,admission.action_epoch = context(),EPOCH
-                admission.deadline_ns,admission.resources = 100*10**9,[]
+                admission.deadline_ns,admission.resources = 10+1200*10**9,[]
                 admission.fresh = SimpleNamespace(deadline=70)
                 admission.selected = manifest()
                 admission.run,admission.run_fd,admission.output,admission.output_fd = run,run_fd,output,output_fd
@@ -449,13 +550,20 @@ class PostExitModels(unittest.TestCase):
                     self.assertEqual(calls,[])
                     collect.assert_not_called()
                     result = admission.completed(0,True,EPOCH,"1"*64,"b"*64)
-                    collect.assert_called_once_with(admission.observer,[],100*10**9)
+                    collect.assert_called_once_with(admission.observer,[],10+1200*10**9)
                 self.assertEqual(result["basename"],guard.OUTPUT)
                 self.assertIn(("observer",True),calls)
                 final = json.loads((run/guard.OUTPUT).read_bytes())
                 self.assertEqual(final["scope"],guard.SCOPE)
                 self.assertTrue(final["requires_successful_guard_receipt"])
                 self.assertEqual(stat.S_IMODE((run/guard.OUTPUT).stat().st_mode),0o600)
+                # Exercise measurement from the ACTUAL collector's exclusive
+                # output bytes/digest, not a manually asserted success flag.
+                self.assertEqual(admission.completed_receipt,(guard.encoded(final),result["sha256"]))
+                _,_,outer = LifecycleProducerModels().final_and_outer()
+                outer["resident_continuity"]["output"] = result
+                outer["resident_continuity"]["lifecycle_attempt"] = admission.lifecycle_attempt(outer,210)
+                guard.validate_lifecycle_guard_join(final,outer,result["sha256"])
             finally:
                 os.close(output_fd)
                 os.close(run_fd)

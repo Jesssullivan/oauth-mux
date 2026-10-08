@@ -35,6 +35,37 @@ class FakeService:
         verify(self.actual, self.root)
 
 
+class ResidentLifecycleCollectorModels(unittest.TestCase):
+    def test_exact_resident_collector_after_final_verdict_preserves_failed_status_and_legacy_routes(self):
+        import execution_guard as guard
+        calls = []
+        def observe(value,clock):
+            calls.append((value['exit'],clock))
+            return {'state':'recorded','outcome':'failed_admitted'}
+        admission = SimpleNamespace(lifecycle_attempt=observe)
+        receipt = {'profile':'resident-continuity','exit':125,'resident_continuity':{}}
+        guard.record_resident_lifecycle(receipt,admission,clock=lambda:7)
+        self.assertEqual(calls,[(125,7)])
+        self.assertEqual(receipt['exit'],125)
+        self.assertEqual(receipt['resident_continuity']['lifecycle_attempt']['outcome'],'failed_admitted')
+        for profile in ('resident-namespace','standard','codex-live'):
+            legacy = {'profile':profile}
+            guard.record_resident_lifecycle(legacy,admission,clock=lambda: (_ for _ in ()).throw(AssertionError('clock read')))
+            self.assertEqual(legacy,{'profile':profile})
+        self.assertEqual(calls,[(125,7)])
+
+    def test_measurement_failure_is_explicit_missing_and_never_changes_actual_guard_outcome(self):
+        import execution_guard as guard
+        def refused(*arguments): raise ValueError('fixed refusal')
+        admission = SimpleNamespace(lifecycle_attempt=refused)
+        receipt = {'profile':'resident-continuity','exit':0,'resident_continuity':{}}
+        guard.record_resident_lifecycle(receipt,admission,clock=lambda:7)
+        self.assertEqual(receipt['exit'],0)
+        fact = receipt['resident_continuity']['lifecycle_attempt']
+        self.assertEqual(fact['state'],'unavailable')
+        self.assertFalse(fact['native_proof_admitted'])
+        self.assertFalse(fact['complete_supported_demand_coverage'])
+
 class ResidentGuardModels(unittest.TestCase):
     def test_full_effective_properties_and_cgroup_preserve_complementary_caps(self):
         import guard_resident_dispatch as resident

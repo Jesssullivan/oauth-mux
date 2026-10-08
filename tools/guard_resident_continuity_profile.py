@@ -555,6 +555,104 @@ def validate_native(value,context):
             in ("none","minimal","low","medium","high","xhigh","max","ultra","persistent"))
     return value
 
+def joined_native_receipt(final,outer,digest,context):
+    """Current producer semantics plus the existing immutable outer join.
+
+    Historical validate_guard_join remains unchanged. This stricter reader is
+    required only for the new admitted-attempt measurement; it cannot promote
+    a self-consistent false native/resident predicate into success.
+    """
+    validate_context(context)
+    require(type(final) is dict
+        and encoded({key:final[key] for key in CONTEXT_FIELDS}) == encoded(context))
+    require(type(digest) is str and HEX.fullmatch(digest)
+        and hashlib.sha256(encoded(final)).hexdigest() == digest)
+    native = {key:final[key] for key in set(NATIVE_FIXED)|NATIVE_VARIABLE}
+    validate_native(native,context)
+    observation = {key:final[key] for key in (
+        "resident_daemon_same_process","resident_installation_preserved",
+        "resident_service_active_after_controller","resident_lifecycle_changed",
+        "resident_vault_owner_preserved")}
+    expected = final_receipt(native,observation,context)
+    expected.update(guard_graph_sha256=final["guard_graph_sha256"],requires_successful_guard_receipt=True)
+    require(encoded(final) == encoded(expected))
+    validate_guard_join(final,outer,digest)
+    return True
+
+def lifecycle_projection(context,outer,terminal_ns,*,joined_native):
+    """One selected admitted guardian invocation, never all supported demands.
+
+    joined_native is supplied only after joined_native_receipt by Admission or
+    the strict receipt consumer. No caller RPC or CLI flag supplies this fact.
+    Monotonic endpoints belong to the same original guardian process; stored
+    duration survives restart without subtracting a later process clock.
+    """
+    validate_context(context)
+    require(type(outer) is dict and outer["id"] == context["action_epoch"]
+        and outer["profile"] == PROFILE and outer["verb"] == "run" and outer["targets"] == [LABEL]
+        and type(outer["exit"]) is int and -128 <= outer["exit"] <= 255
+        and type(outer["workload_exit"]) is int and -128 <= outer["workload_exit"] <= 255
+        and type(joined_native) is bool and type(outer["descendants_empty"]) is bool
+        and type(outer["cleanup"]) is dict and type(outer["cleanup"].get("state")) is str
+        and type(outer["graph_sha256"]) is str and HEX.fullmatch(outer["graph_sha256"]))
+    selected = outer["resident_continuity"]
+    require(type(selected) is dict and type(selected["verified_after_cleanup"]) is bool
+        and type(selected["original_entry_monotonic_ns"]) is int
+        and type(selected["original_deadline_monotonic_ns"]) is int)
+    start,deadline = selected["original_entry_monotonic_ns"],selected["original_deadline_monotonic_ns"]
+    require(0 <= start < deadline and deadline == start+1200*10**9
+        and type(terminal_ns) is int and start <= terminal_ns < 2**63)
+    empty = outer["descendants_empty"] is True and outer["cleanup"]["state"] == "empty"
+    if joined_native:
+        require(outer["exit"] == 0 and outer["workload_exit"] == 0
+            and empty and outer["controller_failure"] is None
+            and selected["verified_after_cleanup"] is True)
+        outcome,cause = "success","none"
+    elif not empty or outer["controller_failure"] is not None:
+        outcome,cause = "unresolved","owned_cleanup_or_controller_unresolved"
+    elif outer["workload_exit"] == 124:
+        outcome,cause = "failed_admitted","workload_timeout"
+    elif outer["workload_exit"] != 0:
+        outcome,cause = "failed_admitted","workload_failed"
+    else:
+        # A zero workload exit without the complete post-exit/outer join is
+        # an admitted validation failure, never a safe pre-effect refusal.
+        outcome,cause = "failed_admitted","post_exit_validation_failed"
+    pins = {key:context[key] for key in (
+        "producer_source_sha256","observer_source_sha256","runtime_selection_sha256",
+        "application_version","runtime_archive_sha256","upstream_commit","candidate_patch_sha256s",
+        "daemon_archive_sha256","daemon_executable_sha256","daemon_source_commit","daemon_graph_sha256")}
+    return {"schema_version":1,"state":"recorded","requirement":"REL-016",
+        "scope":"one_admitted_resident_operator_drain_completed_turn_attempt",
+        "producer":LABEL,"action_epoch":context["action_epoch"],
+        "outcome":outcome,"cause":cause,"native_proof_admitted":joined_native,
+        "safe_refusal_proven":False,"side_effect_outcome_inferred":False,
+        "timing":{"scope":"original_guard_entry_to_terminal_before_receipt_write",
+            "clock":"linux_monotonic_same_guardian_process",
+            "original_entry_monotonic_ns":start,"original_deadline_monotonic_ns":deadline,
+            "terminal_monotonic_ns":terminal_ns,"observed_guardian_elapsed_ns":terminal_ns-start,
+            "deadline_met":terminal_ns <= deadline,"user_request_elapsed_ns":None,
+            "local_work_ns":None,"user_provider_wait_ns":None,
+            "unknown_duration_reason":"user_ingress_and_wait_partition_unobserved"},
+        "provenance":{"pins":pins,"guard_graph_sha256":outer["graph_sha256"],
+            "status":"joined_native_and_resident" if joined_native else "selected_before_launch_only",
+            "source_verified_after_cleanup":selected["verified_after_cleanup"]},
+        "coverage":{"denominator":"one_selected_admitted_guard_invocation",
+            "admitted_attempts":1,"pre_admission_refusals_measured":False,
+            "complete_supported_demand_coverage":False,"complete_lifecycle_coverage":False,
+            "scheduled_baseline_measured":False},"achieved_slo":False}
+
+def validate_lifecycle_guard_join(final,outer,digest):
+    """New measurement consumer; legacy receipts keep their original reader."""
+    context = {key:final[key] for key in CONTEXT_FIELDS}
+    joined_native_receipt(final,outer,digest,context)
+    actual = outer["resident_continuity"]["lifecycle_attempt"]
+    require(type(actual) is dict and type(actual.get("timing")) is dict)
+    expected = lifecycle_projection(context,outer,actual["timing"]["terminal_monotonic_ns"],joined_native=True)
+    # Canonical bytes reject bool/int coercion and extra/missing nested fields.
+    require(encoded(actual) == encoded(expected))
+    return True
+
 def handoff(value,context):
     require(type(value) is dict and set(value) == {"schema_version","producer","action_epoch",
         "producer_source_sha256","observer_source_sha256","runtime_selection_sha256","model","native_result"}
@@ -915,10 +1013,23 @@ class Admission:
             result["requires_successful_guard_receipt"] = True
             digest = create_file(self.run_fd,OUTPUT,result)
             projection.recheck()
+            # Publish no measurement success before this actual closed output,
+            # its input readback and the separate final outer verdict.
+            self.completed_receipt = (encoded(result),digest)
             return {"scope":SCOPE,"basename":OUTPUT,"sha256":digest,"guard_graph_sha256":graph_sha,
                 "verified_after_controller_exit":True}
         finally:
             projection.close()
+
+    def lifecycle_attempt(self,outer,terminal_ns):
+        require(outer["id"] == self.action_epoch
+            and outer["resident_continuity"]["original_deadline_monotonic_ns"] == self.deadline_ns)
+        joined = False
+        if outer["exit"] == 0:
+            raw,digest = self.completed_receipt
+            final = json.loads(raw,object_pairs_hook=resident.unique)
+            joined = joined_native_receipt(final,outer,digest,self.context)
+        return lifecycle_projection(self.context,outer,terminal_ns,joined_native=joined)
 
     def close(self):
         for _,placeholder,_ in reversed(getattr(self,"placeholders",[])):

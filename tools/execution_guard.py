@@ -1041,6 +1041,20 @@ def worker(run, command):
         return process.wait()
 
 
+def record_resident_lifecycle(receipt,admission,*,clock=time.monotonic_ns):
+    """Append only after the actual final outer verdict; no effect authority."""
+    if admission is None or receipt.get('profile') != 'resident-continuity':
+        return
+    try:
+        observation = admission.lifecycle_attempt(receipt,clock())
+    except (AttributeError,OSError,ValueError,KeyError,TypeError,IndexError):
+        # Measurement loss never changes an effect, cached result or original
+        # guard verdict, and cannot become an optimistic successful sample.
+        observation = {'schema_version':1,'state':'unavailable','cause':'projection_refused',
+            'native_proof_admitted':False,'safe_refusal_proven':False,
+            'complete_supported_demand_coverage':False,'achieved_slo':False}
+    receipt['resident_continuity']['lifecycle_attempt'] = observation
+
 def main(argv=None):
     with ExitStack() as admission_resources:
         return _main(argv, admission_resources)
@@ -2312,6 +2326,7 @@ def _main(argv, admission_resources):
                        'graph_binding': 'caller must verify locked-flake and exact local action graph',
                        'bootstrap': 'pre-realized immutable tools; no Nix build',
                        'authority': 'AGENTS.md; R-N11; R-N13'}
+            record_resident_lifecycle(receipt,resident_input)
             receipt_raw = json.dumps(receipt, sort_keys=True) + '\n'
             if native_fresh is not None:
                 receipt_raw = fresh_completion.terminal_receipt(native_fresh, receipt)

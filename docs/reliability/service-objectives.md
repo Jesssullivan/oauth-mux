@@ -86,6 +86,20 @@ request authority. The existing in-memory diagnostic export is not this durable
 baseline. Baseline receipts identify workload, sample counts, observation window,
 outcome definitions and unrun gates before any achieved-SLO or support claim.
 
+The source-only resident REL-016 collector now defines one observation for each
+selected admitted resident evaluation attempt in the existing immutable guard
+receipt: [collector](../../tools/execution_guard.py),
+[producer and strict reader](../../tools/guard_resident_continuity_profile.py).
+Success requires the actual native/resident proof and successful outer exit,
+source readback and empty owned cleanup; admitted failure and unresolved
+cleanup/controller states remain separate. No safe pre-effect refusal is
+inferred. Stored elapsed time covers only the original same-guardian monotonic
+entry-to-terminal interval before receipt writing, and survives receipt reread
+without subtracting a new process clock. User elapsed, local work, user/provider
+wait, pre-admission refusals, complete supported-demand/lifecycle coverage and
+scheduled baseline remain unmeasured. Source/models and actual outcomes remain
+unqualified; this closes no full REL gate and establishes no achieved SLO/SLA.
+
 Implementation trace: [TIN-2063](https://linear.app/tinyland/issue/TIN-2063) owns
 installation/readiness, [TIN-2720](https://linear.app/tinyland/issue/TIN-2720) owns
 browser acquisition, [TIN-5338](https://linear.app/tinyland/issue/TIN-5338) and
