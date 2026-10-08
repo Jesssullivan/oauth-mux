@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import time
+import tempfile
 import unittest
 from unittest import mock
 import execution_guard as execution
@@ -42,10 +43,10 @@ class ProfileTests(unittest.TestCase):
         value=args(profile='standard',codex_component_manifest=None,codex_component_manifest_sha256=None)
         self.assertIsNone(subject.select(value,['test','//tools:execution_guard_test']))
         with self.assertRaises(ValueError):subject.select(args(profile='codex-login'),['run','//delivery:native_account_login'])
-    def admission(self,action='produce',cache=None):
-        selected=args(repository_cache=cache,nixpkgs_source=subject.acquisition.NIXPKGS if cache else None)
+    def admission(self,action='produce',cache=None,profile=subject.PROFILE):
+        selected=args(profile=profile,repository_cache=cache,nixpkgs_source=subject.acquisition.NIXPKGS if cache else None)
         result=subject.Admission.__new__(subject.Admission)
-        result.settings=subject.Settings(selected.codex_component_manifest)
+        result.settings=subject.Settings(selected.codex_component_manifest,profile)
         result.manifest=selected.codex_component_manifest;result.value={'action':action}
         result.repository_cache=cache;result.nixpkgs_source=selected.nixpkgs_source
         result.manifest_sha256=selected.codex_component_manifest_sha256
@@ -101,6 +102,106 @@ class ProfileTests(unittest.TestCase):
                 {'BindReadOnlyPaths':correct['BindReadOnlyPaths']+' /run:/run:rbind'},
                 {'BindPaths':correct['BindPaths'].replace(':rbind','')}):
             with self.assertRaises(ValueError):value.verify_bindings(correct|change,value.run,None)
+
+    def test_reserved_selection_receipt_limits_and_fixed_offline_commands(self):
+        import guard_resident_dispatch as dispatch
+        for profile,bounds in ((subject.PROFILE,(4294967296,512,200)),
+                (subject.RESERVED_PROFILE,(4026531840,480,190))):
+            for action,verb,label in (('produce','test',subject.component.PRODUCER),
+                    ('install','run',subject.component.INSTALLER)):
+                arguments=[verb,label]
+                selected=dispatch.select(args(profile=profile,arguments=arguments),arguments)
+                self.assertIs(type(selected),subject.Settings)
+                self.assertEqual(selected.PROFILE,profile)
+                self.assertEqual((selected.PROOF_MEMORY,selected.PROOF_TASKS,selected.PROOF_CPU_PERCENT),bounds)
+                limits=dispatch.proof_properties(execution.PROPERTIES,selected)
+                self.assertEqual((limits['MemoryMax'],limits['TasksMax'],limits['CPUQuotaPerSecUSec']),
+                    (str(bounds[0]),str(bounds[1]),'1.9s' if profile==subject.RESERVED_PROFILE else '2s'))
+                self.assertEqual(limits['RuntimeMaxUSec'],'20min')
+                value=self.admission(action,profile=profile)
+                command=dispatch.command(execution.bazel_command,'/nix/store/model-bazel/bin/bazel',
+                    Path('/public/owned-epoch'),arguments,value,source_commit='3'*40,source_dirty='false')
+                self.assertEqual(command[-1],label)
+                self.assertIn('--spawn_strategy=linux-sandbox',command)
+                self.assertIn('--disable_download',command)
+                self.assertIn('--repository_disable_download',command)
+                self.assertIn('--jobs=2',command)
+        for change in ({'reuse_owned_cache':True},{'manager':'user'},
+                {'resident_enrollment_manifest':Path('/private/input.json')},
+                {'arguments':['test',subject.component.PRODUCER,'//tools:execution_guard_test']},
+                {'codex_component_manifest_sha256':None}):
+            selected=args(profile=subject.RESERVED_PROFILE,**change)
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                subject.select(selected,selected.arguments)
+
+    def test_actual_verify_correlates_component_profile_properties_kernel_caps_and_original_runtime(self):
+        import guard_resident_dispatch as dispatch
+        for profile in subject.PROFILES:
+            with self.subTest(profile=profile),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                selected=subject.select(args(profile=profile),['test',subject.component.PRODUCER])
+                expected=dispatch.proof_properties(execution.PROPERTIES,selected)
+                for key,value in execution.CGROUP.items():
+                    (root/key).write_text({'memory.max':expected['MemoryMax'],'pids.max':expected['TasksMax']}.get(key,value))
+                reserved=profile==subject.RESERVED_PROFILE
+                (root/'cpu.max').write_text('190000 100000' if reserved else '200000 100000')
+                isolation={**execution.SANDBOX,'PrivateNetwork':'yes'}
+                actual={**expected,**isolation,'RuntimeMaxUSec':'19min',
+                    'TemporaryFileSystem':execution.system_masks(profile='standard'),
+                    'UnsetEnvironment':' '.join(subject.acquisition.unset_environment(execution.DELEGATION_ENV))}
+                execution.verify(actual,root,'system',isolation,profile,1150)
+                other=subject.PROFILE if reserved else subject.RESERVED_PROFILE
+                with self.assertRaises(ValueError):execution.verify(actual,root,'system',isolation,other,1150)
+                for field,bad in (('MemoryMax','4294967296' if reserved else '4026531840'),
+                        ('TasksMax','512' if reserved else '480'),
+                        ('CPUQuotaPerSecUSec','2s' if reserved else '1.9s'),
+                        ('RuntimeMaxUSec','20min'),('MemorySwapMax','1')):
+                    with self.subTest(field=field),self.assertRaises(ValueError):
+                        execution.verify(actual|{field:bad},root,'system',isolation,profile,1150)
+                for name,bad in (('memory.max','4294967296' if reserved else '4026531840'),
+                        ('pids.max','512' if reserved else '480'),
+                        ('cpu.max','190001 100000' if reserved else '200001 100000')):
+                    path=root/name;old=path.read_text();path.write_text(bad)
+                    try:
+                        with self.subTest(name=name),self.assertRaises(ValueError):
+                            execution.verify(actual,root,'system',isolation,profile,1150)
+                    finally:path.write_text(old)
+                if reserved:
+                    (root/'cpu.max').write_text('189999 100000')
+                    with self.assertRaises(ValueError):
+                        execution.verify(actual,root,'system',isolation,profile,1150)
+                missing={**actual,'UnsetEnvironment':' '.join(key for key in actual['UnsetEnvironment'].split()
+                    if key!='DBUS_SESSION_BUS_ADDRESS')}
+                with self.assertRaises(ValueError):
+                    execution.verify(missing,root,'system',isolation,profile,1150)
+
+
+    def test_actual_selected_pids_observation_uses_reserved_kernel_limit(self):
+        for profile,limit in ((subject.PROFILE,512),(subject.RESERVED_PROFILE,480)):
+            with self.subTest(profile=profile),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                (root/'pids.current').write_text(str(limit-1))
+                (root/'pids.max').write_text(str(limit))
+                (root/'pids.events').write_text('max 0')
+                selected=subject.select(args(profile=profile),['test',subject.component.PRODUCER])
+                observation=execution.workload_pids_observation(selected,profile)
+                pin=execution.CgroupPin(root)
+                try:
+                    observation.sample(pin,'baseline')
+                    (root/'pids.current').write_text(str(limit))
+                    observation.sample(pin,'monitor')
+                    result=observation.receipt()
+                    self.assertEqual(result['last_monitor']['pids_limit'],'verified'+str(limit))
+                    self.assertEqual(result['last_monitor']['pids_sample'],'at')
+                    self.assertTrue(result['observed_at_or_over_verified_limit'])
+                    if profile==subject.RESERVED_PROFILE:
+                        changed=execution.workload_pids_observation(selected,profile)
+                        (root/'pids.max').write_text('512')
+                        changed.sample(pin,'baseline')
+                        self.assertEqual(changed.receipt()['baseline']['pids_limit'],'changed')
+                        self.assertFalse(changed.receipt()['observed_at_or_over_verified_limit'])
+                finally:pin.close()
+
     def test_immediate_receipt_copy_redaction_and_exception_no_reflection(self):
         settings=subject.Settings(Path('/private/input.json'))
         properties={'BindPaths':'/private/target:/private/target','BindReadOnlyPaths':'/private/input:/private/input'}

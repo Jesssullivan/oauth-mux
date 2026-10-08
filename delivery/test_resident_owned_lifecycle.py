@@ -126,6 +126,67 @@ class LifecycleContract(unittest.TestCase):
             finally:
                 witness.close.assert_called_once_with()
 
+    def test_main_reads_actual_private_manifest_and_dispatches_strict_inactive_action(self):
+        # Real private_manifest/default validator and canonical guard schema.
+        # Only the fixed namespace alias is mapped to a synthetic owned directory;
+        # no host manager, software archive or daemon method is invoked.
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        home=Path("/home/jess")
+        epoch="11111111-1111-4111-8111-111111111111"
+        receipts=home/".local/state/omux-execution-20261005"
+        selection={"archive_path":str(receipts/epoch/"output-base"/lifecycle.owned.ARCHIVE_RELATIVE),
+            "archive_sha256":"a"*64,"archive_bytes":1,"manifest_sha256":"b"*64,
+            "qualification":{"path":str(receipts/epoch/"receipt.json"),"sha256":"c"*64,"bytes":1,
+                             "source_commit":"d"*40,"graph_sha256":"e"*64}}
+        value={"schema_version":1,"ownership":"omux-installation","action":"observe-inactive","instance":"default",
+            **{key:str(path) for key,path in lifecycle.guard.fixed_paths(home).items()},
+            "native_context":None,"permissions":{"connect_source":False,"activate_service":False,"restart_daemon":False},
+            "start":selection}
+        real_open,real_stat=os.open,os.stat
+        with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+            namespace=Path(temporary)
+            namespace.chmod(0o700)
+            path=namespace/"input.json"
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+            information=namespace.stat()
+            def opened(name,flags,*args,**kwargs):
+                if str(name) == "omux-resident-inputs":
+                    return real_open(namespace,flags)
+                return real_open(name,flags,*args,**kwargs)
+            def named(name,*args,**kwargs):
+                if str(name) == "omux-resident-inputs":
+                    return real_stat(namespace,follow_symlinks=False)
+                return real_stat(name,*args,**kwargs)
+            environment={"HOME":str(home),"OMUX_RESIDENT_ENROLLMENT_MANIFEST":lifecycle.resident.MANIFEST,
+                "OMUX_RESIDENT_NAMESPACE_ID":str(information.st_dev)+":"+str(information.st_ino),
+                "OMUX_RESIDENT_ORIGINAL_DEADLINE_NS":str(time.monotonic_ns()+120*10**9)}
+            output={"service_active":False,"main_pid_zero":True,"unit_cgroup_empty":True}
+            with mock.patch.dict(os.environ,environment,clear=True), \
+                    mock.patch.object(lifecycle.sys,"argv",["resident-owned-lifecycle",lifecycle.__file__]), \
+                    mock.patch.object(lifecycle.resident,"DEADLINE_NS",0), \
+                    mock.patch.object(lifecycle.resident.os,"open",side_effect=opened), \
+                    mock.patch.object(lifecycle.resident.os,"stat",side_effect=named), \
+                    mock.patch.object(lifecycle,"execute_existing",return_value=output) as execute, \
+                    redirect_stdout(io.StringIO()) as stdout:
+                self.assertEqual(lifecycle.main(),0)
+                self.assertEqual(json.loads(stdout.getvalue()),output)
+                received=execute.call_args.args
+                self.assertEqual(received[1],value)
+                self.assertEqual(received[2]["HOME"],str(home))
+                self.assertEqual(received[2]["DBUS_SESSION_BUS_ADDRESS"],"unix:path=/omux-resident-inputs/bus")
+                self.assertEqual(received[-1],int(environment["OMUX_RESIDENT_ORIGINAL_DEADLINE_NS"]))
+                execute.reset_mock()
+                for changes in ({"action":"observe-inactive-extra"},{"native_context":{"application":"codex"}},
+                                {"permissions":{**value["permissions"],"activate_service":True}},
+                                {"start":{**selection,"qualification":{**selection["qualification"],"source_commit":"bad"}}}):
+                    path.write_text(json.dumps({**value,**changes}))
+                    with self.subTest(changes=changes),self.assertRaises(ValueError):
+                        lifecycle.main()
+                    execute.assert_not_called()
+
     def test_inactive_observation_uses_only_two_fixed_show_calls_and_no_health_or_mutation(self):
         result=self.invoke("observe-inactive")
         self.assertFalse(result["service_active"] or result["custody_available"]

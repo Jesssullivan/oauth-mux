@@ -12,7 +12,9 @@ import codex_device_acquisition_component as component
 import guard_native_acquisition_dispatch as acquisition
 
 PROFILE='codex-device-component'
-PROFILES=(PROFILE,)
+RESERVED_PROFILE='codex-device-component-reserved'
+PROFILES=(PROFILE,RESERVED_PROFILE)
+RESERVED_MEMORY,RESERVED_TASKS,RESERVED_CPU_PERCENT=4026531840,480,190
 FIELDS=('codex_component_manifest','codex_component_manifest_sha256')
 MANIFEST_BASE=Path('/srv/fast-local/jess/state/codex/omux-codex-component-inputs-20261008')
 PROOF_MEMORY,PROOF_TASKS,PROOF_CPU_PERCENT=4294967296,512,200
@@ -22,7 +24,11 @@ class Settings:
     acquisition_profile=True
     component_profile=True
     PROOF_MEMORY,PROOF_TASKS,PROOF_CPU_PERCENT=PROOF_MEMORY,PROOF_TASKS,PROOF_CPU_PERCENT
-    def __init__(self,manifest):self.manifest=manifest
+    def __init__(self,manifest,profile=PROFILE):
+        component.require(profile in PROFILES)
+        self.manifest,self.PROFILE=manifest,profile
+        if profile==RESERVED_PROFILE:
+            self.PROOF_MEMORY,self.PROOF_TASKS,self.PROOF_CPU_PERCENT=RESERVED_MEMORY,RESERVED_TASKS,RESERVED_CPU_PERCENT
     def finite(self,arguments,manager,manifest,reuse,unrelated=()):
         component.require(arguments in (['test',component.PRODUCER],['run',component.INSTALLER])
             and manager=='system' and manifest==self.manifest and reuse is False and not any(unrelated))
@@ -36,13 +42,13 @@ class Settings:
 
 def select(args,arguments):
     values=tuple(getattr(args,name,None) for name in FIELDS)
-    if args.profile!=PROFILE:
+    if args.profile not in PROFILES:
         component.require(all(value is None for value in values));return None
     component.require(all(value is not None for value in values))
     allowed=set(FIELDS)|{'profile','manager','arguments','python','systemd_run','systemctl','bazel',
         'closure','bootstrap_closure','zig_sdk','java_home','source_commit','source_dirty','state_dir',
         'initialize_state_dir','coordination_dir','become_file','reuse_owned_cache','repository_cache','nixpkgs_source'}
-    settings=Settings(args.codex_component_manifest)
+    settings=Settings(args.codex_component_manifest,args.profile)
     settings.finite(arguments,args.manager,args.codex_component_manifest,args.reuse_owned_cache,
         tuple(value for key,value in vars(args).items() if key not in allowed))
     component.require(type(args.source_commit) is str and re.fullmatch(r'[0-9a-f]{40}',args.source_commit)
@@ -53,6 +59,13 @@ def select(args,arguments):
         and re.fullmatch(r'[0-9a-f]{32}',path.parent.name))
     acquisition.repositories(args.repository_cache,args.nixpkgs_source)
     return settings
+
+def proof_properties(properties,profile):
+    component.require(profile in PROFILES)
+    if profile==RESERVED_PROFILE:
+        return dict(properties,MemoryMax=str(RESERVED_MEMORY),TasksMax=str(RESERVED_TASKS),
+            CPUQuotaPerSecUSec='1.9s')
+    return dict(properties)
 
 def normalized(value,readback=False):
     rows=[]

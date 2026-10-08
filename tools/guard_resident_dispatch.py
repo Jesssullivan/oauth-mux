@@ -133,6 +133,9 @@ def command(builder,bazel,run,arguments,admission,*,source_commit,source_dirty,r
     return result
 
 def proof_properties(properties,settings=None):
+    if getattr(settings,'component_profile',False):
+        import guard_codex_device_component_profile as component
+        return component.proof_properties(properties,settings.PROFILE)
     if getattr(settings,'acquisition_profile',False):
         return dict(properties)
     return {**properties,'MemoryMax':str(resident.PROOF_MEMORY),'TasksMax':str(resident.PROOF_TASKS),

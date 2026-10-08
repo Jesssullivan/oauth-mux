@@ -49,6 +49,50 @@ class ContractTests(unittest.TestCase):
         for change in changes:
             with self.subTest(change=change),self.assertRaises(ValueError):
                 subject.outer(receipt(base)|change,selected(base),subject.DEVICE)
+
+    def test_reserved_producer_receipt_requires_its_exact_limits_and_original_output_join(self):
+        base=subject.COORDS[0]
+        for profile,limits in ((subject.FULL_PROFILE,subject.LIMITS),
+                (subject.RESERVED_PROFILE,subject.RESERVED_LIMITS)):
+            value=receipt(base)
+            value.update(profile=profile,targets=[subject.PRODUCER],limits=dict(limits))
+            value['observed_properties']=dict(limits,PrivateNetwork='yes',NoNewPrivileges='yes',
+                ProtectControlGroups='yes',RestrictSUIDSGID='yes',RuntimeMaxUSec='19min')
+            value['codex_device_component']={'verified_after_cleanup':True,
+                'original_entry_monotonic_ns':1,'original_deadline_monotonic_ns':1+1200*10**9,
+                'input':{'action':'produce','scope':'provider-free-codex-device-component','manifest_sha256':'e'*64,
+                    'provider_request_performed':False,'native_execution_performed':False,'resident_effects_authorized':False,
+                    'continuity_qualified':False,'credential_contents_read':False},
+                'output':{'action':'produce','action_epoch':EPOCH,'controller_graph_sha256':GRAPH,'manifest_sha256':'e'*64,
+                    'provider_request_performed':False,'resident_enrollment_completed':False,'continuity_qualified':False}}
+            expected=Path(value['output_base'])/'execroot/_main/bazel-out/k8-fastbuild/testlogs/delivery/codex_device_acquisition_component/test.outputs'
+            self.assertEqual(subject.outer(value,selected(base),subject.PRODUCER),expected)
+            if profile==subject.RESERVED_PROFILE:
+                for cpu in ('1.900000s','1900ms','1900000us'):
+                    equivalent=copy.deepcopy(value);equivalent['observed_properties']['CPUQuotaPerSecUSec']=cpu
+                    self.assertEqual(subject.outer(equivalent,selected(base),subject.PRODUCER),expected)
+                for cpu in ('1900001us','1899999us','1900000',True,'1.900000s\\n'):
+                    changed=copy.deepcopy(value);changed['observed_properties']['CPUQuotaPerSecUSec']=cpu
+                    with self.subTest(cpu=cpu),self.assertRaises(ValueError):
+                        subject.outer(changed,selected(base),subject.PRODUCER)
+            wrong_profile=subject.FULL_PROFILE if profile==subject.RESERVED_PROFILE else subject.RESERVED_PROFILE
+            for change in ({'profile':wrong_profile},{'profile':'standard'},
+                    {'limits':dict(subject.LIMITS if profile==subject.RESERVED_PROFILE else subject.RESERVED_LIMITS)},
+                    {'output_base':'/private/guessed/output-base'},{'targets':[subject.PRODUCER,subject.DEVICE]},
+                    {'source_commit':'f'*40},{'exit':False},{'descendants_empty':False}):
+                with self.subTest(profile=profile,change=change),self.assertRaises(ValueError):
+                    subject.outer(value|change,selected(base),subject.PRODUCER)
+            for key,bad in (('MemoryMax','4294967296' if profile==subject.RESERVED_PROFILE else '4026531840'),
+                    ('TasksMax','512' if profile==subject.RESERVED_PROFILE else '480'),
+                    ('CPUQuotaPerSecUSec','2s' if profile==subject.RESERVED_PROFILE else '1.9s'),
+                    ('PrivateNetwork','no'),('RuntimeMaxUSec','20min 1us')):
+                changed=copy.deepcopy(value);changed['observed_properties'][key]=bad
+                with self.subTest(profile=profile,key=key),self.assertRaises(ValueError):
+                    subject.outer(changed,selected(base),subject.PRODUCER)
+        changed=receipt(base);changed['profile']=subject.RESERVED_PROFILE
+        changed['limits']=dict(subject.RESERVED_LIMITS)
+        with self.assertRaises(ValueError):subject.outer(changed,selected(base),subject.DEVICE)
+
     def test_public_before_read_receipt_namespace(self):
         for path in ('/home/jess/.ssh/receipt.json','/run/user/1000/receipt.json',
             str(subject.COORDS[0]/'not-an-epoch/receipt.json')):
@@ -169,6 +213,12 @@ class FileOwnershipTests(unittest.TestCase):
         with self.assertRaises(ValueError):subject.Tree(root,rows,self.deadline,bazel_sealed_source=True)
 
     def test_qualified_api_and_component_seals_copy_to_strict_installed_rows(self):
+        self.qualified_sources(subject.FULL_PROFILE)
+
+    def test_qualified_reserved_component_sources_copy_to_strict_installed_rows(self):
+        self.qualified_sources(subject.RESERVED_PROFILE)
+
+    def qualified_sources(self,profile):
         # Real File/Tree/Qualified/materialize paths; only enormous fixed bytes
         # and inner API validation are synthetic. Actual outer joins stay real.
         bases=(self.base/'device-coordinator',self.base/'component-coordinator')
@@ -178,7 +228,13 @@ class FileOwnershipTests(unittest.TestCase):
             value=receipt(base)
             value['codex_owner_runtime_input']={'verified_after_cleanup':True}
             raws.append(value)
-        raws[1]['profile']='codex-device-component';raws[1]['targets']=[subject.PRODUCER]
+        raws[1]['profile']=profile;raws[1]['targets']=[subject.PRODUCER]
+        limits=subject.RESERVED_LIMITS if profile==subject.RESERVED_PROFILE else subject.LIMITS
+        raws[1]['limits']=dict(limits)
+        raws[1]['observed_properties']=dict(limits,PrivateNetwork='yes',NoNewPrivileges='yes',
+            ProtectControlGroups='yes',RestrictSUIDSGID='yes')
+        if profile==subject.RESERVED_PROFILE:
+            raws[1]['observed_properties']['CPUQuotaPerSecUSec']='1.900000s'
         raws[1]['codex_device_component']={'verified_after_cleanup':True,
             'original_entry_monotonic_ns':1,'original_deadline_monotonic_ns':1+1200*10**9,
             'input':{'action':'produce','scope':'provider-free-codex-device-component','manifest_sha256':'e'*64,

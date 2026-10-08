@@ -210,14 +210,22 @@ struct CodexAcquisitionModels {
         if (!file("codex",modelRuntimeBytes,0555)) return false;
         for (auto it=runtimePolicy.begin();it!=runtimePolicy.end();++it)
             if (!file("runtime/"+it.key(),modelRuntimeBytes,it->mode)) return false;
-        const auto makeOuter=[](const char *label) {
+        const QJsonObject fullLimits{{"MemoryMax","4294967296"},{"MemorySwapMax","0"},{"TasksMax","512"},
+            {"CPUQuotaPerSecUSec","2s"},{"RuntimeMaxUSec","20min"},{"KillMode","control-group"},
+            {"SendSIGKILL","yes"},{"TimeoutStopUSec","10s"},{"OOMPolicy","kill"}};
+        auto fullObserved=fullLimits;
+        for (const auto *key:{"PrivateNetwork","NoNewPrivileges","ProtectControlGroups","RestrictSUIDSGID"})
+            fullObserved[key]="yes";
+        const auto makeOuter=[&](const char *label) {
             return QJsonObject{{"id","11111111-2222-4333-8444-555555555555"},
                 {"artifact_epoch","11111111-2222-4333-8444-555555555555"},
                 {"source_commit",QString(40,'a')},{"graph_sha256",QString(64,'b')},{"source_dirty","false"},
                 {"profile","standard"},{"manager","system"},{"verb","test"},{"targets",QJsonArray{label}},
                 {"exit",0},{"workload_exit",0},{"controller_failure",QJsonValue()},{"descendants_empty",true},
                 {"cleanup",QJsonObject{{"state","empty"}}},{"test_evidence",QJsonObject{{"state","preserved"}}},
-                {"codex_owner_runtime_input",QJsonObject{{"verified_after_cleanup",true}}}};
+                {"codex_owner_runtime_input",QJsonObject{{"verified_after_cleanup",true}}},
+                {"limits",fullLimits},{"observed_properties",fullObserved},
+                {"original_cgroup_identity",QJsonObject{{"device",1},{"inode",2}}}};
         };
         const auto outer=makeOuter("//tools:codex_retained_device_api_qualification");
         // Spaced/indented actual guard JSON must not require compact encoding.
@@ -301,6 +309,54 @@ struct CodexAcquisitionModels {
                 || !writeFixture(record+"/install.json",QJsonDocument(joined).toJson(QJsonDocument::Compact)+'\n',0600)) return false;
             CodexAcquisitionRuntime invalid; invalid.prepare(); return !invalid.error.isEmpty();
         };
+        // Reserved evidence is reread through the real installed Sources
+        // admission with independently rehashed producer/install records.
+        auto reserved=producer;
+        reserved["profile"]="codex-device-component-reserved";
+        auto reservedLimits=fullLimits;
+        reservedLimits["MemoryMax"]="4026531840"; reservedLimits["TasksMax"]="480";
+        reservedLimits["CPUQuotaPerSecUSec"]="1.9s";
+        auto reservedObserved=fullObserved;
+        reservedObserved["MemoryMax"]="4026531840"; reservedObserved["TasksMax"]="480";
+        reservedObserved["CPUQuotaPerSecUSec"]="1.900000s"; reservedObserved["RuntimeMaxUSec"]="19min";
+        reserved["limits"]=reservedLimits; reserved["observed_properties"]=reservedObserved;
+        const auto reservedRaw=QJsonDocument(reserved).toJson(QJsonDocument::Indented);
+        auto reservedInstallation=installation; reservedInstallation["producer"]=projection(reservedRaw,reserved);
+        if (!writeFixture(record+"/producer.json",reservedRaw,0600)
+            || !writeFixture(record+"/install.json",QJsonDocument(reservedInstallation).toJson(QJsonDocument::Compact)+'\n',0600)) return false;
+        {
+            CodexAcquisitionRuntime selected; selected.prepare();
+            if (!selected.error.isEmpty() || selected.backend.value<0 || selected.loader.value<0) return false;
+            selected.recheck();
+        }
+        for (const auto &profile:QStringList{"codex-device-component","standard","unknown"}) {
+            auto wrong=reserved; wrong["profile"]=profile;
+            if (!rejectedProducer(wrong)) return false;
+        }
+        auto wrongFull=producer; wrongFull["profile"]="codex-device-component-reserved";
+        if (!rejectedProducer(wrongFull)) return false;
+        for (const auto *field:{"MemoryMax","TasksMax","CPUQuotaPerSecUSec"}) {
+            auto wrong=reserved; auto declared=reservedLimits; declared[field]=fullLimits.value(field);
+            wrong["limits"]=declared; if (!rejectedProducer(wrong)) return false;
+            wrong=reserved; auto observed=reservedObserved; observed[field]=fullObserved.value(field);
+            wrong["observed_properties"]=observed; if (!rejectedProducer(wrong)) return false;
+        }
+        for (const auto &cpu:QJsonArray{"1900001us","1899999us","1900000",true}) {
+            auto wrong=reserved; auto observed=reservedObserved; observed["CPUQuotaPerSecUSec"]=cpu;
+            wrong["observed_properties"]=observed; if (!rejectedProducer(wrong)) return false;
+        }
+        for (const auto &runtime:QJsonArray{"20min 1us","infinity","1200","19min\n",true,QJsonValue()}) {
+            auto wrong=reserved; auto observed=reservedObserved; observed["RuntimeMaxUSec"]=runtime;
+            wrong["observed_properties"]=observed; if (!rejectedProducer(wrong)) return false;
+        }
+        for (const auto *field:{"PrivateNetwork","NoNewPrivileges","ProtectControlGroups","RestrictSUIDSGID"}) {
+            auto wrong=reserved; auto observed=reservedObserved; observed[field]="no";
+            wrong["observed_properties"]=observed; if (!rejectedProducer(wrong)) return false;
+        }
+        auto missingGroup=reserved; missingGroup.remove("original_cgroup_identity");
+        if (!rejectedProducer(missingGroup)) return false;
+        auto boolGroup=reserved; boolGroup["original_cgroup_identity"]=QJsonObject{{"device",true},{"inode",2}};
+        if (!rejectedProducer(boolGroup)) return false;
         for (const auto *field:{"provider_request_performed","native_execution_performed","resident_effects_authorized",
             "continuity_qualified","credential_contents_read"}) {
             auto wrong=producer; auto context=wrong.value("codex_device_component").toObject();

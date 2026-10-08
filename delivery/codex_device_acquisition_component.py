@@ -36,6 +36,11 @@ HEX = re.compile(r'[0-9a-f]{64}')
 PIN = {'path', 'sha256', 'bytes', 'source_commit', 'graph_sha256'}
 LIMITS={'MemoryMax':'4294967296','MemorySwapMax':'0','TasksMax':'512','CPUQuotaPerSecUSec':'2s',
     'RuntimeMaxUSec':'20min','KillMode':'control-group','SendSIGKILL':'yes','TimeoutStopUSec':'10s','OOMPolicy':'kill'}
+FULL_PROFILE='codex-device-component'
+RESERVED_PROFILE='codex-device-component-reserved'
+COMPONENT_PROFILES=(FULL_PROFILE,RESERVED_PROFILE)
+RESERVED_LIMITS=dict(LIMITS,MemoryMax='4026531840',TasksMax='480',CPUQuotaPerSecUSec='1.9s')
+
 COMPONENT_KEYS = {'schema_version','scope','purpose','system','backend_sha256','files',
     'qualification','version','renewal_owner','native_support','text_continuity','provider_evaluation'}
 RECORD_KEYS = {'schema_version','scope','component_sha256','backend_sha256','data_home',
@@ -199,14 +204,20 @@ def pin(value):
     public_receipt(value['path'])
     return value
 
+def reserved_cpu(value):
+    matched=re.fullmatch(r'([0-9]{1,7}(?:[.][0-9]{1,6})?)(us|ms|s)',value) if type(value) is str else None
+    return matched is not None and Decimal(matched[1])*{'us':1,'ms':1000,'s':1000000}[matched[2]]==1900000
+
 def outer(value, selected, label):
     """Validate genuine current standard producer fields, never a clean release stamp."""
     pin(selected)
+    profile=value.get('profile')
+    require(profile=='standard' if label==DEVICE else profile in COMPONENT_PROFILES)
+    limits=RESERVED_LIMITS if label==PRODUCER and profile==RESERVED_PROFILE else LIMITS
     parent = public_receipt(selected['path']).parent
     require(value.get('id') == parent.name and value.get('artifact_epoch') == parent.name
         and value.get('source_commit') == selected['source_commit'] and value.get('source_dirty') == 'false'
         and value.get('graph_sha256') == selected['graph_sha256']
-        and value.get('profile') == ('standard' if label==DEVICE else 'codex-device-component')
         and value.get('manager') == 'system' and value.get('verb') == 'test' and value.get('targets') == [label]
         and type(value.get('exit')) is int and value['exit'] == 0
         and type(value.get('workload_exit')) is int and value['workload_exit'] == 0
@@ -214,10 +225,12 @@ def outer(value, selected, label):
         and type(value.get('cleanup')) is dict and value['cleanup'].get('state') == 'empty'
         and value['cleanup'].get('ownership') in ('verified','unproved')
         and type(value.get('test_evidence')) is dict and value['test_evidence'].get('state') == 'preserved')
-    require(value.get('limits')==LIMITS and type(value.get('observed_properties')) is dict)
+    require(value.get('limits')==limits and type(value.get('observed_properties')) is dict)
     observed=value['observed_properties']
-    for key,item in LIMITS.items():
-        if key!='RuntimeMaxUSec':require(observed.get(key)==item)
+    for key,item in limits.items():
+        if key=='CPUQuotaPerSecUSec' and profile==RESERVED_PROFILE:
+            require(reserved_cpu(observed.get(key)))
+        elif key!='RuntimeMaxUSec':require(observed.get(key)==item)
     for key in ('PrivateNetwork','NoNewPrivileges','ProtectControlGroups','RestrictSUIDSGID'):
         require(observed.get(key)=='yes')
     duration=observed.get('RuntimeMaxUSec')

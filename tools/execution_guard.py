@@ -331,6 +331,11 @@ class PidsObservation:
                 'pre_cleanup_control_flow_deferred': self.pre_cleanup_control_flow_deferred}
 
 
+def workload_pids_observation(settings, profile):
+    return PidsObservation(settings.PROOF_TASKS
+        if profile in ('resident-enrollment','codex-device-component-reserved') else 512)
+
+
 def observe_pids_before_cleanup(observation, pin, primary=None, *, prior_failure=False):
     """Sampling never skips cleanup; only new control flow is deferred."""
     try:
@@ -856,7 +861,9 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
     import guard_codex_device_component_profile as component
     acquisition_proof = profile in (*acquisition.PROFILES,*component.PROFILES)
     resident_proof = profile in resident_dispatch.PROFILES or profile == resident_dispatch.SETUP_PROFILE
-    expected = resident_dispatch.proof_properties(PROPERTIES) if resident_proof else PROPERTIES
+    component_reserved = profile == component.RESERVED_PROFILE
+    expected = (component.proof_properties(PROPERTIES,profile) if component_reserved else
+        resident_dispatch.proof_properties(PROPERTIES) if resident_proof else PROPERTIES)
     for key, value in {**expected, **(isolation or SANDBOX)}.items():
         if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'codex-native') or
                 profile in ('standard', 'codex-live', *resident_dispatch.PROFILES, resident_dispatch.SETUP_PROFILE, *acquisition.PROFILES, *component.PROFILES) and runtime_seconds is not None):
@@ -867,7 +874,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             else:
                 delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
             continue
-        if key == 'CPUQuotaPerSecUSec' and resident_proof:
+        if key == 'CPUQuotaPerSecUSec' and (resident_proof or component_reserved):
             resident_dispatch.verify_cpu(actual.get(key))
             continue
         if actual.get(key) != value:
@@ -895,12 +902,12 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
     delegated = acquisition.unset_environment(DELEGATION_ENV) if acquisition_proof else resident_dispatch.unset_environment(DELEGATION_ENV) if resident_proof else DELEGATION_ENV
     if not set(delegated).issubset(actual.get('UnsetEnvironment', '').split()):
         raise ValueError('delegation environment isolation rejected')
-    expected_cgroup = {**CGROUP, 'memory.max':expected['MemoryMax'], 'pids.max':expected['TasksMax']} if resident_proof else CGROUP
+    expected_cgroup = {**CGROUP, 'memory.max':expected['MemoryMax'], 'pids.max':expected['TasksMax']} if resident_proof or component_reserved else CGROUP
     for key, value in expected_cgroup.items():
         if (cgroup / key).read_text().strip() != value:
             raise ValueError('effective cgroup bound rejected: ' + key)
     quota, period = (cgroup / 'cpu.max').read_text().split()
-    if quota == 'max' or int(quota) > 2 * int(period) or int(quota) <= 0 or (resident_proof and int(quota)*10 > 19*int(period)):
+    if quota == 'max' or int(quota) > 2 * int(period) or int(quota) <= 0 or (resident_proof and int(quota)*10 > 19*int(period)) or (component_reserved and int(quota)*10 != 19*int(period)):
         raise ValueError('effective CPU quota rejected')
 
 
@@ -1199,7 +1206,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved'), default='standard')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1778,8 +1785,7 @@ def _main(argv, admission_resources):
         result = 125
         cleanup = False
         controller_failure = None
-        pids_observation = PidsObservation(resident_settings.PROOF_TASKS
-            if args.profile == resident_dispatch.SETUP_PROFILE else 512)
+        pids_observation = workload_pids_observation(resident_settings, args.profile)
         pids_cancellation = None
         controller_diagnostics = []
         cleanup_summary = {'state': 'not-started', 'stop': 'not-requested',

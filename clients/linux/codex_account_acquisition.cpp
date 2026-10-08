@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QProcessEnvironment>
+#include <QRegularExpression>
 #include <QThread>
 #include <QMap>
 #include <QUuid>
@@ -257,6 +258,63 @@ QJsonObject policyJson() {
 }
 bool falseValue(const QJsonObject &v,const char *key) { return v.value(key).isBool() && !v.value(key).toBool(); }
 bool exactInteger(const QJsonValue &v,qint64 n) { qint64 actual; return integer(v,&actual) && actual==n; }
+bool componentReservedCPU(const QJsonValue &value) {
+    if (!value.isString()) return false;
+    const auto text=value.toString();
+    if (text.size()>16) return false;
+    const QRegularExpression grammar(QStringLiteral("([0-9]{1,7})(?:\\.([0-9]{1,6}))?(us|ms|s)"));
+    const auto matched=grammar.match(text);
+    if (!matched.hasMatch() || matched.capturedStart()!=0 || matched.capturedLength()!=text.size()) return false;
+    const QMap<QString,qint64> units{{"us",1},{"ms",1000},{"s",1000000}};
+    const auto factor=units.value(matched.captured(3));
+    const auto whole=matched.captured(1).toLongLong();
+    // Bound before multiplying; exact integer microseconds avoid rounding aliases.
+    if (whole>1900000/factor) return false;
+    const auto fraction=matched.captured(2).leftJustified(6,'0').toLongLong();
+    return (whole*1000000+fraction)*factor==1900000LL*1000000LL;
+}
+bool componentProducerBounds(const QJsonObject &receipt) {
+    const auto profile=receipt.value("profile");
+    const bool reserved=profile=="codex-device-component-reserved";
+    if (!reserved && profile!="codex-device-component") return false;
+    const QJsonObject expected{{"MemoryMax",reserved?"4026531840":"4294967296"},
+        {"MemorySwapMax","0"},{"TasksMax",reserved?"480":"512"},
+        {"CPUQuotaPerSecUSec",reserved?"1.9s":"2s"},{"RuntimeMaxUSec","20min"},
+        {"KillMode","control-group"},{"SendSIGKILL","yes"},{"TimeoutStopUSec","10s"},{"OOMPolicy","kill"}};
+    if (!receipt.value("limits").isObject() || receipt.value("limits").toObject()!=expected
+        || !receipt.value("observed_properties").isObject()) return false;
+    const auto observed=receipt.value("observed_properties").toObject();
+    for (auto it=expected.begin();it!=expected.end();++it) {
+        if (reserved && it.key()=="CPUQuotaPerSecUSec") {
+            if (!componentReservedCPU(observed.value(it.key()))) return false;
+        } else if (it.key()!="RuntimeMaxUSec" && observed.value(it.key())!=it.value()) return false;
+    }
+    for (const auto *key:{"PrivateNetwork","NoNewPrivileges","ProtectControlGroups","RestrictSUIDSGID"})
+        if (observed.value(key)!="yes") return false;
+    const auto duration=observed.value("RuntimeMaxUSec");
+    if (!duration.isString() || duration.toString().size()>64) return false;
+    const auto text=duration.toString();
+    const QRegularExpression grammar(QStringLiteral(
+        "^[0-9]{1,10}(?:\\.[0-9]{1,6})?(?:us|ms|s|min|h)(?: [0-9]{1,10}(?:\\.[0-9]{1,6})?(?:us|ms|s|min|h))*$"));
+    const auto matched=grammar.match(text);
+    if (!matched.hasMatch() || matched.capturedLength()!=text.size()) return false;
+    const QRegularExpression token(QStringLiteral("([0-9]+)(?:\\.([0-9]{1,6}))?(us|ms|s|min|h)"));
+    const QMap<QString,qint64> units{{"us",1},{"ms",1000},{"s",1000000},{"min",60000000},{"h",3600000000LL}};
+    long double total=0;
+    auto matches=token.globalMatch(text);
+    while (matches.hasNext()) {
+        const auto item=matches.next();
+        const auto fraction=item.captured(2).leftJustified(6,'0').toLongLong();
+        total+=(static_cast<long double>(item.captured(1).toLongLong())
+            +static_cast<long double>(fraction)/1000000)*units.value(item.captured(3));
+        if (total>1200LL*1000000LL) return false;
+    }
+    const auto group=receipt.value("original_cgroup_identity");
+    if (!group.isObject() || !keys(group.toObject(),{"device","inode"})) return false;
+    qint64 device,inode;
+    return total>0 && integer(group.toObject().value("device"),&device) && device>=0
+        && integer(group.toObject().value("inode"),&inode) && inode>0;
+}
 void deviceReport(const QJsonObject &v) {
     require(exactInteger(v.value("schema_version"),1)
         && v.value("kind")=="omux-retained-device-api-qualification-v1"
@@ -482,7 +540,7 @@ public:
                 && hex(p.value("source_commit").toString(),40)
                 && producer.value("source_commit")==p.value("source_commit")
                 && producer.value("graph_sha256")==p.value("graph_sha256") && handle(producer.value("graph_sha256").toString())
-                && p.value("source_dirty")=="false" && p.value("profile")=="codex-device-component" && p.value("manager")=="system" && p.value("verb")=="test"
+                && p.value("source_dirty")=="false" && componentProducerBounds(p) && p.value("manager")=="system" && p.value("verb")=="test"
                 && p.value("targets").toArray()==QJsonArray{"//delivery:codex_device_acquisition_component"}
                 && exactInteger(p.value("exit"),0) && exactInteger(p.value("workload_exit"),0)
                 && p.value("controller_failure").isNull() && p.value("descendants_empty").isBool()
