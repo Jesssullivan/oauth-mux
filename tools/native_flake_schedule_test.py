@@ -1036,7 +1036,7 @@ class ScheduleModels(unittest.TestCase):
             rows = copy.deepcopy(base)
             rows[0][slot] = value
             return wire(rows)
-        many = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4097)]
+        many = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4609)]
         cases = [
             ("x"*(4*1024**2+1), [root, child], "text-bound", "wire", None),
             (wire(base), [], "root-empty", "declared-roots", None),
@@ -1100,6 +1100,89 @@ class ScheduleModels(unittest.TestCase):
         with self.assertRaises(ValueError):
             closure.registrations("unselected-private-value", roots)
         self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+
+    def test_generated_inventory_ceiling_matches_actual_shape_and_isolates_seed_refs_graph(self):
+        closure = schedule.closure
+        self.assertEqual((closure.MAX_RECORDS, closure.GENERATED_MAX_RECORDS,
+                          schedule.MAX_OBJECTS, schedule.MAX_GENERATED_OBJECTS), (4096, 4608, 4096, 4608))
+        roots = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4609)]
+        def wire(selected):
+            return "\n".join(value for root in selected
+                for value in (root, "f"*64, "8", "", "0"))+"\n"
+        for count in (4096, 4319, 4608):
+            selected = roots[:count]
+            parsed = schedule.proof.readback_records(wire(selected).encode("ascii"),
+                                                     selected, current_flake_paths=True)
+            self.assertEqual(set(parsed), set(selected))
+            self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        for count in (4097, 4319, 4608):
+            selected = roots[:count]
+            with self.assertRaises(ValueError):
+                schedule.proof.readback_records(wire(selected).encode("ascii"), selected)
+            self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(wire(roots).encode("ascii"), roots, current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["family"], "root-bound")
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["declared_roots"], 4609)
+        # The independent per-record reference ceiling remains4096.
+        selected = roots[:4608]
+        lines = [selected[0], "f"*64, "8", "", "4097", *selected[1:4098]]
+        for root in selected[1:]:
+            lines.extend((root, "f"*64, "8", "", "0"))
+        raw = ("\n".join(lines)+"\n").encode("ascii")
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(raw, selected, current_flake_paths=True)
+        self.assertEqual(schedule.proof.PHASE, "registration-readback-wire")
+        normalized = raw.decode("ascii").replace("\n"+"f"*64+"\n", "\nsha256:"+"f"*64+"\n")
+        with self.assertRaises(ValueError):
+            closure.registrations(normalized, selected, current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["family"], "reference-bound")
+        # Total DB inventory does not expand the recursive derivation graph envelope.
+        graph = {"version": 4, "derivations": {str(index): {} for index in range(4097)}}
+        with self.assertRaises(ValueError):
+            schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+        self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
+
+    def test_generated_inventory_preflight_and_new_boundary_keep_real_physical_nar_truth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory)
+            store = private/"nix/store"
+            store.mkdir(parents=True)
+            roots = ["/nix/store/"+"a"*32+"-physical-"+str(index)+(".drv" if index == 4 else "")
+                     for index in range(4608)]
+            for logical in roots:
+                physical = store/logical.rsplit("/", 1)[1]
+                physical.write_bytes(b"public-generated")
+                os.chmod(physical, 0o444)
+            original = nar.hash_descriptor(nar.describe(store/roots[0].rsplit("/", 1)[1]))
+            records = {logical: {"record": [logical, original["narHash"], str(original["narSize"]), "", "0"],
+                                 "references": []} for logical in roots}
+            target = {"sourcePaths": dict(zip(("project", *schedule.sources.ROLES), roots[:4])),
+                      "outPath": OUT}
+            graph = {roots[4]: {"inputSrcs": [roots[5]]}}
+            objects, payloads = schedule.generated_objects(private, records, [], target, graph,
+                                                          float(time.monotonic()+60))
+            self.assertEqual(set(objects), set(roots))
+            self.assertEqual(len(payloads), 4604)
+            self.assertTrue(all(item["narHash"] == original["narHash"]
+                                and item["narSize"] == original["narSize"] for item in objects.values()))
+            extra = "/nix/store/"+"b"*32+"-too-many"
+            with patch.object(schedule.proof, "describe_root") as describing, \
+                 patch.object(schedule.nar, "hash_descriptor") as hashing, \
+                 patch.object(schedule.nar, "open_regular") as opening:
+                with self.assertRaises(ValueError):
+                    schedule.generated_objects(private, {**records, extra: records[roots[0]]}, [],
+                                               target, graph, float(time.monotonic()+60))
+                describing.assert_not_called()
+                hashing.assert_not_called()
+                opening.assert_not_called()
+            # An accepted metadata count never accepts a substituted physical object.
+            physical = store/roots[10].rsplit("/", 1)[1]
+            os.chmod(physical, 0o600)
+            physical.write_bytes(b"substituted-public-generated")
+            os.chmod(physical, 0o444)
+            with self.assertRaises(ValueError):
+                schedule.generated_objects(private, records, [], target, graph, float(time.monotonic()+60))
 
     def test_generated_punctuated_payload_cannot_bypass_registered_nar(self):
         with tempfile.TemporaryDirectory() as directory:

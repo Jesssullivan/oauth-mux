@@ -12,6 +12,8 @@ import re
 
 STORE = r"/nix/store/[0-9a-z]{32}-[A-Za-z0-9._+-]+"
 MAX_RECORDS = 4096
+# Generated current-flake DB inventory, distinct from declared seed/reference limits.
+GENERATED_MAX_RECORDS = 4608
 MAX_DIAGNOSTIC_ROOTS = 65536
 REGISTRATION_PARSE_DIAGNOSTIC = None
 QUERY_GROUP = "codex_metadata_query"
@@ -50,6 +52,7 @@ def registrations(text, declared, *, current_flake_paths=False):
     REGISTRATION_PARSE_DIAGNOSTIC = None
     if type(current_flake_paths) is not bool:
         raise ValueError("registration path policy")
+    record_limit = GENERATED_MAX_RECORDS if current_flake_paths else MAX_RECORDS
     def valid_path(value, *, drv=False):
         if current_flake_paths:
             return current_flake_path_refusal(value, drv=drv) is None
@@ -67,14 +70,14 @@ def registrations(text, declared, *, current_flake_paths=False):
             raise ValueError(message)
     require_field(len(text) <= 4 * 1024 * 1024, "text-bound", "wire", "registration bound")
     require_field(bool(declared), "root-empty", "declared-roots", "declared root set")
-    require_field(len(declared) <= MAX_RECORDS, "root-bound", "declared-roots", "declared root set")
+    require_field(len(declared) <= record_limit, "root-bound", "declared-roots", "declared root set")
     require_field(len(set(declared)) == len(declared), "root-duplicate", "declared-roots", "declared root set")
     for root in declared:
         require_field(valid_path(root), "path", "declared-root", "declared root syntax", path=root)
     lines = text.splitlines()
     records, cursor = {}, 0
     while cursor < len(lines):
-        require_field(len(records) < MAX_RECORDS, "record-bound", "record", "registration shape")
+        require_field(len(records) < record_limit, "record-bound", "record", "registration shape")
         require_field(cursor + 5 <= len(lines), "record-shape", "record", "registration shape")
         root, nar_hash, size, deriver, count = lines[cursor:cursor + 5]
         require_field(valid_path(root), "path", "record-root", "registration record", path=root)

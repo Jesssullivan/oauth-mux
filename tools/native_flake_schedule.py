@@ -23,6 +23,8 @@ MAX_SECONDS = 600
 MAX_GRAPH_BYTES = 32 * 1024**2
 MAX_ARTIFACT_BYTES = 64 * 1024**2
 MAX_OBJECTS = 4096
+# Total generated inventory includes imported sources/scripts beyond graph derivations.
+MAX_GENERATED_OBJECTS = closure.GENERATED_MAX_RECORDS
 PROJECT_FILES = ("flake.nix", "flake.lock", "tools/zig-index.json", "tools/codex_upstream_archives.json")
 PHASE = "admission"
 PHASE_ELAPSED = []
@@ -321,8 +323,11 @@ def generated_objects(private, records, runtime_roots, target, graph, deadline):
     require(imported <= set(records) and target["outPath"] not in records)
     srcs = {path for row in graph.values() for path in row["inputSrcs"]}
     require(srcs | set(graph) <= set(records))
+    selected = sorted(set(records) - set(runtime_roots))
+    # Count all retained registrations; never prune foreign roots to fit the envelope.
+    require(len(records) <= MAX_GENERATED_OBJECTS and len(selected) <= MAX_GENERATED_OBJECTS)
     objects, payloads, total = {}, {}, 0
-    for index, logical in enumerate(sorted(set(records) - set(runtime_roots))):
+    for index, logical in enumerate(selected):
         proof.tick(deadline)
         physical = private / "nix/store" / logical.rsplit("/", 1)[1]
         descriptor = proof.describe_root(logical, physical)
@@ -351,7 +356,7 @@ def generated_objects(private, records, runtime_roots, target, graph, deadline):
                         require(stream.read(1) == b"")
                     payloads[(item["artifact_root"], node["path"])] = bytes(raw)
         objects[logical] = item
-    require(len(objects) <= MAX_OBJECTS and set(graph) <= set(objects))
+    require(len(objects) <= MAX_GENERATED_OBJECTS and set(graph) <= set(objects))
     return objects, payloads
 
 
