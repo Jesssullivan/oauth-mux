@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import codex_live_source as source
+import codex_protocol_history_source as history
 
 
 class NativeSourceTests(unittest.TestCase):
@@ -75,6 +76,86 @@ class NativeSourceTests(unittest.TestCase):
             # Make owned fixture directories writable so tempfile can remove.
             for name in (root / "source/src", root / "source"):
                 name.chmod(0o700)
+
+
+
+
+class ProtocolHistorySourceTests(unittest.TestCase):
+    def fixture(self):
+        files = {name: ("100644", b"unchanged graph input\n") for name in history.GRAPH}
+        files.update({name: ("100644", b"retained before\n"
+            + b"use codex_rollout::RolloutItem;\n"*count+b"retained after\n")
+            for name,count in history.RUST_PATHS.items()})
+        files[history.MANIFEST] = ("100644", b"[dependencies]\ncodex-history = { workspace = true }\ncodex-rollout = { workspace = true }\n")
+        files[history.LOCK] = ("100644", b'[[package]]\nname = "codex-app-server-protocol"\nversion = "0.0.0"\ndependencies = [\n "codex-history",\n "codex-rollout",\n]\n\n[[package]]\nname = "codex-core"\ndependencies = [\n "codex-rollout",\n]\n')
+        files["retained/source.rs"] = ("100644", b"unrelated retained application bytes\n")
+        return files
+
+    def test_dependency_cut_changes_only_six_paths_and_one_locked_edge(self):
+        files = self.fixture()
+        result = history.transform(files,history.PATCH_BYTES)
+        self.assertEqual({name for name in files if files[name] != result[name]},history.ALLOWED)
+        self.assertEqual(result["retained/source.rs"],files["retained/source.rs"])
+        self.assertEqual(result[history.LOCK][1].count(b' "codex-rollout",\n'),1)
+        self.assertIn(b'name = "codex-core"\ndependencies = [\n "codex-rollout",',result[history.LOCK][1])
+        self.assertNotIn(b"codex-rollout =",result[history.MANIFEST][1])
+        for name,count in history.RUST_PATHS.items():
+            self.assertEqual(result[name][1].count(b"codex_history::"),count)
+            self.assertNotIn(b"codex_rollout::",result[name][1])
+        self.assertIn(b"codex_rollout::",files[next(iter(history.RUST_PATHS))][1])
+
+    def test_new_declaration_cannot_expand_or_change_historical_patch_authority(self):
+        files = self.fixture()
+        for raw in (history.PATCH_BYTES+b"\n",history.PATCH_BYTES.replace(b"codex-history",b"other-history"),
+                b"*** Begin Patch\n*** Add File: /private\n+x\n*** End Patch\n"):
+            with self.assertRaises(ValueError):history.transform(files,raw)
+        with self.assertRaises(ValueError):source.apply_native_patch(files,history.PATCH_BYTES)
+        self.assertNotIn(history.MANIFEST,source.ALLOWED)
+        self.assertNotIn(history.LOCK,source.ALLOWED)
+
+    def test_malformed_import_manifest_lock_or_unselected_graph_change_refuses(self):
+        fixtures=[]
+        value=self.fixture();name=next(iter(history.RUST_PATHS))
+        mode,raw=value[name];value[name]=(mode,raw+b"use codex_rollout::parse_rollout_line;\n");fixtures.append(value)
+        value=self.fixture();mode,raw=value[history.MANIFEST]
+        value[history.MANIFEST]=(mode,raw+b"codex-rollout = { workspace = true }\n");fixtures.append(value)
+        value=self.fixture();mode,raw=value[history.LOCK]
+        value[history.LOCK]=(mode,raw.replace(b'name = "codex-app-server-protocol"',b'name = "other-package"'));fixtures.append(value)
+        value=self.fixture();value[history.MANIFEST]=("100755",value[history.MANIFEST][1]);fixtures.append(value)
+        for value in fixtures:
+            with self.assertRaises(ValueError):history.transform(value,history.PATCH_BYTES)
+        files=self.fixture();result=history.transform(files,history.PATCH_BYTES)
+        result["MODULE.bazel"]=("100644",b"changed unselected resolution graph\n")
+        with self.assertRaises(ValueError):history.validate_transition(files,result)
+
+    def test_distinct_sealed_source_output_explicitly_requires_actual_sdk_metadata(self):
+        import json
+        import os
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            patchfile=root/history.PATCH_NAME
+            patchfile.write_bytes(history.PATCH_BYTES);patchfile.chmod(0o600)
+            output=root/"protocol-history-source"
+            parent={"patches":[{"patch_sha256":pin,"paths":[]} for pin in history.PARENT_PATCHES]}
+            try:
+                with patch.object(history,"PATCH_DIRECTORY",root),patch.object(history,"load_parent",
+                        return_value=(self.fixture(),parent)):
+                    receipt=history.produce(output,60)
+                self.assertEqual(receipt["kind"],history.KIND)
+                self.assertEqual(receipt["status"],"verified-protocol-history-source-pending-sdk-metadata")
+                self.assertIs(receipt["sdk_metadata_qualified"],False)
+                self.assertIs(receipt["native_compile_passed"],False)
+                self.assertIs(receipt["provider_evaluation"],False)
+                self.assertEqual(receipt["patch_sha256"],history.PARENT_PATCHES+[history.PATCH_SHA])
+                self.assertEqual((output/"source-receipt.json").stat().st_mode&0o777,0o444)
+                self.assertEqual(output.stat().st_mode&0o777,0o555)
+                observed=json.loads((output/"source-receipt.json").read_bytes())
+                self.assertEqual(observed["inventory_sha256"],receipt["inventory_sha256"])
+                self.assertEqual((output/"source"/history.MANIFEST).stat().st_mode&0o777,0o555)
+            finally:
+                for directory,_,_ in os.walk(root):
+                    Path(directory).chmod(0o700)
+                source.DEADLINE=None
 
 
 if __name__ == "__main__":

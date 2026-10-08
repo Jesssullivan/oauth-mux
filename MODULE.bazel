@@ -142,6 +142,11 @@ apple_repository(name = "omux_apple")
 codex_live_inputs = use_repo_rule("//tools:codex_live_source_inputs.bzl", "codex_live_source_inputs")
 codex_live_inputs(name = "omux_codex_live_source_inputs")
 
+# Exact successful C11 source and reviewed protocol-history dependency delta.
+# No native selector, compile output or cache admission is instantiated here.
+codex_protocol_history_inputs = use_repo_rule("//tools:codex_protocol_history_source_inputs.bzl", "codex_protocol_history_source_inputs")
+codex_protocol_history_inputs(name = "omux_codex_protocol_history_source_inputs")
+
 # Exact successful, independently selected public SDK qualification output.
 sdk_selection = use_repo_rule("//tools:codex_sdk_selection_repository.bzl", "codex_sdk_selection_repository")
 sdk_selection(

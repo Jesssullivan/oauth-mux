@@ -1446,8 +1446,20 @@ python_test(
 python_test(
     name = "codex_live_source_test",
     main = "codex_live_source_test.py",
-    srcs = ["codex_live_source.py"],
+    srcs = ["codex_live_source.py", "codex_protocol_history_source.py"],
 )
+
+# Separate pinned application source delta; old C11 producer remains unchanged.
+# This emits source only. Its distinct receipt requires new SDK metadata.
+python_test(
+    name = "codex_protocol_history_source_producer",
+    main = "codex_protocol_history_source.py",
+    srcs = ["codex_live_source.py"],
+    data = ["@omux_codex_protocol_history_source_inputs//:inputs"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
 # Finite public read-only retained SDK producer. Manual, local, never remote.
 # Arguments come from the root-selected finite metadata repository.
 python_test(
