@@ -1332,6 +1332,22 @@ python_test(
     timeout = "short",
 )
 
+python_test(
+    name = "nix_source_probe_test",
+    main = "nix_source_probe_test.py",
+    srcs = ["nix_source_probe.py"],
+)
+
+# Operator metadata only: byte verification and full build seed are separate.
+python_test(
+    name = "native_flake_source_probe",
+    main = "nix_source_probe.py",
+    data = ["//:flake.lock"],
+    args = ["--lock", "$(location //:flake.lock)", "--native-inputs"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+)
+
 [python_test(
     name = "execution_probe_" + phase.replace("-", "_"),
     main = "execution_guard_probe.py",
