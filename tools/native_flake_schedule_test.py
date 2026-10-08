@@ -383,6 +383,13 @@ class ScheduleModels(unittest.TestCase):
                 self.assertEqual(report["phase"], phase)
                 self.assertEqual(report["registration_readback_phase"], readback_phase)
                 self.assertEqual(report["registration_join_reason"], join_reason)
+                if refused == "record":
+                    self.assertEqual(report["registration_parse"],
+                        {"family": "nar-size", "site": "nar-size", "path_refusal": None,
+                         "declared_roots": len(model.runtime.value["roots"])+len(model.extra),
+                         "declared_roots_clamped": False})
+                else:
+                    self.assertIsNone(report["registration_parse"])
                 self.assertEqual(report["child"]["child_exit"], 0)
                 self.assertIsNone(report["graph_document_reason"])
                 self.assertIsNone(report["graph_path_site"])
@@ -1015,6 +1022,84 @@ class ScheduleModels(unittest.TestCase):
             with self.assertRaises(ValueError):
                 schedule.proof.readback_records(("\n".join(good)+"\n").encode(),
                                                [root, child], current_flake_paths=selected)
+
+    def test_generated_registration_parser_reports_each_exact_fence_without_values(self):
+        closure = schedule.closure
+        root = "/nix/store/"+"a"*32+"-root?="
+        child = "/nix/store/"+"b"*32+"-child?=.drv"
+        outside = "/nix/store/"+"c"*32+"-outside"
+        base = [[root, "sha256:"+"f"*64, "8", child, "1", child],
+                [child, "sha256:"+"d"*64, "9", "", "0"]]
+        def wire(rows):
+            return "\n".join(value for record in rows for value in record)+"\n"
+        def altered(slot, value):
+            rows = copy.deepcopy(base)
+            rows[0][slot] = value
+            return wire(rows)
+        many = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4097)]
+        cases = [
+            ("x"*(4*1024**2+1), [root, child], "text-bound", "wire", None),
+            (wire(base), [], "root-empty", "declared-roots", None),
+            ("", many, "root-bound", "declared-roots", None),
+            (wire(base), [root, root], "root-duplicate", "declared-roots", None),
+            (wire(base), ["/unselected-private-root", child], "path", "declared-root", "layout"),
+            (wire([[name, "sha256:"+"f"*64, "8", "", "0"] for name in many]),
+             [root, child], "record-bound", "record", None),
+            ("one-line\n", [root, child], "record-shape", "record", None),
+            (altered(0, "/unselected-private-root"), [root, child], "path", "record-root", "layout"),
+            (wire(base+[base[0]]), [root, child], "record-duplicate", "record-root", None),
+            (altered(1, "sha256:"+"z"*64), [root, child], "nar-hash", "nar-hash", None),
+            (altered(2, "0"), [root, child], "nar-size", "nar-size", None),
+            (altered(4, "x"), [root, child], "reference-count", "reference-count", None),
+            (altered(3, root), [root, child], "path", "deriver", "derivation-suffix"),
+            (altered(2, str(1 << 63)), [root, child], "nar-size-bound", "nar-size", None),
+            (altered(4, "4097"), [root, child], "reference-bound", "reference-count", None),
+            (altered(1, "sha256:"+"z"*52), [root, child], "nar-hash-range", "nar-hash", None),
+            (wire([[root, "sha256:"+"f"*64, "8", "", "2", child]]),
+             [root, child], "references-length", "references", None),
+            (wire([[root, "sha256:"+"f"*64, "8", "", "2", child, child], base[1]]),
+             [root, child], "references-duplicate", "references", None),
+            (altered(5, "/unselected-private-reference"), [root, child], "path", "reference", "layout"),
+            (wire(base), [root, child, outside], "root-membership", "registered-roots", None),
+            (altered(5, outside), [root, child], "reference-membership", "references", None)]
+        for text, declared, family, site, path_refusal in cases:
+            with self.subTest(family=family,site=site), self.assertRaises(ValueError):
+                closure.registrations(text, declared, current_flake_paths=True)
+            report = closure.REGISTRATION_PARSE_DIAGNOSTIC
+            self.assertEqual(report, {"family": family, "site": site, "path_refusal": path_refusal,
+                "declared_roots": len(declared), "declared_roots_clamped": False})
+            self.assertNotIn("unselected-private", json.dumps(report))
+            self.assertNotIn("/nix/store", json.dumps(report))
+            for selected in (None, 0, 1, "true"):
+                with self.assertRaises(ValueError):
+                    closure.registrations(wire(base), [root, child], current_flake_paths=selected)
+                self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        parsed = closure.registrations(wire(base), [root, child], current_flake_paths=True)
+        self.assertEqual(parsed[root]["references"], [child])
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        with self.assertRaises(ValueError):
+            closure.registrations(wire(base), [root, child])
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+
+    def test_generated_registration_diagnostic_count_is_bounded_and_acceptance_ceiling_unchanged(self):
+        closure = schedule.closure
+        roots = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4096)]
+        text = "\n".join(value for root in roots
+            for value in (root, "sha256:"+"f"*64, "8", "", "0"))+"\n"
+        self.assertEqual(len(closure.registrations(text, roots, current_flake_paths=True)), 4096)
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        oversized = [roots[0]]*(closure.MAX_DIAGNOSTIC_ROOTS+1)
+        with self.assertRaises(ValueError):
+            closure.registrations("", oversized, current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC,
+            {"family": "root-bound", "site": "declared-roots", "path_refusal": None,
+             "declared_roots": closure.MAX_DIAGNOSTIC_ROOTS, "declared_roots_clamped": True})
+        with self.assertRaises(ValueError):
+            closure.registrations("", [], current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["declared_roots"], 0)
+        with self.assertRaises(ValueError):
+            closure.registrations("unselected-private-value", roots)
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
 
     def test_generated_punctuated_payload_cannot_bypass_registered_nar(self):
         with tempfile.TemporaryDirectory() as directory:

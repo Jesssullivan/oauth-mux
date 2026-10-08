@@ -53,7 +53,9 @@ def diagnostic_summary():
             "graph_path_site": GRAPH_PATH_SITE, "graph_path_refusal": GRAPH_PATH_REFUSAL,
             "registration_readback_phase": proof.PHASE if PHASE == "generated-registration-records"
                 and proof.PHASE in REGISTRATION_READBACK_PHASES else None,
-            "registration_join_reason": REGISTRATION_JOIN_REASON}
+            "registration_join_reason": REGISTRATION_JOIN_REASON,
+            "registration_parse": closure.REGISTRATION_PARSE_DIAGNOSTIC
+                if PHASE == "generated-registration-records" else None}
 
 
 def require(value):
@@ -359,6 +361,7 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
     require(type(DIAGNOSTIC_ENTRY) is float and DIAGNOSTIC_ENTRY <= time.monotonic())
     PHASE_ELAPSED, DIAGNOSTICS, GRAPH_DOCUMENT_REASON = [], None, None
     GRAPH_PATH_SITE, GRAPH_PATH_REFUSAL, REGISTRATION_JOIN_REASON = None, None, None
+    closure.REGISTRATION_PARSE_DIAGNOSTIC = None
     def phase(name):
         global PHASE
         PHASE = name
