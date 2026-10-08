@@ -35,6 +35,73 @@ class FakeService:
         verify(self.actual, self.root)
 
 
+class ResidentGuardModels(unittest.TestCase):
+    def test_full_effective_properties_and_cgroup_preserve_complementary_caps(self):
+        import guard_resident_dispatch as resident
+        import guard_resident_namespace_profile as namespace
+        for profile in resident.PROFILES:
+            isolation = {**SANDBOX, **namespace.finite(['run',namespace.LABEL],'system','/public/input.json',False)}
+            if profile == 'resident-continuity': isolation['PrivateNetwork'] = 'no'
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for key,value in CGROUP.items():
+                    (root/key).write_text({'memory.max':'4026531840','pids.max':'480'}.get(key,value))
+                (root/'cpu.max').write_text('190000 100000')
+                actual = {**resident.proof_properties(PROPERTIES),**isolation,
+                    'TemporaryFileSystem':__import__('execution_guard').system_masks(),
+                    'UnsetEnvironment':' '.join(resident.unset_environment(DELEGATION_ENV))}
+                for quota in ('1.900000s','1900ms','1900000us'):
+                    actual['CPUQuotaPerSecUSec'] = quota
+                    verify(actual,root,'system',isolation,profile)
+                for quota in ('1.900001s','1.899999s','NaNs','infs','1900000','-1s'):
+                    with self.assertRaises(ValueError): verify({**actual,'CPUQuotaPerSecUSec':quota},root,'system',isolation,profile)
+                for key,bad in (('memory.max','4026531841'),('memory.swap.max','1'),('pids.max','481'),('cpu.max','190001 100000')):
+                    old=(root/key).read_text(); (root/key).write_text(bad)
+                    with self.assertRaises(ValueError): verify(actual,root,'system',isolation,profile)
+                    (root/key).write_text(old)
+                for key,bad in (('PrivatePIDs','yes'),('NoNewPrivileges','no'),('TasksMax','512'),('MemoryMax','4294967296')):
+                    with self.assertRaises(ValueError): verify({**actual,key:bad},root,'system',isolation,profile)
+                for key in ('SYSTEMD_BUS_ADDRESS','SYSTEMD_HOST','SYSTEMD_MACHINE','DBUS_SYSTEM_BUS_ADDRESS'):
+                    wrong={**actual,'UnsetEnvironment':' '.join(v for v in actual['UnsetEnvironment'].split() if v!=key)}
+                    with self.assertRaises(ValueError): verify(wrong,root,'system',isolation,profile)
+        # Existing standard/native CPU property remains exact 2s.
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for key,value in CGROUP.items(): (root/key).write_text(value)
+            (root/'cpu.max').write_text('200000 100000')
+            actual={**PROPERTIES,**SANDBOX,'TemporaryFileSystem':__import__('execution_guard').system_masks(),
+                'UnsetEnvironment':' '.join(DELEGATION_ENV)}
+            for profile in ('standard','codex-native'):
+                verify(actual,root,'system',SANDBOX,profile,runtime_seconds=1200)
+                with self.assertRaises(ValueError): verify({**actual,'CPUQuotaPerSecUSec':'1.9s'},root,'system',SANDBOX,profile,runtime_seconds=1200)
+
+    def test_actual_standard_command_builder_only_changes_exact_resident_run(self):
+        import guard_resident_dispatch as resident
+        import guard_resident_namespace_profile as namespace
+        run=Path('/private/11111111-1111-4111-8111-111111111111')
+        admission=SimpleNamespace(facts={'scope':namespace.SCOPE},manifest=Path('/public/input.json'),environment=lambda:{'OMUX_RESIDENT_NAMESPACE_EPOCH':run.name})
+        command=resident.command(bazel_command,'/nix/store/public/bin/bazel',run,['run',namespace.LABEL],admission,
+            source_commit='1'*40,source_dirty='false',repository_cache=resident.REPOSITORY_CACHE,nixpkgs_source=resident.NIXPKGS)
+        self.assertIn('run',command); self.assertNotIn('build',command)
+        self.assertEqual(command[-1],namespace.LABEL)
+        for flag in ('--batch','--disable_download','--repo_contents_cache=','--spawn_strategy=linux-sandbox','--disk_cache=',
+            '--repository_cache='+str(resident.REPOSITORY_CACHE),'--run_env=OMUX_RESIDENT_NAMESPACE_EPOCH='+run.name): self.assertIn(flag,command)
+        self.assertFalse(any(part.startswith('--repo_env=OMUX_CODEX_FRESH_RUNTIME_SELECTION=') and part.split('=',2)[-1] for part in command))
+        with self.assertRaises(ValueError): resident.command(bazel_command,'/nix/store/public/bin/bazel',run,['run',namespace.LABEL,'--'],admission,source_commit='1'*40,source_dirty='false')
+
+    def test_partial_or_foreign_resident_cli_refuses_before_immutable_tools(self):
+        from execution_guard import main
+        complete=['--profile','resident-namespace','--manager','system','--resident-manifest','/public/input.json',
+            '--resident-epoch','11111111-1111-4111-8111-111111111111','--resident-producer-sha256','1'*64,
+            '--resident-observer-sha256','2'*64,'--source-commit','3'*40,'--source-dirty','false']
+        for command in (complete[:-2],complete+['--reuse-owned-cache'],complete+['--native-mode','cli-opt'],
+            complete+['--resident-runtime-bytes','1'],complete+['--','run','//:unit_tests'],
+            ['--profile','standard','--resident-manifest','/public/input.json','--','test','//:unit_tests']):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError): main(command if command[-1]=='//:unit_tests' else command+['--','run','//delivery:resident_namespace_qualification'])
+                reader.assert_not_called()
+
+
 class FakeClock:
     def __init__(self, value=0):
         self.value = value

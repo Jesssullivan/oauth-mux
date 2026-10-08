@@ -7,6 +7,14 @@ load(":metadata_rules.bzl", "extension_metadata")
 load(":browser_proof_rules.bzl", "browser_runtime_authority")
 
 package(default_visibility = ["//visibility:public"])
+
+python_binary(
+    name = "resident_namespace_qualification",
+    main = "resident_namespace_qualification.py",
+    srcs = ["//tools:resident_namespace_guard_sources", "pack.py", "portable.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
 filegroup(name = "public_sources", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
 exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
@@ -1027,4 +1035,51 @@ python_test(
         "//integrations/codex-owner-runtime:runtime_package.py",
         "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py",
     ] + ["//tools:codex_fresh_live_support"],
+)
+
+# Exact resident RUN: built inputs stay sandboxed; only the guardian admits
+# this final controller in the host PID namespace with the resident unchanged.
+_RESIDENT_CODEX_LIVE_SOURCES = [
+    "resident_codex_live_controller.py", "resident_codex_live_composition.py",
+    "test_installed_codex_live_continuity.py", "test_installed_native_tui.py",
+    "test_installed_native_interop.py", "test_installed_custody.py",
+    "native_resumed_checkpoint.py", "pack.py", "install.py", "portable.py",
+    "//integrations/codex-owner-runtime:runtime_package.py",
+    "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py",
+    "//tools:codex_fresh_live_support",
+]
+python_binary(
+    name = "resident_codex_live_continuity",
+    main = "resident_codex_live_controller.py",
+    srcs = _RESIDENT_CODEX_LIVE_SOURCES + [
+        "//tools:guard_resident_continuity_profile.py",
+        "//tools:guard_resident_observation.py",
+    ],
+    data = [
+        "@omux_codex_live_fresh_runtime//:runtime.tar.gz",
+        "@omux_codex_live_fresh_runtime//:runtime-manifest.json",
+        "@omux_codex_live_fresh_runtime//:runtime-receipt.json",
+        "@omux_codex_live_fresh_runtime//:input-pin.json",
+    ],
+    args = [
+        "$(location @omux_codex_live_fresh_runtime//:runtime.tar.gz)",
+        "$(location @omux_codex_live_fresh_runtime//:runtime-receipt.json)",
+        "$(location @omux_codex_live_fresh_runtime//:input-pin.json)",
+    ],
+    tags = ["manual", "no-remote", "no-cache", "requires-network"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+# Models use the actual controller/refusal methods with synthetic metadata and
+# owned temporary public files. They never execute the resident RUN or provider.
+python_test(
+    name = "resident_codex_live_composition_test",
+    main = "test_resident_codex_live_composition.py",
+    srcs = _RESIDENT_CODEX_LIVE_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "resident_codex_live_controller_test",
+    main = "test_resident_codex_live_controller.py",
+    srcs = _RESIDENT_CODEX_LIVE_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
 )

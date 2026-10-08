@@ -58,6 +58,15 @@ authority. [catalog.zig](../../src/catalog.zig) distinguishes declared,
 implemented, synthetic-proven and live-proven capabilities. Its `normal_launch`
 flag describes intended entrypoints, not a passed ordinary-launch gate.
 
+Resident validation is declared in [delivery/BUILD.bazel](../../delivery/BUILD.bazel):
+`//delivery:resident_namespace_qualification` checks the provider-free namespace,
+and `//delivery:resident_codex_live_continuity` evaluates ordinary TUI preparation,
+cold native resume and two completed turns in the same resumed process after an
+explicit account-A drain. The [controller](../../delivery/resident_codex_live_controller.py)
+and [guardian](../../tools/guard_resident_continuity_profile.py) require verified
+resident accounts and independently qualified native and daemon artifacts.
+Declared targets and their source models do not establish installed or live proof.
+
 Control mutations require a stable opaque `operation_id` and nonnegative
 `expected_revision`. JSON-RPC `id` remains response correlation only. Query
 `operation.status` after response loss; mismatched reuse, stale revisions and

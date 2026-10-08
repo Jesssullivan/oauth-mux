@@ -32,19 +32,26 @@ def checked_owned_endpoint(home, native):
     return endpoint
 
 # Private native reads retain no raw packet or diagnostic output.
-def checked_native_rpc(endpoint, method, params):
+def checked_native_rpc(endpoint, method, params, *, deadline=None):
     identifier = os.urandom(32).hex()
     packet = json.dumps({"jsonrpc": "2.0", "id": identifier, "method": method,
                          "params": params}, separators=(",", ":")).encode()
     require(len(packet) <= tui.FRAME_LIMIT, "live native packet exceeds bound")
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as channel:
-        channel.settimeout(5)
+        def phase_budget():
+            left = 5 if deadline is None else deadline - time.monotonic()
+            require(left > 0, "live native action deadline expired")
+            channel.settimeout(min(5, left))
+        phase_budget()
         channel.connect(str(endpoint))
         pid, uid, gid = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         require(pid == NATIVE_PEERS.get(str(endpoint)) and uid == os.getuid() and gid == os.getgid(),
                 "live native peer differs")
+        phase_budget()
         require(channel.send(packet) == len(packet), "live native packet incomplete")
+        phase_budget()
         raw, _, flags, _ = channel.recvmsg(tui.FRAME_LIMIT)
+        require(deadline is None or time.monotonic() < deadline, "live native action deadline expired")
         require(raw and not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC), "live native reply exceeds bound")
     value = json.loads(raw, object_pairs_hook=tui.strict_object)
     require(isinstance(value, dict) and set(value) == {"jsonrpc", "id", "result"}

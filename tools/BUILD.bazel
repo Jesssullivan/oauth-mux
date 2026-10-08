@@ -1051,13 +1051,22 @@ python_test(
 
 # Packaging entrypoint only: bootstrap containment uses the pre-realized
 # interpreter before admitting any Bazel invocation.
+_RESIDENT_GUARD_SOURCES = ['guard_resident_observation.py','guard_resident_continuity_profile.py',
+    'guard_resident_namespace_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
+    'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py']
+exports_files(['guard_resident_observation.py','guard_resident_continuity_profile.py','guard_resident_namespace_profile.py'])
+filegroup(name='resident_continuity_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
+filegroup(name='resident_namespace_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
+python_test(name='guard_resident_observation_test',main='guard_resident_observation_test.py',srcs=_RESIDENT_GUARD_SOURCES)
+python_test(name='guard_resident_continuity_profile_test',main='guard_resident_continuity_profile_test.py',srcs=_RESIDENT_GUARD_SOURCES)
+python_test(name='guard_resident_namespace_profile_test',main='guard_resident_namespace_profile_test.py',srcs=_RESIDENT_GUARD_SOURCES)
 python_binary(
     name = "execution_guard",
     main = "execution_guard.py",
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"],
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"] + _RESIDENT_GUARD_SOURCES,
     visibility = ["//visibility:public"],
 )
 
@@ -1067,7 +1076,7 @@ python_test(
     srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES,
 )
 
 python_test(
