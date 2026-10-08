@@ -12,7 +12,7 @@ def _sha(value):
     return type(value) == "string" and len(value) == 64 and all([c in "0123456789abcdef" for c in value.elems()])
 
 def _name(value):
-    _need(type(value) == "string" and not value.startswith("/") and all([part not in ["", ".", ".."] for part in value.split("/")]) and all([c not in value for c in ["\\", "\n", "\r", "\t", "\x00"]]), "relative-path")
+    _need(type(value) == "string" and not value.startswith("/") and all([part not in ["", ".", ".."] for part in value.split("/")]) and all([c not in value for c in ["\\", "\n", "\r", "\t", "\000"]]), "relative-path")
 
 def _uuid(value):
     return len(value) == 36 and all([value[i] == "-" if i in [8, 13, 18, 23] else value[i] in "0123456789abcdef" for i in range(36)])
@@ -92,7 +92,7 @@ def _implementation(ctx):
     _need(len(export_raw) <= 256 * 1024 * 1024, "export-receipt-size")
     exported = json.decode(export_raw)
     repositories = exported.get("repositories", [])
-    _need(exported.get("schema") == "omux-retained-native-sdk-export-v1" and exported.get("qualification_only") == False and 0 < len(repositories) <= 1600 and exported.get("nix_store_roots") == [_JDK], "export-receipt-role")
+    _need(exported.get("schema") == "omux-retained-native-sdk-export-v1" and exported.get("qualification_only") == False and 0 < len(repositories) and len(repositories) <= 1600 and exported.get("nix_store_roots") == [_JDK], "export-receipt-role")
     inputs.append(export_receipt)
     objects, links, absolute, absences = {}, {}, {}, {}
     for repo in repositories:
@@ -109,14 +109,14 @@ def _implementation(ctx):
             objects[key], absolute[key] = row, _EXPORT + "/repositories/" + key
             if row["kind"] == "symlink":
                 target = row.get("target")
-                _need(type(target) == "string" and target and all([c not in target for c in ["\n", "\r", "\t", "\x00"]]), "repository-link")
+                _need(type(target) == "string" and target and all([c not in target for c in ["\n", "\r", "\t", "\000"]]), "repository-link")
                 destination = _normalize(target if target.startswith("/") else "/".join(key.split("/")[:-1]) + "/" + target)
                 _need(destination.startswith(_JDK + "/") or not destination.startswith("/"), "repository-link-root")
                 links[key] = destination
         for absence in repo.get("absent_links", []):
             _need(type(absence) == "dict" and sorted(absence.keys()) == ["origin", "target"] and type(absence["origin"]) == "string" and type(absence["target"]) == "string", "absent-link-role")
             absences[absence["origin"]] = absence["target"]
-    _need(0 < len(objects) <= 500000 and "rules_rs++crate+crates" in objects, "repository-object-bound")
+    _need(0 < len(objects) and len(objects) <= 500000 and "rules_rs++crate+crates" in objects, "repository-object-bound")
     _physical(ctx, _JDK, True)
     objects[_JDK] = {"kind": "directory"}
     absolute[_JDK] = _JDK
@@ -136,7 +136,7 @@ def _implementation(ctx):
                 links[key] = destination
     for key, row in sorted(objects.items()):
         if row["kind"] == "file":
-            _need(type(row.get("size")) == "int" and 0 <= row["size"] <= 1024 * 1024 * 1024 and _sha(row.get("sha256")) and type(row.get("mode")) == "int" and row["mode"] in [292, 365], "selected-file-pin")
+            _need(type(row.get("size")) == "int" and 0 <= row["size"] and row["size"] <= 1024 * 1024 * 1024 and _sha(row.get("sha256")) and type(row.get("mode")) == "int" and row["mode"] in [292, 365], "selected-file-pin")
             inputs.append(_physical(ctx, absolute[key]))
         elif row["kind"] == "directory":
             _physical(ctx, absolute[key], True)
@@ -155,10 +155,10 @@ def _implementation(ctx):
         _need(type(pin) == "dict" and sorted(pin.keys()) == ["sha256"] and _sha(pin.get("sha256")), "graph-file-pin")
         inputs.append(_physical(ctx, _EXPORT + "/graph/" + name))
     registry = exported.get("registry_metadata", {}).get("files", [])
-    _need(0 < len(registry) <= 512, "registry-file-bound")
+    _need(0 < len(registry) and len(registry) <= 512, "registry-file-bound")
     for row in registry:
         digest = row.get("sha256")
-        _need(_sha(digest) and row.get("path") == "content_addressable/sha256/" + digest + "/file" and type(row.get("size")) == "int" and 0 <= row["size"] <= 1024 * 1024, "registry-file-pin")
+        _need(_sha(digest) and row.get("path") == "content_addressable/sha256/" + digest + "/file" and type(row.get("size")) == "int" and 0 <= row["size"] and row["size"] <= 1024 * 1024, "registry-file-pin")
         inputs.append(_physical(ctx, _EXPORT + "/registry-cache/" + row["path"]))
     _need(len(inputs) <= 500000, "declared-file-bound")
     aliases = []
