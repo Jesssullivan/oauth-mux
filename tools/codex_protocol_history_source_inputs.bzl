@@ -1,6 +1,6 @@
 """Declare one finite pinned public C11 source and reviewed dependency patch."""
 _PARENT = "/home/jess/.local/state/omux-execution-20261005/cache-v2-4689a690587ec00080acae0eb6ba13df894a284b47e0ce7a6ee828bed0cb8d9d/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_live_source_producer/test.outputs/codex-live-source"
-_PATCH = "/srv/fast-local/jess/git/oauth-mux/docs/agent-notes/2026-10-07-native-protocol-history-edge.UNAPPLIED.native.patch"
+_PATCH = "/srv/fast-local/jess/git/oauth-mux/docs/agent-notes/2026-10-07-native-protocol-history-edge-formatted.UNAPPLIED.native.patch"
 
 def _implementation(ctx):
     parent_receipt = ctx.path(_PARENT + "/source-receipt.json")

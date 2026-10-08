@@ -83,9 +83,10 @@ class NativeSourceTests(unittest.TestCase):
 class ProtocolHistorySourceTests(unittest.TestCase):
     def fixture(self):
         files = {name: ("100644", b"unchanged graph input\n") for name in history.GRAPH}
-        files.update({name: ("100644", b"retained before\n"
-            + b"use codex_rollout::RolloutItem;\n"*count+b"retained after\n")
-            for name,count in history.RUST_PATHS.items()})
+        files.update({name: ("100644", b"\n\n".join(anchor+b"\n"
+            + b"\n".join(line.replace(b"codex_history::",b"codex_rollout::") for line in imports)
+            for anchor,imports in groups)+b"\n")
+            for name,groups in history.IMPORT_GROUPS.items()})
         files[history.MANIFEST] = ("100644", b"[dependencies]\ncodex-history = { workspace = true }\ncodex-rollout = { workspace = true }\n")
         files[history.LOCK] = ("100644", b'[[package]]\nname = "codex-app-server-protocol"\nversion = "0.0.0"\ndependencies = [\n "codex-history",\n "codex-rollout",\n]\n\n[[package]]\nname = "codex-core"\ndependencies = [\n "codex-rollout",\n]\n')
         files["retained/source.rs"] = ("100644", b"unrelated retained application bytes\n")
@@ -102,6 +103,8 @@ class ProtocolHistorySourceTests(unittest.TestCase):
         for name,count in history.RUST_PATHS.items():
             self.assertEqual(result[name][1].count(b"codex_history::"),count)
             self.assertNotIn(b"codex_rollout::",result[name][1])
+            for anchor,imports in history.IMPORT_GROUPS[name]:
+                self.assertLess(result[name][1].index(imports[0]),result[name][1].index(anchor))
         self.assertIn(b"codex_rollout::",files[next(iter(history.RUST_PATHS))][1])
 
     def test_new_declaration_cannot_expand_or_change_historical_patch_authority(self):
@@ -122,6 +125,11 @@ class ProtocolHistorySourceTests(unittest.TestCase):
         value=self.fixture();mode,raw=value[history.LOCK]
         value[history.LOCK]=(mode,raw.replace(b'name = "codex-app-server-protocol"',b'name = "other-package"'));fixtures.append(value)
         value=self.fixture();value[history.MANIFEST]=("100755",value[history.MANIFEST][1]);fixtures.append(value)
+        value=self.fixture();name=next(iter(history.RUST_PATHS));mode,raw=value[name]
+        anchor=history.IMPORT_GROUPS[name][0][0]
+        value[name]=(mode,raw.replace(anchor,b"use codex_protocol::unqualified_anchor;"));fixtures.append(value)
+        value=self.fixture();mode,raw=value[name]
+        value[name]=(mode,raw+b"\n"+anchor+b"\n");fixtures.append(value)
         for value in fixtures:
             with self.assertRaises(ValueError):history.transform(value,history.PATCH_BYTES)
         files=self.fixture();result=history.transform(files,history.PATCH_BYTES)

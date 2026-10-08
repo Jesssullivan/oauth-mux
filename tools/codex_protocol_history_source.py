@@ -18,9 +18,9 @@ PARENT_INVENTORY_SHA = "5e7628d20807b41c795d08d2ed6f0e6107d394b718f25dd22e970520
 PARENT_PATCHES = ["5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6","3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53","84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5"]
 PARENT_GRAPH = {".bazelrc":{"sha256":"7e48a0fffeb63df92029fe781deba5200f2c6a08f328ed9f3ac41ad471757a30"},".bazelversion":{"sha256":"cdecb300baad839a6f62791229f551a4fa33f3cbdca08e378dc976466354e778"},"MODULE.bazel":{"sha256":"1a6c8685d241a5390ff94432581e842c2950cbe5262b47b27d8db467cebec4c2"},"MODULE.bazel.lock":{"sha256":"3416c08d3ddff96ec9e0b76d7d89eaa2b75cc8d81f0a9f661d8b8466d1343657"},"codex-rs/Cargo.lock":{"sha256":"72efa81ed947d07ed4fbb3e10b094715ff00626126d758aaed56733c97887e5f"},"codex-rs/Cargo.toml":{"sha256":"c732c370ca012d0da7944d463601b3c834eb862a85866d3274db9d2acecea978"},"codex-rs/cli/BUILD.bazel":{"sha256":"2706cd57f6638a9046e1c2707f21c9d99f69788c62a28bc8d7e465ffe8f980b8"},"codex-rs/config/BUILD.bazel":{"sha256":"2b37d96cce0dad377a13e159439ca6a3e064cb3071ea5eaf1582633ac18699a5"},"codex-rs/core/BUILD.bazel":{"sha256":"338753d4f457505edbd9e42f7c22b28f2c1c13dd694b28d94d4d7c5226c031ce"},"codex-rs/core/Cargo.toml":{"sha256":"d745357079c9163f69cd60295f46962c342c80a9cbf11d42afd5b4941df1a6d3"},"codex-rs/login/BUILD.bazel":{"sha256":"8b3be99f128d9b2cf25d79c87acdc1aa8d1d8658b45e0b45a0502e710fc04573"},"defs.bzl":{"sha256":"e38193b7df27d444c9d4a0606207bd76f9226ba4f91ebd80935def0e5525e478"}}
 PATCH_DIRECTORY = source.PATCH_DIRECTORY
-PATCH_NAME = '2026-10-07-native-protocol-history-edge.UNAPPLIED.native.patch'
-PATCH_SHA = '86a455ca88662efca764ca50da33b9d708c75a7f2a044af22d80867f02a0b070'
-PATCH_BYTES = "*** Begin Patch\n*** Update File: codex-rs/app-server-protocol/src/protocol/thread_history.rs\n@@\n use codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;\n-use codex_rollout::CompactedItem;\n-use codex_rollout::RolloutItem;\n+use codex_history::CompactedItem;\n+use codex_history::RolloutItem;\n use std::collections::HashMap;\n use tracing::warn;\n use uuid::Uuid;\n@@\n     use codex_protocol::protocol::WebSearchBeginEvent;\n     use codex_protocol::protocol::WebSearchEndEvent;\n-    use codex_rollout::CompactedItem;\n+    use codex_history::CompactedItem;\n     use codex_utils_absolute_path::test_support::PathBufExt;\n     use codex_utils_absolute_path::test_support::test_path_buf;\n     use pretty_assertions::assert_eq;\n*** Update File: codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs\n@@\n use codex_protocol::protocol::EventMsg;\n-use codex_rollout::RolloutItem;\n-use codex_rollout::RolloutLine;\n+use codex_history::RolloutItem;\n+use codex_history::RolloutLine;\n \n use crate::protocol::thread_history::ThreadHistoryChangeSet;\n use crate::protocol::thread_history::ThreadHistoryItemChange;\n*** Update File: codex-rs/app-server-protocol/src/protocol/thread_history_projection_tests.rs\n@@\n use codex_protocol::security_risk::SecurityRiskScore;\n use codex_protocol::user_input::UserInput;\n-use codex_rollout::CompactedItem;\n-use codex_rollout::RolloutItem;\n-use codex_rollout::RolloutLine;\n+use codex_history::CompactedItem;\n+use codex_history::RolloutItem;\n+use codex_history::RolloutLine;\n use pretty_assertions::assert_eq;\n use std::collections::BTreeMap;\n \n*** Update File: codex-rs/app-server-protocol/src/protocol/item_builders_tests.rs\n@@\n use codex_protocol::protocol::ExecCommandSource;\n use codex_protocol::protocol::GuardianAssessmentStatus;\n use codex_protocol::protocol::TurnStartedEvent;\n-use codex_rollout::RolloutItem;\n+use codex_history::RolloutItem;\n use pretty_assertions::assert_eq;\n use serde_json::json;\n \n*** Update File: codex-rs/app-server-protocol/Cargo.toml\n@@\n codex-history = { workspace = true }\n codex-protocol = { workspace = true }\n-codex-rollout = { workspace = true }\n codex-secrets = { workspace = true }\n codex-shell-command = { workspace = true }\n codex-utils-absolute-path = { workspace = true }\n*** Update File: codex-rs/Cargo.lock\n@@\n [[package]]\n name = \"codex-app-server-protocol\"\n version = \"0.0.0\"\n dependencies = [\n  \"anyhow\",\n  \"codex-app-server-protocol-noop-macros\",\n  \"codex-experimental-api-macros\",\n  \"codex-extension-items\",\n  \"codex-history\",\n  \"codex-protocol\",\n- \"codex-rollout\",\n  \"codex-secrets\",\n  \"codex-shell-command\",\n  \"codex-utils-absolute-path\",\n*** End Patch\n".encode()
+PATCH_NAME = '2026-10-07-native-protocol-history-edge-formatted.UNAPPLIED.native.patch'
+PATCH_SHA = 'b4dd868ac11d863f65e9fe3031d83b8fb7164a5551abca20dc46424c0465c48c'
+PATCH_BYTES = "*** Begin Patch\n*** Update File: codex-rs/app-server-protocol/src/protocol/thread_history.rs\n@@\n use crate::protocol::v2::web_search_action_from_core;\n use codex_extension_items::image_generation::ImageGenerationItem;\n+use codex_history::CompactedItem;\n+use codex_history::RolloutItem;\n use codex_protocol::items::parse_hook_prompt_message;\n use codex_protocol::protocol::AgentMessageEvent;\n use codex_protocol::protocol::AgentReasoningEvent;\n@@\n #[cfg(test)]\n use codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;\n-use codex_rollout::CompactedItem;\n-use codex_rollout::RolloutItem;\n use std::collections::HashMap;\n use tracing::warn;\n use uuid::Uuid;\n@@\n     use crate::protocol::v2::CommandExecutionSource;\n     use codex_extension_items::ExtensionItem as CoreExtensionItem;\n     use codex_extension_items::sleep::SleepItem as CoreSleepItem;\n+    use codex_history::CompactedItem;\n     use codex_protocol::ThreadId;\n     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;\n     use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;\n@@\n     use codex_protocol::protocol::UserMessageEvent;\n     use codex_protocol::protocol::WebSearchBeginEvent;\n     use codex_protocol::protocol::WebSearchEndEvent;\n-    use codex_rollout::CompactedItem;\n     use codex_utils_absolute_path::test_support::PathBufExt;\n     use codex_utils_absolute_path::test_support::test_path_buf;\n     use pretty_assertions::assert_eq;\n*** Update File: codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs\n@@\n-use codex_protocol::protocol::EventMsg;\n-use codex_rollout::RolloutItem;\n+use codex_history::RolloutItem;\n-use codex_rollout::RolloutLine;\n+use codex_history::RolloutLine;\n+use codex_protocol::protocol::EventMsg;\n \n use crate::protocol::thread_history::ThreadHistoryChangeSet;\n use crate::protocol::thread_history::ThreadHistoryItemChange;\n*** Update File: codex-rs/app-server-protocol/src/protocol/thread_history_projection_tests.rs\n@@\n+use codex_history::CompactedItem;\n+use codex_history::RolloutItem;\n+use codex_history::RolloutLine;\n use codex_protocol::ThreadId;\n use codex_protocol::items::AgentMessageContent;\n use codex_protocol::items::AgentMessageItem;\n@@\n use codex_protocol::protocol::TurnStartedEvent;\n use codex_protocol::security_risk::SecurityRiskScore;\n use codex_protocol::user_input::UserInput;\n-use codex_rollout::CompactedItem;\n-use codex_rollout::RolloutItem;\n-use codex_rollout::RolloutLine;\n use pretty_assertions::assert_eq;\n use std::collections::BTreeMap;\n \n*** Update File: codex-rs/app-server-protocol/src/protocol/item_builders_tests.rs\n@@\n use super::*;\n use crate::protocol::thread_history::build_turns_from_rollout_items;\n+use codex_history::RolloutItem;\n use codex_protocol::protocol::EventMsg;\n use codex_protocol::protocol::ExecCommandSource;\n use codex_protocol::protocol::GuardianAssessmentStatus;\n use codex_protocol::protocol::TurnStartedEvent;\n-use codex_rollout::RolloutItem;\n use pretty_assertions::assert_eq;\n use serde_json::json;\n \n*** Update File: codex-rs/app-server-protocol/Cargo.toml\n@@\n codex-history = { workspace = true }\n codex-protocol = { workspace = true }\n-codex-rollout = { workspace = true }\n codex-secrets = { workspace = true }\n codex-shell-command = { workspace = true }\n codex-utils-absolute-path = { workspace = true }\n*** Update File: codex-rs/Cargo.lock\n@@\n [[package]]\n name = \"codex-app-server-protocol\"\n version = \"0.0.0\"\n dependencies = [\n  \"anyhow\",\n  \"codex-app-server-protocol-noop-macros\",\n  \"codex-experimental-api-macros\",\n  \"codex-extension-items\",\n  \"codex-history\",\n  \"codex-protocol\",\n- \"codex-rollout\",\n  \"codex-secrets\",\n  \"codex-shell-command\",\n  \"codex-utils-absolute-path\",\n*** End Patch\n".encode()
 KIND = 'omux-native-protocol-history-source-v1'
 RUST_PATHS = {
     'codex-rs/app-server-protocol/src/protocol/thread_history.rs': 3,
@@ -39,6 +39,41 @@ PHASES = frozenset(('parent','patch','dependency','output'))
 
 def require(value):
     source.require(value)
+
+
+IMPORT_GROUPS = {
+    'codex-rs/app-server-protocol/src/protocol/thread_history.rs': (
+        (b'use codex_protocol::items::parse_hook_prompt_message;',
+         (b'use codex_history::CompactedItem;',b'use codex_history::RolloutItem;')),
+        (b'    use codex_protocol::ThreadId;', (b'    use codex_history::CompactedItem;',))),
+    'codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs': (
+        (b'use codex_protocol::protocol::EventMsg;',
+         (b'use codex_history::RolloutItem;',b'use codex_history::RolloutLine;')),),
+    'codex-rs/app-server-protocol/src/protocol/thread_history_projection_tests.rs': (
+        (b'use codex_protocol::ThreadId;',
+         (b'use codex_history::CompactedItem;',b'use codex_history::RolloutItem;',
+          b'use codex_history::RolloutLine;')),),
+    'codex-rs/app-server-protocol/src/protocol/item_builders_tests.rs': (
+        (b'use codex_protocol::protocol::EventMsg;', (b'use codex_history::RolloutItem;',)),),
+}
+
+
+def order_history_imports(name, value):
+    # Move only nine known imports within their five declared existing groups.
+    # Blank boundaries, cfg attributes and every unrelated line stay exact.
+    blocks = value.split(b'\n\n')
+    for anchor,imports in IMPORT_GROUPS[name]:
+        selected = [index for index,block in enumerate(blocks) if anchor in block.split(b'\n')]
+        require(len(selected) == 1)
+        index = selected[0]
+        lines = blocks[index].split(b'\n')
+        require(all(lines.count(line) == 1 for line in imports)
+            and tuple(line for line in lines if b'use codex_history::' in line) == imports)
+        retained = [line for line in lines if line not in imports]
+        position = retained.index(anchor)
+        require(position == 0 or not retained[position-1].strip().startswith(b'#['))
+        blocks[index] = b'\n'.join(retained[:position]+list(imports)+retained[position:])
+    return b'\n\n'.join(blocks)
 
 
 def load_parent():
@@ -107,7 +142,8 @@ def transform(files, raw):
             if b'codex_rollout::' in line:
                 require(line.strip() in (b'use codex_rollout::CompactedItem;',
                     b'use codex_rollout::RolloutItem;',b'use codex_rollout::RolloutLine;'))
-        result[name] = ('100644',value.replace(b'codex_rollout::',b'codex_history::'))
+        result[name] = ('100644',order_history_imports(name,
+            value.replace(b'codex_rollout::',b'codex_history::')))
     mode,value = result[MANIFEST]
     remove = b'codex-rollout = { workspace = true }\n'
     require(value.count(remove) == 1
