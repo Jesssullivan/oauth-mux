@@ -55,21 +55,32 @@ class ProfileTests(unittest.TestCase):
         return result
     def test_real_bazel_command_test_and_install_are_fixed_offline_original_environment(self):
         run=Path('/public/owned-epoch')
-        for action,verb,label in (('produce','test',subject.component.PRODUCER),('install','run',subject.component.INSTALLER)):
-            value=self.admission(action,subject.acquisition.REPOSITORY_CACHE)
-            actual=subject.command(execution.bazel_command,'/nix/store/model-bazel/bin/bazel',run,[verb,label],value,
-                source_commit='3'*40,source_dirty='false',repository_cache=value.repository_cache,nixpkgs_source=value.nixpkgs_source)
-            self.assertIn(verb,actual);self.assertEqual(actual[-1],label)
-            self.assertIn('--spawn_strategy=linux-sandbox',actual)
-            self.assertIn('--repository_disable_download',actual);self.assertIn('--disable_download',actual)
-            self.assertIn('--repo_contents_cache=',actual)
-            self.assertIn('--repository_cache='+str(value.repository_cache),actual)
-            self.assertIn('--remote_executor=',actual);self.assertIn('--remote_cache=',actual)
-            self.assertIn('--jobs=2',actual);self.assertIn('--host_jvm_args=-Xmx1536m',actual)
-            prefix='--test_env=' if action=='produce' else '--run_env='
-            self.assertIn(prefix+subject.component.DEADLINE+'=1200000000000',actual)
-            self.assertNotIn('--sandbox_default_allow_network=true',actual)
-            self.assertFalse(any('resident_enrollment' in item or 'native_account_login' in item for item in actual))
+        for profile in subject.PROFILES:
+            for action,verb,label in (('produce','test',subject.component.PRODUCER),('install','run',subject.component.INSTALLER)):
+                with self.subTest(profile=profile,action=action):
+                    value=self.admission(action,subject.acquisition.REPOSITORY_CACHE,profile)
+                    actual=subject.command(execution.bazel_command,'/nix/store/model-bazel/bin/bazel',run,[verb,label],value,
+                        source_commit='3'*40,source_dirty='false',repository_cache=value.repository_cache,nixpkgs_source=value.nixpkgs_source)
+                    self.assertIn(verb,actual);self.assertEqual(actual[-1],label)
+                    self.assertEqual([item for item in actual if item.startswith('//')],[label])
+                    self.assertIn('--spawn_strategy=linux-sandbox',actual)
+                    self.assertNotIn('--disable_download',actual)
+                    self.assertEqual(actual.count('--repository_disable_download'),1)
+                    self.assertEqual(actual.count('--repo_contents_cache='),1)
+                    self.assertEqual([item for item in actual if item.startswith('--repo_contents_cache=')],['--repo_contents_cache='])
+                    self.assertLess(actual.index('--repository_disable_download'),actual.index(label))
+                    self.assertLess(actual.index('--repo_contents_cache='),actual.index(label))
+                    self.assertEqual([item for item in actual if item.startswith('--repository_cache=')],
+                        ['--repository_cache='+str(value.repository_cache)])
+                    self.assertEqual([item for item in actual if item.startswith('--repo_env=OMUX_NIXPKGS_EVALUATION_SOURCE=')],
+                        ['--repo_env=OMUX_NIXPKGS_EVALUATION_SOURCE='+str(value.nixpkgs_source)])
+                    self.assertIn('--remote_executor=',actual);self.assertIn('--remote_cache=',actual)
+                    self.assertIn('--jobs=2',actual);self.assertIn('--host_jvm_args=-Xmx1536m',actual)
+                    prefix='--test_env=' if action=='produce' else '--run_env='
+                    self.assertIn(prefix+subject.component.DEADLINE+'=1200000000000',actual)
+                    self.assertNotIn('--sandbox_default_allow_network=true',actual)
+                    self.assertNotIn('--norepository_disable_download',actual)
+                    self.assertFalse(any('resident_enrollment' in item or 'native_account_login' in item for item in actual))
     def test_command_rejects_duck_admission_or_cross_action_no_rebuild(self):
         builder=mock.Mock()
         for value,arguments in ((SimpleNamespace(),['run',subject.component.INSTALLER]),
@@ -123,8 +134,10 @@ class ProfileTests(unittest.TestCase):
                     Path('/public/owned-epoch'),arguments,value,source_commit='3'*40,source_dirty='false')
                 self.assertEqual(command[-1],label)
                 self.assertIn('--spawn_strategy=linux-sandbox',command)
-                self.assertIn('--disable_download',command)
-                self.assertIn('--repository_disable_download',command)
+                self.assertNotIn('--disable_download',command)
+                self.assertEqual(command.count('--repository_disable_download'),1)
+                self.assertNotIn('--repo_contents_cache=',command)
+                self.assertNotIn('--norepository_disable_download',command)
                 self.assertIn('--jobs=2',command)
         for change in ({'reuse_owned_cache':True},{'manager':'user'},
                 {'resident_enrollment_manifest':Path('/private/input.json')},

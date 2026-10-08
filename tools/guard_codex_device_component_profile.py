@@ -197,7 +197,8 @@ def command(builder,bazel,run,arguments,admission,**kwargs):
     result=builder(bazel,run,arguments if producing else ['build',component.INSTALLER],**kwargs)
     if not producing:result[result.index('build')]='run'
     result[result.index('--spawn_strategy=sandboxed')]='--spawn_strategy=linux-sandbox'
-    additions=['--disable_download','--repository_disable_download',
+    # Bazel9's canonical repository download veto; PrivateNetwork remains mandatory.
+    additions=['--repository_disable_download',
         '--repo_env=OMUX_CODEX_COMPONENT_MANIFEST='+str(admission.manifest),
         '--repo_env=OMUX_CODEX_COMPONENT_MANIFEST_SHA256='+admission.manifest_sha256,
         '--repo_env=OMUX_NATIVE_ENROLLMENT_DIRECTORY=',
