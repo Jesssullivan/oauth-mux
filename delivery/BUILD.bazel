@@ -199,7 +199,7 @@ python_test(
 python_test(
     name = "dev_stage_retained",
     main = "dev_stage.py",
-    srcs = ["portable.py"],
+    srcs = ["portable.py", "dev_generation.py", "dev_stage_selected.py"],
     file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
     data = ["//:omux", "//:omuxd", "//extensions:chromium_dev_package", ":chromium_dev_metadata",
             "@omux_nix//:runtime_libraries", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle"],
