@@ -7,6 +7,7 @@ const reference = @import("reference.zig");
 const browser_bridge = @import("browser_bridge.zig");
 const control_schema = @import("control.zig");
 const setup_verification = @import("setup_verification.zig");
+const enrollment_wait = @import("enrollment_wait.zig");
 const instance = @import("instance.zig");
 const git = @import("integrations/git.zig");
 
@@ -77,8 +78,9 @@ pub fn main(init: std.process.Init) !void {
         return controlStdin(io, allocator, locations, "setup.applicationReadiness");
     }
     if (std.mem.eql(u8, command, "enroll")) {
-        if (parameters.len != 1) return error.SourceRequired;
-        return enroll(io, allocator, locations, parameters[0]);
+        if (parameters.len == 1 and !std.mem.eql(u8, parameters[0], "--wait")) return enroll(io, allocator, locations, parameters[0], false);
+        if (parameters.len == 2 and std.mem.eql(u8, parameters[0], "--wait") and !std.mem.eql(u8, parameters[1], "--wait")) return enroll(io, allocator, locations, parameters[1], true);
+        return error.SourceRequired;
     }
     if (std.mem.eql(u8, command, "rpc")) {
         // Parameters may contain grants or browser capsules. They travel only
@@ -479,7 +481,76 @@ fn gitCredential(io: std.Io, allocator: std.mem.Allocator, locations: paths.Loca
     try output(io, response);
 }
 
-fn enroll(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, source_id: []const u8) !void {
+const enrollment_wait_budget_ms: i64 = 30_000;
+const EnrollmentWaitCause = enum { none, admission_error, observation_error, job_failed, superseded, missing_job, custody_unavailable, stale_observation, invalid_reply, observation_unavailable, deadline_expired, admission_unresolved };
+fn enrollmentWaitCause(err: anyerror) EnrollmentWaitCause {
+    return switch (err) {
+        error.EnrollmentSuperseded => .superseded,
+        error.EnrollmentJobMissing => .missing_job,
+        error.EnrollmentCustodyUnavailable => .custody_unavailable,
+        error.EnrollmentObservationStale => .stale_observation,
+        error.InvalidEnrollmentWaitReply => .invalid_reply,
+        error.EnrollmentRequestRejected => .observation_error,
+        error.Timeout => .deadline_expired,
+        else => .observation_unavailable,
+    };
+}
+fn enrollmentWaitOutcome(io: std.Io, allocator: std.mem.Allocator, selected: ?enrollment_wait.Selection, status: enum { completed, failed, unresolved }, cause: EnrollmentWaitCause) !void {
+    const bytes = try std.json.Stringify.valueAlloc(allocator, .{
+        .schema_version = 1,
+        .operation_id = if (selected) |s| s.operation_id else @as(?[]const u8, null),
+        .operation_generation = if (selected) |s| s.operation_generation else @as(?u64, null),
+        .status = @tagName(status),
+        .cause = @tagName(cause),
+        .retry_import = false,
+    }, .{});
+    defer allocator.free(bytes);
+    try output(io, bytes);
+    try output(io, "\n");
+}
+fn waitEnrollment(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, selected: enrollment_wait.Selection, until: std.Io.Clock.Timestamp) !void {
+    const snapshot_request = try request(allocator, "state.snapshot", .{});
+    defer allocator.free(snapshot_request);
+    while (true) {
+        const reply = daemon.exchangeUntil(io, allocator, locations.control, snapshot_request, until) catch |err| {
+            try enrollmentWaitOutcome(io, allocator, selected, .unresolved, enrollmentWaitCause(err));
+            return error.EnrollmentWaitUnresolved;
+        };
+        defer allocator.free(reply);
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, reply, .{
+            .parse_numbers = false,
+            .duplicate_field_behavior = .@"error",
+        }) catch {
+            try enrollmentWaitOutcome(io, allocator, selected, .unresolved, .invalid_reply);
+            return error.EnrollmentWaitUnresolved;
+        };
+        defer parsed.deinit();
+        const observed = enrollment_wait.observe(selected, parsed.value) catch |err| {
+            try enrollmentWaitOutcome(io, allocator, selected, .unresolved, enrollmentWaitCause(err));
+            return error.EnrollmentWaitUnresolved;
+        };
+        if (until.durationFromNow(io).raw.toMilliseconds() <= 0) {
+            try enrollmentWaitOutcome(io, allocator, selected, .unresolved, .deadline_expired);
+            return error.EnrollmentWaitUnresolved;
+        }
+        switch (observed) {
+            .completed => return enrollmentWaitOutcome(io, allocator, selected, .completed, .none),
+            .failed => {
+                try enrollmentWaitOutcome(io, allocator, selected, .failed, .job_failed);
+                return error.EnrollmentFailed;
+            },
+            .pending => {},
+        }
+        const remaining = until.durationFromNow(io).raw.toMilliseconds();
+        if (remaining <= 0) {
+            try enrollmentWaitOutcome(io, allocator, selected, .unresolved, .deadline_expired);
+            return error.EnrollmentWaitUnresolved;
+        }
+        try io.sleep(.fromMilliseconds(@min(250, remaining)), .awake);
+    }
+}
+
+fn enroll(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, source_id: []const u8, wait: bool) !void {
     const bytes = try input(io, allocator, daemon.max_frame_bytes);
     defer std.crypto.secureZero(u8, bytes);
     try control_schema.checkDepth(bytes);
@@ -522,10 +593,52 @@ fn enroll(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, 
         if (value != .integer or value.integer < 1 or value.integer > 2_592_000) return error.InvalidParameters;
         break :blk value.integer;
     } else null;
+    // The optional local wait budget begins after stdin validation. It covers
+    // capability loading, the single import exchange and all observations; it
+    // does not claim to bound operator time supplying stdin.
+    const until: ?std.Io.Clock.Timestamp = if (wait) .fromNow(io, .{
+        .clock = .awake,
+        .raw = .fromMilliseconds(enrollment_wait_budget_ms),
+    }) else null;
     const capability = try paths.readCapability(allocator, locations.state, "enrollment");
     defer std.crypto.secureZero(u8, capability);
-    const payload = try request(allocator, "credential.import", .{ .application = "enrollment", .capability = capability, .source_id = source_id, .provider = provider_name, .access_token = token.string, .provider_account_id = provider_account_id, .credential_kind = credential_kind, .allow_reenrollment = allow_reenrollment, .custody_seconds = custody_seconds, .label = label });
+    const params = .{ .application = "enrollment", .capability = capability, .source_id = source_id, .provider = provider_name, .access_token = token.string, .provider_account_id = provider_account_id, .credential_kind = credential_kind, .allow_reenrollment = allow_reenrollment, .custody_seconds = custody_seconds, .label = label };
+    const payload = if (wait) try request(allocator, "credential.import", .{
+        .application = params.application,
+        .capability = params.capability,
+        .source_id = params.source_id,
+        .provider = params.provider,
+        .access_token = params.access_token,
+        .provider_account_id = params.provider_account_id,
+        .credential_kind = params.credential_kind,
+        .allow_reenrollment = params.allow_reenrollment,
+        .custody_seconds = params.custody_seconds,
+        .label = params.label,
+        .include_operation_generation = true,
+    }) else try request(allocator, "credential.import", params);
     defer std.crypto.secureZero(u8, payload);
+    if (until) |original| {
+        const reply = daemon.exchangeUntil(io, allocator, locations.adapter, payload, original) catch {
+            // No acknowledgement means no generation authority. Never infer
+            // the current generation from another snapshot or repeat import.
+            try enrollmentWaitOutcome(io, allocator, null, .unresolved, .admission_unresolved);
+            return error.EnrollmentWaitUnresolved;
+        };
+        defer allocator.free(reply);
+        const response = std.json.parseFromSlice(std.json.Value, allocator, reply, .{
+            .parse_numbers = false,
+            .duplicate_field_behavior = .@"error",
+        }) catch {
+            try enrollmentWaitOutcome(io, allocator, null, .unresolved, .invalid_reply);
+            return error.EnrollmentWaitUnresolved;
+        };
+        defer response.deinit();
+        const selected = enrollment_wait.selection(response.value) catch |err| {
+            try enrollmentWaitOutcome(io, allocator, null, .unresolved, if (err == error.EnrollmentRequestRejected) .admission_error else .invalid_reply);
+            return error.EnrollmentWaitUnresolved;
+        };
+        return waitEnrollment(io, allocator, locations, selected, original);
+    }
     const reply = try daemon.exchange(io, allocator, locations.adapter, payload);
     try output(io, reply);
     try output(io, "\n");

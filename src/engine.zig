@@ -2855,6 +2855,7 @@ pub const Engine = struct {
             if (!eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
             if (eql(method, "fixture.importStart")) {
                 const reply = try self.startImportMode(allocator, request.id, params, true);
+                if (try control.boolean(params, "include_operation_generation", false)) return reply;
                 allocator.free(reply);
                 const source_id = try control.string(params, "source_id");
                 for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and self.importJobRunning(pending)) {
@@ -3697,6 +3698,7 @@ pub const Engine = struct {
     }
 
     fn startImportMode(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value, fixture_hold: bool) ![]u8 {
+        const include_generation = try control.boolean(params, "include_operation_generation", false);
         if (!eql(try control.string(params, "application"), "enrollment")) return error.WrongPurpose;
         const provider = try control.string(params, "provider");
         const kind = if (try control.optionalString(params, "credential_kind")) |name| std.meta.stringToEnum(domain.CredentialKind, name) orelse return error.UnsupportedCredentialKind else if (eql(provider, "github")) domain.CredentialKind.api_key else domain.CredentialKind.oauth_access;
@@ -3713,6 +3715,14 @@ pub const Engine = struct {
             else => return error.InvalidParams,
         } else null;
         const operation = try self.queueImportMode(try control.string(params, "source_id"), provider, try control.string(params, "access_token"), (try control.optionalString(params, "label")) orelse "", expiry, self.now() + seconds, try control.optionalString(params, "provider_account_id"), kind, try control.boolean(params, "allow_reenrollment", false), fixture_hold, true);
+        if (include_generation) {
+            // queueImportMode persisted this exact generation before returning.
+            // Do not make the client infer generation from a later snapshot.
+            for (self.state.jobs.items) |job| if (eql(job.id, operation) and job.kind == .enrollment) {
+                return control.success(allocator, id, .{ .operation_id = operation, .status = "verifying_identity", .operation_generation = job.operation_generation, .admitted_revision = self.revision });
+            };
+            return error.NotFound;
+        }
         return control.success(allocator, id, .{ .operation_id = operation, .status = "verifying_identity" });
     }
 

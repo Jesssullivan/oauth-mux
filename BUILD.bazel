@@ -247,6 +247,7 @@ zig_test(
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
 )
+zig_test(name = "enrollment_wait_test", main = "src/enrollment_wait.zig")
 zig_test(name = "reliability_test", main = "src/reliability.zig")
 zig_test(name = "reliability_lifecycle_test", main = "src/reliability_lifecycle_tests.zig", srcs = ["src/reliability.zig"])
 zig_test(name = "onboarding_test", main = "src/onboarding_tests.zig", srcs = ["src/onboarding.zig"])

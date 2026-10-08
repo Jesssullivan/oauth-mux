@@ -320,15 +320,30 @@ pub fn exchange(io: std.Io, allocator: std.mem.Allocator, socket_path: []const u
 
 pub fn exchangeWithTimeout(io: std.Io, allocator: std.mem.Allocator, socket_path: []const u8, payload: []const u8, timeout_ms: i64) ![]u8 {
     if (timeout_ms < 1 or timeout_ms > request_timeout_ms) return error.InvalidDeadline;
+    return exchangeUntil(io, allocator, socket_path, payload, deadlineAfter(io, timeout_ms));
+}
+
+/// Bound every transport phase by the original caller deadline. Preserve the
+/// existing per-exchange 15s ceiling even when the caller has more time.
+pub fn exchangeUntil(io: std.Io, allocator: std.mem.Allocator, socket_path: []const u8, payload: []const u8, original: std.Io.Clock.Timestamp) ![]u8 {
+    const remaining = original.durationFromNow(io).raw.toMilliseconds();
+    if (remaining <= 0) return error.Timeout;
+    const capped = deadline(io);
+    const until = if (original.raw.durationTo(capped.raw).toNanoseconds() > 0) original else capped;
     paths.verifySocketPath(allocator, socket_path) catch |err| switch (err) {
         error.PathOpenFailed => return error.DaemonUnavailable,
         else => return err,
     };
-    const until = deadlineAfter(io, timeout_ms);
+    if (until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.Timeout;
     const fd = try connect(io, socket_path, until);
     defer _ = c.close(fd);
     try writeFrame(io, fd, payload, until);
     return readFrame(io, allocator, fd, until);
+}
+
+test "expired original client deadline refuses before socket metadata or IO" {
+    const original = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    try std.testing.expectError(error.Timeout, exchangeUntil(std.testing.io, std.testing.allocator, "/not-an-authorized-socket", "never-issued", original));
 }
 
 const ControlConnection = struct {

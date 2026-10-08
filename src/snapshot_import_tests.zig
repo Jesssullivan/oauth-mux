@@ -61,6 +61,63 @@ test "native import terminal measurements survive restart without counting start
     try std.testing.expectEqual([2]u64{ 1, 1 }, try enrollmentCounts(fixture.engine.?));
 }
 
+test "CLI enrollment selection observes only the committed original generation across restart" {
+    const wait = @import("enrollment_wait.zig");
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const source = try fixture.connect();
+    defer allocator.free(source);
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const capability = try fixture.engine.?.capabilityForTest("enrollment");
+    var admitted = try rpc(fixture.engine.?, .adapter, "fixture.importStart", .{
+        .application = "enrollment",
+        .capability = capability[0..],
+        .source_id = source,
+        .provider = "github",
+        .access_token = token,
+        .include_operation_generation = true,
+    });
+    defer admitted.deinit();
+    const selected = try wait.selection(admitted.parsed.value);
+    var held: HeldImport = .{ .operation_id = try allocator.dupe(u8, selected.operation_id), .generation = @intCast(selected.operation_generation) };
+    defer held.deinit();
+    {
+        var pending = try rpc(fixture.engine.?, .control, "state.snapshot", .{});
+        defer pending.deinit();
+        try std.testing.expectEqual(wait.State.pending, try wait.observe(selected, pending.parsed.value));
+    }
+    const response = try identityResponse();
+    defer allocator.free(response);
+    try completeImport(fixture.engine.?, source, held, response, null);
+    {
+        var committed = try rpc(fixture.engine.?, .control, "state.snapshot", .{});
+        defer committed.deinit();
+        try std.testing.expectEqual(wait.State.completed, try wait.observe(selected, committed.parsed.value));
+        const accounts = control.get(try committed.result(), "accounts").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), accounts.len);
+        try std.testing.expect(try control.boolean(control.get(accounts[0], "identity").?, "verified", false));
+        try std.testing.expectEqual([2]u64{ 1, 0 }, try enrollmentCounts(fixture.engine.?));
+    }
+    try fixture.restart();
+    {
+        var restored = try rpc(fixture.engine.?, .control, "state.snapshot", .{});
+        defer restored.deinit();
+        try std.testing.expectEqual(wait.State.completed, try wait.observe(selected, restored.parsed.value));
+        try std.testing.expectEqual([2]u64{ 1, 0 }, try enrollmentCounts(fixture.engine.?));
+    }
+    var replacement = try holdImport(fixture.engine.?, source, token, false);
+    defer replacement.deinit();
+    {
+        var superseded = try rpc(fixture.engine.?, .control, "state.snapshot", .{});
+        defer superseded.deinit();
+        try std.testing.expectError(error.EnrollmentSuperseded, wait.observe(selected, superseded.parsed.value));
+    }
+}
+
 const Reply = struct {
     bytes: []u8,
     parsed: std.json.Parsed(std.json.Value),
