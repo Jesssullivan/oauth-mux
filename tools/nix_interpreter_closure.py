@@ -12,6 +12,8 @@ import re
 
 STORE = r"/nix/store/[0-9a-z]{32}-[A-Za-z0-9._+-]+"
 MAX_RECORDS = 4096
+QUERY_GROUP = "codex_metadata_query"
+QUERY_PACKAGES = ("bazel", "bash", "coreutils", "python", "git", "bazel_jdk")
 CAPABILITIES = frozenset(("dbus_run_session", "dbus_daemon", "gnome_keyring_daemon",
                           "patchelf", "openssl_tool", "systemctl", "moc", "rcc", "uic", "secret_tool"))
 
@@ -110,6 +112,25 @@ def select(native, declared, registration, inventory, resolved_tools=None):
             if root not in records or alias not in files:
                 raise ValueError("native executable must be registered and inventoried")
             seeds[name] = [root, bash]
+    query_tools = None
+    # Bazel is the explicit feature declaration; Git-only host manifests stay valid.
+    if "bazel" in packages:
+        if not all(name in packages and isinstance(packages[name], dict)
+                   and set(packages[name]) == {"out"} for name in QUERY_PACKAGES):
+            raise ValueError("complete metadata query packages required")
+        roots = [packages[name]["out"] for name in QUERY_PACKAGES]
+        if any(not isinstance(root, str) or not re.fullmatch(STORE, root) for root in roots):
+            raise ValueError("metadata query package root syntax")
+        tools = {"bazel": roots[0] + "/bin/bazel", "bash": roots[1] + "/bin/bash",
+                 "coreutils": roots[2] + "/bin/env", "python": roots[3] + "/bin/python3",
+                 "git": roots[4] + "/bin/git"}
+        if any("closure/" + executable[len("/nix/store/"):] not in files
+               for executable in tools.values()):
+            raise ValueError("metadata query executable not inventoried")
+        seeds[QUERY_GROUP] = roots
+        query_tools = {"schemaVersion": 1, "kind": "omux-codex-metadata-query-tools-v1",
+                       "tools": tools, "path": [root + "/bin" for root in roots[1:5]],
+                       "java_home": roots[5]}
     groups = {}
     for name, selected_seeds in seeds.items():
         roots = reachable(records, selected_seeds)
@@ -118,7 +139,11 @@ def select(native, declared, registration, inventory, resolved_tools=None):
         selected = sorted(file for root in roots for file in indexed[root])
         serialized = "".join("\n".join(records[root]["record"]) + "\n" for root in roots)
         groups[name] = {"roots": roots, "files": selected, "registration": serialized}
-    return {"schemaVersion": 1, "groups": groups}
+    result = {"schemaVersion": 1, "groups": groups}
+    if query_tools is not None:
+        query_tools["roots"] = groups[QUERY_GROUP]["roots"]
+        result["query_tools"] = query_tools
+    return result
 
 
 def bounded_read(path, bound):

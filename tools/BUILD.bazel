@@ -10,6 +10,7 @@ load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
 load(":codex_fresh_native_receipt_scope_test.bzl", "codex_fresh_native_receipt_scope_test")
 load(":codex_fresh_runtime_repository_selector_test.bzl", "codex_fresh_runtime_repository_selector_test")
 load(":codex_fresh_native_package_visibility_test.bzl", "codex_fresh_native_package_visibility_test")
+load(":codex_metadata_query_tools_declaration_test.bzl", "codex_metadata_query_tools_declaration_test")
 
 _CODEX_SDK_SOURCES = [
     "codex_protocol_history_package_consumer.py",
@@ -1478,6 +1479,21 @@ python_test(
 )
 
 
+# Requires actual new query group; old cached native manifests cannot supply it.
+codex_metadata_query_tools_declaration_test(name = "codex_metadata_query_tools_declaration_test", tags = ["manual"])
+
+# Parse the actual generated descriptor. This detects serialization errors and
+# constant/manifest drift that an analysis membership check cannot observe.
+python_test(
+    name = "codex_metadata_query_tools_descriptor_test",
+    main = "codex_metadata_query_tools_descriptor_test.py",
+    srcs = ["codex_live_source.py", "codex_protocol_history_source.py",
+            "codex_protocol_history_metadata.py", "codex_protocol_history_metadata_producer.py",
+            "codex_retained_sdk_export.py"],
+    data = ["@omux_nix//:codex_metadata_query_tools"],
+    tags = ["manual", "no-remote", "no-cache"],
+)
+
 # Fixed metadata-only regeneration; instantiate its inputs only after an actual
 # independent protocol-history source receipt exists. No native build is run.
 python_test(
@@ -1486,7 +1502,7 @@ python_test(
     srcs = ["codex_live_source.py", "codex_protocol_history_source.py",
             "codex_protocol_history_metadata.py", "codex_retained_sdk_export.py"],
     data = ["@omux_codex_protocol_history_source_inputs//:inputs",
-            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:all_tools"],
+            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:codex_metadata_query_tools"],
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
 )
@@ -1508,7 +1524,7 @@ python_test(
             "codex_protocol_history_metadata.py", "codex_protocol_history_metadata_producer.py",
             "codex_retained_sdk_export.py"],
     data = ["@omux_codex_protocol_history_source_inputs//:inputs",
-            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:all_tools"],
+            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:codex_metadata_query_tools"],
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
 )

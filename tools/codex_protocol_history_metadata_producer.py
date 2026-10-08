@@ -60,6 +60,37 @@ def validate_document(document):
     return document
 
 
+def validate_query_tools(value):
+    require(type(value) is dict and set(value) == {"schemaVersion", "kind", "tools", "path", "java_home", "roots"}
+        and type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
+        and value["kind"] == "omux-codex-metadata-query-tools-v1"
+        and type(value["tools"]) is dict and set(value["tools"]) == {"bazel", "bash", "coreutils", "python", "git"}
+        and value["path"] == LOCKED_PATH.split(":") and value["java_home"] == sdk.JDK)
+    expected = dict(zip(("bash", "coreutils", "python", "git"),
+        (directory + "/" + binary for directory, binary in zip(value["path"], ("bash", "env", "python3", "git")))))
+    expected["bazel"] = BAZEL
+    require(value["tools"] == expected and type(value["roots"]) is list
+        and value["roots"] == sorted(set(value["roots"])) and 0 < len(value["roots"]) <= 4096
+        and all(type(root) is str and re.fullmatch(r"/nix/store/[0-9a-z]{32}-[A-Za-z0-9._+-]+", root)
+                for root in value["roots"])
+        and all("/".join(path.split("/")[:4]) in value["roots"]
+                for path in list(expected.values()) + [value["java_home"]]))
+    return True
+
+
+def declared_query_tools(runfiles, rows):
+    selected = [row[2] for row in rows if len(row) == 3 and row[0] in ("", "_main") and row[1] == "omux_nix"]
+    require(len(selected) == 1 and re.fullmatch(r"[A-Za-z0-9_+.-]{1,256}", selected[0]) is not None)
+    parent = (runfiles/selected[0]).resolve(strict=True)
+    require(parent.name == selected[0] and "external" in parent.parts)
+    fd = source.directory(parent)
+    try:
+        raw, _ = source.read(fd, "codex-metadata-query-tools.json", 1024*1024)
+    finally:
+        os.close(fd)
+    return validate_query_tools(json.loads(raw, object_pairs_hook=source.unique))
+
+
 def declared_selection():
     # Resolve only the exact apparent data repository through Bazel's mapping.
     require(len(sys.argv) == 1 and os.environ.get("TEST_SRCDIR")
@@ -70,6 +101,7 @@ def declared_selection():
     raw = mapping_path.read_bytes()
     require(len(raw) <= 1024*1024)
     rows = [line.split(",") for line in raw.decode().splitlines()]
+    require(declared_query_tools(runfiles, rows) is True)
     selected = [row[2] for row in rows if len(row) == 3 and row[0] in ("","_main")
         and row[1] == INPUT_NAME]
     require(len(selected) == 1 and re.fullmatch(r"[A-Za-z0-9_+.-]{1,256}",selected[0]) is not None

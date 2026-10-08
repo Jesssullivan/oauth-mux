@@ -66,6 +66,9 @@
           cacert = { out = "${pkgs.cacert}"; };
           openssh = { out = "${operatorSsh}"; };
           bazel_jdk = { out = "${pkgs.jdk_headless}"; };
+          # Complete query-tool roots; the purpose group follows registrations.
+          bazel = { out = "${pkgs.bazel_9}"; };
+          git = { out = "${pkgs.git}"; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
           swift = { out = "${pkgs.swift}"; };
           apple_sdk = { out = "${pkgs.apple-sdk_14}"; };

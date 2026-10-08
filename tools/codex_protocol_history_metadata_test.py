@@ -72,6 +72,39 @@ class ProtocolHistoryMetadataTests(unittest.TestCase):
             with self.assertRaises(ValueError):metadata.retained_overrides(bad,root)
 
 
+class QueryToolsBindingModels(unittest.TestCase):
+    def descriptor(self):
+        paths = producer.LOCKED_PATH.split(":")
+        tools = dict(zip(("bash", "coreutils", "python", "git"),
+            (directory+"/"+binary for directory,binary in zip(paths,("bash","env","python3","git")))))
+        tools["bazel"] = producer.BAZEL
+        return {"schemaVersion":1,"kind":"omux-codex-metadata-query-tools-v1","tools":tools,
+            "path":paths,"java_home":producer.sdk.JDK,
+            "roots":sorted({"/".join(path.split("/")[:4]) for path in list(tools.values())+[producer.sdk.JDK]})}
+
+    def test_actual_query_constants_match_closed_declared_tool_descriptor(self):
+        self.assertIs(producer.validate_query_tools(self.descriptor()), True)
+        for change in ({"schemaVersion":True}, {"kind":"old-full-closure"}, {"roots":[]},
+                {"path":self.descriptor()["path"]+["/usr/bin"]}, {"java_home":"/private/jdk"},
+                {"tools":{**self.descriptor()["tools"],"bazel":"/nix/store/"+"a"*32+"-other/bin/bazel"}},
+                {"extra":True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                producer.validate_query_tools({**self.descriptor(),**change})
+
+    def test_missing_query_manifest_or_repository_mapping_has_no_old_closure_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)/"external";root.mkdir()
+            repository = root/"omux_nix";repository.mkdir()
+            rows = [["_main","omux_nix","omux_nix"]]
+            with self.assertRaises(OSError): producer.declared_query_tools(root, rows)
+            with self.assertRaises(ValueError): producer.declared_query_tools(root, [])
+            manifest = repository/"codex-metadata-query-tools.json"
+            manifest.write_bytes(source.encoded(self.descriptor()));manifest.chmod(0o444)
+            self.assertIs(producer.declared_query_tools(root, rows), True)
+            manifest.unlink();manifest.symlink_to(repository/"missing")
+            with self.assertRaises(OSError): producer.declared_query_tools(root, rows)
+
+
 class MetadataProducerModels(unittest.TestCase):
     hub = ProtocolHistoryMetadataTests.hub
     changed = ProtocolHistoryMetadataTests.changed
