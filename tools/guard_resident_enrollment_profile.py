@@ -99,7 +99,7 @@ def repository_inputs(repository_cache,nixpkgs_source):
 def carrier_purpose(label,action,selected_archive=False):
     require(type(selected_archive) is bool and label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL)
         and ((label == EXISTING_ENROLLMENT_LABEL and action == "enroll-existing" and selected_archive)
-            or (not selected_archive and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","stop-idle-owned"))
+            or (not selected_archive and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"))
             or (label == LABEL and action in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing"))))))
 
 def canonical(value):
@@ -136,13 +136,13 @@ def fixed_paths(home,instance="default"):
 def manifest_schema(value,home):
     existing_enrollment = type(value) is dict and "existing_archive" in value
     updating = type(value) is dict and value.get("action") == "update-existing"
-    starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","stop-idle-owned")
+    starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","observe-inactive","stop-idle-owned")
     stopping = type(value) is dict and value.get("action") == "stop-idle-owned"
     require(type(value) is dict and set(value) == {"schema_version","ownership","action","instance",
         "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else {"start"} if starting else set()) | ({"existing_archive"} if existing_enrollment else set())
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
-        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing","observe-existing","stop-idle-owned")
+        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned")
         and value["instance"] == "default")
     expected = fixed_paths(home)
     for key in ("records","runtime_state"):
@@ -497,9 +497,16 @@ class OwnedUnitCustody:
             resolve_owned_unit_fragment(path,self.selected["service_path"])
 
     def close(self):
-        for descriptor in reversed(self.held):
-            os.close(descriptor)
-        self.held = []
+        held,self.held = self.held,[]
+        failure = None
+        for descriptor in reversed(held):
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                if failure is None:
+                    failure = error
+        if failure is not None:
+            raise failure
 
 def recovery_loaded_properties(values):
     require(values["LoadState"] == "loaded" and values["ActiveState"] == "inactive"
@@ -513,6 +520,7 @@ class Admission:
     def __init__(self,manifest,home,deadline_ns,*,label=LABEL):
         self.diagnostic_phase = "arguments"
         self.deadline_ns = deadline_ns
+        self.original_deadline_ns = deadline_ns
         require(label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL))
         self.label=label
         self.lifecycle_identity=None
@@ -578,6 +586,10 @@ class Admission:
             self.diagnostic_phase = "manifest-schema"
             self.selected = manifest_schema(json.loads(self.raw,object_pairs_hook=unique),home)
             carrier_purpose(label,self.selected["action"],"existing_archive" in self.selected)
+            if self.selected["action"] == "observe-inactive":
+                # Setup, IPC, readback and collection share the original budget.
+                self.deadline_ns = deadline_ns-30*10**9
+                require(time.monotonic_ns() < self.deadline_ns)
             self.control_child = runtime_child(self.selected["runtime_state"])
             self.control_source = runtime/self.control_child
             self.diagnostic_phase = "control-directory"
@@ -616,10 +628,11 @@ class Admission:
                 self.diagnostic_phase = "owned-update"
                 import guard_resident_owned_update as update
                 self.installation_update = update.InstallationUpdate(self.selected,home,deadline_ns)
-            if self.selected["action"] in ("start-existing","observe-existing","stop-idle-owned"):
+            if self.selected["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"):
                 self.diagnostic_phase = "owned-first-start"
                 import guard_resident_owned_update as update
-                self.owned_start = update.OwnedFirstStart(self.selected,home,deadline_ns)
+                witness = update.OwnedInactiveObservation if self.selected["action"] == "observe-inactive" else update.OwnedFirstStart
+                self.owned_start = witness(self.selected,home,self.deadline_ns)
             if "existing_archive" in self.selected:
                 self.diagnostic_phase = "existing-enrollment"
                 import guard_resident_owned_update as update
@@ -634,6 +647,10 @@ class Admission:
         # or caller value is emitted, and the witness/connection is unchanged.
         role = "session-manager-peer" if path == self.sources[self.root/"systemd/private"] else "session-bus-peer"
         self.diagnostic_phase = role+"-recheck" if recheck else role
+        if not hasattr(self,"selected"):
+            require(time.monotonic_ns()+2*10**9 < self.original_deadline_ns-30*10**9)
+        elif self.selected["action"] == "observe-inactive":
+            require(time.monotonic_ns()+2*10**9 < self.deadline_ns)
         return socket_witness(path)
 
     @diagnostic_method
@@ -727,11 +744,11 @@ class Admission:
             "DBUS_SESSION_BUS_ADDRESS":"unix:path=/run/user/"+str(os.getuid())+"/bus"}
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
-        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","stop-idle-owned")
+        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned")
         properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
         if recovering_action:
             properties += ",UnitFileState"
-        if self.selected["action"] in ("update-existing","start-existing","observe-existing","stop-idle-owned"):
+        if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned"):
             import guard_resident_owned_update as update
             properties = ",".join(sorted(update.IDLE_PROPERTIES))
         result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
@@ -746,12 +763,23 @@ class Admission:
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
             "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set())
-            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","stop-idle-owned") else set()))
-        if self.selected["action"] in ("start-existing","observe-existing","stop-idle-owned"):
+            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") else set()))
+        if self.selected["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"):
             self.diagnostic_phase = "owned-custody-recheck"
             require(self.owned_start is not None)
             self.owned_start.recheck()
             action=self.selected["action"]
+            if action == "observe-inactive":
+                self.owned_start.recheck()
+                self.diagnostic_phase = "inactive-unit"
+                update.inactive_installation(values,self.selected)
+                self.diagnostic_phase = "inactive-cgroup"
+                population = update.inactive_cgroup(self.deadline_ns)
+                require(not os.listdir(self.control_source))
+                self.recheck()
+                return {"active":False,"main_pid_zero":True,"owned_inactive_observation_verified":True,
+                    **population,"bounded":True,"service_mutation_requested":False,
+                    "provider_request_requested":False,"custody_verified":False}
             if starting and action == "start-existing":
                 self.owned_start.pristine()
                 self.diagnostic_phase = "inactive-unit"
@@ -870,16 +898,55 @@ class Admission:
 
     def environment(self):
         info = os.fstat(self.directory)
-        return {VARIABLE:DESTINATION+"/input.json",DEADLINE_VARIABLE:str(self.deadline_ns),
+        return {VARIABLE:DESTINATION+"/input.json",DEADLINE_VARIABLE:str(getattr(self,"original_deadline_ns",self.deadline_ns)),
             "OMUX_RESIDENT_NAMESPACE_ID":str(info.st_dev)+":"+str(info.st_ino),
             "DBUS_SESSION_BUS_ADDRESS":"unix:path="+DESTINATION+"/bus","XDG_RUNTIME_DIR":DESTINATION}
 
     def runtime_seconds(self):
-        remaining = (self.deadline_ns-time.monotonic_ns())//10**9-30
+        remaining = (getattr(self,"original_deadline_ns",self.deadline_ns)-time.monotonic_ns())//10**9-30
         require(0 < remaining <= 1200)
         return int(remaining)
 
     def close(self):
+        if getattr(self,"selected",{}).get("action") == "observe-inactive":
+            failure = None
+            def attempt(operation):
+                nonlocal failure
+                try:
+                    operation()
+                except BaseException as error:
+                    if failure is None:
+                        failure = error
+            witness,self.owned_start = self.owned_start,None
+            if witness is not None:
+                attempt(witness.close)
+            sockets,self.created_sockets = getattr(self,"created_sockets",[]),[]
+            for placeholder,path,identity in reversed(sockets):
+                attempt(placeholder.close)
+                def remove_leaf(path=path,identity=identity):
+                    if path.exists() and stable(path.stat(follow_symlinks=False)) == identity:
+                        path.unlink()
+                attempt(remove_leaf)
+            control,self.created_control = getattr(self,"created_control",None),None
+            if control is not None:
+                path,identity = control
+                def remove_control():
+                    if path.is_dir() and not path.is_symlink() and stable(path.stat(follow_symlinks=False)) == identity and not any(path.iterdir()):
+                        path.rmdir()
+                attempt(remove_control)
+            if getattr(self,"created_manager",False):
+                self.created_manager = False
+                def remove_manager():
+                    path = self.root/"systemd"
+                    if path.is_dir() and not path.is_symlink() and stable(path.stat(follow_symlinks=False)) == self.created_manager_identity and not any(path.iterdir()):
+                        path.rmdir()
+                attempt(remove_manager)
+            held,self.held = getattr(self,"held",[]),[]
+            for descriptor in reversed(held):
+                attempt(lambda descriptor=descriptor:os.close(descriptor))
+            if failure is not None:
+                raise failure
+            return
         if getattr(self,"existing_enrollment",None) is not None:
             self.existing_enrollment.close()
             self.existing_enrollment = None

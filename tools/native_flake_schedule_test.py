@@ -777,21 +777,49 @@ class ScheduleModels(unittest.TestCase):
             self.assertIsNone(schedule.GRAPH_PATH_SITE)
             self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
 
-    def test_supported_graph_name_does_not_bypass_strict_generated_registration(self):
+    def test_legal_graph_root_reference_and_deriver_roundtrip_preserves_full_proof(self):
         with tempfile.TemporaryDirectory() as directory:
             script = "/nix/store/" + "c"*32 + "-builder?=.sh"
-            # The real graph accepts this legal name; the unchanged shared seed
-            # registration parser still closes publication, never yielding proof.
-            with patch(__name__+".SCRIPT", script):
+            drv = "/nix/store/" + "d"*32 + "-omux?=-bazel-closure.drv"
+            child = "/nix/store/" + "b"*32 + "-dependency?=.drv"
+            with patch(__name__+".SCRIPT", script), patch(__name__+".DRV", drv), \
+                 patch(__name__+".CHILD", child):
                 model = Fixture(directory)
-                with patch.object(schedule.proof, "readback_records",
+                graph = json.loads(model.raw_graph)
+                graph["derivations"][drv.rsplit("/", 1)[1]]["name"] = "omux?=-bazel-closure"
+                graph["derivations"][child.rsplit("/", 1)[1]]["name"] = "dependency?="
+                model.raw_graph = encoded(graph)
+                original = model.registration
+                def registration(private):
+                    lines = original(private).decode("ascii").splitlines()
+                    offset = 0
+                    while offset < len(lines):
+                        if lines[offset] == script:
+                            lines[offset+3] = drv
+                        offset += 5+int(lines[offset+4])
+                    return ("\n".join(lines)+"\n").encode()
+                with patch.object(model, "registration", side_effect=registration), \
+                     patch.object(schedule.proof, "readback_records",
                                   wraps=schedule.proof.readback_records) as parsed:
-                    with self.assertRaises(ValueError):
-                        model.operate()
+                    result, payloads = model.operate()
                     self.assertEqual(parsed.call_count, 2)
-            self.assertTrue(any("derivation" in command for command, _, _ in model.calls))
-            self.assertEqual(schedule.PHASE, "recursive-document")
-            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+                    self.assertEqual(parsed.call_args_list[0].kwargs, {})
+                    self.assertEqual(parsed.call_args_list[1].kwargs, {"current_flake_paths": True})
+            self.assertEqual(set(result["derivations"]), {drv, child})
+            self.assertTrue({drv, child, script} <= set(result["generated"]))
+            self.assertTrue(payloads)
+            self.assertTrue(result["runtime_seed_rechecked"] and result["source_rechecked"]
+                            and result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"] or result["realized"]
+                             or result["native_runtime_qualified"] or result["sdk_qualified"])
+            roots = sorted({*model.runtime.value["roots"], *model.extra})
+            records = schedule.proof.readback_records(result["registration"].encode("ascii"), roots,
+                                                     current_flake_paths=True)
+            self.assertEqual(records[script]["record"][3], drv)
+            self.assertEqual(set(records[drv]["references"]), {child, script})
+            # The new generated grammar does not change old declared seed admission.
+            with self.assertRaises(ValueError):
+                schedule.proof.readback_records(result["registration"].encode("ascii"), roots)
             self.assertIsNone(schedule.GRAPH_PATH_SITE)
             self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
             self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
@@ -825,6 +853,88 @@ class ScheduleModels(unittest.TestCase):
                     self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "node")
                     self.assertIsNone(schedule.GRAPH_PATH_SITE)
                     self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+
+
+    def test_current_flake_registration_rejects_invalid_paths_in_each_identity_role(self):
+        root = "/nix/store/" + "a"*32 + "-root?="
+        child = "/nix/store/" + "b"*32 + "-child?=.drv"
+        def wire(selected=root, reference=child, deriver=child):
+            rows = [[selected, "f"*64, "8", deriver, "1", reference],
+                    [child, "d"*64, "9", "", "0"]]
+            return ("\n".join(value for row in rows for value in row)+"\n").encode()
+        accepted = schedule.proof.readback_records(wire(), [root, child], current_flake_paths=True)
+        self.assertEqual(accepted[root]["references"], [child])
+        prefix = "/nix/store/" + "a"*32 + "-"
+        invalid = [prefix+"x"*212, prefix+".", prefix+"..", prefix+".-x", prefix+"..-x",
+                   prefix+"x:x", prefix+"x/x", "/other/store/"+"a"*32+"-x",
+                   "/nix/store/"+"a"*32+"_x"]
+        invalid.extend("/nix/store/"+character*32+"-x" for character in ("e", "o", "u", "t", "A"))
+        for value in invalid:
+            for role in ("declared", "root", "reference", "deriver"):
+                with self.subTest(role=role):
+                    raw = wire(selected=value if role == "root" else root,
+                               reference=value if role == "reference" else child,
+                               deriver=value if role == "deriver" else child)
+                    declared = [value, child] if role == "declared" else [root, child]
+                    with self.assertRaises(ValueError):
+                        schedule.proof.readback_records(raw, declared, current_flake_paths=True)
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(wire(deriver=root), [root, child], current_flake_paths=True)
+
+    def test_current_flake_registration_keeps_hash_size_and_exact_reference_fences(self):
+        root = "/nix/store/"+"a"*32+"-root?="
+        child = "/nix/store/"+"b"*32+"-child?="
+        good = [root, "f"*64, "8", "", "1", child, child, "d"*64, "9", "", "0"]
+        for slot, changed in ((1, "z"*64), (2, "0"), (4, "4097"), (5, root)):
+            rows = list(good)
+            rows[slot] = changed
+            raw = ("\n".join(rows)+"\n").encode()
+            if slot == 5:
+                # A self-reference is valid; the declared child still exists.
+                parsed = schedule.proof.readback_records(raw, [root, child], current_flake_paths=True)
+                self.assertEqual(parsed[root]["references"], [root])
+            else:
+                with self.assertRaises(ValueError):
+                    schedule.proof.readback_records(raw, [root, child], current_flake_paths=True)
+        outside = "/nix/store/"+"c"*32+"-outside?="
+        missing = list(good)
+        missing[5] = outside
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(("\n".join(missing)+"\n").encode(),
+                                           [root, child], current_flake_paths=True)
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(("\n".join(good)+"\n").encode(),
+                                           [root, root], current_flake_paths=True)
+        for selected in (None, 0, 1, "true"):
+            with self.assertRaises(ValueError):
+                schedule.proof.readback_records(("\n".join(good)+"\n").encode(),
+                                               [root, child], current_flake_paths=selected)
+
+    def test_generated_punctuated_payload_cannot_bypass_registered_nar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = "/nix/store/" + "c"*32 + "-builder?=.sh"
+            with patch(__name__+".SCRIPT", script):
+                model = Fixture(directory)
+                dumps = 0
+                def runner(command, environment, root, deadline, **kwargs):
+                    nonlocal dumps
+                    raw = model.runner(command, environment, root, deadline, **kwargs)
+                    if command[-1] == "--dump-db":
+                        dumps += 1
+                        if dumps == 2:
+                            private = Path(command[command.index("--store")+1].removeprefix("local?root="))
+                            physical = private/"nix/store"/script.rsplit("/", 1)[1]
+                            os.chmod(physical, 0o600)
+                            payload = physical.read_bytes()
+                            physical.write_bytes(b"x"*len(payload))
+                            os.chmod(physical, 0o444)
+                    return raw
+                with self.assertRaises(ValueError):
+                    model.operate(runner)
+                self.assertEqual(dumps, 2)
+            self.assertEqual(schedule.PHASE, "generated-byte-proof")
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
 
 
 if __name__ == "__main__":

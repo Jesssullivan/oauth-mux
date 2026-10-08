@@ -779,5 +779,167 @@ class OwnedRecoveryModels(unittest.TestCase):
                     os.close(descriptor)
                 admission.owned_unit.close()
 
+class InactiveObservationModels(unittest.TestCase):
+    def selected(self):
+        value=manifest()
+        value.update(action="observe-inactive",native_context=None,
+            permissions={"connect_source":False,"activate_service":False,"restart_daemon":False},
+            start={"archive_path":"/synthetic/public/archive"})
+        return value
+
+    def test_exact_existing_lifecycle_only_no_caller_authority_or_enrollment(self):
+        import guard_resident_owned_update as owned
+        selected=self.selected()
+        with patch.object(owned,"start_pins",return_value=selected["start"]):
+            self.assertIs(resident.manifest_schema(selected,HOME),selected)
+            resident.carrier_purpose(resident.LIFECYCLE_LABEL,"observe-inactive")
+            for label in (resident.LABEL,resident.EXISTING_ENROLLMENT_LABEL,"//delivery:arbitrary"):
+                with self.assertRaises(ValueError):
+                    resident.carrier_purpose(label,"observe-inactive")
+            for key in selected["permissions"]:
+                changed=copy.deepcopy(selected)
+                changed["permissions"][key]=True
+                with self.assertRaises(ValueError):
+                    resident.manifest_schema(changed,HOME)
+            changed=copy.deepcopy(selected)
+            changed["native_context"]=manifest()["native_context"]
+            with self.assertRaises(ValueError):
+                resident.manifest_schema(changed,HOME)
+
+    def test_normal_encrypted_state_is_metadata_only_unlocked_and_replacement_refuses(self):
+        import guard_resident_owned_update as owned
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+            state=Path(temporary)
+            state.chmod(0o700)
+            for name,raw in (("daemon.lock",b""),("state.sqlite",b"synthetic opaque ciphertext"),
+                             ("state.sqlite.authority",b"synthetic opaque authority")):
+                (state/name).write_bytes(raw)
+                (state/name).chmod(0o600)
+            selected={**self.selected(),"runtime_state":str(state)}
+            software=Mock(files=[])
+            actual_open=os.open
+            def metadata_only(path,flags,*args,**kwargs):
+                if str(path) in ("daemon.lock","state.sqlite","state.sqlite.authority"):
+                    self.assertTrue(flags & os.O_PATH)
+                return actual_open(path,flags,*args,**kwargs)
+            with patch.object(owned,"QualifiedExistingEnrollment",return_value=software), \
+                    patch.object(owned.os,"open",side_effect=metadata_only), \
+                    patch.object(owned.fcntl,"flock",side_effect=AssertionError("no lock acquisition")):
+                witness=owned.OwnedInactiveObservation(selected,HOME,time.monotonic_ns()+60*10**9)
+                try:
+                    witness.recheck()
+                    original=state/"state.sqlite"
+                    original.rename(state/"retired")
+                    original.write_bytes(b"synthetic opaque ciphertext")
+                    original.chmod(0o600)
+                    with self.assertRaises(ValueError):
+                        witness.recheck()
+                finally:
+                    witness.close()
+                software.close.assert_called_once_with()
+
+    def test_inactive_guard_actual_properties_local_environment_and_original_work_deadline(self):
+        import guard_resident_owned_update as owned
+        from unittest.mock import Mock
+        admission=resident.Admission.__new__(resident.Admission)
+        admission.selected=self.selected()
+        admission.deadline_ns=40*10**9
+        admission.owned_start=Mock()
+        admission.control_source=Path("/synthetic/control")
+        admission.recheck=Mock(return_value={})
+        executable=str(Path(admission.selected["prefix"])/"bin/omuxd")
+        values={"LoadState":"loaded","ActiveState":"inactive","SubState":"dead","MainPID":"0",
+            "FragmentPath":admission.selected["service_path"],"ControlGroup":"","UnitFileState":"enabled",
+            "Slice":"app.slice","ExecStart":"{ path="+executable+" ; argv[]="+executable+" --state-dir "+
+                admission.selected["runtime_state"]+" ; ignore_errors=no ; pid=0 ; status=0/0 }",
+            "DropInPaths":"","NeedDaemonReload":"no","MemoryMax":"268435456","MemorySwapMax":"0",
+            "TasksMax":"32","CPUQuotaPerSecUSec":"100ms"}
+        def response(changed):
+            return SimpleNamespace(returncode=0,stderr=b"",
+                stdout="".join(k+"="+v+"\n" for k,v in changed.items()).encode())
+        with patch.object(resident.time,"monotonic_ns",return_value=30*10**9), \
+                patch.object(resident.subprocess,"run",return_value=response(values)) as query, \
+                patch.object(resident,"resolve_owned_unit_fragment",return_value=Path(values["FragmentPath"])), \
+                patch.object(owned,"inactive_cgroup",return_value={"unit_cgroup_empty":True}) as population, \
+                patch.object(resident.os,"listdir",return_value=[]):
+            result=admission.service_observation("/declared/systemctl",starting=True)
+            self.assertTrue(result["main_pid_zero"] and result["unit_cgroup_empty"])
+            self.assertFalse(result["active"] or result["service_mutation_requested"] or result["custody_verified"])
+            self.assertEqual(query.call_args.kwargs["timeout"],10)
+            self.assertEqual(set(query.call_args.kwargs["env"]),
+                {"HOME","LC_ALL","XDG_RUNTIME_DIR","DBUS_SESSION_BUS_ADDRESS"})
+            population.assert_called_once_with(admission.deadline_ns)
+            admission.recheck.assert_called_once_with()
+            for key,value in (("ActiveState","active"),("MainPID","2"),("ControlGroup","/foreign"),
+                              ("TasksMax","33"),("CPUQuotaPerSecUSec","101ms")):
+                with self.subTest(key=key),patch.object(resident.subprocess,"run",
+                        return_value=response({**values,key:value})),self.assertRaises(ValueError):
+                    admission.service_observation("/declared/systemctl")
+        with patch.object(resident.time,"monotonic_ns",return_value=admission.deadline_ns), \
+                patch.object(resident.subprocess,"run") as query,self.assertRaises(ValueError):
+            admission.service_observation("/declared/systemctl")
+        query.assert_not_called()
+
+    def test_inactive_witness_close_failure_still_releases_software_and_namespace(self):
+        import guard_resident_owned_update as owned
+        from unittest.mock import Mock
+        witness=owned.OwnedInactiveObservation.__new__(owned.OwnedInactiveObservation)
+        runtime,software=Mock(),Mock()
+        runtime.close.side_effect=OSError("synthetic close fault")
+        witness.runtime,witness.software=runtime,software
+        with self.assertRaises(OSError):
+            witness.close()
+        software.close.assert_called_once_with()
+        self.assertIsNone(witness.runtime)
+        self.assertIsNone(witness.software)
+        admission=resident.Admission.__new__(resident.Admission)
+        admission.selected=self.selected()
+        admission.owned_start=Mock()
+        admission.owned_start.close.side_effect=OSError("synthetic witness close fault")
+        descriptor=os.open("/dev/null",os.O_RDONLY|os.O_CLOEXEC)
+        admission.held=[descriptor]
+        with self.assertRaises(OSError):
+            admission.close()
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+        self.assertEqual(admission.held,[])
+
+    def test_initial_peer_calls_cannot_spend_the_original_cleanup_reserve(self):
+        admission=resident.Admission.__new__(resident.Admission)
+        admission.root=Path("/synthetic/inputs")
+        bus=Path("/synthetic/bus")
+        admission.sources={admission.root/"systemd/private":Path("/synthetic/manager"),
+                           admission.root/"bus":bus}
+        admission.original_deadline_ns=40*10**9
+        admission.deadline_ns=40*10**9
+        with patch.object(resident.time,"monotonic_ns",return_value=9*10**9), \
+                patch.object(resident,"socket_witness") as peer,self.assertRaises(ValueError):
+            admission.session_peer_witness(bus)
+        peer.assert_not_called()
+        with patch.object(resident.time,"monotonic_ns",return_value=7*10**9), \
+                patch.object(resident,"socket_witness",return_value="synthetic peer") as peer:
+            self.assertEqual(admission.session_peer_witness(bus),"synthetic peer")
+        peer.assert_called_once_with(bus)
+
+    def test_post_cleanup_proof_requires_zero_cleaned_exact_epoch_and_graph(self):
+        import guard_resident_setup_dispatch as dispatch
+        from unittest.mock import Mock
+        value=dispatch.Admission.__new__(dispatch.Admission)
+        value.run=Path("/synthetic/epoch")
+        value.systemctl=Path("/declared/systemctl")
+        value.inner=Mock(installation_update=None,selected=self.selected())
+        value.inner.service_observation.return_value={"active":False,"main_pid_zero":True,
+            "unit_cgroup_empty":True,"service_mutation_requested":False}
+        for status,cleaned,epoch,graph in ((1,True,"epoch","a"*64),(False,True,"epoch","a"*64),
+                (0,False,"epoch","a"*64),(0,True,"other","a"*64),(0,True,"epoch","x"*64)):
+            with self.subTest(status=status,cleaned=cleaned,epoch=epoch),self.assertRaises(ValueError):
+                value.completed(status,cleaned,epoch,None,graph)
+        value.inner.service_observation.assert_not_called()
+        result=value.completed(0,True,"epoch",None,"a"*64)
+        self.assertTrue(result["verified_after_cleanup"])
+        self.assertEqual(result["source_graph_sha256"],"a"*64)
+        self.assertEqual(result["action_epoch"],"epoch")
+
 if __name__ == "__main__":
     unittest.main()

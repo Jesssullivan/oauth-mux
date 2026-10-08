@@ -368,9 +368,10 @@ def builder_output(private, raw):
 
 
 
-def readback_records(raw, roots):
-    """Pinned opDumpDB emits unprefixed base16; declared seed parsing stays strict."""
+def readback_records(raw, roots, *, current_flake_paths=False):
+    """Pinned opDumpDB emits bare base16; default declared seed policy stays strict."""
     global PHASE
+    seed.require(type(current_flake_paths) is bool)
     PHASE = "registration-readback-ascii"
     seed.require(isinstance(raw, bytes) and len(raw) <= MAX_OUTPUT)
     lines = raw.decode("ascii").splitlines()
@@ -385,7 +386,8 @@ def readback_records(raw, roots):
         lines[offset+1] = "sha256:"+lines[offset+1]
         offset += 5+count
     PHASE = "registration-readback-parse"
-    return seed.registrations("\n".join(lines)+"\n", roots)
+    return seed.registrations("\n".join(lines)+"\n", roots,
+                              current_flake_paths=current_flake_paths)
 
 
 def compare_readback(expected, actual):

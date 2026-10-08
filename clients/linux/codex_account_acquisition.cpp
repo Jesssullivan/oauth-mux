@@ -287,14 +287,41 @@ void deviceReport(const QJsonObject &v) {
 
 class CodexAcquisitionRuntime {
 public:
-    FD root, recordRoot, leaf, lock, backend, loader, libraries, ca, profile, enrollment, sourceParent, intent, active;
-    struct stat intentIdentity{}, activeIdentity{};
+    FD root, recordRoot, leaf, lock, backend, loader, libraries, ca, profile, enrollment, sourceParent, sourceLease, intent, active;
+    struct stat intentIdentity{}, activeIdentity{}, sourceLeaseIdentity{};
     QString dataHome,stateHome,parentPath,recordPath,leafPath,profilePath,sourceParentPath,componentSha,error;
     std::atomic_bool cancelled{false};
     QElapsedTimer clock;
     std::map<QString,FD> files;
     QMap<QString,struct stat> identities, directoryIdentities;
     struct stat rootIdentity{},recordIdentity{},leafIdentity{},lockIdentity{};
+    bool takeSourceLease() {
+        require(sourceLease.value<0 && sourceParent.value>=0);
+        recheckDirectory(sourceParentPath,sourceParent.value);
+        int fd=::openat(sourceParent.value,".lock",O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+        const bool created=fd>=0;
+        if (fd<0) {
+            require(errno==EEXIST);
+            fd=::openat(sourceParent.value,".lock",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+        }
+        sourceLease=FD(fd); require(fd>=0);
+        if (created) require(::fsync(fd)==0 && ::fsync(sourceParent.value)==0);
+        sourceLeaseIdentity=metadata(fd);
+        require(S_ISREG(sourceLeaseIdentity.st_mode) && sourceLeaseIdentity.st_uid==::getuid()
+            && sourceLeaseIdentity.st_nlink==1 && sourceLeaseIdentity.st_size==0
+            && (sourceLeaseIdentity.st_mode&0777)==0600);
+        if (::flock(fd,LOCK_EX|LOCK_NB)!=0) {
+            require(errno==EWOULDBLOCK || errno==EAGAIN); sourceLease=FD(); return false;
+        }
+        recheckSourceLease(); return true;
+    }
+    void recheckSourceLease() {
+        require(sourceLease.value>=0);
+        recheckDirectory(sourceParentPath,sourceParent.value);
+        FD named(::openat(sourceParent.value,".lock",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
+        require(named.value>=0 && same(sourceLeaseIdentity,metadata(named.value))
+            && same(sourceLeaseIdentity,metadata(sourceLease.value)));
+    }
     void tick() { require(!cancelled.load() && clock.isValid() && clock.elapsed()<120000); }
     FD member(const QString &relative, bool dir=false) {
         require(!relative.startsWith('/') && !relative.contains('\0'));
@@ -657,6 +684,9 @@ void CodexAccountAcquisition::start(bool custodyAvailable) {
     try {
         runtime->sourceParentPath=homeRoot("XDG_STATE_HOME","/.local/state")+"/omux-native-sources/codex";
         runtime->sourceParent=ensure(runtime->sourceParentPath);
+        if (!runtime->takeSourceLease()) {
+            finish("Another account sign-in window owns the private enrollment workflow. Finish or cancel that observation before starting another account."); return;
+        }
         // Recovering an already admitted operation requires no installed native
         // component, no credential reads and no provider acquisition.
         if (recoverIntent()) return;
@@ -681,6 +711,7 @@ void CodexAccountAcquisition::launch() {
     const auto parentPath = homeRoot("XDG_STATE_HOME","/.local/state") + "/omux-native-sources/codex";
     auto parent = ensure(parentPath);
     runtime_->sourceParentPath=parentPath; runtime_->sourceParent=FD(::dup(parent.value));
+    runtime_->recheckSourceLease();
     if (recoverIntent()) return;
     const auto name = "native-login-" + QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-').toLower();
     require(::mkdirat(parent.value,name.toUtf8().constData(),0700) == 0);
@@ -699,7 +730,7 @@ void CodexAccountAcquisition::launch() {
     env.insert("SSL_CERT_FILE",QString("/proc/self/fd/%1").arg(runtime_->ca.value));
     env.insert("CURL_CA_BUNDLE",env.value("SSL_CERT_FILE"));
     require(::fsync(runtime_->profile.value)==0 && ::fsync(parent.value)==0);
-    runtime_->recheck();
+    runtime_->recheck(); runtime_->recheckSourceLease(); recheckDirectory(profile_,runtime_->profile.value);
     native_.setProcessEnvironment(env); native_.setWorkingDirectory(profile_);
     native_.setStandardErrorFile(QProcess::nullDevice());
     const int loader = runtime_->loader.value, backend = runtime_->backend.value,
@@ -817,7 +848,7 @@ void CodexAccountAcquisition::nativeStopped(int code,QProcess::ExitStatus result
 }
 void CodexAccountAcquisition::checkpoint(const QString &phase) {
     require(runtime_ && within());
-    recheckDirectory(runtime_->sourceParentPath,runtime_->sourceParent.value);
+    runtime_->recheckSourceLease();
     if (runtime_->active.value>=0) {
         FD active(::openat(runtime_->sourceParent.value,"active.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
         require(active.value>=0 && same(metadata(active.value),runtime_->activeIdentity)
@@ -869,7 +900,7 @@ void CodexAccountAcquisition::checkpoint(const QString &phase) {
     require(runtime_->intent.value>=0); runtime_->intentIdentity=metadata(runtime_->intent.value);
     entries(runtime_->enrollment.value,{"input.json"});
     if (runtime_->active.value<0) {
-        recheckDirectory(runtime_->sourceParentPath,runtime_->sourceParent.value);
+        runtime_->recheckSourceLease();
         FD active(::openat(runtime_->sourceParent.value,"active.json",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600));
         require(active.value>=0);
         const auto pointer=QJsonDocument(QJsonObject{{"schema_version",1},{"scope","omux-codex-active-acquisition-v1"},
@@ -879,7 +910,7 @@ void CodexAccountAcquisition::checkpoint(const QString &phase) {
         runtime_->active=FD(::openat(runtime_->sourceParent.value,"active.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
         require(runtime_->active.value>=0); runtime_->activeIdentity=metadata(runtime_->active.value);
     }
-    recheckDirectory(runtime_->sourceParentPath,runtime_->sourceParent.value);
+    runtime_->recheckSourceLease();
     recheckDirectory(profile_,runtime_->profile.value);
     recheckDirectory(profile_+"/enrollment-inputs",runtime_->enrollment.value);
     FD active(::openat(runtime_->sourceParent.value,"active.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
@@ -887,6 +918,7 @@ void CodexAccountAcquisition::checkpoint(const QString &phase) {
         && same(metadata(runtime_->active.value),runtime_->activeIdentity) && within());
 }
 bool CodexAccountAcquisition::recoverIntent() {
+    runtime_->recheckSourceLease();
     struct stat exists{};
     if (::fstatat(runtime_->sourceParent.value,"active.json",&exists,AT_SYMLINK_NOFOLLOW)<0) {
         require(errno==ENOENT); return false;
@@ -928,7 +960,7 @@ bool CodexAccountAcquisition::recoverIntent() {
     require(phase=="source-connect-pending" || phase=="enrollment-pending" || phase=="identity-verification-admitted" || phase=="identity-ready");
     recovering_=true;
     runtime_->activeIdentity=metadata(runtime_->active.value); runtime_->intentIdentity=metadata(runtime_->intent.value);
-    recheckDirectory(runtime_->sourceParentPath,runtime_->sourceParent.value);
+    runtime_->recheckSourceLease();
     recheckDirectory(profile_,runtime_->profile.value); recheckDirectory(profile_+"/enrollment-inputs",runtime_->enrollment.value);
     if (phase=="source-connect-pending") {
         require(r.value("source_id").isNull() && r.value("job_id").isNull() && r.value("job_generation").isNull()
@@ -949,7 +981,7 @@ bool CodexAccountAcquisition::recoverIntent() {
 }
 void CodexAccountAcquisition::clearIntent() {
     if (!runtime_ || runtime_->active.value<0) return;
-    recheckDirectory(runtime_->sourceParentPath,runtime_->sourceParent.value);
+    runtime_->recheckSourceLease();
     FD named(::openat(runtime_->sourceParent.value,"active.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
     require(named.value>=0 && same(metadata(named.value),runtime_->activeIdentity)
         && same(metadata(runtime_->active.value),runtime_->activeIdentity));

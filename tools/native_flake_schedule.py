@@ -13,6 +13,7 @@ import time
 
 import nar_descriptor as nar
 import native_flake_sources as sources
+import nix_interpreter_closure as closure
 import nix_private_store_seed as seed
 import nix_private_store_qualification as proof
 from verify_declared_nars import metadata_alias_roots, open_declared
@@ -62,28 +63,11 @@ def path_refused(site, reason):
 
 
 def store_path(value, *, drv=False, site=None):
-    # Pinned Nix 2.34.6 path.cc checkName/StorePath and path.hh HashLen/MaxPathLen.
-    # This graph/target wire grammar does not alter the declared seed parser.
-    if not isinstance(value, str):
-        path_refused(site, "type")
-    if not value.startswith("/nix/store/"):
-        path_refused(site, "layout")
-    basename = value[len("/nix/store/"):]
-    if len(basename) < 34 or basename[32] != "-" or "/" in basename:
-        path_refused(site, "layout")
-    if re.fullmatch("[0123456789abcdfghijklmnpqrsvwxyz]{32}", basename[:32]) is None:
-        path_refused(site, "hash")
-    name = basename[33:]
-    if not 1 <= len(name) <= 211:
-        path_refused(site, "name-bound")
-    if name in {".", ".."} or name.startswith((".-", "..-")):
-        path_refused(site, "name-prefix")
-    if re.fullmatch("[A-Za-z0-9+._?=-]+", name) is None:
-        path_refused(site, "name-characters")
-    if drv and not name.endswith(".drv"):
-        path_refused(site, "derivation-suffix")
+    # One pinned grammar shared with purpose-bound generated registration parsing.
+    reason = closure.current_flake_path_refusal(value, drv=drv)
+    if reason is not None:
+        path_refused(site, reason)
     return value
-
 
 def base_path(value, *, drv=False, site=None):
     if not isinstance(value, str):
@@ -461,7 +445,7 @@ def operate(value, seed_raw, descriptor_raw, descriptor_path, project, wrapper, 
                 require(offset+5 <= len(lines) and re.fullmatch("[0-9]{1,4}", lines[offset+4]) is not None)
                 roots.append(lines[offset])
                 offset += 5+int(lines[offset+4])
-            records = proof.readback_records(dumped, roots)
+            records = proof.readback_records(dumped, roots, current_flake_paths=True)
             require(set(value["roots"]) <= set(records))
             same_records({logical: records[logical] for logical in value["roots"]}, initial)
             phase("generated-byte-proof")

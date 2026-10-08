@@ -72,11 +72,15 @@ struct CodexAcquisitionModels {
         runtime->componentSha=QString(64,'f'); runtime->sourceParentPath=parent;
         runtime->sourceParent=FD(::dup(held.value)); runtime->profile=directory(profile); runtime->profilePath=profile;
         first.runtime_=runtime;
+        if (!runtime->takeSourceLease()) return false;
         first.checkpoint("source-connect-pending");
         const auto raw=read(runtime->intent.value,16384); const auto record=json(raw);
         if (record.value("connect_params").toObject().value("expected_revision")!=12
             || record.value("connect_params").toObject().value("operation_id")!=first.connectID_
             || record.value("enrollment_params").toObject().value("expected_revision").isDouble()) return false;
+        // Closing the original UI releases only its workflow lease; retained intent
+        // bytes stay private and unchanged for the next UI.
+        runtime->sourceLease=FD();
         // A second UI instance recovers the same intent, without a native child
         // or any mutation dispatch. Its client only tracks the original identity.
         OmuxClient recoveredClient(root+"/unused-control.sock");
@@ -85,6 +89,7 @@ struct CodexAcquisitionModels {
         auto recovered=std::make_shared<CodexAcquisitionRuntime>();
         recovered->sourceParentPath=parent; recovered->sourceParent=directory(parent);
         second.runtime_=recovered;
+        if (!recovered->takeSourceLease()) return false;
         if (!second.recoverIntent() || second.connectID_!=first.connectID_ || second.enrollmentID_!=first.enrollmentID_
             || second.connectRevision_!=12 || !recoveredClient.hasUncertainOperations()
             || second.native_.state()!=QProcess::NotRunning) return false;
@@ -92,6 +97,8 @@ struct CodexAcquisitionModels {
         second.operationEvent({{"operation_kind","mutation"},{"operation_id",first.connectID_},{"operation_status","not_found"}});
         FD pointer(::openat(held.value,"active.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC)); if (pointer.value<0) return false;
         if (read(runtime->intent.value,16384)!=raw) return false;
+        recovered->sourceLease=FD();
+        if (!runtime->takeSourceLease()) return false;
         first.elapsed_.invalidate();
         bool refused=false; try { first.checkpoint("source-connect-pending"); } catch (...) { refused=true; }
         if (!refused || read(runtime->intent.value,16384)!=raw) return false;
@@ -109,6 +116,26 @@ struct CodexAcquisitionModels {
         if (replacement.value<0 || ::write(replacement.value,activeRaw.constData(),size_t(activeRaw.size()))!=activeRaw.size()) return false;
         refused=false; try { first.checkpoint("source-connect-pending"); } catch (...) { refused=true; }
         return refused && read(runtime->intent.value,16384)==raw;
+    }
+    static bool workflowLease(const QString &root) {
+        const auto parent=root+"/workflow-sources";
+        CodexAcquisitionRuntime first,second;
+        first.sourceParentPath=second.sourceParentPath=parent;
+        first.sourceParent=ensure(parent); second.sourceParent=directory(parent);
+        if (!first.takeSourceLease() || second.takeSourceLease()) return false;
+        // A second control window refuses before creating a profile or an
+        // intent. The component's shared runtime lease is independent.
+        entries(first.sourceParent.value,{".lock"});
+        first.recheckSourceLease();
+        first.sourceLease=FD();
+        if (!second.takeSourceLease()) return false;
+        second.recheckSourceLease(); second.recheckSourceLease();
+        // Replacing a named lock cannot relabel ownership of the held lease.
+        if (::renameat(second.sourceParent.value,".lock",second.sourceParent.value,"old-lock")!=0) return false;
+        FD replacement(::openat(second.sourceParent.value,".lock",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600));
+        if (replacement.value<0) return false;
+        bool refused=false; try { second.recheckSourceLease(); } catch (...) { refused=true; }
+        return refused && second.profile.value<0 && second.intent.value<0;
     }
     static bool freshIntent(const QString &root) {
         OmuxClient client(root+"/new-intent-control.sock"); CodexAccountAcquisition next(client,nullptr);
@@ -135,13 +162,17 @@ struct CodexAcquisitionModels {
         auto runtime=std::make_shared<CodexAcquisitionRuntime>();
         runtime->componentSha=QString(64,'f'); runtime->sourceParentPath=parent;
         runtime->sourceParent=FD(::dup(held.value)); runtime->profile=directory(profile); runtime->profilePath=profile;
-        original.runtime_=runtime; original.checkpoint("source-connect-pending");
+        original.runtime_=runtime;
+        if (!runtime->takeSourceLease()) return false;
+        original.checkpoint("source-connect-pending");
         const auto intent=read(runtime->intent.value,16384);
+        runtime->sourceLease=FD();
         OmuxClient recoveredClient(root+"/recovery-control.sock");
         CodexAccountAcquisition recovered(recoveredClient,nullptr);
         recovered.phase_=CodexAccountAcquisition::Phase::Preparing; recovered.elapsed_.start();
         auto selected=std::make_shared<CodexAcquisitionRuntime>();
         selected->sourceParentPath=parent; selected->sourceParent=directory(parent); recovered.runtime_=selected;
+        if (!selected->takeSourceLease()) return false;
         QString source,message;
         recovered.onSourceConnected=[&](const QString &v) { source=v; };
         recovered.onStatus=[&](const QString &v) { message=v; };
@@ -341,5 +372,6 @@ int main(int argc,char **argv) {
     if (!CodexAcquisitionModels::component(root.path())) return 8;
     if (!CodexAcquisitionModels::recoveredConnection(root.path())) return 9;
     if (!CodexAcquisitionModels::freshIntent(root.path())) return 10;
+    if (!CodexAcquisitionModels::workflowLease(root.path())) return 11;
     return 0;
 }

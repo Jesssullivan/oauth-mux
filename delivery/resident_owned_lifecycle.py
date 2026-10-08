@@ -11,7 +11,7 @@ import guard_resident_owned_update as owned
 import resident_enrollment as resident
 import pack
 
-PHASES=frozenset(("manifest","software","start","active-readback","health","idle-admission","stop","stopped-readback"))
+PHASES=frozenset(("manifest","software","start","active-readback","health","idle-admission","stop","stopped-readback","inactive-readback"))
 PHASE="manifest"
 def phase(name):
     global PHASE
@@ -20,7 +20,7 @@ def phase(name):
 
 def execute_existing(systemctl,manifest,environment,bounded,remaining,deadline_ns):
     guard.manifest_schema(manifest,environment["HOME"])
-    guard.require(manifest["action"] in ("start-existing","observe-existing","stop-idle-owned"))
+    guard.require(manifest["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"))
     if manifest["action"] == "start-existing":
         phase("start")
         import resident_owned_start
@@ -35,7 +35,8 @@ def execute_existing(systemctl,manifest,environment,bounded,remaining,deadline_n
         and hashlib.sha256(payload).hexdigest() == selection["archive_sha256"])
     _,files=pack.verify_bundle(payload)
     guard.require(hashlib.sha256(files["release-manifest.json"]).hexdigest() == selection["manifest_sha256"])
-    witness=owned.OwnedFirstStart(manifest,environment["HOME"],deadline_ns-30*10**9)
+    witness_type = owned.OwnedInactiveObservation if manifest["action"] == "observe-inactive" else owned.OwnedFirstStart
+    witness=witness_type(manifest,environment["HOME"],deadline_ns-30*10**9)
     try:
         unit=Path(manifest["service_path"]).name
         control=Path(environment["XDG_RUNTIME_DIR"])/guard.runtime_child(manifest["runtime_state"])
@@ -65,6 +66,28 @@ def execute_existing(systemctl,manifest,environment,bounded,remaining,deadline_n
             guard.require(type(envelope) is dict and set(envelope) == {"jsonrpc","id","result"}
                 and envelope["jsonrpc"] == "2.0" and type(envelope["id"]) is int and envelope["id"] == 1)
             return envelope["result"]
+        if manifest["action"] == "observe-inactive":
+            # Fixed local manager metadata only: no installed executable, daemon
+            # RPC, source, vault operation, or service lifecycle command.
+            def inactive():
+                phase("inactive-readback")
+                remaining()
+                witness.recheck()
+                owned.inactive_installation(properties(),manifest)
+                population = owned.inactive_cgroup(deadline_ns-30*10**9)
+                guard.require(not os.listdir(control))
+                witness.recheck()
+                remaining()
+                return population
+            before = inactive()
+            guard.require(inactive() == before)
+            return {"schema_version":1,"scope":"owned_resident_inactive",
+                "service_active":False,"main_pid_zero":True,**before,
+                "service_mutation_requested":False,"resident_bounds_verified":True,
+                "provider_request_requested_by_controller":False,"controller_vault_material_read":False,
+                "controller_key_written":False,"account_counts_observed":False,
+                "custody_available":False,"enrollment_verified":False,"source_connected":False,
+                "same_process_handoff_proven":False,"archive_sha256":selection["archive_sha256"]}
         before=active()
         phase("health")
         health=rpc("system.health")

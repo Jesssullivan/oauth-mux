@@ -104,8 +104,16 @@ class Admission:
         enrollment.require(self.run is not None and self.run.name == epoch)
         if getattr(self.inner, "installation_update", None) is not None:
             self.inner.complete_owned_update(status, cleaned)
+        inactive = getattr(self.inner,"selected",{}).get("action") == "observe-inactive"
+        if inactive:
+            enrollment.require(type(status) is int and status == 0 and cleaned is True
+                and type(graph_sha256) is str and re.fullmatch(r"[0-9a-f]{64}",graph_sha256))
         self.inner.recheck()
-        return self.inner.service_observation(self.systemctl)
+        result = self.inner.service_observation(self.systemctl)
+        if inactive:
+            result = {**result,"action_epoch":epoch,"source_graph_sha256":graph_sha256,
+                "verified_after_cleanup":True}
+        return result
 
     def close(self):
         if self.inner is not None:

@@ -18,12 +18,43 @@ CAPABILITIES = frozenset(("dbus_run_session", "dbus_daemon", "gnome_keyring_daem
                           "patchelf", "openssl_tool", "systemctl", "moc", "rcc", "uic", "secret_tool"))
 
 
-def registrations(text, declared):
+def current_flake_path_refusal(value, *, drv=False):
+    """Pinned Nix 2.34.6 canonical logical StorePath; no host path resolution."""
+    if not isinstance(value, str):
+        return "type"
+    if not value.startswith("/nix/store/"):
+        return "layout"
+    basename = value[len("/nix/store/"):]
+    if len(basename) < 34 or basename[32] != "-" or "/" in basename:
+        return "layout"
+    if re.fullmatch("[0123456789abcdfghijklmnpqrsvwxyz]{32}", basename[:32]) is None:
+        return "hash"
+    name = basename[33:]
+    if not 1 <= len(name) <= 211:
+        return "name-bound"
+    if name in {".", ".."} or name.startswith((".-", "..-")):
+        return "name-prefix"
+    if re.fullmatch("[A-Za-z0-9+._?=-]+", name) is None:
+        return "name-characters"
+    if drv and not name.endswith(".drv"):
+        return "derivation-suffix"
+    return None
+
+
+def registrations(text, declared, *, current_flake_paths=False):
+    # This code-selected mode is exclusive to generated current-flake readback.
+    # Declared runtime seeds and all existing callers retain their exact grammar.
+    if type(current_flake_paths) is not bool:
+        raise ValueError("registration path policy")
+    def valid_path(value, *, drv=False):
+        if current_flake_paths:
+            return current_flake_path_refusal(value, drv=drv) is None
+        return re.fullmatch(STORE + (r"\.drv" if drv else ""), value) is not None
     if len(text) > 4 * 1024 * 1024:
         raise ValueError("registration bound")
     if not declared or len(declared) > MAX_RECORDS or len(set(declared)) != len(declared):
         raise ValueError("declared root set")
-    if any(not re.fullmatch(STORE, root) for root in declared):
+    if any(not valid_path(root) for root in declared):
         raise ValueError("declared root syntax")
     lines = text.splitlines()
     records, cursor = {}, 0
@@ -31,11 +62,11 @@ def registrations(text, declared):
         if len(records) >= MAX_RECORDS or cursor + 5 > len(lines):
             raise ValueError("registration shape")
         root, nar_hash, size, deriver, count = lines[cursor:cursor + 5]
-        if (not re.fullmatch(STORE, root) or root in records
+        if (not valid_path(root) or root in records
                 or not re.fullmatch(r"sha256:(?:[0-9abcdfghijklmnpqrsvwxyz]{52}|[0-9a-f]{64})", nar_hash)
                 or not re.fullmatch(r"[1-9][0-9]{0,18}", size)
                 or not re.fullmatch(r"[0-9]{1,4}", count)
-                or (deriver and not re.fullmatch(STORE + r"\.drv", deriver))):
+                or (deriver and not valid_path(deriver, drv=True))):
             raise ValueError("registration record")
         if int(size) > (1 << 63) - 1 or int(count) > MAX_RECORDS:
             raise ValueError("registration numeric bound")
@@ -50,7 +81,7 @@ def registrations(text, declared):
         end = cursor + 5 + int(count)
         references = lines[cursor + 5:end]
         if (len(references) != int(count) or len(set(references)) != len(references)
-                or any(not re.fullmatch(STORE, ref) for ref in references)):
+                or any(not valid_path(ref) for ref in references)):
             raise ValueError("registration references")
         records[root] = {"references": references, "record": lines[cursor:end]}
         cursor = end

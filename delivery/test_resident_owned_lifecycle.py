@@ -39,7 +39,7 @@ class LifecycleContract(unittest.TestCase):
             self.assertEqual(delegate.call_count,1)
         bounded.assert_not_called()
 
-    def invoke(self,action,*,health_change=None,native_launch=False,changed_identity=False,unknown_state=False):
+    def invoke(self,action,*,health_change=None,native_launch=False,changed_identity=False,unknown_state=False,inactive_change=None,populated=False):
         home=Path("/home/jess")
         payload,manifest_raw=b"public software archive",b"public software manifest"
         selection={"archive_path":"/public/archive","archive_bytes":len(payload),
@@ -59,6 +59,10 @@ class LifecycleContract(unittest.TestCase):
             "Slice":"app.slice","ExecStart":"{ path="+executable+" ; argv[]="+executable+" --state-dir "+value["runtime_state"]+" ; ignore_errors=no ; pid=10 ; status=0/0 }",
             "DropInPaths":"","NeedDaemonReload":"no","MemoryMax":"268435456","MemorySwapMax":"0",
             "TasksMax":"32","CPUQuotaPerSecUSec":"100ms"}
+        if action == "observe-inactive":
+            values.update(ActiveState="inactive",SubState="dead",MainPID="0",ControlGroup="")
+            if inactive_change:
+                values.update(inactive_change)
         health={"protocol_version":2,"status":"vault_locked","custody_available":False,"metadata_loaded":False,
             "provider_access":False,"live_handoff_proven":False,"recovery_action":"unlock_platform_vault_then_restart_daemon"}
         if health_change:
@@ -106,12 +110,13 @@ class LifecycleContract(unittest.TestCase):
                 (lifecycle.pack,"read_bundle",{"return_value":payload}),
                 (lifecycle.pack,"verify_bundle",{"return_value":({}, {"release-manifest.json":manifest_raw})}),
                 (lifecycle.owned,"OwnedFirstStart",{"return_value":witness}),
+                (lifecycle.owned,"OwnedInactiveObservation",{"return_value":witness}),
                 (lifecycle.guard,"resolve_owned_unit_fragment",{"return_value":Path(value["service_path"])}),
                 (lifecycle.resident,"process_identity",{"side_effect":process}),
                 (lifecycle.resident,"cgroup_observation",{"return_value":(caps,(50,60))}),
                 (lifecycle.guard,"socket_witness",{"return_value":peer}),
                 (lifecycle.guard,"start_ticks",{"return_value":20}),
-                (lifecycle.owned,"inactive_cgroup",{"return_value":{"unit_cgroup_absent":True}}),
+                (lifecycle.owned,"inactive_cgroup",{"side_effect":ValueError("synthetic populated refusal")} if populated else {"return_value":{"unit_cgroup_absent":True}}),
                 (lifecycle.os,"listdir",{"return_value":[]})):
                 stack.enter_context(mock.patch.object(target,name,**options))
             try:
@@ -120,6 +125,27 @@ class LifecycleContract(unittest.TestCase):
                     lambda maximum=20:maximum,time.monotonic_ns()+120*10**9)
             finally:
                 witness.close.assert_called_once_with()
+
+    def test_inactive_observation_uses_only_two_fixed_show_calls_and_no_health_or_mutation(self):
+        result=self.invoke("observe-inactive")
+        self.assertFalse(result["service_active"] or result["custody_available"]
+            or result["service_mutation_requested"] or result["enrollment_verified"])
+        self.assertTrue(result["main_pid_zero"] and result["unit_cgroup_absent"])
+        self.assertEqual(len(self.commands),2)
+        self.assertTrue(all(command[1:4] == ["--user","--quiet","show"]
+            and command[-1] == "ai.xoxd.omux.service" for command in self.commands))
+
+    def test_inactive_observation_refuses_active_nonzero_foreign_caps_or_populated_cgroup(self):
+        for changes in ({"ActiveState":"active"},{"SubState":"running"},{"MainPID":"2"},
+                {"MainPID":"00"},{"ControlGroup":"/foreign"},{"MemoryMax":"268435457"},
+                {"TasksMax":"33"},{"CPUQuotaPerSecUSec":"101ms"},{"UnitFileState":"disabled"},
+                {"DropInPaths":"/foreign.conf"},{"NeedDaemonReload":"yes"}):
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                self.invoke("observe-inactive",inactive_change=changes)
+            self.assertTrue(all("show" in command for command in self.commands))
+        with self.assertRaises(ValueError):
+            self.invoke("observe-inactive",populated=True)
+        self.assertTrue(all("show" in command for command in self.commands))
 
     def test_observation_is_mutation_free_and_locked_custody_truth_is_preserved(self):
         result=self.invoke("observe-existing")

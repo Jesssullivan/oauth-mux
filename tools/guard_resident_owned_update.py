@@ -350,11 +350,18 @@ class PublicFile:
         resident.require(resident.file_identity(os.fstat(self.fd)) == self.identity
             == resident.file_identity(os.stat(self.path.name,dir_fd=self.parent,follow_symlinks=False)))
     def close(self):
-        for name in ("fd","parent"):
-            value = getattr(self,name,None)
-            if value is not None:
-                os.close(value)
-                setattr(self,name,None)
+        descriptors = [getattr(self,name,None) for name in ("fd","parent")]
+        self.fd = self.parent = None
+        failure = None
+        for descriptor in descriptors:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as error:
+                    if failure is None:
+                        failure = error
+        if failure is not None:
+            raise failure
 
 class QualifiedExistingEnrollment:
     """Public archive/installed-software authority; never open private custody."""
@@ -407,12 +414,17 @@ class QualifiedExistingEnrollment:
         for public in self.files:
             public.recheck()
     def close(self):
-        if self.unit is not None:
-            self.unit.close()
-            self.unit = None
-        for public in reversed(self.files):
-            public.close()
-        self.files = []
+        unit,files = self.unit,self.files
+        self.unit,self.files = None,[]
+        failure = None
+        for held in ([unit] if unit is not None else [])+list(reversed(files)):
+            try:
+                held.close()
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+        if failure is not None:
+            raise failure
 
 class RuntimeFence:
     """Hold existing singleton lock and exact named/held metadata; read no private bytes."""
@@ -466,9 +478,47 @@ class RuntimeFence:
             if children is not None:
                 resident.require(tuple(sorted(os.listdir(fd))) == children)
     def close(self):
-        for fd in reversed(self.held):
-            os.close(fd)
-        self.held = []
+        held,self.held = self.held,[]
+        failure = None
+        for fd in reversed(held):
+            try:
+                os.close(fd)
+            except OSError as error:
+                if failure is None:
+                    failure = error
+        if failure is not None:
+            raise failure
+
+class OwnedInactiveObservation:
+    """Qualified installed software plus read-only private-state metadata."""
+    def __init__(self,selected,home,deadline):
+        self.software = self.runtime = None
+        try:
+            # The private input retains the existing closed start-pins shape.
+            self.software = QualifiedExistingEnrollment(
+                {**selected,"existing_archive":selected["start"]},home,deadline)
+            self.runtime = RuntimeFence(selected["runtime_state"],deadline,acquire_lock=False)
+            self.files = self.software.files
+            self.recheck()
+        except BaseException:
+            self.close()
+            raise
+    def recheck(self):
+        self.software.recheck()
+        self.runtime.recheck()
+    def close(self):
+        runtime,software = self.runtime,self.software
+        self.runtime = self.software = None
+        failure = None
+        for held in (runtime,software):
+            if held is not None:
+                try:
+                    held.close()
+                except BaseException as error:
+                    if failure is None:
+                        failure = error
+        if failure is not None:
+            raise failure
 
 class InstallationUpdate:
     """Only the owned record/unit/payload witness may make an old-to-new transition."""
