@@ -1645,7 +1645,9 @@ pub const Engine = struct {
         const metrics = self.metrics;
         self.metrics_mutex.unlock(self.io);
         var staged: Engine = .{
-            .allocator = self.allocator, .io = self.io, .state_dir = self.state_dir,
+            .allocator = self.allocator,
+            .io = self.io,
+            .state_dir = self.state_dir,
             .instance_selection = self.instance_selection,
             .state = domain.State.init(self.allocator),
             .observers = observer.Coordinator.init(self.allocator),
@@ -1653,7 +1655,9 @@ pub const Engine = struct {
             .mutations = try mutation_authority.Ledger.init(self.allocator, 4096),
             .admission = snapshot_admission.Ledger.init(self.allocator),
             .native_owners = native_owner.Ledger.init(self.allocator),
-            .metrics = metrics, .test_key = self.test_key, .test_vault = self.test_vault,
+            .metrics = metrics,
+            .test_key = self.test_key,
+            .test_vault = self.test_vault,
             .fixture_startup_vault_locked = self.fixture_startup_vault_locked,
             .fixture_custody_stage_failure = self.fixture_custody_stage_failure,
             .active_until = self.active_until,

@@ -98,6 +98,17 @@ A genuine private macOS Keychain driver also passed against the locked SDK.
 Personal-session custody, production Darwin runtime and service behavior
 require separate receipts.
 
+When startup retains a `Locked` custody failure, local controls remain available.
+After normal platform-vault unlock, the user explicitly calls `custody.reopen`
+with no parameters or an empty object. The same daemon actor stages custody and
+loads the existing database using its recorded root; failed retry leaves custody
+unavailable. This action does not enroll a source or initiate a provider request.
+Until loading succeeds, `system.health` reports `metadata_loaded: false` and
+`account_count: null`, rather than asserting an empty account store. Its
+`vault_locked` status records the retained startup condition; setup vault evidence
+is stale diagnostic evidence, not a fresh observation that the OS vault remains
+locked. These are source semantics, not an installed locked-vault recovery proof.
+
 Each adopted refresh lineage has exactly one renewal writer. `src/storage.zig`
 records rotation intent before issuer contact and allows only the creator of
 that intent to issue it. Successful rotation commits successor ciphertext and
