@@ -159,6 +159,81 @@ class JoinedFixture:
 
 
 class CarrierModels(unittest.TestCase):
+    def test_batch_materializes_exact_aliases_without_changing_source_or_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root/"public-input"
+            source.write_bytes(b"synthetic-public-byte-proof")
+            source.chmod(0o444)
+            before = inputs.witness(source.stat())
+            repository = root/"repository"
+            repository.mkdir()
+            regular = [{"alias": "regular/"+str(index).zfill(8), "source": str(source)}
+                       for index in range(64)]
+            with patch.object(inputs.proof.time, "monotonic", return_value=0.0):
+                inputs.materialize_regular(repository, regular, 100.0)
+            self.assertEqual(sorted(path.name for path in (repository/"regular").iterdir()),
+                             [str(index).zfill(8) for index in range(64)])
+            for item in regular:
+                alias = repository/item["alias"]
+                self.assertTrue(alias.is_symlink())
+                self.assertEqual(os.readlink(alias), str(source))
+                self.assertEqual(alias.read_bytes(), b"synthetic-public-byte-proof")
+            self.assertEqual(inputs.witness(source.stat()), before)
+
+    def test_batch_refuses_noncontiguous_or_redirected_input_without_aliases(self):
+        for fault in ("alias", "source-link"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root/"public-input"
+                source.write_bytes(b"synthetic-public")
+                selected = source
+                if fault == "source-link":
+                    selected = root/"redirected"
+                    selected.symlink_to(source)
+                regular = [{"alias": "regular/00000001" if fault == "alias" else "regular/00000000",
+                            "source": str(selected)}]
+                repository = root/"repository"
+                repository.mkdir()
+                with patch.object(inputs.proof.time, "monotonic", return_value=0.0):
+                    with self.assertRaises(ValueError):
+                        inputs.materialize_regular(repository, regular, 100.0)
+                self.assertEqual(list(repository.iterdir()), [])
+
+    def test_batch_expiry_or_source_replacement_preserves_primary_and_cleans_owned_aliases(self):
+        for fault in ("deadline", "source-replaced", "link-failure"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root/"public-input"
+                source.write_bytes(b"synthetic-public")
+                repository = root/"repository"
+                repository.mkdir()
+                sentinel = repository/"prior"
+                sentinel.write_bytes(b"retain")
+                regular = [{"alias": "regular/"+str(index).zfill(8), "source": str(source)}
+                           for index in range(2)]
+                now = [0.0]
+                real_symlink = os.symlink
+                primary = OSError("synthetic-link-failure")
+                def symlink(*args, **kwargs):
+                    if fault == "link-failure" and args[1] == "00000001":
+                        raise primary
+                    real_symlink(*args, **kwargs)
+                    if fault == "deadline":
+                        now[0] = 100.0
+                    elif fault == "source-replaced":
+                        replacement = root/"replacement"
+                        replacement.write_bytes(b"synthetic-public")
+                        replacement.replace(source)
+                with patch.object(inputs.proof.time, "monotonic", side_effect=lambda: now[0]), \
+                        patch.object(inputs.os, "symlink", side_effect=symlink):
+                    with self.assertRaises(OSError if fault == "link-failure" else ValueError) as caught:
+                        inputs.materialize_regular(repository, regular, 100.0)
+                if fault == "link-failure":
+                    self.assertIs(caught.exception, primary)
+                self.assertEqual(list(repository.iterdir()), [sentinel])
+                self.assertEqual(sentinel.read_bytes(), b"retain")
+
     def test_valid_producer_identity_is_a_boolean_predicate_and_keeps_all_joined_pins(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
             self.assertIs(inputs.selection(fixture.selected), fixture.selected)

@@ -401,7 +401,63 @@ def declared_metadata(bundle, bundle_path, selected, deadline):
     return result
 
 
-def generate(selected_raw, digest, runtime_raw, source_raw, project_sources, directory, deadline):
+def materialize_regular(directory, regular, deadline):
+    """Batch only the closed declared aliases; byte qualification stays in TEST."""
+    require(type(regular) is list and 0 < len(regular) <= seed.MAX_FILES)
+    for index, item in enumerate(regular):
+        proof.tick(deadline)
+        require(type(item) is dict and set(item) == {"alias", "source"}
+            and item["alias"] == "regular/"+str(index).zfill(8))
+        canonical(item["source"])
+    directory = Path(directory)
+    require(directory.is_absolute() and directory.resolve(strict=True) == directory)
+    parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    child = None
+    child_identity = None
+    created = []
+    try:
+        held = os.fstat(parent)
+        require(held.st_uid == os.getuid() and not held.st_mode & 0o022)
+        os.mkdir("regular", mode=0o755, dir_fd=parent)
+        info = os.stat("regular", dir_fd=parent, follow_symlinks=False)
+        child_identity = (info.st_dev, info.st_ino)
+        child = os.open("regular", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        require((os.fstat(child).st_dev, os.fstat(child).st_ino) == child_identity)
+        for item in regular:
+            proof.tick(deadline)
+            source = item["source"]
+            require(str(Path(source).resolve(strict=True)) == source)
+            with nar.open_regular(source, "") as stream:
+                before = witness(os.fstat(stream.fileno()))
+                leaf = item["alias"].split("/")[1]
+                os.symlink(source, leaf, dir_fd=child)
+                info = os.stat(leaf, dir_fd=child, follow_symlinks=False)
+                created.append((leaf, (info.st_dev, info.st_ino)))
+                with nar.open_regular(source, "") as named:
+                    require(before == witness(os.fstat(stream.fileno())) == witness(os.fstat(named.fileno())))
+        proof.tick(deadline)
+        require(sorted(os.listdir(child)) == [str(index).zfill(8) for index in range(len(regular))])
+    except BaseException as primary:
+        if child_identity is not None:
+            try:
+                for leaf, identity in reversed(created):
+                    info = os.stat(leaf, dir_fd=child, follow_symlinks=False)
+                    require(stat.S_ISLNK(info.st_mode) and (info.st_dev, info.st_ino) == identity)
+                    os.unlink(leaf, dir_fd=child)
+                info = os.stat("regular", dir_fd=parent, follow_symlinks=False)
+                require(stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == child_identity)
+                os.rmdir("regular", dir_fd=parent)
+            except BaseException:
+                primary.add_note("selected owned alias cleanup refused")
+        raise
+    finally:
+        if child is not None:
+            os.close(child)
+        os.close(parent)
+
+
+def generate(selected_raw, digest, runtime_raw, source_raw, project_sources, directory, deadline,
+             *, materialize=False):
     require(type(digest) is str and HEX.fullmatch(digest) and seed.sha(selected_raw) == digest)
     selected = selection(decode(selected_raw, MAX_SELECTION))
     roles = metadata_roles(selected)
@@ -423,7 +479,10 @@ def generate(selected_raw, digest, runtime_raw, source_raw, project_sources, dir
     content = encode(result)
     require(len(content) <= MAX_MAPPING)
     (directory/"inputs.json").write_bytes(content)
+    if materialize:
+        materialize_regular(directory, regular, deadline)
     return {"regularInputs": regular, "mapping_sha256": seed.sha(content),
+        "regularMaterialized": materialize,
         "metadata": [item["alias"] for item in result["metadata"].values()],
         "metadataInputs": [roles[name]["path"] for name in sorted(roles)]}
 
@@ -432,13 +491,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("selection", "sha256", "seed", "descriptors", "project", "directory"):
         parser.add_argument("--"+name, required=True)
+    parser.add_argument("--materialize", action="store_true")
     args = parser.parse_args()
     original_deadline = float(time.monotonic()+schedule.MAX_SECONDS)
     read = lambda file, limit: seed.metadata(Path(file), limit)
     project_sources = decode(read(args.project, MAX_SELECTION), MAX_SELECTION)
     report = generate(read(args.selection, MAX_SELECTION), args.sha256,
         read(args.seed, seed.MAX_METADATA), read(args.descriptors, nar.MAX_METADATA_BYTES),
-        project_sources, args.directory, original_deadline)
+        project_sources, args.directory, original_deadline, materialize=args.materialize)
     print(json.dumps(report, sort_keys=True))
 
 

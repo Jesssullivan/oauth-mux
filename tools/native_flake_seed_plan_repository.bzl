@@ -62,10 +62,13 @@ def _impl(ctx):
         str(ctx.path(".")), str(ctx.path("native_flake_seed_plan_inputs.py")),
         "--selection", str(ctx.path("selection.json")), "--sha256", digest,
         "--seed", str(ctx.path(ctx.attr.seed)), "--descriptors", str(ctx.path(ctx.attr.descriptors)),
-        "--project", str(ctx.path("project-sources.json")), "--directory", str(ctx.path("."))], timeout = 600)
+        "--project", str(ctx.path("project-sources.json")), "--directory", str(ctx.path(".")),
+        "--materialize"], timeout = 600)
     if generated.return_code:
         fail("selected plan declaration refused; no discovery or fallback")
     report = json.decode(generated.stdout)
+    if report.get("regularMaterialized") != True:
+        fail("closed selected alias materialization required")
     mapping_digest = _digest(report["mapping_sha256"])
     if len(report["regularInputs"]) > 1000000:
         fail("selected regular input count exceeds bound")
@@ -75,11 +78,9 @@ def _impl(ctx):
         if sorted(item.keys()) != ["alias", "source"] or item["alias"] != expected:
             fail("closed contiguous declared leaf mapping required")
         source = _absolute(item["source"])
-        path = ctx.path(source)
-        if not path.exists or path.is_dir or str(path.realpath) != source:
-            fail("selected regular leaf unavailable or redirected")
-        ctx.watch(path)
-        ctx.symlink(path, expected)
+        # The locked helper materialized this exact closed alias set under the
+        # same generator deadline. Preserve every original source watch.
+        ctx.watch(ctx.path(source))
         labels.append(expected)
     metadata = report["metadata"]
     if len(metadata) not in [5, 7] or metadata != ["metadata/" + ("00000000" + str(i))[-8:] for i in range(len(metadata))]:
