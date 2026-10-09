@@ -1,6 +1,7 @@
 """Lazy selected successful obligations data for one fixed main-repo TEST.
 
-No repository instance, successful digest or native admission is provided.
+The selected instance declares public recorded inputs only. Native admission
+and realization require independent consumer qualification.
 """
 
 def _absolute(value):

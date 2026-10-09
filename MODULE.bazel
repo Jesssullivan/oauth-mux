@@ -208,7 +208,11 @@ yoga_public_install_inputs=use_repo_rule("//tools:yoga_public_install_inputs_rep
 yoga_public_install_inputs(name="omux_yoga_public_install_inputs")
 
 
-# Append without any actual selection or future artifact digest. Bazel only
-# evaluates this data repository when its exact manual consumer is requested.
+# Independently pinned successful target-obligation data only; not a complete
+# native seed or runtime. The exact manual consumer qualifies this selection.
 native_flake_seed_plan = use_repo_rule("//tools:native_flake_seed_plan_repository.bzl", "native_flake_seed_plan_repository")
-native_flake_seed_plan(name = "omux_native_flake_seed_plan")
+native_flake_seed_plan(
+    name = "omux_native_flake_seed_plan",
+    selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/4c3aa2a9-9421-411d-bd6e-74ecc5f6290c/native-flake-seed-plan-selection.json",
+    selection_sha256 = "e7c50f1a6d5392bb99e7d4b24e1a561ba61eb6ce32d39e0c5ef184d2b8386e07",
+)
