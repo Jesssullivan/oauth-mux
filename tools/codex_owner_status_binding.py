@@ -65,7 +65,7 @@ def load_actual():
     return json.loads(raw, object_pairs_hook=source.unique)
 
 
-def bind():
+def load_verified_source():
     fd = source.directory(ROOT)
     try:
         before = os.fstat(fd)
@@ -85,21 +85,26 @@ def bind():
             source.require((after.st_dev, after.st_ino, after.st_uid, stat.S_IMODE(after.st_mode)) == identity)
         finally:
             os.close(named)
-        return {
+        return report, fifth
+    finally:
+        os.close(fd)
+
+
+def bind():
+    report, _ = load_verified_source()
+    return {
             "schema_version": 1, "kind": KIND, "status": "verified-n1-source-binding-pending-sdk",
             "metadata_input": {"kind": "omux-owner-status-metadata-input-v1",
                 "source_root": str(ROOT), "source_receipt_sha256": RECEIPT_SHA,
                 "source_inventory_sha256": INVENTORY_SHA,
                 "export_root": EXPORT_ROOT, "export_receipt_sha256": EXPORT_SHA},
-            "source_graph": expected["graph_files"],
+            "source_graph": report["graph_files"],
             "source_reconstructed_and_fully_read": True,
             "sdk_materials_revalidated": False, "sdk_metadata_qualified": False,
             "schema_producer_qualified": False, "native_source_finalized": False,
             "native_compile_passed": False, "native_support": False,
             "provider_evaluation": False, "live_handoff_proven": False,
-        }
-    finally:
-        os.close(fd)
+    }
 
 
 def main():

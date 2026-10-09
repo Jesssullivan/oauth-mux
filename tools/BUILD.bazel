@@ -1131,7 +1131,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -1145,6 +1145,13 @@ python_test(name='guard_resident_sources_profile_test',main='guard_resident_sour
     target_compatible_with=['@platforms//os:linux'])
 filegroup(name='resident_continuity_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
 filegroup(name='resident_namespace_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
+python_test(name='guard_resident_owner_status_persistence_source_reserved_test',main='guard_resident_owner_status_persistence_source_reserved_test.py',
+    srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
+        'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
+        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
+        +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_owner_status_binding_reserved_test',main='guard_resident_owner_status_binding_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
@@ -1669,6 +1676,25 @@ python_test(
     main = "codex_owner_status_binding.py",
     srcs = ["codex_owner_status_source.py", "codex_live_source.py", "codex_protocol_history_source.py", "//integrations/codex-upstream:patch_io.py"],
     data = ["@omux_codex_protocol_history_source_inputs//:inputs", "@omux_codex_owner_status_source_inputs//:inputs", "@omux_codex_owner_status_binding_inputs//:inputs"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+exports_files(["codex_owner_status_persistence_source_inputs.bzl"])
+
+_OWNER_STATUS_PERSISTENCE_SOURCES = ["codex_owner_status_binding.py", "codex_owner_status_source.py", "codex_live_source.py", "codex_protocol_history_source.py", "//integrations/codex-upstream:patch_io.py"]
+
+python_test(
+    name = "codex_owner_status_persistence_source_test",
+    main = "codex_owner_status_persistence_source_test.py",
+    srcs = _OWNER_STATUS_PERSISTENCE_SOURCES + ["codex_owner_status_persistence_source.py"],
+)
+
+python_test(
+    name = "codex_owner_status_persistence_source_producer",
+    main = "codex_owner_status_persistence_source.py",
+    srcs = _OWNER_STATUS_PERSISTENCE_SOURCES,
+    data = ["@omux_codex_protocol_history_source_inputs//:inputs", "@omux_codex_owner_status_source_inputs//:inputs", "@omux_codex_owner_status_binding_inputs//:inputs", "@omux_codex_owner_status_persistence_source_inputs//:inputs"],
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
 )
