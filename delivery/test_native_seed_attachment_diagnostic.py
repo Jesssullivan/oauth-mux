@@ -4,7 +4,7 @@ import copy
 import io
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import FunctionType, SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -47,19 +47,21 @@ class SeedAttachmentModels(unittest.TestCase):
                       if isinstance(node, ast.FunctionDef) and node.name == "inside")
         scope = copy.deepcopy(next(node for node in inside.body
                                    if isinstance(node, ast.Try) and node.finalbody))
-        predicate = next(index for index, node in enumerate(scope.body)
-                         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-                         and isinstance(node.value.func, ast.Name) and node.value.func.id == "require"
-                         and any(isinstance(value, ast.Constant) and value.value == MESSAGE
-                                 for value in node.value.args))
-        scope.body = scope.body[predicate - 1:predicate + 2]
-        functions = [copy.deepcopy(node) for node in module.body
-                     if isinstance(node, ast.FunctionDef) and node.name in (
-                         "discovered_attachment", "seed_history_attachment_difference",
-                         "seed_history_attachment")]
+        # The seeded predicate now lives in the explicit seeded else branch.
+        # Locate its actual enclosing statement list, retaining the original
+        # PID short circuit and adjacent diagnostic assignments unchanged.
+        matches = [(statements, index) for parent in ast.walk(scope)
+                   for _, statements in ast.iter_fields(parent) if isinstance(statements, list)
+                   for index, node in enumerate(statements)
+                   if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                   and isinstance(node.value.func, ast.Name) and node.value.func.id == "require"
+                   and any(isinstance(value, ast.Constant) and value.value == MESSAGE
+                           for value in node.value.args)]
+        self.assertEqual(len(matches), 1, "exact seeded predicate must remain unique")
+        statements, predicate = matches[0]
+        scope.body = statements[predicate - 1:predicate + 2]
         source = ast.parse("def fixture_scope():\n    global DIAGNOSTIC\n    pass\n")
         source.body[0].body[-1:] = [scope]
-        source.body[0:0] = functions
         source = ast.fix_missing_locations(source)
         endpoint, _, _ = fixture()
         events = []
@@ -103,6 +105,13 @@ class SeedAttachmentModels(unittest.TestCase):
             failed_messages=failed_messages,
         )
         exec(compile(source, "declared-seed-predicate-model", "exec"), namespace)
+        # Execute the imported real helper code against isolated model globals;
+        # do not mirror or regenerate its RPC/equality/projection boundary.
+        for name in ("discovered_attachment", "seed_history_attachment_difference",
+                     "seed_history_attachment"):
+            helper = getattr(legacy, name)
+            namespace[name] = FunctionType(helper.__code__, namespace, name,
+                                          helper.__defaults__, helper.__closure__)
         return namespace["fixture_scope"], namespace, request, events, primary, tails, anchor
 
     def failure(self, run, namespace, events, expected, diagnostic, tails=None):
