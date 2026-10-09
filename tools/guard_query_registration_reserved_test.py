@@ -201,6 +201,17 @@ class QueryReservationModels(unittest.TestCase):
             producer.main()
         run.assert_not_called()
 
+    def test_missing_or_empty_bazel_environment_refuses_before_project_or_database_io(self):
+        argv=["collector","--flake","f","--lock","l","--zig-index","z","--archives","a"]
+        with patch.object(collector.sys,"argv",argv),patch.object(collector,"read_project") as read, \
+            patch.object(collector,"collect") as collect,patch.object(collector,"persist") as publish:
+            for env in ({},{"TEST_TIMEOUT":"60"},{"TEST_UNDECLARED_OUTPUTS_DIR":"/model/out"},
+                {"TEST_TIMEOUT":"60","TEST_UNDECLARED_OUTPUTS_DIR":""},
+                {"TEST_TIMEOUT":"","TEST_UNDECLARED_OUTPUTS_DIR":"/model/out"}):
+                with patch.dict(os.environ,env,clear=True),self.assertRaises(ValueError):
+                    collector.main()
+            read.assert_not_called();collect.assert_not_called();publish.assert_not_called()
+
     def test_actual_collector_sqlite_and_sealed_fd_publication_use_supplied_cutoff(self):
         for bound,expected in ((None,130.0),(105.0,105.0)):
             with tempfile.TemporaryDirectory() as temporary:

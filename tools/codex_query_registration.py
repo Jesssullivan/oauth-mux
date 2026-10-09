@@ -311,7 +311,7 @@ def main(*, absolute_deadline=None):
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ("flake","lock","zig-index","archives"):parser.add_argument("--"+name,required=True)
     args=parser.parse_args()
-    require(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR") and os.environ.get("TEST_TIMEOUT"))
+    require(bool(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR")) and bool(os.environ.get("TEST_TIMEOUT")))
     deadline=float(entry+min(MAX_SECONDS,int(os.environ["TEST_TIMEOUT"])-5))
     if absolute_deadline is not None:
         require(type(absolute_deadline) is float and math.isfinite(absolute_deadline))
