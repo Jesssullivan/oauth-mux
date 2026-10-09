@@ -12,7 +12,16 @@ load(":codex_fresh_runtime_repository_selector_test.bzl", "codex_fresh_runtime_r
 load(":codex_fresh_native_package_visibility_test.bzl", "codex_fresh_native_package_visibility_test")
 load(":codex_metadata_query_tools_declaration_test.bzl", "codex_metadata_query_tools_declaration_test")
 
-_CODEX_SDK_SOURCES = [
+_PROTOCOL_HISTORY_QUERY_TOOL_SOURCES = [
+    "codex_protocol_history_query_tools.py", "native_flake_seed_plan_inputs.py",
+    "native_flake_seed_plan.py", "native_flake_schedule.py", "native_flake_sources.py",
+    "nar_descriptor.py", "verify_declared_nars.py", "verify_cached_nars.py",
+    "nix_source_probe.py", "nix_private_store_seed.py", "nix_private_store_qualification.py",
+    "nix_interpreter_closure.py", "native_flake_missing_plan.py",
+    "guard_native_seed_plan_reserved.py", "guard_resident_observation.py",
+]
+
+_CODEX_SDK_SOURCES = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + [
     "codex_protocol_history_package_consumer.py",
     "codex_staged_native_package_consumer.py",
     "codex_native_candidate_cache.py",
@@ -1614,11 +1623,12 @@ codex_metadata_query_tools_declaration_test(name = "codex_metadata_query_tools_d
 python_test(
     name = "codex_metadata_query_tools_descriptor_test",
     main = "codex_metadata_query_tools_descriptor_test.py",
-    srcs = ["codex_live_source.py", "codex_protocol_history_source.py",
+    srcs = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + ["codex_live_source.py", "codex_protocol_history_source.py",
             "codex_protocol_history_metadata.py", "codex_protocol_history_metadata_producer.py",
             "codex_retained_sdk_export.py"],
-    data = ["@omux_nix//:codex_metadata_query_tools"],
+    data = ["@omux_protocol_history_query_tools//:inputs"],
     tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
 )
 
 # Fixed metadata-only regeneration; instantiate its inputs only after an actual
@@ -1626,10 +1636,10 @@ python_test(
 python_test(
     name = "codex_protocol_history_metadata_producer",
     main = "codex_protocol_history_metadata_producer.py",
-    srcs = ["codex_live_source.py", "codex_protocol_history_source.py",
+    srcs = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + ["codex_live_source.py", "codex_protocol_history_source.py",
             "codex_protocol_history_metadata.py", "codex_retained_sdk_export.py"],
     data = ["@omux_codex_protocol_history_source_inputs//:inputs",
-            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:codex_metadata_query_tools"],
+            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_protocol_history_query_tools//:inputs"],
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
 )
@@ -1637,7 +1647,7 @@ python_test(
 python_test(
     name = "codex_protocol_history_metadata_test",
     main = "codex_protocol_history_metadata_test.py",
-    srcs = ["codex_live_source.py", "codex_live_source_test.py",
+    srcs = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + ["codex_live_source.py", "codex_live_source_test.py",
             "codex_protocol_history_source.py", "codex_protocol_history_metadata.py",
             "codex_protocol_history_metadata_producer.py", "codex_retained_sdk_export.py"],
 )
@@ -1647,11 +1657,11 @@ python_test(
 python_test(
     name = "codex_protocol_history_sdk_export_producer",
     main = "codex_protocol_history_sdk_export.py",
-    srcs = ["codex_live_source.py", "codex_protocol_history_source.py",
+    srcs = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + ["codex_live_source.py", "codex_protocol_history_source.py",
             "codex_protocol_history_metadata.py", "codex_protocol_history_metadata_producer.py",
             "codex_retained_sdk_export.py"],
     data = ["@omux_codex_protocol_history_source_inputs//:inputs",
-            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_nix//:codex_metadata_query_tools"],
+            "@omux_protocol_history_metadata_inputs//:inputs", "@omux_protocol_history_query_tools//:inputs"],
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
 )
@@ -1659,7 +1669,7 @@ python_test(
 python_test(
     name = "codex_protocol_history_sdk_export_test",
     main = "codex_protocol_history_sdk_export_test.py",
-    srcs = ["codex_live_source.py", "codex_live_source_test.py",
+    srcs = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + ["codex_live_source.py", "codex_live_source_test.py",
             "codex_protocol_history_source.py", "codex_protocol_history_metadata.py",
             "codex_protocol_history_metadata_producer.py", "codex_protocol_history_metadata_test.py",
             "codex_retained_sdk_export.py", "codex_protocol_history_sdk_export.py"],
@@ -2071,6 +2081,20 @@ python_test(
     ],
     env_inherit = ["OMUX_EXECUTION_GUARD"],
     tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Read-only selected query tool inputs; no current-flake realization claim.
+exports_files(["codex_protocol_history_query_tools.py", "protocol_history_query_tools_repository.bzl"])
+python_test(
+    name = "codex_protocol_history_query_tools_test",
+    main = "codex_protocol_history_query_tools_test.py",
+    srcs = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + [
+        "native_flake_seed_plan_carrier_test.py", "native_flake_seed_plan_qualification.py",
+        "native_flake_seed_plan_test.py", "native_flake_schedule_test.py",
+        "native_flake_sources_test.py", "nix_private_store_qualification_test.py",
+    ],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )

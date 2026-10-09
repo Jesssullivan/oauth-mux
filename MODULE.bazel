@@ -216,3 +216,7 @@ native_flake_seed_plan(
     selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/4c3aa2a9-9421-411d-bd6e-74ecc5f6290c/native-flake-seed-plan-selection.json",
     selection_sha256 = "e7c50f1a6d5392bb99e7d4b24e1a561ba61eb6ce32d39e0c5ef184d2b8386e07",
 )
+
+# No future successful plan or ready tool byte pins are invented here.
+protocol_history_query_tools = use_repo_rule("//tools:protocol_history_query_tools_repository.bzl", "protocol_history_query_tools_repository")
+protocol_history_query_tools(name = "omux_protocol_history_query_tools")

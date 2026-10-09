@@ -181,9 +181,13 @@ def export(document, metadata_root, output, absolute_deadline):
 
 def main():
     os.umask(0o077)
-    document,pin=producer.declared_selection()
+    entry=float(time.monotonic())
     seconds=min(840,int(os.environ["TEST_TIMEOUT"])-60)
-    deadline=time.monotonic()+seconds
+    require(1<=seconds<=840)
+    deadline=entry+seconds
+    producer.DEADLINE=deadline;producer.QUERY_REPOSITORY=None
+    document,pin=producer.declared_selection()
+    require(producer.QUERY_REPOSITORY is not None)
     temporary=Path(os.environ["TEST_TMPDIR"]).resolve(strict=True)
     outputs=Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]).resolve(strict=True)
     # Metadata is freshly generated in THIS action, not caller supplied.
@@ -191,6 +195,7 @@ def main():
     producer.produce(document,pin,temporary/"protocol-history-sdk-work",metadata_root,seconds,
         absolute_deadline=deadline)
     export(document,metadata_root,outputs/"protocol-history-sdk-export",deadline)
+    require(producer.query_tools.verify_repository(producer.QUERY_REPOSITORY,deadline)["inputs_rechecked"] is True)
     print("selected graph SDK exported; native compilation and provider evaluation unrun")
 
 

@@ -94,13 +94,26 @@ class QueryToolsBindingModels(unittest.TestCase):
     def test_missing_query_manifest_or_repository_mapping_has_no_old_closure_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)/"external";root.mkdir()
-            repository = root/"omux_nix";repository.mkdir()
-            rows = [["_main","omux_nix","omux_nix"]]
+            repository = root/producer.query_tools.REPOSITORY;repository.mkdir()
+            rows = [["_main",producer.query_tools.REPOSITORY,producer.query_tools.REPOSITORY]]
+            self.addCleanup(setattr,producer,"DEADLINE",None)
+            self.addCleanup(setattr,producer,"QUERY_REPOSITORY",None)
+            producer.DEADLINE=float(producer.time.monotonic()+60)
             with self.assertRaises(OSError): producer.declared_query_tools(root, rows)
             with self.assertRaises(ValueError): producer.declared_query_tools(root, [])
             manifest = repository/"codex-metadata-query-tools.json"
             manifest.write_bytes(source.encoded(self.descriptor()));manifest.chmod(0o444)
-            self.assertIs(producer.declared_query_tools(root, rows), True)
+            # This mapping model stubs the external byte gate only. The new
+            # query-tool suite exercises real NAR/reference/readback methods.
+            with patch.object(producer.query_tools,"verify_repository",return_value={
+                    "status":"declared-fixed-query-tools-byte-qualified",
+                    "inputs_rechecked":True,"query_tools":self.descriptor()}) as verified:
+                self.assertIs(producer.declared_query_tools(root, rows), True)
+                verified.assert_called_once_with(repository,producer.DEADLINE)
+            with patch.object(producer.query_tools,"verify_repository",return_value={
+                    "status":"declared-fixed-query-tools-byte-qualified",
+                    "inputs_rechecked":False,"query_tools":self.descriptor()}):
+                with self.assertRaises(ValueError):producer.declared_query_tools(root,rows)
             manifest.unlink();manifest.symlink_to(repository/"missing")
             with self.assertRaises(OSError): producer.declared_query_tools(root, rows)
 

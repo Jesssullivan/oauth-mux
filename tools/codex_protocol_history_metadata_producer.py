@@ -14,6 +14,7 @@ import codex_live_source as source
 import codex_protocol_history_source as history
 import codex_protocol_history_metadata as metadata
 import codex_retained_sdk_export as sdk
+import codex_protocol_history_query_tools as query_tools
 
 KIND = "omux-protocol-history-metadata-input-v1"
 OUTPUT_KIND = "omux-protocol-history-metadata-v1"
@@ -29,6 +30,7 @@ SOURCE_SCOPE = re.compile(r"(?:/home/jess/\.local/state/omux-execution-20261005|
 PHASE = "selection"
 MAX_LOG = {"stdout":16*1024*1024,"stderr":4*1024*1024}
 DEADLINE = None
+QUERY_REPOSITORY = None
 
 
 def require(value):
@@ -71,7 +73,7 @@ def validate_query_tools(value):
     expected["bazel"] = BAZEL
     require(value["tools"] == expected and type(value["roots"]) is list
         and value["roots"] == sorted(set(value["roots"])) and 0 < len(value["roots"]) <= 4096
-        and all(type(root) is str and re.fullmatch(r"/nix/store/[0-9a-z]{32}-[A-Za-z0-9._+-]+", root)
+        and all(type(root) is str and query_tools.closure.current_flake_path_refusal(root) is None
                 for root in value["roots"])
         and all("/".join(path.split("/")[:4]) in value["roots"]
                 for path in list(expected.values()) + [value["java_home"]]))
@@ -79,7 +81,10 @@ def validate_query_tools(value):
 
 
 def declared_query_tools(runfiles, rows):
-    selected = [row[2] for row in rows if len(row) == 3 and row[0] in ("", "_main") and row[1] == "omux_nix"]
+    global QUERY_REPOSITORY
+    require(type(DEADLINE) is float)
+    tick()
+    selected = [row[2] for row in rows if len(row) == 3 and row[0] in ("", "_main") and row[1] == query_tools.REPOSITORY]
     require(len(selected) == 1 and re.fullmatch(r"[A-Za-z0-9_+.-]{1,256}", selected[0]) is not None)
     parent = (runfiles/selected[0]).resolve(strict=True)
     require(parent.name == selected[0] and "external" in parent.parts)
@@ -88,7 +93,13 @@ def declared_query_tools(runfiles, rows):
         raw, _ = source.read(fd, "codex-metadata-query-tools.json", 1024*1024)
     finally:
         os.close(fd)
-    return validate_query_tools(json.loads(raw, object_pairs_hook=source.unique))
+    descriptor = json.loads(raw, object_pairs_hook=source.unique)
+    require(validate_query_tools(descriptor) is True)
+    qualified = query_tools.verify_repository(parent, DEADLINE)
+    require(qualified["status"] == "declared-fixed-query-tools-byte-qualified"
+        and qualified["inputs_rechecked"] is True and qualified["query_tools"] == descriptor)
+    QUERY_REPOSITORY = parent
+    return True
 
 
 def declared_selection():
@@ -325,13 +336,19 @@ def produce(document, selector_sha, temporary, output, seconds, *, absolute_dead
 
 
 def main():
-    global PHASE
+    global PHASE,DEADLINE,QUERY_REPOSITORY
     os.umask(0o077)
-    document,pin = declared_selection()
+    entry = float(time.monotonic())
     seconds = min(840,int(os.environ["TEST_TIMEOUT"])-60)
+    require(1 <= seconds <= 840)
+    DEADLINE = entry+seconds
+    QUERY_REPOSITORY = None
+    document,pin = declared_selection()
+    require(QUERY_REPOSITORY is not None)
     temporary = Path(os.environ["TEST_TMPDIR"]).resolve(strict=True)/"protocol-history-metadata-work"
     output = Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]).resolve(strict=True)/"protocol-history-metadata"
-    produce(document,pin,temporary,output,seconds)
+    produce(document,pin,temporary,output,seconds,absolute_deadline=DEADLINE)
+    require(query_tools.verify_repository(QUERY_REPOSITORY,DEADLINE)["inputs_rechecked"] is True)
     print("strict generated Cargo hub verified; full SDK export and native compilation unrun")
 
 
