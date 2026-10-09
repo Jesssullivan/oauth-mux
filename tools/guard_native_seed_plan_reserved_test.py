@@ -954,7 +954,7 @@ class TerminalConfirmedProcExitModels(unittest.TestCase):
             with self.assertRaises(reserved.ReservationValueError) as rejected:
                 reserved.monitor(reserved.PROFILE, witness, query, 1, lambda: None, clock=lambda: 0)
         self.assertEqual(reserved.diagnostic_projection(rejected.exception)["proc_exit_confirmation"], "custody-refused")
-        self.assertNotIn("private", guard.rejection_diagnostic(rejected.exception, "private-epoch"))
+        self.assertNotIn("drift", guard.rejection_diagnostic(rejected.exception, "private-epoch"))
         self.assertIn("proc_exit_confirmation=custody-refused", guard.rejection_diagnostic(rejected.exception, "private-epoch"))
         query.reset_mock()
         with self.assertRaises(reserved.ReservationValueError): witness.confirm_proc_exit(query, 1, lambda: 0)
