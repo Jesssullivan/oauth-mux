@@ -12,7 +12,7 @@ PROFILE = "native-seed-plan-reserved"
 MODEL_PROFILE = "native-seed-plan-reserved-models"
 PROFILES = (PROFILE, MODEL_PROFILE)
 # Kernel worker reuse only; archive admission has its own exact BUILD helper.
-WORKLOAD_PROFILES = (*PROFILES, "default-archive-reserved", "query-registration-reserved", "resident-models-reserved")
+WORKLOAD_PROFILES = (*PROFILES, "default-archive-reserved", "query-registration-reserved", "resident-models-reserved", "resident-owner-status-source-reserved")
 LABEL = "//tools:native_flake_seed_plan_qualification"
 MODELS = ["test", "//tools:guard_native_seed_plan_reserved_test", "//tools:execution_guard_test",
     "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
