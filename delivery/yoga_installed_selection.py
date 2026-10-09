@@ -1,0 +1,321 @@
+"""Fixed c106 public selector assembly; Bazel TEST only, never writes staging."""
+import argparse
+from contextlib import ExitStack
+import hashlib
+import os
+from pathlib import Path
+import re
+import stat
+import time
+
+import yoga_installed_workspace as workspace
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent / 'tools'))
+import yoga_installed_controller_support as support
+
+LABEL = '//delivery:yoga_installed_selection'
+COORD = Path('/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005')
+CONTROLLER = support.TOOLS
+NATIVE_SHA = 'b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0'
+INPUT_SHA = {
+    'bundle': workspace.ARTIFACTS['bundle'][0],
+    'extension': workspace.ARTIFACTS['extension'][0],
+    'runtime_authority': workspace.ARTIFACTS['runtime_authority'][0],
+    'chromium': 'e17d2b0d9b0218bb01bb208c8680d35431dc17208bbd00e69b5b88135f6e51f9',
+    'node': 'ee614b3f5d9fb5aa59845aa18fb620e5b259a3cd907353b4fd43d904a76c5191',
+    'observer': workspace.ORIGIN_SOURCE_SHA['delivery/yoga_toolbar_observer.mjs'],
+    'recorder': workspace.ORIGIN_SOURCE_SHA['delivery/yoga_toolbar_native_recorder.py'],
+    'recorder_implementation': workspace.ORIGIN_SOURCE_SHA['delivery/chromium_native_recorder.py'],
+    'dbus_session': '0f1dc4d355e763b987340a2d984bcf058c0bb0ecca7c8ee4a513d8afd8bbabbf',
+    'dbus_daemon': '352f2f64c60f465c3aa08079abfa9c75c67db58ff872fc4f72e1366f10be1bfe',
+    'keyring': '6a5e31b15bb28687aa21078a224c6829e05e1bacf1ec83fc845d5f2254d88626',
+}
+INPUT_KEYS = {
+    'bundle': '_main/delivery/release_archive.tar.gz',
+    'extension': '_main/extensions/chromium_dev_package.zip',
+    'runtime_authority': '_main/delivery/qualified_browser_runtime.json',
+    'chromium': '+cached_site_repository+omux_cached_site/packages/chromium/bin/chromium',
+    'node': '+cached_site_repository+omux_cached_site/packages/node/bin/node',
+    'observer': '_main/delivery/yoga_toolbar_observer.mjs',
+    'recorder': '_main/delivery/yoga_toolbar_native_recorder.py',
+    'recorder_implementation': '_main/delivery/chromium_native_recorder.py',
+    'dbus_session': '+omux_nix_repository+omux_nix/dbus_run_session',
+    'dbus_daemon': '+omux_nix_repository+omux_nix/dbus_daemon',
+    'keyring': '+omux_nix_repository+omux_nix/gnome_keyring_daemon',
+}
+BOOTSTRAP_SHA = {
+    '_main/delivery/portable_launcher_template.py': 'ebf7b14f81b57290bdd395ed535e5b95cd74c50b94b544cc07020f1341c95bfc',
+    '+omux_nix_repository+omux_nix/python': 'dcd0c375203a9608854148081e021d339a337e22f122bae6a1ae2a34440cf481',
+    '+omux_nix_repository+omux_nix/tool_wrappers/python': 'dcd0c375203a9608854148081e021d339a337e22f122bae6a1ae2a34440cf481',
+    '+omux_nix_repository+omux_nix/tool_wrappers/bash': '320ca17b474afcdcf8daac09dad94fdcb19dfef2945405b2f7e3bed1c760b02a',
+}
+BOOTSTRAP_PATH = {
+    '_main/delivery/portable_launcher_template.py': workspace.OUTPUT_BASE + '/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/portable_launcher_template.py',
+    '+omux_nix_repository+omux_nix/python': workspace.OUTPUT_BASE + '/external/+omux_nix_repository+omux_nix/tool_wrappers/python',
+    '+omux_nix_repository+omux_nix/tool_wrappers/python': workspace.OUTPUT_BASE + '/external/+omux_nix_repository+omux_nix/tool_wrappers/python',
+    '+omux_nix_repository+omux_nix/tool_wrappers/bash': workspace.OUTPUT_BASE + '/external/+omux_nix_repository+omux_nix/tool_wrappers/bash',
+}
+
+
+def historical_pin(key, physical, digest):
+    if key in BOOTSTRAP_SHA:
+        workspace.require(str(physical) == BOOTSTRAP_PATH[key] and digest == BOOTSTRAP_SHA[key])
+    if key.startswith('_main/') and key[len('_main/'):] in workspace.ORIGIN_SOURCE_SHA:
+        relative = key[len('_main/'):]
+        workspace.require(str(physical) == workspace.SOURCE_ROOT + '/' + relative
+                          and digest == workspace.ORIGIN_SOURCE_SHA[relative])
+    if key == '+omux_nix_repository+omux_nix/native.json':
+        workspace.require(str(physical) == workspace.OUTPUT_BASE + '/external/+omux_nix_repository+omux_nix/native.json'
+                          and digest == NATIVE_SHA)
+    for name, selected_key in INPUT_KEYS.items():
+        if key == selected_key:
+            workspace.require(digest == INPUT_SHA[name])
+    for name in ('dbus_daemon', 'dbus_run_session', 'gnome_keyring_daemon'):
+        if key == '+omux_nix_repository+omux_nix/tool_wrappers/' + name:
+            selected = {'dbus_daemon': 'dbus_daemon', 'dbus_run_session': 'dbus_session', 'gnome_keyring_daemon': 'keyring'}[name]
+            workspace.require(digest == INPUT_SHA[selected])
+
+
+INVENTORY_REPOS = {'browserInventory': '+cached_site_repository+omux_cached_site',
+                  'controllerInventory': '+cached_nar_repository+omux_yoga_controller_nars'}
+
+
+def output_base(path):
+    path = workspace.source_path(str(path))
+    suffix = path.relative_to(COORD)
+    parts = suffix.parts
+    workspace.require(len(parts) > 2 and (re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', parts[0])
+        or re.fullmatch(r'cache-v2-[0-9a-f]{64}', parts[0])) and parts[1] == 'output-base')
+    return COORD / parts[0] / 'output-base'
+
+
+def declared_inventory(alias, name):
+    alias = workspace.source_path(str(alias))
+    base = output_base(alias)
+    repository = INVENTORY_REPOS[name]
+    expected = base / 'external' / repository / 'inventory.json'
+    workspace.require(alias == expected or str(alias).endswith('.runfiles/' + repository + '/inventory.json'))
+    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
+    workspace.require(physical == expected)
+    return physical
+
+
+def declared_controller(alias, name):
+    alias = workspace.source_path(str(alias))
+    expected = CONTROLLER / name
+    workspace.require(alias == expected or (output_base(alias) and
+        str(alias).endswith('.runfiles/_main/tools/' + name)))
+    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
+    workspace.require(physical == expected)
+    return physical
+
+
+def output_parent(path):
+    path = workspace.source_path(str(path))
+    base = output_base(path)
+    relative = path.relative_to(base).as_posix()
+    # TestRunnerAction emits an execroot-relative output; test-setup.sh makes
+    # it absolute before changing cwd. Both declared sandbox runners use their own execroot.
+    workspace.require(re.fullmatch(
+        r'(?:sandbox/(?:linux-sandbox|processwrapper-sandbox)/(?:0|[1-9][0-9]{0,8})/)?execroot/_main/bazel-out/k8-fastbuild/testlogs/delivery/yoga_installed_selection/test\.outputs',
+        relative))
+    return path
+
+
+def directory_identity(info):
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode)
+
+
+def publish(parent_path, files, until):
+    workspace.require(set(files) == {'selection.json', 'browser-inventory.json', 'controller-inventory.json'})
+    parent_path = output_parent(parent_path)
+    root = parent_path / 'installed-toolbar-selection'
+    with ExitStack() as stack:
+        parent = workspace.payload.parent(root)
+        stack.callback(os.close, parent)
+        info = os.fstat(parent)
+        workspace.require(info.st_uid == os.getuid() and not info.st_mode & 0o022)
+        def parent_check():
+            workspace.payload.budget(until)
+            current = workspace.payload.parent(root)
+            try:
+                workspace.require(directory_identity(info) == directory_identity(os.fstat(parent))
+                                  == directory_identity(os.fstat(current)))
+                return os.stat(root.name, dir_fd=current, follow_symlinks=False)
+            finally:
+                os.close(current)
+        # Reopen the canonical parent before creating any selected output.
+        current = workspace.payload.parent(root)
+        try:
+            workspace.require(directory_identity(info) == directory_identity(os.fstat(current)))
+        finally:
+            os.close(current)
+        os.mkdir(root.name, 0o700, dir_fd=parent)
+        fd = os.open(root.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        stack.callback(os.close, fd)
+        held = os.fstat(fd)
+        for name, content in sorted(files.items()):
+            workspace.payload.budget(until)
+            leaf = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=fd)
+            try:
+                offset = 0
+                while offset < len(content):
+                    workspace.payload.budget(until)
+                    count = os.write(leaf, content[offset:offset + 65536])
+                    workspace.require(count > 0); offset += count
+                os.fsync(leaf)
+            finally:
+                os.close(leaf)
+        # Shared finite no-extra output reader, exact content/0600 modes.
+        workspace.verify_output(fd, files, {name: 0o600 for name in files}, until)
+        named = parent_check()
+        workspace.require(directory_identity(held) == directory_identity(os.fstat(fd)) == directory_identity(named))
+        os.fsync(fd); os.fsync(parent)
+        workspace.require(directory_identity(held) == directory_identity(parent_check()))
+    return root
+
+
+def assemble(browser_alias, controller_alias, controller_files, output, deadline_ns, *, controller_support):
+    workspace.require(type(deadline_ns) is int and 30 * 10**9 < deadline_ns - time.monotonic_ns() <= 1200 * 10**9)
+    until = (deadline_ns - 30 * 10**9) / 10**9
+    launch = workspace.OUTPUT_BASE + '/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh'
+    with ExitStack() as stack:
+        captures, aliases = [], {}
+        def capture(path, digest, maximum, **options):
+            held = workspace.PhysicalCapture(path, digest, maximum, until, **options)
+            stack.callback(held.close); captures.append(held)
+            return held
+        def measure(path, maximum=workspace.payload.MAX_FILE, **options):
+            held = workspace.PhysicalCapture.measure(path, maximum, until, **options)
+            stack.callback(held.close); captures.append(held)
+            return held
+        receipt = capture(workspace.BUILD_RECEIPT, workspace.BUILD_SHA, workspace.payload.MAX_METADATA)
+        workspace.origin(workspace.decode(receipt.bytes(workspace.payload.MAX_METADATA)))
+        launcher = capture(launch, workspace.LAUNCHER_SHA, 1024 * 1024)
+        workspace.require(launcher.size == 5339)
+        manifest = capture(launch + '.runfiles_manifest', workspace.MANIFEST_SHA, workspace.MAX_MANIFEST)
+        mapping = workspace.manifest(manifest.bytes(workspace.MAX_MANIFEST))
+        workspace.require(set(BOOTSTRAP_SHA).issubset(mapping))
+        inventories, roots = {}, set()
+        for name, alias in (('browserInventory', browser_alias), ('controllerInventory', controller_alias)):
+            physical = declared_inventory(alias, name)
+            held = capture(physical, workspace.INVENTORY_SHA[name], workspace.payload.MAX_METADATA, declared_inventory=name)
+            content = held.bytes(workspace.payload.MAX_METADATA)
+            value = workspace.decode(content)
+            workspace.require(type(value) is dict and type(value.get('paths')) is list and 0 < len(value['paths']) <= 4096)
+            roots.update(row['path'] for row in value['paths'])
+            inventories['browser-inventory.json' if name == 'browserInventory' else 'controller-inventory.json'] = content
+            aliases[str(alias)] = (physical, (workspace.source_path(str(alias)), physical))
+        workspace.require(all(re.fullmatch(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+', root) for root in roots))
+        roots = frozenset(roots)
+        input_paths = {name: mapping[key] for name, key in INPUT_KEYS.items()}
+        native = workspace.OUTPUT_BASE + '/external/+omux_nix_repository+omux_nix/native.json'
+        capture(native, NATIVE_SHA, workspace.payload.MAX_METADATA)
+        pins = {}
+        copied_bytes = receipt.size + launcher.size + manifest.size + sum(map(len, inventories.values()))
+        workspace.require(copied_bytes <= workspace.MAX_COPIED)
+        for key, target in sorted(mapping.items()):
+            workspace.payload.budget(until)
+            physical = workspace.safe_resolve(target, roots)
+            aliases[target] = (physical, ())
+            if str(physical).startswith('/nix/store/'):
+                workspace.require(key not in BOOTSTRAP_SHA and key != '+omux_nix_repository+omux_nix/native.json'
+                    and not (key.startswith('_main/') and key[len('_main/'):] in workspace.ORIGIN_SOURCE_SHA)
+                    and key not in {INPUT_KEYS[name] for name in INPUT_KEYS if name not in ('chromium', 'node')}
+                    and not key.startswith('+omux_nix_repository+omux_nix/tool_wrappers/'))
+                workspace.require(str(Path(*physical.parts[:4])) in roots)
+                continue
+            held = measure(physical, min(workspace.payload.MAX_FILE, workspace.MAX_COPIED - copied_bytes))
+            copied_bytes += held.size
+            pins[key] = held.sha
+            workspace.require(len(pins) <= 256)
+            historical_pin(key, physical, held.sha)
+            if target == native:
+                workspace.require(held.sha == NATIVE_SHA)
+        # Independent eleven-input byte pins include actual Nix executables;
+        # their public store bytes are read, never executed.
+        for name, target in input_paths.items():
+            physical = workspace.safe_resolve(target, roots)
+            held = capture(physical, INPUT_SHA[name], workspace.payload.MAX_FILE,
+                           store_roots=roots if str(physical).startswith('/nix/store/') else None)
+            if name in workspace.ARTIFACTS:
+                workspace.require(held.size == workspace.ARTIFACTS[name][1])
+        names = [Path(path).name for path in controller_files]
+        workspace.require(len(names) == len(set(names)) and 0 < len(names) <= 512
+                          and all(re.fullmatch(r'[A-Za-z0-9_-]+\.py', name) for name in names))
+        directory = workspace.payload.parent(CONTROLLER / 'placeholder')
+        stack.callback(os.close, directory)
+        saved_directory = os.fstat(directory)
+        def package_check():
+            workspace.payload.budget(until)
+            workspace.require({name for name in os.listdir(directory) if name.endswith('.py')} == set(names))
+            named = workspace.payload.parent(CONTROLLER / 'placeholder')
+            try:
+                held, current = os.fstat(directory), os.fstat(named)
+                workspace.require((saved_directory.st_dev, saved_directory.st_ino, saved_directory.st_uid, saved_directory.st_mode)
+                    == (held.st_dev, held.st_ino, held.st_uid, held.st_mode)
+                    == (current.st_dev, current.st_ino, current.st_uid, current.st_mode))
+            finally: os.close(named)
+        package_check()
+        package = {}
+        for alias in controller_files:
+            name = Path(alias).name
+            physical = declared_controller(alias, name)
+            held = measure(physical, 1024 * 1024, controller_root=CONTROLLER)
+            workspace.require(0 < held.size <= 1024 * 1024)
+            copied_bytes += held.size
+            workspace.require(copied_bytes <= workspace.MAX_COPIED)
+            package[name] = {'sha256': held.sha, 'bytes': held.size}
+            aliases[str(alias)] = (physical, (workspace.source_path(str(alias)), physical))
+        alias, expected = support.declared(controller_support, output_base)
+        physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
+        workspace.require(physical == expected)
+        aliases[str(alias)] = (physical, (alias, expected))
+        held_support = measure(physical, 1024 * 1024, controller_root=support.DELIVERY)
+        copied_bytes += held_support.size
+        workspace.require(copied_bytes <= workspace.MAX_COPIED)
+        support_pin = {'root': str(support.DELIVERY), 'files': {
+            expected.name: {'sha256': held_support.sha, 'bytes': held_support.size}}}
+        support.support(support_pin)
+        selection = workspace.selected({'schemaVersion': support.SCHEMA, 'scope': support.SELECTION_SCOPE,
+            'buildReceipt': {'path': workspace.BUILD_RECEIPT, 'sha256': workspace.BUILD_SHA},
+            'launcher': {'path': launch, 'sha256': workspace.LAUNCHER_SHA},
+            'runfilesManifest': {'path': launch + '.runfiles_manifest', 'sha256': workspace.MANIFEST_SHA},
+            'inputPaths': input_paths, 'inputSha256': INPUT_SHA, 'nativeManifest': native,
+            'nativeManifestSha256': NATIVE_SHA, 'fileSha256': pins,
+            'browserInventory': {'path': workspace.PUBLIC_STAGING + '/browser-inventory.json', 'sha256': workspace.INVENTORY_SHA['browserInventory']},
+            'controllerInventory': {'path': workspace.PUBLIC_STAGING + '/controller-inventory.json', 'sha256': workspace.INVENTORY_SHA['controllerInventory']},
+            'controllerPackage': {'root': str(CONTROLLER), 'files': package},
+            'controllerDelivery': support_pin})
+        files = dict(inventories, **{'selection.json': workspace.canonical(selection) + b'\n'})
+        def recheck():
+            for held in captures: held.check()
+            package_check()
+            for target, (physical, declared) in aliases.items():
+                workspace.require(workspace.safe_resolve(target, roots, declared_paths=declared) == physical)
+        recheck()
+        result = publish(output, files, until)
+        recheck()
+        return result, hashlib.sha256(files['selection.json']).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--browser-inventory', required=True)
+    parser.add_argument('--controller-inventory', required=True)
+    parser.add_argument('--controller-file', action='append', required=True)
+    parser.add_argument('--controller-support-file', required=True)
+    args = parser.parse_args()
+    try:
+        raw = os.environ.get('OMUX_INSTALLED_SELECTION_DEADLINE_NS', '')
+        workspace.require(re.fullmatch(r'[1-9][0-9]{1,19}', raw))
+        _, digest = assemble(args.browser_inventory, args.controller_inventory, args.controller_file,
+                             os.environ['TEST_UNDECLARED_OUTPUTS_DIR'], int(raw),
+                             controller_support=args.controller_support_file)
+        print(workspace.canonical({'schemaVersion': 1, 'scope': 'yoga-installed-selection-assembly-v1',
+            'selectionSha256': digest, 'executionAuthority': False, 'toolbarConsentProved': False}).decode())
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        parser.exit(125, 'installed-toolbar-selection-assembly-refused\n')
+
+
+if __name__ == '__main__': main()

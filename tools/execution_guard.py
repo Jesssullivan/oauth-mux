@@ -332,7 +332,7 @@ class PidsObservation:
 
 
 def workload_pids_observation(settings, profile):
-    if profile in ('yoga-install-inputs','native-seed-plan-reserved','native-seed-plan-reserved-models','default-archive-reserved','query-registration-reserved','resident-models-reserved','resident-owner-status-source-reserved','resident-owner-status-binding-reserved','resident-owner-status-persistence-source-reserved','resident-owner-status-persistence-binding-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved'):
+    if profile in ('yoga-install-inputs','native-seed-plan-reserved','native-seed-plan-reserved-models','default-archive-reserved','query-registration-reserved','resident-models-reserved','resident-owner-status-source-reserved','resident-owner-status-binding-reserved','resident-owner-status-persistence-source-reserved','resident-owner-status-persistence-binding-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','yoga-installed-selection-reserved','yoga-installed-workspace-reserved','yoga-installed-models-reserved','yoga-toolbar-reserved','yoga-toolbar-reserved-models'):
         return PidsObservation(480)
     return PidsObservation(settings.PROOF_TASKS
         if profile in ('resident-enrollment','resident-sources','codex-device-component-reserved') else 512)
@@ -582,7 +582,7 @@ def blocked_paths(profile='standard'):
     # also excludes alternative manager endpoints within the same namespace.
     return ['/run/user/' + str(os.getuid()), '/run/dbus',
             '/run/systemd', '/nix/var/nix/daemon-socket',
-            str(Path(pwd.getpwuid(os.getuid()).pw_dir) / '.config/sops-nix/secrets/become')] + (['/etc/bluetooth', '/etc/environment'] if profile in ('installed-browser', 'site', 'yoga-toolbar') else [])
+            str(Path(pwd.getpwuid(os.getuid()).pw_dir) / '.config/sops-nix/secrets/become')] + (['/etc/bluetooth', '/etc/environment'] if profile in ('installed-browser', 'site', 'yoga-toolbar','yoga-toolbar-reserved') else [])
 
 
 def validate_become_metadata(metadata, uid):
@@ -901,6 +901,10 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         import guard_resident_owner_status_persistence_binding_reserved as seed_reserved
     elif profile in ('resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved'):
         import guard_resident_custody_runtime_reserved as seed_reserved
+    elif profile in ('yoga-installed-selection-reserved','yoga-installed-workspace-reserved','yoga-installed-models-reserved'):
+        import guard_yoga_installed_reserved as seed_reserved
+    elif profile in ('yoga-toolbar-reserved','yoga-toolbar-reserved-models'):
+        import guard_yoga_toolbar_reserved as seed_reserved
     seed_proof = profile in seed_reserved.PROFILES
     expected = (component.proof_properties(PROPERTIES,profile) if component_reserved else
         resident_dispatch.proof_properties(PROPERTIES) if resident_proof else PROPERTIES)
@@ -913,7 +917,9 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'yoga-install-inputs', 'codex-native') or
                 profile in ('standard', 'codex-live', *resident_dispatch.PROFILES, resident_dispatch.SETUP_PROFILE, *acquisition.PROFILES, *component.PROFILES, *seed_reserved.PROFILES) and runtime_seconds is not None):
             import yoga_delivery_settings as delivery_settings
-            if profile == 'codex-native' and native_phase2 is True:
+            if profile in ('yoga-toolbar-reserved','yoga-toolbar-reserved-models'):
+                seed_reserved.verify_runtime(actual.get(key),runtime_seconds)
+            elif profile == 'codex-native' and native_phase2 is True:
                 from codex_native_profile import phase2_effective_runtime
                 phase2_effective_runtime(actual.get(key), runtime_seconds)
             else:
@@ -925,13 +931,13 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         if actual.get(key) != value:
             raise ValueError('effective service property rejected: ' + key)
     if manager == 'system':
-        if profile == 'yoga-toolbar':
+        if profile in ('yoga-toolbar','yoga-toolbar-reserved'):
             import guard_yoga_profile as yoga
             home = Path(pwd.getpwuid(os.getuid()).pw_dir)
             yoga.verify_masks(actual, home, actual.get('BindReadOnlyPaths', '').split())
         else:
             verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if resident_proof or acquisition_proof or seed_proof or profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live') else profile)
-        if profile in ('installed-browser', 'site', 'yoga-toolbar') and '/etc/environment' not in {
+        if profile in ('installed-browser', 'site', 'yoga-toolbar','yoga-toolbar-reserved') and '/etc/environment' not in {
                 path.lstrip('-') for path in actual.get('InaccessiblePaths', '').split()}:
             raise ValueError('host environment file mask missing')
     else:
@@ -1144,12 +1150,21 @@ def yoga_command(bazel, run, arguments, admission, *, manager, source_commit=Non
     yoga.finite('yoga-toolbar', manager, arguments)
     if bazel != admission['receipt']['controllerTools']['bazel']:
         raise ValueError('Yoga command requires the qualified Bazel selector')
+    installed = admission['receipt'].get('scope') == yoga.INSTALLED_SCOPE or admission.get('reservedToolbar') is True
+    if installed:
+        import guard_yoga_installed_workspace as inventory
+        if inventory.verified(admission) is not True or source_commit is not None or source_dirty is not None:
+            raise ValueError('Yoga installed graph requires independent origin without source stamp overrides')
     bindings = yoga.repository_bindings(admission, run)
     # Reuse the fixed local build options, then select this single run label.
     # The generic constructor continues refusing all non-formatter run calls.
     command = bazel_command(bazel, run, ['build', yoga.LABEL],
                             source_commit=source_commit, source_dirty=source_dirty)
     command[command.index('build')] = 'run'
+    if installed:
+        command.remove('--@rules_zig//zig/settings:use_standalone_translate_c')
+        command[command.index('run')+1:command.index('run')+1] = [
+            '--repository_disable_download', '--repo_contents_cache=']
     command[-1:-1] = ['--symlink_prefix=' + str(Path(run) / 'bazel-')] + [
         '--repo_env=' + key + '=' + value for key, value in sorted(bindings.items())]
     return command
@@ -1259,7 +1274,8 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved', 'resident-owner-status-source-reserved', 'resident-owner-status-binding-reserved', 'resident-owner-status-persistence-source-reserved', 'resident-owner-status-persistence-binding-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved', 'resident-owner-status-source-reserved', 'resident-owner-status-binding-reserved', 'resident-owner-status-persistence-source-reserved', 'resident-owner-status-persistence-binding-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved', 'yoga-installed-selection-reserved', 'yoga-installed-workspace-reserved', 'yoga-installed-models-reserved', 'yoga-toolbar-reserved', 'yoga-toolbar-reserved-models'), default='standard')
+    parser.add_argument('--yoga-installed-producer-selection-sha256')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1351,7 +1367,22 @@ def _main(argv, admission_resources):
         import guard_resident_owner_status_persistence_binding_reserved as seed_reserved
     elif args.profile in ('resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved'):
         import guard_resident_custody_runtime_reserved as seed_reserved
+    elif args.profile in ('yoga-installed-selection-reserved','yoga-installed-workspace-reserved','yoga-installed-models-reserved'):
+        import guard_yoga_installed_reserved as seed_reserved
+    elif args.profile == 'yoga-toolbar-reserved-models':
+        import guard_yoga_toolbar_reserved as seed_reserved
+    import guard_yoga_toolbar_reserved as toolbar_reserved
+    yoga_toolbar_reserved = args.profile == toolbar_reserved.PROFILE
+    if yoga_toolbar_reserved:
+        toolbar_reserved.request(args,arguments)
     seed_selected = seed_reserved.request(args,arguments)
+    reservation_selected = seed_selected or yoga_toolbar_reserved
+    reservation_helper = toolbar_reserved if yoga_toolbar_reserved else seed_reserved
+    yoga_reserved = args.profile in ('yoga-installed-selection-reserved','yoga-installed-workspace-reserved','yoga-installed-models-reserved')
+    if args.yoga_installed_producer_selection_sha256 is not None and args.profile != 'yoga-installed-workspace-reserved':
+        raise ValueError('installed Yoga input is exclusive to the reserved workspace profile')
+    yoga_installed_input,yoga_installed_before,yoga_installed_after = None,None,None
+    yoga_installed_verified_after = None
     seed_reservation,seed_verified_after,seed_after = None,None,None
     seed_failure = None
     resident_input = None
@@ -1525,9 +1556,12 @@ def _main(argv, admission_resources):
             repository_policy.repository_inputs(args.repository_cache,args.nixpkgs_source)
     elif args.yoga_delivery_epoch is not None:
         raise ValueError('prior Yoga delivery epoch is exclusive to its fixed read-only profile')
-    if args.profile == 'yoga-toolbar':
+    if args.profile in ('yoga-toolbar','yoga-toolbar-reserved'):
         import guard_yoga_profile as yoga
-        yoga.finite(args.profile, args.manager, arguments)
+        if yoga_toolbar_reserved:
+            toolbar_reserved.finite(args.manager,arguments)
+        else:
+            yoga.finite(args.profile, args.manager, arguments)
         if (any(value is None for value in (args.yoga_qualification, args.yoga_qualification_sha256,
                 args.yoga_deadline_monotonic_ns)) or args.reuse_owned_cache or
                 any(value is not None for value in (args.repository_cache, args.site_source, args.site_phase,
@@ -1576,7 +1610,7 @@ def _main(argv, admission_resources):
         raise ValueError('SDK inputs are exclusive to the SDK profile')
     if os.environ.get('OMUX_EXECUTION_GUARD'):
         raise ValueError('recursive launcher reentry rejected')
-    isolation = {**SANDBOX,**seed_reserved.selected(args.profile,arguments)} if seed_selected else resident_isolation(resident_settings, args, arguments) if resident_settings else {**SANDBOX, **site.phase_isolation(args.site_phase, arguments)} if site else {**SANDBOX, **selected_profile(args.profile, arguments,
+    isolation = {**SANDBOX,**selected_profile('yoga-toolbar',arguments)} if yoga_toolbar_reserved else {**SANDBOX,**seed_reserved.selected(args.profile,arguments)} if seed_selected else resident_isolation(resident_settings, args, arguments) if resident_settings else {**SANDBOX, **site.phase_isolation(args.site_phase, arguments)} if site else {**SANDBOX, **selected_profile(args.profile, arguments,
         site_inputs=any((args.site_source, args.site_nixpkgs_source, args.site_inventory,
                          args.site_inventory_sha256, args.nixpkgs_source if args.profile != 'yoga-install-inputs' else False)),
         pack_input=args.codex_pack_directory is not None,
@@ -1639,15 +1673,28 @@ def _main(argv, admission_resources):
     if yoga:
         # All live seat/input/closure checks precede state initialization, lock,
         # epoch, cache or unit creation. The selected deadline never restarts.
-        yoga_admission = yoga.preallocate(args.yoga_qualification, args.yoga_qualification_sha256,
+        preallocate = toolbar_reserved.preallocate if yoga_toolbar_reserved else yoga.preallocate
+        yoga_admission = preallocate(args.yoga_qualification, args.yoga_qualification_sha256,
             args.yoga_deadline_monotonic_ns, manager=args.manager, arguments=arguments,
             state_root=args.state_dir, source_root=Path.cwd(), home=Path(pwd.getpwuid(os.getuid()).pw_dir),
             tools={'python': python, 'systemd_run': runner, 'systemctl': control, 'bazel': bazel,
                    'closure': str(closure), 'bootstrap_closure': str(bootstrap), 'zig_sdk': str(zig), 'java_home': str(java)},
             graph_sha256=graph_digest(Path.cwd())[0], uid=os.getuid(), operator_descriptor=sys.stdin.fileno())
         admission_resources.callback(yoga_admission['pin'].close)
+        if 'installedCapture' in yoga_admission:
+            admission_resources.callback(yoga_admission['installedCapture'].close)
+        if yoga_toolbar_reserved:
+            delivery_entry_monotonic_ns,delivery_entry_deadline_ns = toolbar_reserved.clock(
+                yoga_admission['receipt'],args.yoga_deadline_monotonic_ns)
+            seed_reservation = toolbar_reserved.Witness(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
+            admission_resources.callback(seed_reservation.close)
         environment['OMUX_BROWSER_HOST_CONFIGURATION'] = 'host-configurations-unavailable'
-    coordination = prepare_state(args.state_dir, 'standard' if seed_selected or resident_settings else 'codex-sdk' if site else args.profile,
+    if args.profile == 'yoga-installed-workspace-reserved':
+        yoga_installed_input = seed_reserved.admit(args.yoga_installed_producer_selection_sha256,
+            Path.cwd(),delivery_entry_deadline_ns)
+        admission_resources.callback(yoga_installed_input.close)
+        yoga_installed_before = yoga_installed_input.facts()
+    coordination = prepare_state(args.state_dir, 'yoga-toolbar' if yoga_toolbar_reserved else 'standard' if seed_selected or resident_settings else 'codex-sdk' if site else args.profile,
                                  args.coordination_dir, args.initialize_state_dir, arguments=arguments)
     DIAGNOSTIC_STAGE = 'operatorinputs'
     if args.codex_owner_runtime_directory is not None:
@@ -1723,6 +1770,10 @@ def _main(argv, admission_resources):
         identifier = args.resident_epoch if args.profile in resident_dispatch.PROFILES else yoga_admission['receipt']['proofId'] if yoga else str(uuid.uuid4())
         run = args.state_dir / identifier
         run.mkdir(mode=0o700)
+        if yoga_installed_input is not None:
+            (run / 'home').mkdir(mode=0o700)
+            (run / 'tmp').mkdir(mode=0o700)
+            environment.update(HOME=str(run / 'home'),TMPDIR=str(run / 'tmp'))
         if resident_input is not None:
             resident_input.bind_run(run)
             environment.update(resident_input.environment())
@@ -1735,7 +1786,8 @@ def _main(argv, admission_resources):
                 proof_id=identifier, proof_root=str(run), source_socket=yoga_admission['witness']['source'], uid=os.getuid(),
                 deadline_ns=args.yoga_deadline_monotonic_ns, input_digests=yoga_admission['receipt']['inputSha256'],
                 vault_wrapper_authority=yoga_admission['receipt']['vaultWrapperAuthority'],
-                source_root=yoga_admission['receipt']['sourceRoot'], source_files_sha256=yoga_admission['receipt']['sourceFilesSha256'])
+                source_root=yoga_admission['receipt']['sourceRoot'], source_files_sha256=yoga_admission['receipt']['sourceFilesSha256'],
+                **({'original_entry_ns':delivery_entry_monotonic_ns} if yoga_toolbar_reserved else {}))
             resources.callback(yoga_support.close)
             yoga_support.witness = yoga_admission['witness']
             operator_read, yoga_operator_writer = os.pipe()
@@ -1754,10 +1806,11 @@ def _main(argv, admission_resources):
                 source_commit=args.source_commit,source_dirty=args.source_dirty,
                 repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
         elif seed_selected:
+            seed_command_options = ({'admission':yoga_installed_input} if yoga_reserved else {})
             command = seed_reserved.command(bazel_command,bazel,run,arguments,args.profile,
                 delivery_entry_monotonic_ns,delivery_entry_deadline_ns,
                 repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source,
-                source_commit=args.source_commit,source_dirty=args.source_dirty)
+                source_commit=args.source_commit,source_dirty=args.source_dirty,**seed_command_options)
         elif delivery_settings:
             command, delivery_envelope = yoga_delivery_command(bazel, run, arguments, delivery_entry_deadline_ns,
                 delivery_prior, source_commit=args.source_commit, source_dirty=args.source_dirty,
@@ -1918,8 +1971,8 @@ def _main(argv, admission_resources):
                         raise ValueError('privileged controller operation rejected')
                     descriptor = become_descriptor(args.become_file)
                     parts = [sudo, '-S', '-p', '', '--'] + parts
-                if seed_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
-                    bound = delivery_entry_deadline_ns - (30*10**9 if (getattr(resident_input,'acquisition_profile',False) or getattr(resident_input,'sources_profile',False) or args.profile == 'yoga-install-inputs' or seed_selected) and phase != 'cleanup' else 0)
+                if reservation_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
+                    bound = delivery_entry_deadline_ns - (30*10**9 if (getattr(resident_input,'acquisition_profile',False) or getattr(resident_input,'sources_profile',False) or args.profile == 'yoga-install-inputs' or reservation_selected) and phase != 'cleanup' else 0)
                     deadline = min(deadline, bound / 10**9) if deadline is not None else bound / 10**9
                 if native_sdk and (phase != 'cleanup' or native_history is not None or native_cli is not None):
                     deadline = min(deadline, args.native_deadline) if deadline is not None else args.native_deadline
@@ -1943,6 +1996,8 @@ def _main(argv, admission_resources):
                 fresh_input.recheck()
             if owner_input is not None:
                 owner_input.recheck()
+            if yoga_installed_input is not None:
+                yoga_installed_input.recheck()
             if live_input is not None:
                 live_input.recheck()
             if delivery_settings:
@@ -2055,10 +2110,10 @@ def _main(argv, admission_resources):
             launch += (['--property=TemporaryFileSystem=' + (yoga.mask_setting(Path(pwd.getpwuid(os.getuid()).pw_dir))
                         if yoga else system_masks(profile=mask_profile))] if args.manager == 'system'
                        else ['--property=InaccessiblePaths=' + ' '.join('-' + path for path in blocked_paths(args.profile))])
-            if args.manager == 'system' and args.profile in ('installed-browser', 'site', 'yoga-toolbar'):
+            if args.manager == 'system' and args.profile in ('installed-browser', 'site', 'yoga-toolbar','yoga-toolbar-reserved'):
                 launch += ['--property=InaccessiblePaths=-/etc/environment']
             if yoga:
-                launch += ['--property=BindReadOnlyPaths=' + yoga_admission['witness']['source'] + ':' + yoga_admission['witness']['destination']]
+                launch += ['--property=BindReadOnlyPaths=' + yoga.display.readonly_setting(yoga_admission['witness'])]
             if args.profile == 'yoga-install-inputs':
                 launch += ['--property=BindReadOnlyPaths='+' '.join(delivery_settings.AGENT.bindings())]
             if native_sdk:
@@ -2068,6 +2123,12 @@ def _main(argv, admission_resources):
             if live_input is not None:
                 live_binds = fresh_live.readonly_bindings(fresh_input,live_input.binding()) if fresh_input else [live_input.binding()]
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(live_binds)]
+            if yoga_installed_input is not None:
+                import guard_yoga_installed_producer as installed_producer
+                readonly,writable = yoga_installed_input.bindings()
+                launch += ['--property=BindReadOnlyPaths='+readonly,'--property=BindPaths='+writable,
+                    '--property=ProtectSystem=strict',
+                    '--property=ReadWritePaths='+str(run)+' '+str(installed_producer.OUTPUT_PARENT)]
             if resident_input is not None:
                 extra_binds = ([str(args.repository_cache)+':'+str(args.repository_cache)]
                     if args.repository_cache and args.profile != resident_dispatch.SETUP_PROFILE else [])
@@ -2080,7 +2141,7 @@ def _main(argv, admission_resources):
                     unset = acquisition.unset_environment(unset)
                 else:
                     unset = resident_dispatch.unset_environment(unset)
-            if yoga or args.profile == 'yoga-install-inputs':
+            if yoga or yoga_reserved or args.profile == 'yoga-install-inputs':
                 unset += ('DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE',
                           'SSH_AUTH_SOCK', 'SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY', 'NODE_OPTIONS', 'NODE_PATH',
                           'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME', 'XAUTHORITY',
@@ -2095,10 +2156,11 @@ def _main(argv, admission_resources):
             settings.pop('RuntimeMaxUSec')
             settings.pop('TimeoutStopUSec')
             settings.update(CPUQuota='200%', RuntimeMaxSec='1200', TimeoutStopSec='10')
-            if seed_selected:
-                delivery_runtime_seconds = int(seed_reserved.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns))
+            if reservation_selected:
+                delivery_runtime_seconds = (yoga_support.reserved_runtime if yoga_toolbar_reserved else
+                    int(reservation_helper.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)))
                 if delivery_runtime_seconds < 1: raise ValueError('native-seed-reservation-expired')
-                settings.update(MemoryMax=str(seed_reserved.MEMORY),TasksMax=str(seed_reserved.TASKS),
+                settings.update(MemoryMax=str(reservation_helper.MEMORY),TasksMax=str(reservation_helper.TASKS),
                     CPUQuota='190%',RuntimeMaxSec=str(delivery_runtime_seconds),RemainAfterExit='yes')
             if dev_stage_proof:
                 delivery_runtime_seconds = dev_stage_runtime(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
@@ -2140,8 +2202,11 @@ def _main(argv, admission_resources):
                                     'User', 'Group', 'PrivateUsers', 'CapabilityBoundingSet',
                                     'AmbientCapabilities', 'StandardInput', 'MainPID',
                                     'TemporaryFileSystem', 'InaccessiblePaths', 'BindReadOnlyPaths', 'BindPaths')}
-            if seed_selected:
+            if reservation_selected:
                 observed_properties['RemainAfterExit'] = actual.get('RemainAfterExit')
+            if yoga_installed_input is not None:
+                observed_properties.update(ProtectSystem=actual.get('ProtectSystem'),
+                    ReadWritePaths=actual.get('ReadWritePaths'))
             if live_input is not None:
                 observed_properties = live.receipt_properties(observed_properties)
                 live_binding_readback = fresh_live.binding_facts(actual,live_binds) if fresh_input else live.binding_facts(actual,live_input.binding())
@@ -2181,6 +2246,9 @@ def _main(argv, admission_resources):
                     live.verify_binding(actual,live_input.binding())
                 observed_properties = live.receipt_properties(observed_properties, verified=True)
                 live_input.recheck()
+            if yoga_installed_input is not None:
+                yoga_installed_input.verify(actual,run)
+                yoga_installed_input.recheck()
             exported = set(actual.get('Environment', '').split())
             if not {key + '=' + value for key, value in environment.items()}.issubset(exported):
                 raise ValueError('effective pinned tool environment rejected')
@@ -2216,18 +2284,30 @@ def _main(argv, admission_resources):
                 yoga_worker_identity = ready
                 actual = properties(call([control, manager_flag, 'show', '--all', unit],
                                          operation='unit-readback', phase='qualification'))
-                verify(actual, cgroup, args.manager, isolation, args.profile)
+                verify(actual, cgroup, args.manager, isolation, args.profile,
+                    runtime_seconds=delivery_runtime_seconds if yoga_toolbar_reserved else None)
                 system_identity(actual, int(actual['MainPID']))
                 yoga.verify_masks(actual, Path(pwd.getpwuid(os.getuid()).pw_dir), expected_binds)
                 source_snapshot = yoga.refresh(yoga_admission, Path(pwd.getpwuid(os.getuid()).pw_dir), graph_digest(Path.cwd())[0])
                 pids_observation.sample(cgroup_pin, 'baseline')
+                if yoga_toolbar_reserved:
+                    yoga.owns_unit(actual,unit=unit,run=run,nonce=yoga_launch_nonce,
+                        plan_sha256=environment['OMUX_YOGA_WORKER_PLAN_SHA256'],
+                        worker=str(Path(yoga_launch.__file__).resolve()),python=python,cgroup=cgroup,
+                        worker_identity=yoga_worker_identity)
+                    unit_epoch_identity(actual,unit=unit,manager=args.manager,run=run,
+                        python=python,worker=str(Path(yoga_launch.__file__).resolve()))
+                    proof_worker = reservation_helper.WorkloadWitness(args.profile,delivery_entry_monotonic_ns,
+                        delivery_entry_deadline_ns,cgroup_pin,actual,original_pid,original_ticks)
+                    resources.callback(proof_worker.close)
+                    seed_reservation.observe()
                 yoga_launch.admit_worker(yoga_support, ready, properties=actual, source_snapshot=source_snapshot,
                     effective_readonly_binds=actual.get('BindReadOnlyPaths', '').split(),
                     effective_writable_binds=actual.get('BindPaths', '').split())
             if seed_selected:
                 unit_epoch_identity(actual,unit=unit,manager=args.manager,run=run,
                     python=python,worker=str(Path(__file__).resolve()))
-                proof_worker = seed_reserved.WorkloadWitness(args.profile,delivery_entry_monotonic_ns,
+                proof_worker = reservation_helper.WorkloadWitness(args.profile,delivery_entry_monotonic_ns,
                     delivery_entry_deadline_ns,cgroup_pin,actual,original_pid,original_ticks)
                 resources.callback(proof_worker.close)
             epoch_start_ns = time.time_ns()
@@ -2243,6 +2323,8 @@ def _main(argv, admission_resources):
                     delivery_settings.AGENT.verify_bindings(actual)
                 if seed_reservation is not None:
                     seed_reservation.observe()
+                if yoga_installed_input is not None:
+                    yoga_installed_input.recheck()
                 (run / 'go').touch(mode=0o600, exist_ok=False)
             deadline = ((args.yoga_deadline_monotonic_ns - yoga.CLEANUP_RESERVE_NS) / 10**9
                         if yoga else time.monotonic() + 1200)
@@ -2250,9 +2332,11 @@ def _main(argv, admission_resources):
                 deadline = (delivery_entry_deadline_ns - delivery_settings.CLEANUP_RESERVE_NS) / 10**9
             elif native_sdk:
                 deadline = args.native_deadline - 120
-            elif seed_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
+            elif reservation_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
+                if yoga_installed_input is not None:
+                    yoga_installed_input.recheck()
                 if seed_reservation is not None:
                     seed_reservation.observe()
                 pids_observation.sample(cgroup_pin, 'monitor')
@@ -2263,8 +2347,8 @@ def _main(argv, admission_resources):
                     for progress in yoga_launch.read_progress(yoga_support):
                         print(json.dumps(progress, sort_keys=True), flush=True)
                     yoga.pump_event(yoga_admission, yoga_support, yoga_operator_writer)
-            if seed_selected:
-                result = seed_reserved.monitor(args.profile,proof_worker,
+            if reservation_selected:
+                result = reservation_helper.monitor(args.profile,proof_worker,
                     lambda: properties(call([control,manager_flag,'show',
                         '--property=Id,InvocationID,ExecMainPID,MainPID,RemainAfterExit,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus',unit],
                         operation='unit-readback',phase='monitor')),deadline,iteration)
@@ -2272,7 +2356,7 @@ def _main(argv, admission_resources):
                 result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--property=ActiveState,Result,ExecMainStatus', unit],
                     operation='unit-readback', phase='monitor')), deadline, iteration)
         except (ValueError, OSError) as error:
-            if seed_selected:
+            if reservation_selected:
                 import guard_native_seed_plan_reserved as reservation_diagnostic
                 seed_failure = reservation_diagnostic.diagnostic_projection(error)
             rejection = (resident_settings.rejection(error) if resident_settings else live.rejection_category(error) if args.profile == 'codex-live'
@@ -2291,7 +2375,7 @@ def _main(argv, admission_resources):
                     cleanup_deadline = min(cleanup_deadline, native_cli.original_deadline_ns / 10**9)
                 if native_history is not None:
                     cleanup_deadline = min(cleanup_deadline, native_history.original_deadline_ns / 10**9)
-                if seed_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
+                if reservation_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
                     cleanup_deadline = min(cleanup_deadline, delivery_entry_deadline_ns / 10**9)
                 if yoga:
                     cleanup_deadline = min(cleanup_deadline, args.yoga_deadline_monotonic_ns / 10**9)
@@ -2312,7 +2396,7 @@ def _main(argv, admission_resources):
                         cgroup = cgroup_pin.path
                         resources.callback(cgroup_pin.close)
                         return False
-                    if seed_selected and proof_worker is not None:
+                    if reservation_selected and proof_worker is not None:
                         unit_epoch_identity(owned,unit=unit,manager=args.manager,run=run,
                             python=python,worker=selected_worker)
                         proof_worker.authorize_cleanup(owned)
@@ -2325,7 +2409,7 @@ def _main(argv, admission_resources):
                             plan_sha256=environment['OMUX_YOGA_WORKER_PLAN_SHA256'],
                             worker=str(Path(yoga_launch.__file__).resolve()), python=python, cgroup=cgroup,
                             worker_identity=yoga_worker_identity)
-                cleanup_method = seed_reserved.cleanup_retained if seed_selected else cleanup_owned
+                cleanup_method = reservation_helper.cleanup_retained if reservation_selected else cleanup_owned
                 cleanup_summary = cleanup_method(deadline=cleanup_deadline,
                     readback=lambda timeout, absolute: properties(call([control, manager_flag, 'show', '--all', unit],
                         operation='unit-readback', phase='cleanup', timeout=timeout, deadline=absolute)),
@@ -2335,7 +2419,7 @@ def _main(argv, admission_resources):
                         timeout=timeout, deadline=absolute),
                     observe=lambda: cgroup_pin.observe() if cgroup_pin is not None else 'uncaptured')
                 cleanup = cleanup_summary['state'] == 'empty'
-            if seed_selected and not seed_reserved.release_worker(proof_worker):
+            if reservation_selected and not reservation_helper.release_worker(proof_worker):
                 cleanup = False
                 result = 125
             if delivery_settings:
@@ -2385,7 +2469,8 @@ def _main(argv, admission_resources):
                     native_verified_after = False
             if yoga:
                 try:
-                    yoga.refresh(yoga_admission, Path(pwd.getpwuid(os.getuid()).pw_dir), graph_digest(Path.cwd())[0])
+                    yoga.refresh(yoga_admission, Path(pwd.getpwuid(os.getuid()).pw_dir), graph_digest(Path.cwd())[0],
+                        **({'cleanup':True} if yoga_toolbar_reserved else {}))
                     yoga_verified_after = True
                 except (OSError, ValueError, KeyError, TypeError):
                     yoga_verified_after = False
@@ -2485,6 +2570,15 @@ def _main(argv, admission_resources):
                         owner_input.close()
                     except OSError:
                         owner_input_verified_after = False
+            if yoga_installed_input is not None:
+                try:
+                    yoga_installed_after = yoga_installed_input.recheck()
+                    yoga_installed_verified_after = graph_digest(Path.cwd()) == (graph_sha256,graph_inputs)
+                except (OSError,ValueError):
+                    yoga_installed_verified_after = False
+                finally:
+                    try: yoga_installed_input.close()
+                    except OSError: yoga_installed_verified_after = False
             if live_input is not None:
                 try:
                     live_input.recheck()
@@ -2521,7 +2615,7 @@ def _main(argv, admission_resources):
                 finally:
                     try: seed_reservation.close()
                     except OSError: seed_verified_after = False
-            final_status = result if fresh_input_verified_after is not False and cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
+            final_status = result if fresh_input_verified_after is not False and cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and yoga_installed_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
             if dev_stage_proof:
                 try:
                     dev_stage_budget(delivery_entry_monotonic_ns,delivery_entry_deadline_ns,reserve_ns=0)
@@ -2599,6 +2693,8 @@ def _main(argv, admission_resources):
                            runtime_seconds=delivery_runtime_seconds) if delivery_settings else None,
                        'yoga': {'qualification_sha256': args.yoga_qualification_sha256,
                                 'source_verified_after_cleanup': yoga_verified_after,
+                                'installed_workspace': yoga_admission['installedCapture'].projection(yoga_verified_after is True)
+                                    if 'installedCapture' in yoga_admission else None,
                                 'summary': yoga_summary, 'toolbarConsentProved': final_status == 0 and yoga_summary.get('toolbarConsentProved', False)} if yoga else None,
                        'coordination_lock': str(coordination / 'execution.lock'),
                        'codex_pack_directory': str(args.codex_pack_directory) if args.codex_pack_directory else None,
@@ -2656,10 +2752,10 @@ def _main(argv, admission_resources):
                        'original_cgroup_identity': {'device': cgroup_pin.identity[0], 'inode': cgroup_pin.identity[1]} if cgroup_pin else None,
                        'rejection': rejection, 'observed_properties': observed_properties,
                        'startup_history': startup_history,
-                       'descendants_empty': cleanup, 'limits': seed_reserved.properties(PROPERTIES) if seed_selected else resident_dispatch.proof_properties(PROPERTIES,resident_settings) if resident_settings else PROPERTIES,
+                       'descendants_empty': cleanup, 'limits': reservation_helper.properties(PROPERTIES) if reservation_selected else resident_dispatch.proof_properties(PROPERTIES,resident_settings) if resident_settings else PROPERTIES,
                        'isolation': isolation,
                        'inaccessible_paths': blocked_paths(args.profile) if args.manager == 'user' else
-                           (['/etc/environment'] if args.profile in ('installed-browser', 'site', 'yoga-toolbar') else []),
+                           (['/etc/environment'] if args.profile in ('installed-browser', 'site', 'yoga-toolbar','yoga-toolbar-reserved') else []),
                        'temporary_filesystem_masks': (yoga.mask_setting(Path(pwd.getpwuid(os.getuid()).pw_dir)) if yoga else system_masks(profile=mask_profile)) if args.manager == 'system' else None,
                        'nixpkgs_evaluation_source': str(args.nixpkgs_source) if args.nixpkgs_source else None,
                        'site_source': str(args.site_source) if args.site_source else None,
@@ -2673,18 +2769,31 @@ def _main(argv, admission_resources):
                        'graph_binding': 'caller must verify locked-flake and exact local action graph',
                        'bootstrap': 'pre-realized immutable tools; no Nix build',
                        'authority': 'AGENTS.md; R-N11; R-N13'}
-            if seed_selected:
+            if reservation_selected:
                 receipt['reserved_failure'] = seed_failure
+                if yoga_installed_input is not None:
+                    receipt['yoga_installed_producer_input'] = {'before':yoga_installed_before,
+                        'after':yoga_installed_after,'verified_after_cleanup':yoga_installed_verified_after}
                 outcome = getattr(proof_worker, 'proc_exit_confirmation', 'not-requested')
                 import guard_native_seed_plan_reserved as reservation_diagnostic
                 receipt['reserved_proc_exit_confirmation'] = (outcome if type(outcome) is str
                     and outcome in reservation_diagnostic.PROC_EXIT_OUTCOMES else 'unknown')
                 try:
-                    seed_reserved.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns,cleanup=True)
+                    reservation_helper.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns,cleanup=True)
                 except ValueError:
                     seed_verified_after=False
                     final_status=receipt['exit']=125
-                if args.profile == 'default-archive-reserved':
+                if yoga_toolbar_reserved:
+                    toolbar_reserved.finalize(receipt,delivery_entry_monotonic_ns,
+                        delivery_entry_deadline_ns,seed_verified_after is True,seed_after)
+                    final_status = receipt['exit']
+                elif args.profile == toolbar_reserved.MODEL_PROFILE:
+                    receipt['yoga_toolbar_model_reservation'] = toolbar_reserved.model_projection(
+                        delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                elif yoga_reserved:
+                    receipt['yoga_installed_reservation'] = seed_reserved.projection(args.profile,
+                        delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                elif args.profile == 'default-archive-reserved':
                     receipt['default_archive_reservation'] = seed_reserved.projection(
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
                 elif args.profile == 'query-registration-reserved':

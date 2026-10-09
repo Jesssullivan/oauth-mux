@@ -3,6 +3,7 @@ load("@rules_zig//zig/translate-c:toolchain.bzl", "translate_c_toolchain")
 load(":zig_tools.bzl", "zig_format", "zig_format_test")
 load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
 load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
+load(":yoga_selection_inputs.bzl", "yoga_selection_declaration_test")
 load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA256")
 load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
 load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_manifest")
@@ -54,12 +55,45 @@ _YOGA_DELIVERY_GUARD_SOURCES = ['guard_yoga_delivery_profile.py', 'yoga_delivery
     '//delivery:install.py','//delivery:pack.py','//delivery:portable.py']
 
 _YOGA_GUARD_SOURCES = [
+    "guard_yoga_toolbar_reserved.py",
+    "guard_yoga_installed_workspace.py", "guard_yoga_installed_producer.py",
+    "guard_yoga_installed_reserved.py", "yoga_installed_controller_support.py",
     "guard_yoga_profile.py", "yoga_display_binding.py", "yoga_proof_inputs.py",
     "yoga_operator_coordinator.py", "yoga_operator_launch.py",
     "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py",
 ]
 
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch", "*.json", "*.zig", "*.h"], allow_empty = True), visibility = ["//visibility:public"])
+filegroup(name = "installed_toolbar_controller_inputs", srcs = glob(["*.py"]), visibility = ["//visibility:public"])
+python_test(name = "guard_yoga_toolbar_reserved_test", main = "guard_yoga_toolbar_reserved_test.py",
+    srcs = _YOGA_GUARD_SOURCES + ["yoga_session_qualification.py", "system_mask_policy.py",
+            "guard_native_seed_plan_reserved.py", "guard_resident_observation.py", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"])
+python_binary(name = "yoga_reserved_session_qualification", main = "yoga_reserved_session_qualification.py",
+    srcs = _YOGA_GUARD_SOURCES + ["yoga_session_qualification.py", "system_mask_policy.py",
+            "guard_native_seed_plan_reserved.py", "guard_resident_observation.py", "guard_resident_enrollment_profile.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
+python_test(name = "yoga_reserved_session_qualification_test", main = "yoga_reserved_session_qualification_test.py",
+    srcs = _YOGA_GUARD_SOURCES + ["yoga_reserved_session_qualification.py", "yoga_session_qualification.py",
+            "yoga_session_qualification_test.py", "system_mask_policy.py",
+            "guard_native_seed_plan_reserved.py", "guard_resident_observation.py", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"])
+exports_files(["yoga_selection_inputs.bzl", "yoga_installed_controller_support.py"])
+yoga_selection_declaration_test(name = "yoga_selection_declaration_test")
+python_test(name = "guard_yoga_installed_producer_test", main = "guard_yoga_installed_producer_test.py",
+    srcs = ["guard_yoga_installed_producer.py", "yoga_installed_controller_support.py"],
+    target_compatible_with = ["@platforms//os:linux"])
+python_test(name = "yoga_installed_workspace_test", main = "yoga_installed_workspace_test.py",
+    srcs = ["guard_yoga_installed_workspace.py", "yoga_installed_controller_support.py"],
+    target_compatible_with = ["@platforms//os:linux"])
+python_test(name = "yoga_installed_controller_support_test", main = "yoga_installed_controller_support_test.py",
+    srcs = ["yoga_installed_controller_support.py"], target_compatible_with = ["@platforms//os:linux"])
+python_test(name = "guard_yoga_installed_reserved_test", main = "guard_yoga_installed_reserved_test.py",
+    srcs = ["guard_yoga_installed_reserved.py", "guard_yoga_installed_producer.py",
+            "yoga_installed_controller_support.py", "guard_native_seed_plan_reserved.py",
+            "guard_resident_observation.py", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"])
 
 codex_fresh_native_receipt_scope_test(name = "codex_fresh_native_receipt_scope_test")
 
@@ -250,6 +284,9 @@ python_test(
     name = "yoga_operator_launch_test",
     main = "yoga_operator_launch_test.py",
     srcs = ["yoga_operator_launch.py", "yoga_operator_coordinator.py",
+            "guard_yoga_toolbar_reserved.py", "guard_native_seed_plan_reserved.py",
+            "guard_resident_observation.py", "guard_resident_enrollment_profile.py",
+            "guard_yoga_installed_workspace.py", "yoga_installed_controller_support.py",
             "yoga_display_binding.py", "yoga_proof_inputs.py", "guard_yoga_profile.py", "system_mask_policy.py",
             "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py"],
     target_compatible_with = ["@platforms//os:linux"],
@@ -257,13 +294,18 @@ python_test(
 python_test(
     name = "yoga_operator_coordinator_test",
     main = "yoga_operator_coordinator_test.py",
-    srcs = ["yoga_operator_coordinator.py", "yoga_display_binding.py"],
+    srcs = ["yoga_operator_coordinator.py", "yoga_display_binding.py",
+            "guard_yoga_toolbar_reserved.py", "guard_native_seed_plan_reserved.py",
+            "guard_resident_observation.py", "guard_resident_enrollment_profile.py"],
     target_compatible_with = ["@platforms//os:linux"],
 )
 python_binary(
     name = "yoga_session_qualification",
     main = "yoga_session_qualification.py",
     srcs = ["guard_yoga_profile.py", "system_mask_policy.py", "yoga_display_binding.py",
+            "guard_yoga_toolbar_reserved.py", "guard_native_seed_plan_reserved.py",
+            "guard_resident_observation.py", "guard_resident_enrollment_profile.py",
+            "guard_yoga_installed_workspace.py", "yoga_installed_controller_support.py",
             "yoga_proof_inputs.py", "yoga_operator_coordinator.py",
             "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py"],
     tags = ["manual", "no-remote", "no-cache"],
@@ -273,6 +315,9 @@ python_test(
     name = "yoga_session_qualification_test",
     main = "yoga_session_qualification_test.py",
     srcs = ["yoga_session_qualification.py", "guard_yoga_profile.py", "system_mask_policy.py",
+            "guard_yoga_toolbar_reserved.py", "guard_native_seed_plan_reserved.py",
+            "guard_resident_observation.py", "guard_resident_enrollment_profile.py",
+            "guard_yoga_installed_workspace.py", "yoga_installed_controller_support.py",
             "yoga_display_binding.py", "yoga_proof_inputs.py", "yoga_operator_coordinator.py",
             "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],

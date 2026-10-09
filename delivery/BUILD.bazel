@@ -43,6 +43,35 @@ filegroup(name = "public_sources", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "
 exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
 exports_files(["yoga_wrapper_authority.py", "yoga_wrapper_custody.py", "generate_portable_launcher_template.py"])
 
+# Public origin remains c106; root-successor controller and eager support are separate.
+python_test(
+    name = "yoga_installed_selection",
+    main = "yoga_installed_selection.py",
+    srcs = ["yoga_installed_workspace.py", "yoga_payload.py", "browser_runtime_authority.py",
+            "//tools:yoga_installed_controller_support.py"],
+    data = ["@omux_yoga_selection_inputs//:old_public_inputs",
+            "@omux_cached_site//:inventory.json", "@omux_cached_site//:full_closure",
+            "@omux_yoga_controller_nars//:inventory.json", "@omux_yoga_controller_nars//:regular_inputs",
+            ":codex_device_acquisition_component.py"],
+    file_args = {"//tools:installed_toolbar_controller_inputs": "--controller-file"},
+    args = ["--browser-inventory", "$(location @omux_cached_site//:inventory.json)",
+            "--controller-inventory", "$(location @omux_yoga_controller_nars//:inventory.json)",
+            "--controller-support-file", "$(location :codex_device_acquisition_component.py)"],
+    tags = ["manual", "no-remote", "no-cache"], timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(name = "yoga_installed_selection_test", main = "test_yoga_installed_selection.py",
+    srcs = ["yoga_installed_selection.py", "yoga_installed_workspace.py", "yoga_payload.py",
+            "browser_runtime_authority.py", "//tools:yoga_installed_controller_support.py"])
+python_binary(name = "yoga_installed_workspace", main = "yoga_installed_workspace.py",
+    srcs = ["yoga_payload.py", "browser_runtime_authority.py", "//tools:yoga_installed_controller_support.py"],
+    data = ["//tools:source_receipt_inputs", ":codex_device_acquisition_component.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
+python_test(name = "yoga_installed_workspace_test", main = "test_yoga_installed_workspace.py",
+    srcs = ["yoga_installed_workspace.py", "yoga_payload.py", "browser_runtime_authority.py",
+            "//tools:yoga_installed_controller_support.py"])
+
 # Initial support is the declared native Linux target only. Other targets get
 # an explicit unavailable module; there is no host-template fallback.
 zig_format(

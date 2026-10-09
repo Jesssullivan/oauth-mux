@@ -1824,5 +1824,140 @@ class ResidentSetupIsolationModels(unittest.TestCase):
                 dispatch.select(args,["run",label])
 
 
+class InstalledYogaReservedRegistrationModels(unittest.TestCase):
+    def test_exact_new_profiles_refuse_before_tools_or_state_initialization(self):
+        import execution_guard as guard
+        import guard_yoga_installed_reserved as installed
+        with patch.object(guard, 'immutable', side_effect=AssertionError('tool read')) as tools, \
+                patch.object(guard, 'prepare_state', side_effect=AssertionError('state mutation')) as state, \
+                patch.object(installed, 'admit', side_effect=AssertionError('public input read')) as admission:
+            for profile in installed.PROFILES:
+                for arguments in (['test', '//:docs_check'], installed.VECTORS[profile] + ['--untrusted']):
+                    with self.assertRaises(ValueError):
+                        guard.main(['--profile', profile, '--manager', 'system', '--source-commit', 'a' * 40,
+                            '--source-dirty', 'false', '--', *arguments])
+            for profile in ('standard', installed.SELECTION_PROFILE, installed.MODEL_PROFILE):
+                with self.assertRaises(ValueError):
+                    guard.main(['--profile', profile, '--manager', 'system', '--source-commit', 'a' * 40,
+                        '--source-dirty', 'false', '--yoga-installed-producer-selection-sha256', 'b' * 64,
+                        '--', *installed.VECTORS.get(profile, ['test', '//:docs_check'])])
+            tools.assert_not_called()
+            state.assert_not_called()
+            admission.assert_not_called()
+
+    def test_each_profile_reads_back_only_existing_reserved_caps_and_original_runtime(self):
+        import execution_guard as guard
+        import guard_yoga_installed_reserved as installed
+        import guard_native_seed_plan_reserved as kernel
+        for profile in installed.PROFILES:
+            self.assertIn(profile, kernel.WORKLOAD_PROFILES)
+            self.assertNotIn(profile, kernel.PROFILES)
+            self.assertEqual(guard.workload_pids_observation(None, profile).expected_limit, 480)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for name, value in guard.CGROUP.items():
+                    (root / name).write_text({'memory.max': str(installed.MEMORY), 'pids.max': '480'}.get(name, value))
+                (root / 'cpu.max').write_text('190000 100000')
+                actual = {**installed.properties(guard.PROPERTIES), **guard.SANDBOX, 'RuntimeMaxUSec': '17s',
+                    'TemporaryFileSystem': guard.system_masks(profile='standard'),
+                    'UnsetEnvironment': ' '.join(guard.DELEGATION_ENV)}
+                guard.verify(actual, root, 'system', guard.SANDBOX, profile, runtime_seconds=17)
+                for key, value in (('MemoryMax', '4294967296'), ('TasksMax', '512'),
+                        ('CPUQuotaPerSecUSec', '2s'), ('RuntimeMaxUSec', '1200s'), ('PrivateNetwork', 'no')):
+                    with self.assertRaises(ValueError):
+                        guard.verify({**actual, key: value}, root, 'system', guard.SANDBOX, profile, runtime_seconds=17)
+
+class AttendedYogaReservedRegistrationModels(unittest.TestCase):
+    def test_exact_toolbar_and_model_requests_refuse_before_tools_or_state(self):
+        import execution_guard as guard
+        import guard_yoga_toolbar_reserved as reserved
+        with patch.object(guard, 'immutable', side_effect=AssertionError('tool read')) as tools, \
+                patch.object(guard, 'prepare_state', side_effect=AssertionError('state mutation')) as state, \
+                patch.object(reserved, 'preallocate', side_effect=AssertionError('qualification read')) as admission:
+            for profile in reserved.PROFILES:
+                for arguments in (['run', '//delivery:yoga_installed_workspace'],
+                        ['run', reserved.LABEL, '--untrusted'], ['test', '//:docs_check']):
+                    with self.subTest(profile=profile,arguments=arguments),self.assertRaises(ValueError):
+                        guard.main(['--profile',profile,'--manager','system','--',*arguments])
+            tools.assert_not_called()
+            state.assert_not_called()
+            admission.assert_not_called()
+
+    def test_same_derived_runtime_and_reserved_caps_are_required_for_both_profiles(self):
+        import execution_guard as guard
+        import guard_yoga_toolbar_reserved as reserved
+        import guard_native_seed_plan_reserved as kernel
+        import guard_yoga_profile as yoga
+        for profile in reserved.PROFILES:
+            self.assertIn(profile,kernel.WORKLOAD_PROFILES)
+            self.assertNotIn(profile,kernel.PROFILES)
+            self.assertEqual(guard.workload_pids_observation(None,profile).expected_limit,480)
+            with tempfile.TemporaryDirectory() as temporary,patch.object(yoga,'verify_masks'):
+                root=Path(temporary)
+                for name,value in guard.CGROUP.items():
+                    (root/name).write_text({'memory.max':str(reserved.MEMORY),'pids.max':'480'}.get(name,value))
+                (root/'cpu.max').write_text('190000 100000')
+                actual={**reserved.properties(guard.PROPERTIES),**guard.SANDBOX,'RuntimeMaxUSec':'17s',
+                    'TemporaryFileSystem':guard.system_masks(profile='standard'),
+                    'InaccessiblePaths':'/etc/environment',
+                    'UnsetEnvironment':' '.join(guard.DELEGATION_ENV)}
+                guard.verify(actual,root,'system',guard.SANDBOX,profile,runtime_seconds=17)
+                for key,value in (('MemoryMax','4294967296'),('TasksMax','512'),
+                        ('CPUQuotaPerSecUSec','2s'),('RuntimeMaxUSec','1200s'),('PrivateNetwork','no')):
+                    with self.subTest(profile=profile,key=key),self.assertRaises(ValueError):
+                        guard.verify({**actual,key:value},root,'system',guard.SANDBOX,profile,runtime_seconds=17)
+                with self.assertRaises(ValueError):
+                    guard.verify(actual,root,'system',guard.SANDBOX,profile,runtime_seconds=18)
+
+    def test_original_yoga_launcher_identity_cannot_be_substituted_by_guard_worker(self):
+        import execution_guard as guard
+        unit='omux-proof-original.service';run=Path('/owned/epoch');python='/nix/store/fixed/bin/python3'
+        worker='/sealed/tools/yoga_operator_launch.py'
+        actual={'Id':unit,'User':str(os.getuid()),'Group':str(os.getgid()),
+            'Environment':'OMUX_EXECUTION_GUARD='+str(run),
+            'ExecStart':'path='+python+' ; argv[]='+python+' '+worker+' --worker '+str(run)+' -- run'}
+        guard.unit_epoch_identity(actual,unit=unit,manager='system',run=run,python=python,worker=worker)
+        for field,value in (('Id','another.service'),('Environment','OMUX_EXECUTION_GUARD=/other'),
+                ('ExecStart',actual['ExecStart'].replace(worker,'/sealed/tools/execution_guard.py'))):
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                guard.unit_epoch_identity({**actual,field:value},unit=unit,manager='system',run=run,python=python,worker=worker)
+
+
+class InstalledYogaCommandTests(unittest.TestCase):
+    def admission(self):
+        import guard_yoga_profile as yoga
+        return {'receipt': {'scope': yoga.INSTALLED_SCOPE,
+                            'controllerTools': {'bazel': '/store/bazel'}}}
+
+    def test_marker_without_concrete_capture_refuses_before_bazel_construction(self):
+        import execution_guard as guard
+        import guard_yoga_profile as yoga
+        with patch.object(guard, 'bazel_command', side_effect=AssertionError('builder')) as builder:
+            with self.assertRaises(ValueError):
+                guard.yoga_command('/store/bazel', Path('/model/epoch'), ['run', yoga.LABEL],
+                                   self.admission(), manager='system')
+            builder.assert_not_called()
+
+    def test_fixed_mini_graph_flags_and_source_stamp_refusal(self):
+        import execution_guard as guard
+        import guard_yoga_profile as yoga
+        import guard_yoga_installed_workspace as inventory
+        # Authority is synthetic here; concrete held file/alias tests are in
+        # yoga_installed_workspace_test. This exercises actual command policy.
+        with patch.object(inventory, 'verified', return_value=True):
+            command = guard.yoga_command('/store/bazel', Path('/model/epoch'), ['run', yoga.LABEL],
+                                         self.admission(), manager='system')
+            self.assertIn('--repository_disable_download', command)
+            self.assertIn('--repo_contents_cache=', command)
+            self.assertNotIn('--@rules_zig//zig/settings:use_standalone_translate_c', command)
+            self.assertEqual(command[-1], yoga.LABEL)
+            for stamp in ({'source_commit': 'a'*40}, {'source_dirty': 'false'}):
+                with patch.object(guard, 'bazel_command', side_effect=AssertionError('builder')) as builder:
+                    with self.assertRaises(ValueError):
+                        guard.yoga_command('/store/bazel', Path('/model/epoch'), ['run', yoga.LABEL],
+                                           self.admission(), manager='system', **stamp)
+                    builder.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
