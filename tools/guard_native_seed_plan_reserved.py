@@ -1,5 +1,7 @@
 """Finite native seed-plan TEST reservation; kernel metadata only, no resident effects."""
 import os
+import errno
+from functools import wraps
 from pathlib import Path
 import re
 import select as poll
@@ -38,6 +40,50 @@ RESERVE_NS = 30 * 10**9
 ENTRY = "OMUX_NATIVE_SEED_ROOT_ENTRY_NS"
 DEADLINE = "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS"
 MODE = "OMUX_NATIVE_SEED_RESERVED_PROFILE"
+
+DIAGNOSTIC_PHASES = frozenset(("unknown", "resident-sample", "resident-completion",
+    "worker-pidfd-readiness", "worker-cgroup-custody", "worker-cgroup-bounds",
+    "worker-proc-identity", "worker-proc-security", "worker-membership", "worker-alive",
+    "monitor-iteration", "terminal-manager-readback", "terminal-recheck", "terminal-result"))
+DIAGNOSTIC_ERRNOS = frozenset(("ENOENT", "ESRCH", "EACCES", "EPERM", "ENOTDIR",
+    "ELOOP", "EBADF", "EIO", "EINVAL", "EMFILE", "ENFILE"))
+
+class ReservationOSError(OSError):
+    def __init__(self, phase, number):
+        self.reservation_phase = phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else "unknown"
+        super().__init__(number if type(number) is int else None, "reserved-observation-refused")
+
+class ReservationValueError(ValueError):
+    def __init__(self, phase):
+        self.reservation_phase = phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else "unknown"
+        super().__init__("reserved-observation-refused")
+
+def diagnostic_projection(error):
+    if type(error) not in (ReservationOSError, ReservationValueError):
+        return None
+    phase = error.reservation_phase
+    phase = phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else "unknown"
+    number = error.errno if type(error) is ReservationOSError else None
+    symbol = errno.errorcode.get(number, "other") if type(number) is int else "none"
+    return {"phase": phase, "errno": symbol if symbol in DIAGNOSTIC_ERRNOS or symbol == "none" else "other"}
+
+def diagnostic_call(phase, invoke, *arguments, **keywords):
+    try:
+        return invoke(*arguments, **keywords)
+    except (OSError, ValueError) as error:
+        if type(error) in (ReservationOSError, ReservationValueError):
+            raise
+        if isinstance(error, OSError):
+            raise ReservationOSError(phase, error.errno) from None
+        raise ReservationValueError(phase) from None
+
+def diagnostic_method(phase):
+    def decorate(method):
+        @wraps(method)
+        def invoke(*arguments, **keywords):
+            return diagnostic_call(phase, method, *arguments, **keywords)
+        return invoke
+    return decorate
 
 def require(value):
     if not value:
@@ -202,6 +248,7 @@ class Witness:
         require(len(set(result))==len(result))
         return result
 
+    @diagnostic_method("resident-sample")
     def observe(self, *, cleanup=False):
         remaining(self.entry,self.deadline,cleanup=cleanup)
         require(self.directory is not None)
@@ -227,6 +274,7 @@ class Witness:
             "installation_qualified":False,"health_observed":False,"custody_observed":False,
             "resident_signalled":False,"whole_host_reservation":False}
 
+    @diagnostic_method("resident-completion")
     def complete(self,result,cleanup,evidence,source):
         require(type(result) is int and result==0 and cleanup is True
             and evidence is True and source is True)
@@ -272,6 +320,7 @@ class WorkloadWitness:
             self.close()
             raise
 
+    @diagnostic_method("worker-cgroup-custody")
     def check_directory(self, exited):
         for index,(path,fd,identity) in enumerate(self.chain):
             require(resident.stable(os.fstat(fd))==identity)
@@ -285,19 +334,20 @@ class WorkloadWitness:
         require(self.chain[-1][2]==self.identity)
         return True
 
+    @diagnostic_method("worker-alive")
     def alive(self):
         remaining(self.entry,self.deadline)
         require(self.directory is not None)
-        exited=bool(poll.select([self.pidfd],[],[],0)[0])
+        exited=bool(diagnostic_call("worker-pidfd-readiness", poll.select, [self.pidfd], [], [], 0)[0])
         named=self.check_directory(exited)
         if not named:
             remaining(self.entry,self.deadline)
             return False
         values=self.check_bounds()
         if not exited:
-            require(process(self.pid)==self.worker)
+            require(diagnostic_call("worker-proc-identity", process, self.pid)==self.worker)
             self.check_process()
-            rows=self.read("cgroup.procs").splitlines()
+            rows=diagnostic_call("worker-membership", self.read, "cgroup.procs").splitlines()
             require(len(rows)<=TASKS and all(re.fullmatch(r"[1-9][0-9]{0,9}",v) for v in rows)
                 and len(set(rows))==len(rows) and str(self.pid) in rows)
             require(self.pin.observe()=="populated")
@@ -308,6 +358,7 @@ class WorkloadWitness:
         self.bounds=values
         return not exited
 
+    @diagnostic_method("worker-cgroup-bounds")
     def check_bounds(self):
         values={name:self.read(name) for name in
             ("memory.max","memory.swap.max","pids.max","cpu.max","memory.oom.group")}
@@ -319,6 +370,7 @@ class WorkloadWitness:
         require(self.bounds is None or values==self.bounds)
         return values
 
+    @diagnostic_method("worker-proc-security")
     def check_process(self):
         # Fixed public proc metadata only; no cmdline/environment/credential bytes.
         def read(name):
@@ -367,6 +419,7 @@ class WorkloadWitness:
         self.check_directory(exited)
         remaining(self.entry,self.deadline,cleanup=True)
 
+    @diagnostic_method("terminal-result")
     def terminal(self, actual):
         require(actual.get("Id")==self.unit and actual.get("InvocationID")==self.invocation
             and actual.get("ExecMainPID")==str(self.pid))
@@ -388,17 +441,17 @@ def monitor(profile, witness, readback, deadline, on_iteration, *,
     """No routine manager reads; one terminal read still owns the exit/result fact."""
     require(profile in WORKLOAD_PROFILES and type(witness) is WorkloadWitness)
     while clock()<deadline:
-        on_iteration()
+        diagnostic_call("monitor-iteration", on_iteration)
         if clock()>=deadline:
             return 124
         alive=witness.alive()
         if clock()>=deadline:
             return 124
         if not alive:
-            actual=readback()
+            actual=diagnostic_call("terminal-manager-readback", readback)
             if clock()>=deadline:
                 return 124
-            require(not witness.alive())
+            require(not diagnostic_call("terminal-recheck", witness.alive))
             if clock()>=deadline:
                 return 124
             return witness.terminal(actual)

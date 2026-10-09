@@ -696,6 +696,71 @@ class ProofWorkerModels(unittest.TestCase):
             value=reserved.post_stop_projection({**raw,"MainPID":pid},identity)
             self.assertIn(value["MainPID"],("missing","other"))
 
+class ReservedFailureDiagnosticModels(unittest.TestCase):
+    def worker(self):
+        witness = reserved.WorkloadWitness.__new__(reserved.WorkloadWitness)
+        witness.entry, witness.deadline = 100 * 10**9, 1300 * 10**9
+        witness.directory, witness.pidfd, witness.pid, witness.worker = 10, 11, 1234, (1, 2, 3)
+        witness.check_directory = Mock(return_value=True)
+        witness.check_bounds = Mock(return_value={})
+        witness.check_process = Mock()
+        witness.read = Mock(return_value="1234")
+        witness.pin = SimpleNamespace(observe=Mock(return_value="populated"))
+        return witness
+
+    def test_exit_after_original_pidfd_poll_remains_fail_closed_with_exact_phase(self):
+        witness = self.worker()
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", return_value=([], [], [])) as readiness, \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private path")) as proc:
+            with self.assertRaises(reserved.ReservationOSError) as rejected:
+                witness.alive()  # Actual production helper; no race recovery or extra poll.
+        self.assertEqual(reserved.diagnostic_projection(rejected.exception),
+            {"phase": "worker-proc-identity", "errno": "ENOENT"})
+        self.assertEqual(readiness.call_count, 1)
+        proc.assert_called_once_with(1234)
+        witness.check_process.assert_not_called()
+        witness.pin.observe.assert_not_called()
+        self.assertNotIn("private", str(rejected.exception))
+        self.assertIn("reserved_phase=worker-proc-identity; reserved_errno=ENOENT",
+            guard.rejection_diagnostic(rejected.exception, "private-epoch"))
+
+    def test_real_security_helper_tags_oserror_without_reading_other_proc_fields(self):
+        witness = self.worker()
+        with patch.object(reserved.os, "open", side_effect=OSError(13, "private proc")) as opened:
+            with self.assertRaises(reserved.ReservationOSError) as rejected:
+                reserved.WorkloadWitness.check_process(witness)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(reserved.diagnostic_projection(rejected.exception),
+            {"phase": "worker-proc-security", "errno": "EACCES"})
+
+    def test_real_monitor_tags_terminal_readback_and_never_invents_terminal_success(self):
+        witness = self.worker()
+        witness.alive = Mock(return_value=False)
+        terminal = Mock(side_effect=OSError(5, "private unit"))
+        with self.assertRaises(reserved.ReservationOSError) as rejected:
+            reserved.monitor(reserved.PROFILE, witness, terminal, 1, lambda: None, clock=lambda: 0)
+        self.assertEqual(reserved.diagnostic_projection(rejected.exception),
+            {"phase": "terminal-manager-readback", "errno": "EIO"})
+        self.assertEqual(witness.alive.call_count, 1)
+        terminal.assert_called_once_with()
+
+    def test_real_resident_helper_and_completion_keep_first_failure_and_closed_projection(self):
+        witness = reserved.Witness.__new__(reserved.Witness)
+        witness.entry, witness.deadline, witness.directory = 100 * 10**9, 1300 * 10**9, 10
+        witness.check_directory = Mock(side_effect=OSError(9, "private directory"))
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9):
+            with self.assertRaises(reserved.ReservationOSError) as rejected:
+                witness.complete(0, True, True, True)
+        self.assertEqual(reserved.diagnostic_projection(rejected.exception),
+            {"phase": "resident-sample", "errno": "EBADF"})
+        self.assertIsNone(reserved.diagnostic_projection(OSError(2, "private arbitrary")))
+        error = reserved.ReservationOSError("private phase", 123456)
+        self.assertEqual(reserved.diagnostic_projection(error), {"phase": "unknown", "errno": "other"})
+        self.assertEqual(reserved.diagnostic_projection(reserved.ReservationValueError("terminal-result")),
+            {"phase": "terminal-result", "errno": "none"})
+        self.assertNotIn("private", json.dumps(reserved.diagnostic_projection(error)))
+
 # Keep the actual production walker captured before per-constructor injection.
 reserved_open=reserved.open_chain
 

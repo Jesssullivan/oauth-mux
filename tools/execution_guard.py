@@ -509,6 +509,11 @@ def rejection_diagnostic(error, stage):
     diagnostic = resident.diagnostic_projection(error)
     if diagnostic is not None:
         result += '; resident_phase=' + diagnostic['phase'] + '; resident_errno=' + diagnostic['errno']
+    if type(error).__module__ == 'guard_native_seed_plan_reserved':
+        import guard_native_seed_plan_reserved as reservation
+        diagnostic = reservation.diagnostic_projection(error)
+        if diagnostic is not None:
+            result += '; reserved_phase=' + diagnostic['phase'] + '; reserved_errno=' + diagnostic['errno']
     return result
 
 
@@ -1334,6 +1339,7 @@ def _main(argv, admission_resources):
         import guard_resident_owner_status_binding_reserved as seed_reserved
     seed_selected = seed_reserved.request(args,arguments)
     seed_reservation,seed_verified_after,seed_after = None,None,None
+    seed_failure = None
     resident_input = None
     resident_verified_after = None
     resident_output = None
@@ -2252,6 +2258,9 @@ def _main(argv, admission_resources):
                 result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--property=ActiveState,Result,ExecMainStatus', unit],
                     operation='unit-readback', phase='monitor')), deadline, iteration)
         except (ValueError, OSError) as error:
+            if seed_selected:
+                import guard_native_seed_plan_reserved as reservation_diagnostic
+                seed_failure = reservation_diagnostic.diagnostic_projection(error)
             rejection = (resident_settings.rejection(error) if resident_settings else live.rejection_category(error) if args.profile == 'codex-live'
                          else str(error) if isinstance(error, ValueError) else None)
             raise
@@ -2490,8 +2499,11 @@ def _main(argv, admission_resources):
                         cleanup is True and cleanup_summary.get('state')=='empty' and pids_cancellation is None,
                         evidence_ok,graph_digest(Path.cwd())==(graph_sha256,graph_inputs))
                     seed_verified_after = True
-                except (OSError,ValueError,KeyError,TypeError):
+                except (OSError,ValueError,KeyError,TypeError) as error:
                     seed_verified_after = False
+                    if seed_failure is None:
+                        import guard_native_seed_plan_reserved as reservation_diagnostic
+                        seed_failure = reservation_diagnostic.diagnostic_projection(error)
                 finally:
                     try: seed_reservation.close()
                     except OSError: seed_verified_after = False
@@ -2648,6 +2660,7 @@ def _main(argv, admission_resources):
                        'bootstrap': 'pre-realized immutable tools; no Nix build',
                        'authority': 'AGENTS.md; R-N11; R-N13'}
             if seed_selected:
+                receipt['reserved_failure'] = seed_failure
                 try:
                     seed_reserved.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns,cleanup=True)
                 except ValueError:
