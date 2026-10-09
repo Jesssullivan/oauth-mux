@@ -230,5 +230,60 @@ class LifecycleContract(unittest.TestCase):
                 self.invoke("stop-idle-owned",**changes)
             self.assertFalse(any("stop" in command for command in self.commands))
 
+    def reserved_archive_receipt(self):
+        # Synthetic public qualification only; no archive, DB, manager or credential IO.
+        epoch = "11111111-1111-4111-8111-111111111111"
+        run = Path("/home/jess/.local/state/omux-execution-20261005")/epoch
+        qualification = {"path":str(run/"receipt.json"),"sha256":"a"*64,"bytes":1,
+            "source_commit":"b"*40,"graph_sha256":"c"*64}
+        receipt = {"id":epoch,"artifact_epoch":epoch,"profile":"default-archive-reserved",
+            "manager":"system","verb":"build","targets":["//delivery:default_instance_archive"],
+            "exit":0,"workload_exit":0,"descendants_empty":True,"cleanup":{"state":"empty"},
+            "controller_failure":None,"source_dirty":"false","source_commit":qualification["source_commit"],
+            "graph_sha256":qualification["graph_sha256"],"cache_reuse_requested":False,
+            "cache_policy":None,"cache_key":None,"output_base":str(run/"output-base"),
+            "limits":{"MemoryMax":"4026531840","TasksMax":"480","MemorySwapMax":"0","CPUQuotaPerSecUSec":"1.9s"},
+            "observed_properties":{"MemoryMax":"4026531840","TasksMax":"480","MemorySwapMax":"0",
+                "CPUQuotaPerSecUSec":"1.900000s"},"isolation":{"PrivateNetwork":"yes"},
+            "default_archive_reservation":{"scope":"default-linux-archive-reserved-v1","mode":"build",
+                "original_entry_monotonic_ns":1,"original_deadline_monotonic_ns":1200*10**9+1,
+                "verified_after_cleanup":True,"archive_installed":False,"enrollment_proven":False,
+                "native_runtime_qualified":False,"resident":{
+                    "scope":"sampled-fixed-default-cgroup-kernel-reservation-v1",
+                    "kernel_bounds":{"memory.max":"268435456","memory.swap.max":"0",
+                        "pids.max":"32","cpu.max":"10000 100000"},"observations":1,
+                    "initial_direct_process_count":1,"initial_direct_processes_retained":True,
+                    "outer_pid_namespace_matched":True,"hierarchical_caps":True,
+                    "descendant_process_inventory":False,"installation_qualified":False,
+                    "health_observed":False,"custody_observed":False,"resident_signalled":False,
+                    "whole_host_reservation":False}}}
+        return receipt,qualification,run/"output-base"
+
+    def test_declared_delivery_runfiles_validate_reserved_archive_and_legacy_standard(self):
+        # Unmocked qualification_output loads the same filegroup declared by delivery
+        # binaries, including the lazy CPU parser; standalone source execution is not proof.
+        receipt,qualification,expected = self.reserved_archive_receipt()
+        self.assertEqual(lifecycle.owned.qualification_output(receipt,qualification),expected)
+        import sys
+        namespace = Path(lifecycle.owned.__file__).parent
+        for name in ("guard_default_archive_reserved","guard_native_seed_plan_reserved",
+                "guard_resident_observation","guard_resident_dispatch"):
+            self.assertEqual(Path(sys.modules[name].__file__).parent,namespace)
+        historical = copy.deepcopy(receipt)
+        historical["profile"] = "standard"
+        for name in ("default_archive_reservation","limits","observed_properties","isolation"):
+            historical.pop(name)
+        self.assertEqual(lifecycle.owned.qualification_output(historical,qualification),expected)
+
+    def test_declared_reserved_reader_refuses_wrong_cpu_or_promoted_custody(self):
+        receipt,qualification,_ = self.reserved_archive_receipt()
+        bad_cpu = copy.deepcopy(receipt)
+        bad_cpu["observed_properties"]["CPUQuotaPerSecUSec"] = "1900001us"
+        bad_custody = copy.deepcopy(receipt)
+        bad_custody["default_archive_reservation"]["resident"]["custody_observed"] = True
+        for invalid in (bad_cpu,bad_custody):
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
+                lifecycle.owned.qualification_output(invalid,qualification)
+
 if __name__ == "__main__":
     unittest.main()
