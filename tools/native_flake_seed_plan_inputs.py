@@ -220,6 +220,102 @@ def metadata_roles(selected):
     return roles
 
 
+def watch_custody(info):
+    return info.st_uid == 0 and (stat.S_ISLNK(info.st_mode) or not info.st_mode & 0o222)
+
+
+def immutable_watch_tree(descriptor, physical, deadline):
+    """Fresh closed no-follow metadata proof, only for protected Nix roots."""
+    nodes, children = nar.validate_descriptor(descriptor)
+    canonical(physical)
+    if (re.fullmatch(seed.STORE, physical) is None or nodes[""]["type"] != "directory"):
+        return False
+    proof.tick(deadline)
+    require(str(Path(physical).resolve(strict=True)) == physical)
+    root = os.open(physical, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    def walk(fd, relative):
+        proof.tick(deadline)
+        before = os.fstat(fd)
+        require(watch_custody(before))
+        expected_names = sorted(children.get(relative, []))
+        names = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                proof.tick(deadline)
+                require(len(names) < len(expected_names))
+                names.append(entry.name)
+        require(sorted(names) == expected_names)
+        for name in names:
+            proof.tick(deadline)
+            path = relative+"/"+name if relative else name
+            node = nodes[path]
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            require(watch_custody(info))
+            if node["type"] == "directory":
+                require(stat.S_ISDIR(info.st_mode))
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    require(witness(info) == witness(os.fstat(child)))
+                    walk(child, path)
+                finally:
+                    os.close(child)
+            elif node["type"] == "regular":
+                require(stat.S_ISREG(info.st_mode) and info.st_size == node["size"]
+                    and bool(info.st_mode & stat.S_IXUSR) == node["executable"])
+            else:
+                require(stat.S_ISLNK(info.st_mode) and os.readlink(name, dir_fd=fd) == node["target"])
+            require(witness(info) == witness(os.stat(name, dir_fd=fd, follow_symlinks=False)))
+        require(witness(before) == witness(os.fstat(fd)))
+    try:
+        before = os.fstat(root)
+        walk(root, "")
+        require(witness(before) == witness(os.fstat(root)) == witness(os.lstat(physical)))
+        return True
+    finally:
+        os.close(root)
+
+
+def watch_plan(descriptor, physical, mapped, deadline):
+    """Every selected regular source is covered; mutable/unproved roots stay leaf-watched."""
+    nodes, _ = nar.validate_descriptor(descriptor)
+    require(set(mapped) == {name for name, node in nodes.items() if node["type"] == "regular"})
+    fallback = [{"kind": "file", "path": canonical(mapped[name]["source"])} for name in sorted(mapped)]
+    if physical is None or not mapped:
+        return fallback
+    try:
+        safe = immutable_watch_tree(descriptor, physical, deadline)
+    except (OSError, ValueError):
+        proof.tick(deadline)
+        return fallback
+    if not safe:
+        return fallback
+    unsafe = set()
+    regular_dirs = set()
+    for name, node in nodes.items():
+        if node["type"] == "symlink":
+            parts = nar.relative_name(name)
+            unsafe.update("/".join(parts[:index]) for index in range(len(parts)))
+        elif node["type"] == "regular":
+            parts = nar.relative_name(name)
+            regular_dirs.update("/".join(parts[:index]) for index in range(len(parts)))
+    trees = set()
+    for name, node in sorted(nodes.items(), key=lambda row: (len(nar.relative_name(row[0])), row[0])):
+        proof.tick(deadline)
+        parts = nar.relative_name(name)
+        if (node["type"] == "directory" and name in regular_dirs and name not in unsafe
+                and not any("/".join(parts[:index]) in trees for index in range(len(parts)))):
+            trees.add(name)
+    result = [{"kind": "tree", "path": physical+("/"+name if name else "")} for name in sorted(trees)]
+    for name in sorted(mapped):
+        proof.tick(deadline)
+        source = canonical(mapped[name]["source"])
+        require(source == physical+("/"+name if name else ""))
+        parts = nar.relative_name(name)
+        if not any("/".join(parts[:index]) in trees for index in range(len(parts))):
+            result.append({"kind": "file", "path": source})
+    return sorted(result, key=lambda row: (row["path"], row["kind"]))
+
+
 def mapping(selected, raw, runtime_raw, source_raw, project_sources, deadline):
     """All role namespaces are admitted before sidecar or candidate tree IO."""
     producer_success(selected, raw)
@@ -237,8 +333,8 @@ def mapping(selected, raw, runtime_raw, source_raw, project_sources, deadline):
     sources.validate_selection({role: item["descriptor"]["root"]
         for role, item in source_items.items()})
     require(set(project_sources) == set(schedule.PROJECT_FILES))
-    roots, regular, count, nodes = {}, [], 0, 0
-    def add(logical, descriptor, physical, *, retained=False):
+    roots, regular, watches, count, nodes = {}, [], [], 0, 0
+    def add(logical, descriptor, physical, *, retained=False, project=False):
         nonlocal count, nodes
         require(logical not in roots)
         by_path, _ = nar.validate_descriptor(descriptor)
@@ -265,6 +361,7 @@ def mapping(selected, raw, runtime_raw, source_raw, project_sources, deadline):
             mapped[relative] = {"alias": alias, "source": actual}
             regular.append({"alias": alias, "source": actual})
         roots[logical] = {"descriptor": descriptor, "regularInputs": mapped}
+        watches.extend(watch_plan(descriptor, None if project else physical(""), mapped, deadline))
         if retained:
             roots[logical]["retained_transport"] = RETAINED_TRANSPORT
     for logical in runtime["roots"]:
@@ -288,7 +385,7 @@ def mapping(selected, raw, runtime_raw, source_raw, project_sources, deadline):
         elif item["source_role"] == "project":
             require({node["path"] for node in item["descriptor"]["nodes"]
                 if node["type"] == "regular"} == set(project_sources))
-            add(logical, item["descriptor"], lambda relative: project_sources[relative])
+            add(logical, item["descriptor"], lambda relative: project_sources[relative], project=True)
         else:
             descriptor = source_items[item["source_role"]]["descriptor"]
             require(seed.encoded({**descriptor, "root": logical}) == seed.encoded(item["descriptor"]))
@@ -303,7 +400,7 @@ def mapping(selected, raw, runtime_raw, source_raw, project_sources, deadline):
         add(logical, descriptor, lambda relative, logical=logical:
             logical+("/"+relative if relative else ""))
     require(set(roots) == set(records) | set(chosen))
-    return {"schema_version": 1, "kind": KIND, "roots": roots}, regular
+    return {"schema_version": 1, "kind": KIND, "roots": roots}, regular, watches
 
 
 def bundle_opener(bundle, bundle_path):
@@ -466,7 +563,7 @@ def generate(selected_raw, digest, runtime_raw, source_raw, project_sources, dir
     producer_success(selected, raw)
     for name in sorted(set(roles)-set(raw)):
         raw[name] = selected_bytes(roles[name], deadline)
-    result, regular = mapping(selected, raw, runtime_raw, source_raw, project_sources, deadline)
+    result, regular, watches = mapping(selected, raw, runtime_raw, source_raw, project_sources, deadline)
     result["selection_sha256"] = digest
     result["metadata"] = {}
     directory = Path(directory)
@@ -482,6 +579,7 @@ def generate(selected_raw, digest, runtime_raw, source_raw, project_sources, dir
     if materialize:
         materialize_regular(directory, regular, deadline)
     return {"regularInputs": regular, "mapping_sha256": seed.sha(content),
+        "watchInputs": watches,
         "regularMaterialized": materialize,
         "metadata": [item["alias"] for item in result["metadata"].values()],
         "metadataInputs": [roles[name]["path"] for name in sorted(roles)]}

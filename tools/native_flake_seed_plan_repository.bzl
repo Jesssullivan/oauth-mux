@@ -78,10 +78,27 @@ def _impl(ctx):
         if sorted(item.keys()) != ["alias", "source"] or item["alias"] != expected:
             fail("closed contiguous declared leaf mapping required")
         source = _absolute(item["source"])
-        # The locked helper materialized this exact closed alias set under the
-        # same generator deadline. Preserve every original source watch.
-        ctx.watch(ctx.path(source))
         labels.append(expected)
+    watches = report.get("watchInputs")
+    if type(watches) != "list" or len(watches) > 1000000:
+        fail("closed selected watch mapping required")
+    seen_watches = {}
+    for item in watches:
+        if sorted(item.keys()) != ["kind", "path"] or item["kind"] not in ["file", "tree"]:
+            fail("closed selected watch kind required")
+        source = _absolute(item["path"])
+        key = item["kind"] + ":" + source
+        if key in seen_watches:
+            continue
+        seen_watches[key] = True
+        path = ctx.path(source)
+        if item["kind"] == "tree":
+            # Only freshly proven root-owned read-only Nix subtrees without
+            # symlinks are grouped. Mutable retained/project inputs stay leaves.
+            ctx.watch(path)
+            ctx.watch_tree(path)
+        else:
+            ctx.watch(path)
     metadata = report["metadata"]
     if len(metadata) not in [5, 7] or metadata != ["metadata/" + ("00000000" + str(i))[-8:] for i in range(len(metadata))]:
         fail("closed metadata alias sequence required")

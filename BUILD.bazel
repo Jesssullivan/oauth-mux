@@ -590,6 +590,15 @@ zig_format_test(
 )
 
 zig_test(
+    name = "control_test",
+    main = "src/control.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
     name = "engine_test",
     main = "src/engine.zig",
     srcs = ZIG_SOURCES,

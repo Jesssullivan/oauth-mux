@@ -27,6 +27,14 @@ def locked_health():
         "recovery_action": "unlock_platform_vault_then_restart_daemon"}
 
 class NamespaceModels(unittest.TestCase):
+    def test_reopen_capable_locked_health_keeps_unloaded_count_unknown(self):
+        value = {**locked_health(), "account_count": None,
+            "recovery_action": "unlock_platform_vault_then_reopen_custody"}
+        self.assertEqual(guard.health_projection(value)["health_observation"], "vault_locked")
+        for count in (0, 1, False, "0"):
+            with self.assertRaises(ValueError):
+                guard.health_projection({**value, "account_count": count})
+
     def test_exact_separate_target_admission_rejects_live_and_extra_options(self):
         guard.finite(["run", guard.LABEL], "system", "/private/input.json", False)
         for args, manager, reuse, extra in ((["run", "//delivery:resident_codex_live_continuity"], "system", False, ()),

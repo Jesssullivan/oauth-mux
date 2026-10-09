@@ -222,10 +222,11 @@ def health_projection(value):
     status = value.get("status")
     require(status in ("ready", "repair_required", "vault_locked"))
     if status == "vault_locked":
-        require(set(value) == {"protocol_version", "status", "custody_available", "metadata_loaded", "provider_access",
-            "live_handoff_proven", "recovery_action"} and value["custody_available"] is False
+        require(set(value) in ({"protocol_version", "status", "custody_available", "metadata_loaded", "provider_access",
+            "live_handoff_proven", "recovery_action"}, {"protocol_version", "status", "custody_available", "metadata_loaded", "provider_access",
+            "live_handoff_proven", "recovery_action", "account_count"}) and ("account_count" not in value or value["account_count"] is None) and value["custody_available"] is False
             and value["metadata_loaded"] is False and value["provider_access"] is False
-            and value["recovery_action"] == "unlock_platform_vault_then_restart_daemon")
+            and value["recovery_action"] in ("unlock_platform_vault_then_restart_daemon", "unlock_platform_vault_then_reopen_custody"))
     else:
         require(value["custody_available"] is (status == "ready"))
         require("metadata_loaded" not in value or type(value["metadata_loaded"]) is bool)

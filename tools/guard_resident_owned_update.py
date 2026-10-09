@@ -132,7 +132,8 @@ def start_health(value):
     if value.get("status") == "vault_locked":
         resident.require(value.get("custody_available") is False and value.get("metadata_loaded") is False
             and value.get("provider_access") is False
-            and value.get("recovery_action") == "unlock_platform_vault_then_restart_daemon")
+            and value.get("recovery_action") in ("unlock_platform_vault_then_restart_daemon", "unlock_platform_vault_then_reopen_custody")
+            and ("account_count" not in value or value["account_count"] is None))
         return {"control_plane_ready":True,"custody_available":False,"vault_locked":True}
     resident.require(value.get("status") == "ready" and value.get("custody_available") is True
         and type(value.get("revision")) is int and value["revision"] >= 0)

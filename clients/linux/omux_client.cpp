@@ -90,6 +90,8 @@ OmuxClient::OmuxClient(QString socketPath, QObject *parent)
                 }
                 enrollmentGeneration_ = result.value("capabilities").toObject().value("enrollment_generation_reply").isBool()
                     && result.value("capabilities").toObject().value("enrollment_generation_reply").toBool();
+                custodyReopen_ = result.value("capabilities").toObject().value("custody_reopen").isBool()
+                    && result.value("capabilities").toObject().value("custody_reopen").toBool();
                 ready_ = true;
                 publishConnection(true, "Connected");
                 reconcileOperations();
@@ -172,6 +174,7 @@ void OmuxClient::connectToDaemon() {
 
 void OmuxClient::disconnectWithReason(const QString &reason) {
     ready_ = false;
+    custodyReopen_ = false;
     enrollmentGeneration_ = false;
     connecting_ = false;
     buffer_.clear();

@@ -477,6 +477,8 @@ pub const Engine = struct {
     vault_locked: bool = false,
     fixture_startup_vault_locked: bool = false,
     test_key: ?envelope.Key = null,
+    test_vault: ?vault.Backend = null,
+    fixture_custody_stage_failure: enum { none, database_open, state_allocation, supervisor_ready } = .none,
     state: domain.State,
     db: ?storage.Store = null,
     network: ?*transport.Client = null,
@@ -550,16 +552,17 @@ pub const Engine = struct {
     }
 
     fn create(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection) !*Engine {
-        return createConfigured(io, allocator, state_dir, key, selection, null, false);
+        return createConfigured(io, allocator, state_dir, key, selection, null, false, null);
     }
 
     pub fn openWithMeasuredRootForTest(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key, root: []const u8) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
-        return createConfigured(io, allocator, state_dir, key, .default, root, false);
+        return createConfigured(io, allocator, state_dir, key, .default, root, false, null);
     }
 
-    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool) !*Engine {
+    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool, test_backend: ?vault.Backend) !*Engine {
         if (locked_fixture and !builtin.is_test) return error.TestOnly;
+        if (test_backend != null and !builtin.is_test) return error.TestOnly;
         try paths.validateAbsolute(state_dir);
         const self = try allocator.create(Engine);
         errdefer allocator.destroy(self);
@@ -612,6 +615,7 @@ pub const Engine = struct {
             self.installation_probe_at = if (collection_timed_out) null else self.now();
         }
         self.fixture_startup_vault_locked = locked_fixture;
+        self.test_vault = test_backend;
         self.thread = try std.Thread.spawn(.{}, actor, .{self});
         self.mutex.lockUncancelable(io);
         while (!self.startup_complete) self.condition.waitUncancelable(io, &self.mutex);
@@ -758,7 +762,7 @@ pub const Engine = struct {
     }
 
     fn actor(self: *Engine) void {
-        self.bootstrap() catch |err| {
+        self.initializeCustody() catch |err| {
             // Vault loading precedes database/network creation. Preserve a
             // bounded local control plane for an ordinary platform unlock;
             // never turn an unavailable wrapping key into fresh custody.
@@ -766,7 +770,8 @@ pub const Engine = struct {
                 self.vault_locked = true;
                 self.poisoned = true;
                 std.crypto.secureZero(u8, &self.root_key);
-                self.lockedActor();
+                if (!self.lockedActor()) return;
+                self.normalActor();
                 return;
             }
             if (self.network) |client| client.deinit();
@@ -778,16 +783,10 @@ pub const Engine = struct {
             self.mutex.unlock(self.io);
             return;
         };
-        self.native_workers = native_work.Supervisor.create(self.io, self.allocator, .{ .context = self, .signal = nativeWake }) catch |err| {
-            self.network.?.deinit();
-            self.db.?.close();
-            self.mutex.lockUncancelable(self.io);
-            self.startup_error = err;
-            self.startup_complete = true;
-            self.condition.broadcast(self.io);
-            self.mutex.unlock(self.io);
-            return;
-        };
+        self.normalActor();
+    }
+
+    fn normalActor(self: *Engine) void {
         defer {
             self.native_workers.?.deinit();
             self.network.?.deinit();
@@ -891,7 +890,7 @@ pub const Engine = struct {
         self.condition.broadcast(self.io);
         self.mutex.unlock(self.io);
     }
-    fn lockedActor(self: *Engine) void {
+    fn lockedActor(self: *Engine) bool {
         self.mutex.lockUncancelable(self.io);
         self.startup_complete = true;
         self.condition.broadcast(self.io);
@@ -899,7 +898,7 @@ pub const Engine = struct {
             while (self.queue_count == 0 and !self.stopping) self.condition.waitUncancelable(self.io, &self.mutex);
             if (self.queue_count == 0 and self.stopping) {
                 self.mutex.unlock(self.io);
-                return;
+                return false;
             }
             const item = self.queue[self.queue_head].?;
             self.queue[self.queue_head] = null;
@@ -909,14 +908,17 @@ pub const Engine = struct {
             self.mutex.unlock(self.io);
             // No maintenance, source reads, provider work, native workers,
             // mutation ledger admission or database access exists here.
+            self.active_until = item.until;
             const response = if (stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.lockedRequest(item.allocator, item.payload, item.channel);
+            self.active_until = null;
             self.finishInvocation(item, response);
+            if (!self.vault_locked) return true;
             self.mutex.lockUncancelable(self.io);
         }
     }
 
     fn lockedRequest(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel) ![]u8 {
-        if (channel == .browser) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = @as(?[]const u8, null), .@"error" = .{ .code = "VaultLocked", .message = "Unlock the platform vault, then explicitly restart the daemon." } }, .{});
+        if (channel == .browser) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = @as(?[]const u8, null), .@"error" = .{ .code = "VaultLocked", .message = "Unlock the platform vault, then explicitly reopen custody through local controls." } }, .{});
         var request = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32600, "InvalidRequest");
         defer request.deinit();
         if (channel != .control) return control.failure(allocator, request.id, -32000, "VaultLocked");
@@ -925,16 +927,24 @@ pub const Engine = struct {
             .service = "omuxd",
             .channel = "control",
             .custody_available = false,
-            .capabilities = .{ .credential_free_control = true, .native_launch = false, .live_handoff_proven = false },
+            .capabilities = .{ .credential_free_control = true, .custody_reopen = true, .native_launch = false, .live_handoff_proven = false },
         });
+        if (eql(request.method, "custody.reopen")) {
+            if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return control.failure(allocator, request.id, -32602, "InvalidParams");
+            self.initializeCustody() catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+            self.vault_locked = false;
+            self.poisoned = false;
+            return control.success(allocator, request.id, .{ .reopened = true, .custody_available = true, .metadata_loaded = true, .account_count = self.state.accounts.items.len, .provider_request_initiated = false, .live_handoff_proven = false });
+        }
         if (eql(request.method, "system.health")) return control.success(allocator, request.id, .{
             .protocol_version = control.protocol_version,
             .status = "vault_locked",
             .custody_available = false,
             .metadata_loaded = false,
+            .account_count = @as(?usize, null),
             .provider_access = false,
             .live_handoff_proven = false,
-            .recovery_action = "unlock_platform_vault_then_restart_daemon",
+            .recovery_action = "unlock_platform_vault_then_reopen_custody",
         });
         if (eql(request.method, "setup.readiness") or eql(request.method, "setup.evidence") or eql(request.method, "setup.plan")) return self.handleRequest(allocator, request, channel);
         return control.failure(allocator, request.id, -32000, "VaultLocked");
@@ -1626,7 +1636,52 @@ pub const Engine = struct {
         };
     }
 
+    /// Both ordinary startup and explicit locked retry stage all custody state.
+    /// The actor is the single writer; queue/mutex/thread identity never moves.
+    fn initializeCustody(self: *Engine) !void {
+        if (self.db != null or self.network != null or self.native_workers != null) return error.CustodyAlreadyLoaded;
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        self.metrics_mutex.lockUncancelable(self.io);
+        const metrics = self.metrics;
+        self.metrics_mutex.unlock(self.io);
+        var staged: Engine = .{
+            .allocator = self.allocator, .io = self.io, .state_dir = self.state_dir,
+            .instance_selection = self.instance_selection,
+            .state = domain.State.init(self.allocator),
+            .observers = observer.Coordinator.init(self.allocator),
+            .requests = request_authority.Ledger.init(self.allocator, 4096),
+            .mutations = try mutation_authority.Ledger.init(self.allocator, 4096),
+            .admission = snapshot_admission.Ledger.init(self.allocator),
+            .native_owners = native_owner.Ledger.init(self.allocator),
+            .metrics = metrics, .test_key = self.test_key, .test_vault = self.test_vault,
+            .fixture_startup_vault_locked = self.fixture_startup_vault_locked,
+            .fixture_custody_stage_failure = self.fixture_custody_stage_failure,
+            .active_until = self.active_until,
+        };
+        defer {
+            if (staged.network) |client| client.deinit();
+            if (staged.db) |*db| db.close();
+            staged.release();
+        }
+        if (self.codex_runtime_root) |root| staged.codex_runtime_root = try self.allocator.dupe(u8, root);
+        try staged.bootstrap();
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        // Create the only supervisor with the final stable Engine callback.
+        const workers = try native_work.Supervisor.create(self.io, self.allocator, .{ .context = self, .signal = nativeWake });
+        errdefer workers.deinit();
+        try self.custodyDeadline();
+        if (builtin.is_test and self.fixture_custody_stage_failure == .supervisor_ready) return error.CustodyStageFailure;
+        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts" }) |name| {
+            std.mem.swap(@TypeOf(@field(self.*, name)), &@field(self.*, name), &@field(staged, name));
+        }
+        self.native_workers = workers;
+    }
+
     fn bootstrap(self: *Engine) !void {
+        try self.custodyDeadline();
         const database_path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/state.sqlite", .{self.state_dir}, 0);
         defer self.allocator.free(database_path);
         const existing = if (std.Io.Dir.cwd().statFile(self.io, database_path, .{ .follow_symlinks = false })) |stat| blk: {
@@ -1648,8 +1703,10 @@ pub const Engine = struct {
         if (!eql(self.root_id.?, self.instance_selection.vaultRoot())) return error.InstanceCustodyMismatch;
         if (!existing) try validatePersistedAdmission(self.allocator, "{}", 0);
         if (builtin.is_test and self.fixture_startup_vault_locked) return error.Locked;
-        self.root_key = self.test_key orelse if (existing) try vault.Vault.loadRoot(self.root_id.?) else try vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false);
+        self.root_key = if (self.test_vault) |backend| try vault.loadOrCreateForTest(backend, self.root_id.?, existing) else self.test_key orelse if (existing) try vault.Vault.loadRoot(self.root_id.?) else try vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false);
+        try self.custodyDeadline();
         self.db = try storage.Store.openRootWithSnapshotValidator(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission);
+        if (builtin.is_test and self.fixture_custody_stage_failure == .database_open) return error.CustodyStageFailure;
         var saved = try self.db.?.readSnapshot();
         defer saved.deinit();
         const parsed = try std.json.parseFromSlice(Persisted, self.allocator, saved.json, .{});
@@ -1659,8 +1716,17 @@ pub const Engine = struct {
         }
         try validatePersistedAdmission(self.allocator, saved.json, saved.revision);
         if (parsed.value.browser_attempt_authority) |attempts| self.browser_attempts = try browser_attempt.Ledger.fromSnapshot(self.allocator, attempts);
+        const restored_state = restored: {
+            if (builtin.is_test and self.fixture_custody_stage_failure == .state_allocation) {
+                var failing = std.testing.FailingAllocator.init(self.allocator, .{ .fail_index = 0 });
+                var unexpected = try domain.State.fromSnapshot(failing.allocator(), parsed.value.state);
+                unexpected.deinit();
+                return error.CustodyFixtureDidNotAllocate;
+            }
+            break :restored try domain.State.fromSnapshot(self.allocator, parsed.value.state);
+        };
         self.state.deinit();
-        self.state = try domain.State.fromSnapshot(self.allocator, parsed.value.state);
+        self.state = restored_state;
         self.revision = saved.revision;
         self.policy = parsed.value.policy;
         self.adapter_epochs = parsed.value.adapter_epochs;
@@ -1711,6 +1777,7 @@ pub const Engine = struct {
         // or cancellation fence rejects every possible old completion.
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
         _ = try self.snapshotUsage();
+        try self.custodyDeadline();
         try self.persist(&.{});
         self.network = try transport.Client.init(self.allocator);
         if (!builtin.is_test) {
@@ -1724,6 +1791,10 @@ pub const Engine = struct {
             try self.releaseOutcome(key);
             try self.persist(&.{});
         }
+    }
+
+    fn custodyDeadline(self: *Engine) !void {
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
     }
 
     fn captureInstallationSelection(self: *Engine) !void {
@@ -1910,7 +1981,7 @@ pub const Engine = struct {
             snapshot.artifact = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
             snapshot.service = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
         }
-        snapshot.vault = .{ .state = if (self.vault_locked) .locked else if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
+        snapshot.vault = .{ .state = if (self.vault_locked) .locked else if (self.poisoned) .unknown else .ready, .freshness = if (self.vault_locked) .stale else .current, .evidence = .diagnostic };
         // A locked startup has not loaded retained source/account metadata.
         if (self.vault_locked) return snapshot;
         const timestamp = self.now();
@@ -2312,7 +2383,7 @@ pub const Engine = struct {
         defer request.deinit();
         // Audit refusals do not restore or rewrite the actor's committed state.
         // Production control ingress already verifies the socket's peer user.
-        if (eql(request.method, "integrations.nativeRequestAudit")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "custody.reopen")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -3071,11 +3142,16 @@ pub const Engine = struct {
         if (definition == null) return error.MethodNotFound;
         if (definition.?.channel != channel and !eql(method, "system.handshake")) return error.WrongChannel;
         if (channel == .adapter and !eql(method, "system.handshake")) _ = try self.authenticate(params);
+        if (eql(method, "custody.reopen")) {
+            if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
+            if (self.poisoned) return error.RepairRequired;
+            return control.success(allocator, request.id, .{ .reopened = false, .custody_available = true, .metadata_loaded = true, .account_count = self.state.accounts.items.len, .provider_request_initiated = false, .live_handoff_proven = false });
+        }
         if (eql(method, "system.handshake")) return control.success(allocator, request.id, .{
             .protocol_version = control.protocol_version,
             .service = "omuxd",
             .channel = @tagName(channel),
-            .capabilities = .{ .native_launch = true, .credential_free_control = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true },
+            .capabilities = .{ .native_launch = true, .credential_free_control = true, .custody_reopen = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true },
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);
@@ -3151,6 +3227,8 @@ pub const Engine = struct {
                 .protocol_version = control.protocol_version,
                 .revision = self.revision,
                 .custody_available = !self.poisoned,
+                .metadata_loaded = true,
+                .account_count = self.state.accounts.items.len,
                 .status = if (self.poisoned) "repair_required" else "ready",
                 .metrics_available = !metric_failure,
                 .live_handoff_proven = false,
@@ -5859,7 +5937,7 @@ test "locked vault startup keeps bounded diagnostics and refuses all custody wor
     try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
     const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(path);
-    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, true);
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, true, null);
     defer current.deinit();
     try std.testing.expect(current.vault_locked and current.poisoned);
     try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
@@ -5877,18 +5955,19 @@ test "locked vault startup keeps bounded diagnostics and refuses all custody wor
             try std.testing.expectEqualStrings("vault_locked", try control.string(result, "status"));
             try std.testing.expect(!try control.boolean(result, "custody_available", true));
             try std.testing.expect(!try control.boolean(result, "metadata_loaded", true));
-            try std.testing.expectEqualStrings("unlock_platform_vault_then_restart_daemon", try control.string(result, "recovery_action"));
+            try std.testing.expectEqualStrings("unlock_platform_vault_then_reopen_custody", try control.string(result, "recovery_action"));
+            try std.testing.expect(control.get(result, "account_count").? == .null);
         }
         if (eql(method, "setup.readiness")) {
             try std.testing.expect(!try control.boolean(result, "ready", true));
             const findings = control.get(result, "findings").?.array.items;
-            try std.testing.expectEqualStrings("vault_locked", try control.string(findings[2], "reason"));
-            try std.testing.expectEqualStrings("unlock_vault", try control.string(findings[2], "action"));
+            try std.testing.expectEqualStrings("observation_stale", try control.string(findings[2], "reason"));
+            try std.testing.expectEqualStrings("refresh_observation", try control.string(findings[2], "action"));
             try std.testing.expectEqualStrings("observation_unknown", try control.string(findings[3], "reason"));
         }
     }
     for (control.methods) |method| {
-        if (eql(method.name, "system.handshake") or eql(method.name, "system.health") or eql(method.name, "setup.readiness") or eql(method.name, "setup.evidence") or eql(method.name, "setup.plan")) continue;
+        if (eql(method.name, "custody.reopen") or eql(method.name, "system.handshake") or eql(method.name, "system.health") or eql(method.name, "setup.readiness") or eql(method.name, "setup.evidence") or eql(method.name, "setup.plan")) continue;
         // Absent params is a valid envelope. An empty Zig tuple serializes
         // as [], which the control wire contract correctly refuses first.
         const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 2, .method = method.name }, .{});
@@ -5942,7 +6021,7 @@ test "locked existing custody retains its original database and key across expli
     defer allocator.free(before);
     const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
     defer allocator.free(authority_before);
-    const locked = try Engine.createConfigured(io, allocator, path, null, .default, null, true);
+    const locked = try Engine.createConfigured(io, allocator, path, null, .default, null, true, null);
     try std.testing.expect(locked.vault_locked and locked.db == null);
     locked.deinit();
     const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
@@ -5957,6 +6036,268 @@ test "locked existing custody retains its original database and key across expli
     try std.testing.expect(!reopened.vault_locked and !reopened.poisoned);
     try std.testing.expect(reopened.db != null);
     // Synthetic supplied key only: this is not a real platform unlock proof.
+}
+
+const ReopenVaultFixture = struct {
+    mode: std.atomic.Value(u8) = .init(0),
+    loads: std.atomic.Value(usize) = .init(0),
+    creates: std.atomic.Value(usize) = .init(0),
+    fn load(context: ?*anyopaque, _: [:0]const u8) vault.VaultError!vault.Key {
+        const self: *ReopenVaultFixture = @ptrCast(@alignCast(context.?));
+        _ = self.loads.fetchAdd(1, .seq_cst);
+        return switch (self.mode.load(.seq_cst)) {
+            0 => error.Locked,
+            1 => @splat(0x63),
+            2 => error.Missing,
+            3 => @splat(0x64),
+            4 => error.InvalidKey,
+            else => error.Unavailable,
+        };
+    }
+    fn create(context: ?*anyopaque, _: [:0]const u8) vault.VaultError!vault.Key {
+        const self: *ReopenVaultFixture = @ptrCast(@alignCast(context.?));
+        _ = self.creates.fetchAdd(1, .seq_cst);
+        return error.Denied;
+    }
+    fn backend(self: *ReopenVaultFixture) vault.Backend {
+        return .{ .context = self, .load_fn = load, .create_fn = create };
+    }
+};
+
+fn reopenTestReply(current: *Engine, method: []const u8, channel: Channel) !std.json.Parsed(std.json.Value) {
+    const allocator = std.testing.allocator;
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+    defer allocator.free(payload);
+    const reply = try current.dispatch(allocator, payload, channel);
+    defer allocator.free(reply);
+    return std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+}
+
+test "explicit custody reopen uses actual staged SQLite and preserves the actor through eventual unlock" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const actor_id = current.thread.?.getHandle();
+    var health = try reopenTestReply(current, "system.health", .control);
+    defer health.deinit();
+    try std.testing.expect(control.get(control.get(health.value, "result").?, "account_count").? == .null);
+    var refused = try reopenTestReply(current, "custody.reopen", .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("Locked", try control.string(control.get(refused.value, "error").?, "message"));
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    backend.mode.store(1, .seq_cst);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    const result = control.get(reopened.value, "result").?;
+    try std.testing.expect(try control.boolean(result, "reopened", false));
+    try std.testing.expectEqual(@as(i64, 0), control.get(result, "account_count").?.integer);
+    try std.testing.expect(!try control.boolean(result, "provider_request_initiated", true));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    const workers = current.native_workers;
+    const loads = backend.loads.load(.seq_cst);
+    var repeated = try reopenTestReply(current, "custody.reopen", .control);
+    defer repeated.deinit();
+    try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+    try std.testing.expect(workers == current.native_workers);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    var accounts = try reopenTestReply(current, "accounts.list", .control);
+    defer accounts.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(control.get(accounts.value, "result").?, "accounts").?.array.items.len);
+}
+
+test "missing corrupt and unavailable existing wrapping keys refuse without regeneration or partial adoption" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    for ([_]u8{ 2, 3, 4, 5 }) |mode| {
+        backend.mode.store(mode, .seq_cst);
+        var reply = try reopenTestReply(current, "custody.reopen", .control);
+        defer reply.deinit();
+        try std.testing.expect(control.get(reply.value, "error") != null);
+        try std.testing.expect(current.vault_locked and current.poisoned);
+        try std.testing.expect(current.root_id == null and current.db == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+        try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    }
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    backend.mode.store(1, .seq_cst);
+    var successful = try reopenTestReply(current, "custody.reopen", .control);
+    defer successful.deinit();
+    try std.testing.expect(control.get(successful.value, "result") != null);
+}
+
+test "custody reopen rejects asserted secret authority foreign channels and expired admission" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const loads = backend.loads.load(.seq_cst);
+    const bad = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\",\"params\":{\"key\":\"synthetic-public-invalid\"}}", .control);
+    defer allocator.free(bad);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bad, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("InvalidParams", try control.string(control.get(parsed.value, "error").?, "message"));
+    var foreign = try reopenTestReply(current, "custody.reopen", .adapter);
+    defer foreign.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(foreign.value, "error").?, "message"));
+    try std.testing.expectError(error.Timeout, current.dispatchUntil(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\"}", .control, .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) })));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+}
+
+test "failed custody stage closes real database and permits a clean later retry" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    backend.mode.store(1, .seq_cst);
+    for ([_]@TypeOf(current.fixture_custody_stage_failure){ .database_open, .supervisor_ready }) |fault| {
+        current.mutex.lockUncancelable(io);
+        current.fixture_custody_stage_failure = fault;
+        current.mutex.unlock(io);
+        var failed = try reopenTestReply(current, "custody.reopen", .control);
+        defer failed.deinit();
+        try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(failed.value, "error").?, "message"));
+        try std.testing.expect(current.db == null and current.root_id == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    }
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var successful = try reopenTestReply(current, "custody.reopen", .control);
+    defer successful.deinit();
+    try std.testing.expect(control.get(successful.value, "result") != null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+const ReopenCaller = struct {
+    engine: *Engine,
+    reopened: bool = false,
+    failure: ?anyerror = null,
+    fn run(self: *ReopenCaller) void {
+        self.call() catch |err| self.failure = err;
+    }
+    fn call(self: *ReopenCaller) !void {
+        var reply = try reopenTestReply(self.engine, "custody.reopen", .control);
+        defer reply.deinit();
+        const result = control.get(reply.value, "result") orelse return error.UnexpectedRpcFailure;
+        self.reopened = try control.boolean(result, "reopened", false);
+    }
+};
+
+test "concurrent explicit reopen requests adopt one custody owner and one supervisor" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const loads = backend.loads.load(.seq_cst);
+    backend.mode.store(1, .seq_cst);
+    var first: ReopenCaller = .{ .engine = current };
+    var second: ReopenCaller = .{ .engine = current };
+    const one = try std.Thread.spawn(.{}, ReopenCaller.run, .{&first});
+    const two = std.Thread.spawn(.{}, ReopenCaller.run, .{&second}) catch |err| {
+        one.join();
+        return err;
+    };
+    one.join();
+    two.join();
+    try std.testing.expect(first.failure == null and second.failure == null);
+    try std.testing.expect(first.reopened != second.reopened);
+    try std.testing.expectEqual(loads + 1, backend.loads.load(.seq_cst));
+    try std.testing.expect(current.native_workers != null and current.db != null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+test "reopened status counts genuinely retained accounts rather than treating unloaded metadata as zero" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var model = domain.State.init(allocator);
+    defer model.deinit();
+    _ = try model.connectSource(.{ .id = "fixture-count-source", .kind = .explicit, .provider = "github" });
+    _ = try model.enroll(.{ .account_id = "fixture-count-account", .source_id = "fixture-count-source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "fixture-count-subject", .verified = true } }, 1);
+    const metadata = try std.json.Stringify.valueAlloc(allocator, Persisted{ .state = model.snapshot() }, .{});
+    defer allocator.free(metadata);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    {
+        var store = try storage.Store.openRootWithSnapshotValidator(io, allocator, database, instance.Selection.default.vaultRoot(), @splat(0x63), validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, metadata, &.{});
+    }
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    var initial = try reopenTestReply(current, "system.health", .control);
+    defer initial.deinit();
+    try std.testing.expect(control.get(control.get(initial.value, "result").?, "account_count").? == .null);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .state_allocation;
+    current.mutex.unlock(io);
+    backend.mode.store(1, .seq_cst);
+    var refused = try reopenTestReply(current, "custody.reopen", .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("OutOfMemory", try control.string(control.get(refused.value, "error").?, "message"));
+    try std.testing.expect(current.vault_locked and current.db == null and current.root_id == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(reopened.value, "result").?, "account_count").?.integer);
+    var health = try reopenTestReply(current, "system.health", .control);
+    defer health.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(health.value, "result").?, "account_count").?.integer);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
 }
 
 test "snapshot maintenance float reserve covers decimal smallest subnormals" {

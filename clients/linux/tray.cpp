@@ -226,6 +226,16 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     setupNotice_->setTextFormat(Qt::PlainText);
     static_cast<QVBoxLayout *>(setupPage->layout())->insertWidget(0, setupNotice_);
     button(actions, "Check setup", this, [this] { refreshReadiness(); });
+    button(actions, "Resume after vault unlock", this, [this] {
+        if (!client_.ready()) { setupNotice_->setText("Connect to the service first."); return; }
+        if (!client_.supportsCustodyReopen()) { setupNotice_->setText("This installed service requires an update before it can resume custody without restarting."); return; }
+        if (client_.hasUncertainOperations()) { setupNotice_->setText(client_.uncertaintyMessage()); return; }
+        client_.request("custody.reopen", {}, [this](const QJsonObject &, const QString &error) {
+            setupNotice_->setText(!error.isEmpty() ? error : "Custody is ready. Connect an authorized source to enroll accounts.");
+            refresh();
+            refreshReadiness();
+        });
+    });
     setupVerify_ = button(actions, "Verify setup", this, [this] {
         if (!client_.ready() || client_.hasUncertainOperations()) return;
         client_.request("setup.refresh", {{"operation_id", QUuid::createUuid().toString(QUuid::WithoutBraces)}},

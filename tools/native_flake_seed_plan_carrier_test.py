@@ -6,6 +6,7 @@ tests establish neither a successful real producer nor a native build seed.
 from contextlib import ExitStack
 import copy
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -159,6 +160,80 @@ class JoinedFixture:
 
 
 class CarrierModels(unittest.TestCase):
+    def test_watch_mapper_covers_every_leaf_and_excludes_symlink_subtrees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/"safe").mkdir()
+            (root/"unsafe").mkdir()
+            (root/"safe/a").write_bytes(b"synthetic")
+            (root/"safe/b").write_bytes(b"synthetic")
+            (root/"unsafe/c").write_bytes(b"synthetic")
+            (root/"unsafe/link").symlink_to("/synthetic-unopened-outside")
+            descriptor = nar.describe(root)
+            mapped = {node["path"]: {"source": str(root/node["path"])}
+                      for node in descriptor["nodes"] if node["type"] == "regular"}
+            # Only custody is synthetic; traversal, no-follow checks and tree
+            # selection operate on actual disposable files/descriptors.
+            with patch.object(seed, "STORE", re.escape(str(root))), \
+                    patch.object(inputs, "watch_custody", return_value=True), \
+                    patch.object(inputs.proof.time, "monotonic", return_value=0.0):
+                selected = inputs.watch_plan(descriptor, str(root), mapped, 100.0)
+            self.assertEqual(selected, [{"kind": "tree", "path": str(root/"safe")},
+                                        {"kind": "file", "path": str(root/"unsafe/c")}])
+            for item in mapped.values():
+                self.assertEqual(sum(item["source"] == row["path"] if row["kind"] == "file"
+                                     else item["source"].startswith(row["path"]+"/") for row in selected), 1)
+
+    def test_watch_mapper_extra_link_or_mutable_root_falls_back_to_exact_files(self):
+        for fault in ("extra-link", "mutable", "retained"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root/"a").write_bytes(b"synthetic")
+                descriptor = nar.describe(root)
+                mapped = {"a": {"source": str(root/"a")}}
+                if fault == "extra-link":
+                    (root/"inserted").symlink_to("/synthetic-unopened-outside")
+                with patch.object(seed, "STORE", re.escape(str(root)) if fault != "retained" else r"/nix/store/never"), \
+                        patch.object(inputs, "watch_custody", return_value=fault != "mutable"), \
+                        patch.object(inputs.proof.time, "monotonic", return_value=0.0):
+                    selected = inputs.watch_plan(descriptor, str(root), mapped, 100.0)
+                self.assertEqual(selected, [{"kind": "file", "path": str(root/"a")}])
+
+    def test_watch_mapper_refuses_missing_or_misbound_leaf_and_original_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/"a").write_bytes(b"synthetic")
+            descriptor = nar.describe(root)
+            with patch.object(inputs.proof.time, "monotonic", return_value=0.0):
+                with self.assertRaises(ValueError):
+                    inputs.watch_plan(descriptor, str(root), {}, 100.0)
+            with patch.object(seed, "STORE", re.escape(str(root))), \
+                    patch.object(inputs, "watch_custody", return_value=True), \
+                    patch.object(inputs.proof.time, "monotonic", return_value=0.0):
+                with self.assertRaises(ValueError):
+                    inputs.watch_plan(descriptor, str(root), {"a": {"source": str(root/"other")}}, 100.0)
+            with patch.object(seed, "STORE", re.escape(str(root))), \
+                    patch.object(inputs.proof.time, "monotonic", return_value=100.0):
+                with self.assertRaises(ValueError):
+                    inputs.watch_plan(descriptor, str(root), {"a": {"source": str(root/"a")}}, 100.0)
+
+    def test_watch_mapper_replaced_directory_is_not_traversed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)/"selected"
+            root.mkdir()
+            (root/"child").mkdir()
+            (root/"child/a").write_bytes(b"synthetic")
+            descriptor = nar.describe(root)
+            moved = Path(directory)/"moved"
+            (root/"child").rename(moved)
+            (root/"child").symlink_to(moved, target_is_directory=True)
+            with patch.object(seed, "STORE", re.escape(str(root))), \
+                    patch.object(inputs, "watch_custody", return_value=True), \
+                    patch.object(inputs.proof.time, "monotonic", return_value=0.0):
+                selected = inputs.watch_plan(descriptor, str(root),
+                    {"child/a": {"source": str(root/"child/a")}}, 100.0)
+            self.assertEqual(selected, [{"kind": "file", "path": str(root/"child/a")}])
+
     def test_batch_materializes_exact_aliases_without_changing_source_or_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
