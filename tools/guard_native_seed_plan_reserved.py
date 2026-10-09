@@ -345,7 +345,24 @@ class WorkloadWitness:
             return False
         values=self.check_bounds()
         if not exited:
-            require(diagnostic_call("worker-proc-identity", process, self.pid)==self.worker)
+            try:
+                require(diagnostic_call("worker-proc-identity", process, self.pid)==self.worker)
+            except ReservationOSError as error:
+                # A disappearing proc identity is exit readiness only when the
+                # original held pidfd agrees; manager terminal result stays mandatory.
+                if error.reservation_phase != "worker-proc-identity" or error.errno != errno.ENOENT:
+                    raise
+                if self.bounds is None or values != self.bounds:
+                    raise
+                if not diagnostic_call("worker-pidfd-readiness", poll.select,
+                        [self.pidfd], [], [], 0)[0]:
+                    raise
+                named=self.check_directory(True)
+                if named:
+                    self.check_bounds()  # Preserve the admitted frozen cap tuple.
+                self.check_directory(True)
+                remaining(self.entry,self.deadline)
+                return False
             self.check_process()
             rows=diagnostic_call("worker-membership", self.read, "cgroup.procs").splitlines()
             require(len(rows)<=TASKS and all(re.fullmatch(r"[1-9][0-9]{0,9}",v) for v in rows)

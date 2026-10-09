@@ -701,6 +701,7 @@ class ReservedFailureDiagnosticModels(unittest.TestCase):
         witness = reserved.WorkloadWitness.__new__(reserved.WorkloadWitness)
         witness.entry, witness.deadline = 100 * 10**9, 1300 * 10**9
         witness.directory, witness.pidfd, witness.pid, witness.worker = 10, 11, 1234, (1, 2, 3)
+        witness.bounds = {}
         witness.check_directory = Mock(return_value=True)
         witness.check_bounds = Mock(return_value={})
         witness.check_process = Mock()
@@ -708,16 +709,16 @@ class ReservedFailureDiagnosticModels(unittest.TestCase):
         witness.pin = SimpleNamespace(observe=Mock(return_value="populated"))
         return witness
 
-    def test_exit_after_original_pidfd_poll_remains_fail_closed_with_exact_phase(self):
+    def test_missing_proc_without_ready_original_pidfd_remains_fail_closed_with_exact_phase(self):
         witness = self.worker()
         with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
                 patch.object(reserved.poll, "select", return_value=([], [], [])) as readiness, \
                 patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private path")) as proc:
             with self.assertRaises(reserved.ReservationOSError) as rejected:
-                witness.alive()  # Actual production helper; no race recovery or extra poll.
+                witness.alive()  # Real helper; one original-pidfd recheck still refuses.
         self.assertEqual(reserved.diagnostic_projection(rejected.exception),
             {"phase": "worker-proc-identity", "errno": "ENOENT"})
-        self.assertEqual(readiness.call_count, 1)
+        self.assertEqual(readiness.call_count, 2)
         proc.assert_called_once_with(1234)
         witness.check_process.assert_not_called()
         witness.pin.observe.assert_not_called()
@@ -760,6 +761,110 @@ class ReservedFailureDiagnosticModels(unittest.TestCase):
         self.assertEqual(reserved.diagnostic_projection(reserved.ReservationValueError("terminal-result")),
             {"phase": "terminal-result", "errno": "none"})
         self.assertNotIn("private", json.dumps(reserved.diagnostic_projection(error)))
+
+class VerifiedProcExitModels(unittest.TestCase):
+    UNIT = ProofWorkerModels.UNIT
+    def worker(self):
+        witness = ReservedFailureDiagnosticModels.worker(self)
+        witness.unit = ProofWorkerModels.UNIT
+        witness.invocation = "a" * 32
+        return witness
+
+    def test_ready_original_pidfd_returns_only_exit_readiness_after_anchored_custody(self):
+        witness = self.worker()
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", side_effect=[([], [], []), ([11], [], [])]) as readiness, \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")) as proc:
+            self.assertFalse(witness.alive())
+        self.assertEqual(readiness.call_args_list, [unittest.mock.call([11], [], [], 0)] * 2)
+        self.assertEqual(witness.check_directory.call_args_list,
+            [unittest.mock.call(False), unittest.mock.call(True), unittest.mock.call(True)])
+        self.assertEqual(witness.check_bounds.call_count, 2)
+        proc.assert_called_once_with(1234)
+        witness.check_process.assert_not_called()
+        witness.read.assert_not_called()
+
+    def test_other_errno_phase_or_unfrozen_caps_never_take_exit_path(self):
+        cases = (OSError(5, "private"), reserved.ReservationOSError("worker-cgroup-bounds", 2))
+        for error in cases:
+            witness = self.worker()
+            with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                    patch.object(reserved.poll, "select", return_value=([], [], [])) as readiness, \
+                    patch.object(reserved, "process", side_effect=error):
+                with self.assertRaises(reserved.ReservationOSError): witness.alive()
+            self.assertEqual(readiness.call_count, 1)
+            self.assertEqual(witness.check_directory.call_count, 1)
+        witness = self.worker()
+        witness.bounds = None
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", return_value=([], [], [])) as readiness, \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")):
+            with self.assertRaises(reserved.ReservationOSError): witness.alive()
+        self.assertEqual(readiness.call_count, 1)
+
+    def test_process_identity_mismatch_never_rechecks_pidfd(self):
+        witness = self.worker()
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", return_value=([], [], [])) as readiness, \
+                patch.object(reserved, "process", return_value=(999, 2, 3)):
+            with self.assertRaises(reserved.ReservationValueError): witness.alive()
+        self.assertEqual(readiness.call_count, 1)
+
+    def test_ordinary_ready_path_has_no_extra_poll_or_proc_read(self):
+        witness = self.worker()
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", return_value=([11], [], [])) as readiness, \
+                patch.object(reserved, "process", side_effect=AssertionError("unexpected proc read")) as proc:
+            self.assertFalse(witness.alive())
+        self.assertEqual(readiness.call_count, 1)
+        self.assertEqual(witness.check_bounds.call_count, 1)
+        self.assertEqual(witness.check_directory.call_count, 2)
+        proc.assert_not_called()
+
+    def test_ready_exit_does_not_tolerate_custody_or_actual_cap_drift(self):
+        witness = self.worker()
+        witness.check_directory.side_effect = [True, ValueError("drift")]
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", side_effect=[([], [], []), ([11], [], [])]), \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")):
+            with self.assertRaises(reserved.ReservationValueError): witness.alive()
+        witness = self.worker()
+        values = {"memory.max": str(reserved.MEMORY), "memory.swap.max": "0",
+            "pids.max": str(reserved.TASKS), "cpu.max": "190000 100000", "memory.oom.group": "1"}
+        witness.bounds = dict(values)
+        reads = []
+        def read(name):
+            reads.append(name)
+            return str(reserved.MEMORY + 1) if name == "memory.max" and len(reads) > 5 else values[name]
+        witness.read = Mock(side_effect=read)
+        witness.check_bounds = reserved.WorkloadWitness.check_bounds.__get__(witness)
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", side_effect=[([], [], []), ([11], [], [])]), \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")):
+            with self.assertRaises(reserved.ReservationValueError) as rejected: witness.alive()
+        self.assertEqual(reserved.diagnostic_projection(rejected.exception)["phase"], "worker-cgroup-bounds")
+
+    def test_real_monitor_still_requires_exact_terminal_manager_and_preserves_failed_exit(self):
+        base = ProofWorkerModels.terminal(self)
+        cases = (({}, 0), ({"Result": "exit-code"}, 125),
+            ({"ActiveState": "failed", "SubState": "failed", "Result": "exit-code", "ExecMainStatus": "3"}, 3))
+        for changes, expected in cases:
+            witness = self.worker()
+            query = Mock(return_value={**base, **changes})
+            with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                    patch.object(reserved.poll, "select", side_effect=[([], [], []), ([11], [], []), ([11], [], [])]), \
+                    patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")):
+                actual = reserved.monitor(reserved.PROFILE, witness, query, 1, lambda: None, clock=lambda: 0)
+            self.assertEqual(actual, expected)
+            query.assert_called_once_with()
+        for changes in ({"Id": "wrong"}, {"InvocationID": "b" * 32}, {"ExecMainPID": "9999"}):
+            witness = self.worker()
+            with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                    patch.object(reserved.poll, "select", side_effect=[([], [], []), ([11], [], []), ([11], [], [])]), \
+                    patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")):
+                with self.assertRaises(reserved.ReservationValueError):
+                    reserved.monitor(reserved.PROFILE, witness, lambda: {**base, **changes}, 1,
+                        lambda: None, clock=lambda: 0)
 
 # Keep the actual production walker captured before per-constructor injection.
 reserved_open=reserved.open_chain
