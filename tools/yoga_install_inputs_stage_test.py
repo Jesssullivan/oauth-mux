@@ -102,7 +102,9 @@ class ReceiverTest(unittest.TestCase):
         self.assertIn('CPUQuota=10%',command)
         self.assertIn('RuntimeMaxSec=45',command)
         self.assertEqual(maximum,45000000)
-        self.assertEqual(command[-4:-1],[receiver.PYTHON,'-I','-S'])
+        expected_source=("# frozen source\ntry:\n worker('"+TOKEN+
+                         "',20000000100)\nexcept BaseException:\n sys.exit(125)\n")
+        self.assertEqual(command[-6:],['--',receiver.PYTHON,'-I','-S','-c',expected_source])
         with self.assertRaises(ValueError):
             receiver.unit_name(TOKEN+';command')
 
@@ -179,7 +181,9 @@ class ReceiverTest(unittest.TestCase):
     def test_actual_guard_effective_sender_caps_and_cgroup_drift(self):
         import execution_guard as guard
         import guard_yoga_install_inputs_profile as profile
-        actual=dict(guard.PROPERTIES,**guard.SANDBOX)
+        isolation={**guard.SANDBOX,**guard.selected_profile(profile.PROFILE,['run',sender.LABEL])}
+        self.assertEqual(isolation['PrivateNetwork'],'no')
+        actual=dict(guard.PROPERTIES,**isolation)
         actual.update(MemoryMax='4026531840',TasksMax='480',CPUQuotaPerSecUSec='1.900000s',
                       RuntimeMaxUSec='60s',PrivateNetwork='no',
                       UnsetEnvironment=' '.join(guard.DELEGATION_ENV))
@@ -189,12 +193,19 @@ class ReceiverTest(unittest.TestCase):
                     'memory.oom.group':'1','cpu.max':'190000 100000'}
             for name,value in values.items():(root/name).write_text(value+'\n')
             with mock.patch.object(guard,'verify_system_masks'):
-                guard.verify(actual,root,manager='system',profile=profile.PROFILE,runtime_seconds=60)
+                guard.verify(actual,root,manager='system',isolation=isolation,
+                             profile=profile.PROFILE,runtime_seconds=60)
+                actual['PrivateNetwork']='yes'
+                with self.assertRaises(ValueError):
+                    guard.verify(actual,root,manager='system',isolation=isolation,
+                                 profile=profile.PROFILE,runtime_seconds=60)
+                actual['PrivateNetwork']='no'
                 for name,bad in (('memory.max','4026531841'),('pids.max','481'),
                                  ('cpu.max','190001 100000')):
                     (root/name).write_text(bad+'\n')
                     with self.assertRaises(ValueError):
-                        guard.verify(actual,root,manager='system',profile=profile.PROFILE,runtime_seconds=60)
+                        guard.verify(actual,root,manager='system',isolation=isolation,
+                             profile=profile.PROFILE,runtime_seconds=60)
                     (root/name).write_text(values[name]+'\n')
             self.assertEqual(guard.workload_pids_observation(None,profile.PROFILE).expected_limit,480)
 
@@ -379,13 +390,27 @@ class TransactionTest(unittest.TestCase):
 
     def test_uncaptured_creation_refuses_destructive_cleanup(self):
         transaction=receiver.Transaction(self.deadline)
-        actual=os.stat
+        actual_stat,actual_mkdir=os.stat,os.mkdir
+        made={'epoch':False}
+        def create(name,*args,**kwargs):
+            result=actual_mkdir(name,*args,**kwargs)
+            if name==receiver.EPOCH:made['epoch']=True
+            return result
         def fail(name,*args,**kwargs):
-            if name==receiver.EPOCH:raise PermissionError()
-            return actual(name,*args,**kwargs)
-        with mock.patch.object(receiver.os,'stat',side_effect=fail):
+            if name==receiver.EPOCH and made['epoch']:raise PermissionError()
+            return actual_stat(name,*args,**kwargs)
+        with mock.patch.object(receiver.os,'mkdir',side_effect=create), \
+             mock.patch.object(receiver.os,'stat',side_effect=fail):
             with self.assertRaises(PermissionError):transaction.create()
-        with self.assertRaises(ValueError):transaction.close()
+        self.assertTrue(made['epoch'])
+        self.assertEqual(len(transaction.created),1)
+        self.assertEqual(transaction.created[0][1:], [receiver.EPOCH,None])
+        self.assertEqual(transaction.dirs,[])
+        with mock.patch.object(receiver.os,'unlink') as unlink, \
+             mock.patch.object(receiver.os,'rmdir') as rmdir:
+            with self.assertRaises(ValueError):transaction.close()
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
         self.assertTrue((self.parent/receiver.EPOCH).is_dir())
 
     def test_destination_rebound_during_receive_refuses_and_preserves_foreign(self):

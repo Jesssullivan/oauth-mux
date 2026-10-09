@@ -159,6 +159,43 @@ class JoinedFixture:
 
 
 class CarrierModels(unittest.TestCase):
+    def test_valid_producer_identity_is_a_boolean_predicate_and_keeps_all_joined_pins(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            self.assertIs(inputs.selection(fixture.selected), fixture.selected)
+            self.assertEqual(inputs.producer_success(fixture.selected, fixture.raw), fixture.receipt)
+            self.assertEqual(fixture.selected["producer"]["source_commit"], fixture.receipt["source_commit"])
+            self.assertEqual(fixture.selected["producer"]["graph_sha256"], fixture.receipt["graph_sha256"])
+            self.assertEqual(fixture.selected["producer"]["receipt"],
+                fixture.file_pin(fixture.epoch/"receipt.json"))
+            self.assertEqual(fixture.selected["obligations"],
+                fixture.file_pin(fixture.output/"native-flake-obligations.json"))
+            self.assertEqual(fixture.raw["obligations"], inputs.encode(fixture.model.body))
+            for field, value in (("source_commit", "a"*39), ("source_commit", "g"*40),
+                    ("source_commit", True), ("graph_sha256", "b"*63),
+                    ("graph_sha256", "g"*64), ("graph_sha256", True)):
+                selected = copy.deepcopy(fixture.selected)
+                selected["producer"][field] = value
+                with self.subTest(field=field, value_type=type(value).__name__), \
+                        self.assertRaises(ValueError):
+                    inputs.selection(selected)
+            self.assertEqual(fixture.model.calls, [])
+
+    def test_valid_candidate_path_is_boolean_without_reading_or_promoting_candidate_bytes(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            selected = copy.deepcopy(fixture.selected)
+            root = "/nix/store/"+"b"*32+"-modeled-candidate-metadata"
+            selected["candidates"] = {role: {"path": root+"/"+leaf,
+                "sha256": "1"*64, "bytes": 1}
+                for role, leaf in (("registration", "registration"), ("paths", "store-paths"))}
+            with patch.object(inputs, "selected_bytes", side_effect=AssertionError("candidate byte IO")):
+                self.assertIs(inputs.selection(selected), selected)
+                for role in ("registration", "paths"):
+                    invalid = copy.deepcopy(selected)
+                    invalid["candidates"][role]["path"] += "-unselected"
+                    with self.subTest(role=role), self.assertRaises(ValueError):
+                        inputs.selection(invalid)
+            self.assertEqual(fixture.model.calls, [])
+
     def test_many_leaf_opens_reuse_admitted_descriptor_but_keep_actual_fd_checks(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
             fixture.generate()

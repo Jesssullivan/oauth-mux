@@ -93,8 +93,8 @@ def selection(value):
     require(all(re.fullmatch(re.escape(parent)+r"/test-evidence/[a-f0-9]{64}[.]evidence",
         producer[name]["path"]) for name in ("log", "xml")))
     require(type(producer["source_commit"]) is str
-        and re.fullmatch(r"[a-f0-9]{40}", producer["source_commit"])
-        and type(producer["graph_sha256"]) is str and HEX.fullmatch(producer["graph_sha256"]))
+        and re.fullmatch(r"[a-f0-9]{40}", producer["source_commit"]) is not None
+        and type(producer["graph_sha256"]) is str and HEX.fullmatch(producer["graph_sha256"]) is not None)
     pin(value["obligations"], schedule.MAX_GRAPH_BYTES)
     # Reject unrelated cache leaves before any referenced role is read.
     suffix = "/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/native_flake_schedule_qualification/test.outputs/native-flake-obligations.json"
@@ -106,7 +106,7 @@ def selection(value):
         require(type(candidate) is dict and set(candidate) == {"registration", "paths"})
         for name, leaf in (("registration", "registration"), ("paths", "store-paths")):
             pin(candidate[name], seed.MAX_METADATA)
-            require(re.fullmatch(seed.STORE+"/"+leaf, candidate[name]["path"]))
+            require(re.fullmatch(seed.STORE+"/"+leaf, candidate[name]["path"]) is not None)
         require(str(Path(candidate["registration"]["path"]).parent)
             == str(Path(candidate["paths"]["path"]).parent))
     return value
