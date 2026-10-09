@@ -213,6 +213,7 @@ class QueryReservationModels(unittest.TestCase):
             read.assert_not_called();collect.assert_not_called();publish.assert_not_called()
 
     def test_actual_collector_sqlite_and_sealed_fd_publication_use_supplied_cutoff(self):
+        actual_collect=collector.collect
         for bound,expected in ((None,130.0),(105.0,105.0)):
             with tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary);fixture=registration_models.Fixture(root)
@@ -225,7 +226,10 @@ class QueryReservationModels(unittest.TestCase):
                 seen=[]
                 def collect(project,deadline,epoch):
                     self.assertEqual(project,fixture.project);seen.append(deadline)
-                    return fixture.collect(deadline)
+                    self.assertEqual(epoch,registration_models.EPOCH)
+                    with patch.object(collector,"database_scope"):
+                        return actual_collect(project,deadline,epoch,database=fixture.database,
+                            exists=lambda path:path in fixture.paths)
                 env={"TEST_UNDECLARED_OUTPUTS_DIR":str(outputs),"TEST_TIMEOUT":"60",
                     "OMUX_EXECUTION_GUARD":collector.COORDINATORS[0]+"/"+registration_models.EPOCH}
                 with patch.dict(os.environ,env,clear=True),patch.object(collector.sys,"argv",argv), \
