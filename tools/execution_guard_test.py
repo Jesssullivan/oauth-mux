@@ -522,15 +522,20 @@ class GuardTest(unittest.TestCase):
         pin.pids_snapshot.side_effect = snapshot
         observations = PidsObservation(); observations.sample(pin, 'baseline')
         replies = iter([{'ActiveState': 'active'}, {'ActiveState': 'inactive', 'Result': 'success', 'ExecMainStatus': '0'}])
+        read_times = []
+        def read():
+            read_times.append(clock())
+            return next(replies)
         pauses = []
         def pause(seconds): pauses.append(seconds); clock.advance(seconds)
         def iteration(): observations.sample(pin, 'monitor'); sequence.append('iteration')
-        result = monitor_workload(lambda: next(replies), 10, iteration, clock=clock, pause=pause)
+        result = monitor_workload(read, 10, iteration, clock=clock, pause=pause)
         self.assertIsNone(observe_pids_before_cleanup(observations, pin))
         sequence.append('cleanup'); observations.finish(pin)
-        self.assertEqual(result, 0); self.assertEqual(pauses, [0.5])
-        self.assertEqual(sequence, ['sample', 'sample', 'iteration', 'sample', 'iteration', 'sample', 'cleanup'])
-        self.assertEqual(observations.receipt()['monitor_samples'], 2)
+        self.assertEqual(result, 0); self.assertEqual(pauses, [0.5] * 4)
+        self.assertEqual(read_times, [0, 2.0])
+        self.assertEqual(sequence, ['sample'] + ['sample', 'iteration'] * 5 + ['sample', 'cleanup'])
+        self.assertEqual(observations.receipt()['monitor_samples'], 5)
         original = OSError('private-exception-value')
         failed = PidsObservation(); failed.sample(pin, 'baseline')
         with self.assertRaises(OSError) as raised:
@@ -542,6 +547,35 @@ class GuardTest(unittest.TestCase):
         self.assertIs(raised.exception, original)
         self.assertEqual(failed.pre_cleanup['sample_timing'], 'pre-cleanup')
         self.assertNotIn('private-exception-value', json.dumps(failed.receipt()))
+
+    def test_monitor_original_deadline_bounds_samples_queries_and_terminal_result(self):
+        from execution_guard import monitor_workload
+        clock = FakeClock(); sample_times = []; read_times = []; pauses = []
+        def read():
+            read_times.append(clock())
+            return {'ActiveState': 'active'}
+        def pause(seconds):
+            pauses.append(seconds); clock.advance(seconds)
+        result = monitor_workload(read, 1.25, lambda: sample_times.append(clock()),
+                                  clock=clock, pause=pause)
+        self.assertEqual(result, 124)
+        self.assertEqual(sample_times, [0, 0.5, 1.0])
+        self.assertEqual(read_times, [0])
+        self.assertEqual(pauses, [0.5, 0.5, 0.25])
+        self.assertEqual(clock(), 1.25)
+
+        clock = FakeClock(); unread = Mock()
+        def expired_iteration(): clock.advance(1)
+        self.assertEqual(monitor_workload(unread, 1, expired_iteration,
+                                         clock=clock, pause=Mock()), 124)
+        unread.assert_not_called()
+        for terminal in ({'ActiveState': 'inactive', 'Result': 'success', 'ExecMainStatus': '0'},
+                         {'ActiveState': 'failed', 'Result': 'exit-code', 'ExecMainStatus': '3'}):
+            clock = FakeClock(); no_pause = Mock()
+            def late_read(): clock.advance(1); return terminal
+            self.assertEqual(monitor_workload(late_read, 1, lambda: None,
+                                             clock=clock, pause=no_pause), 124)
+            no_pause.assert_not_called()
 
     def test_pids_cleanup_continues_and_deferred_control_flow_keeps_primary(self):
         from execution_guard import PidsObservation, observe_pids_before_cleanup

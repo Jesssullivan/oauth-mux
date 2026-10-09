@@ -423,13 +423,25 @@ def cleanup_owned(*, deadline, readback, authorize, stop, observe,
 
 
 def monitor_workload(readback, deadline, on_iteration, *, clock=time.monotonic, pause=time.sleep):
+    next_readback = clock()
     while clock() < deadline:
         on_iteration()
-        actual = readback()
-        if actual.get('ActiveState') in ('inactive', 'failed'):
-            result = int(actual.get('ExecMainStatus', '125'))
-            return 125 if actual.get('Result') != 'success' and result == 0 else result
-        pause(0.5)
+        now = clock()
+        if now >= deadline:
+            return 124
+        if now >= next_readback:
+            actual = readback()
+            now = clock()
+            if now >= deadline:
+                return 124
+            if actual.get('ActiveState') in ('inactive', 'failed'):
+                result = int(actual.get('ExecMainStatus', '125'))
+                return 125 if actual.get('Result') != 'success' and result == 0 else result
+            next_readback = now + 2.0
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
+        pause(min(0.5, remaining))
     return 124
 
 
