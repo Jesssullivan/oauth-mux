@@ -17,6 +17,7 @@ CONSUMERS = frozenset((
     "//delivery:installed_native_interop_test",
     "//delivery:installed_native_discovery_test",
     "//delivery:installed_legacy_native_tui_test",
+    "//delivery:installed_retained_ordinary_native_tui_test",
     "//tools:codex_owner_runtime_input_copy",
     "//tools:codex_owner_runtime_input_qualification",
     "//tools:codex_retained_device_api_qualification",
@@ -24,6 +25,7 @@ CONSUMERS = frozenset((
 COMPANIONS = frozenset((
     "//tools:codex_owner_runtime_input_test",
     "//tools:guard_owner_runtime_input_test",
+    "//delivery:retained_ordinary_native_tui_contract_test",
     "//tools:execution_guard_test",
     "//tools:guard_dependency_profile_test",
     "//tools:runtime_source_receipt", "//:docs_check",

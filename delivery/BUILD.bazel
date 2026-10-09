@@ -666,6 +666,50 @@ python_test(
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 
+# Distinct retained009 provider-free ordinary launch/export/rename/resume path.
+# Never delegates the legacy carrier's app-server history seeding.
+_RETAINED_ORDINARY_TUI_SOURCES = [
+    "pack.py", "install.py", "portable.py", "codex_runtime_selection.py",
+    "test_installed_custody.py", "test_installed_native_interop.py",
+    "test_installed_native_tui.py", "test_installed_legacy_native_tui.py",
+    "native_resumed_checkpoint.py", "native_cli_stderr.py", "native_fd2_observer.py",
+    "native_history_diagnostic.py", "native_run_cli_failure.py", "native_thread_census.py",
+    "//integrations/codex-owner-runtime:runtime_package.py",
+    "//integrations/codex-upstream:patch_io.py",
+    "//integrations/codex-upstream:restore_source.py",
+]
+python_test(
+    name = "installed_retained_ordinary_native_tui_test",
+    main = "test_installed_retained_ordinary_native_tui.py",
+    srcs = _RETAINED_ORDINARY_TUI_SOURCES,
+    data = [
+        ":default_instance_archive",
+        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-receipt.json",
+        "//integrations/codex-owner-runtime:runtime-manifest.json",
+        "//integrations/codex-owner-candidate:artifact_files",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "$(location :default_instance_archive)",
+        "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)",
+        "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    env_inherit = ["HOME"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "retained_ordinary_native_tui_contract_test",
+    main = "test_retained_ordinary_native_tui_contract.py",
+    srcs = ["test_installed_retained_ordinary_native_tui.py"] + _RETAINED_ORDINARY_TUI_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 # Instrumented provider-free diagnosis; never substitutes the ordinary proof.
 python_test(
     name = "installed_legacy_native_fd2_diagnostic_test",
