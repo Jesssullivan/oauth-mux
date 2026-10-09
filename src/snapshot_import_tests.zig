@@ -788,12 +788,248 @@ fn expectOldImportAbsent(engine: *engine_module.Engine, source_id: []const u8, h
     try reply.expectError("NotFound");
 }
 
+fn nativeEnrollmentSource(fixture: *Fixture, token: []const u8) ![]u8 {
+    const document = try std.json.Stringify.valueAlloc(allocator, .{ .access_token = token }, .{});
+    defer {
+        std.crypto.secureZero(u8, document);
+        allocator.free(document);
+    }
+    const file = try fixture.directory.dir.createFile(io, "explicit-enrollment.json", .{ .exclusive = true });
+    defer file.close(io);
+    if (std.c.fchmod(file.handle, 0o600) != 0) return error.FixturePermissionFailed;
+    try file.writeStreamingAll(io, document);
+    const path = try std.fmt.allocPrint(allocator, "{s}/explicit-enrollment.json", .{fixture.path});
+    defer allocator.free(path);
+    var connected = try rpc(fixture.engine.?, .control, "source.connect", .{ .kind = "native_store", .provider = "github", .label = "generated explicit enrollment fixture", .source_path = path });
+    defer connected.deinit();
+    return allocator.dupe(u8, try control.string(try connected.result(), "source_id"));
+}
+
+fn holdEnrollmentStart(engine: *engine_module.Engine) !void {
+    const capability = try engine.capabilityForTest("enrollment");
+    try success(engine, .adapter, "fixture.importEnrollmentHold", .{ .application = "enrollment", .capability = capability[0..] });
+}
+
+test "ordinary explicit enrollment fences only stranded generation while mutation replay and live ownership stay unchanged" {
+    const wait = @import("enrollment_wait.zig");
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const source = try nativeEnrollmentSource(&fixture, token);
+    defer allocator.free(source);
+    const response = try identityResponse();
+    defer allocator.free(response);
+    var old = try holdImport(fixture.engine.?, source, token, false);
+    defer old.deinit();
+    try holdEnrollmentStart(fixture.engine.?);
+    const original_id = try generatedValue();
+    defer allocator.free(original_id);
+    const original_revision = try revision(fixture.engine.?);
+    const original_params = .{ .source_id = source, .include_operation_generation = true, .operation_id = original_id[0..64], .expected_revision = original_revision };
+    var admitted = try rpc(fixture.engine.?, .control, "enrollment.start", original_params);
+    defer admitted.deinit();
+    const original = try wait.selection(admitted.parsed.value);
+    try std.testing.expectEqual(@as(u64, @intCast(old.generation)), original.operation_generation);
+    try std.testing.expectEqualStrings(old.operation_id, original.operation_id);
+    try std.testing.expectEqual(@as(usize, 1), (try budget(fixture.engine.?)).credit_count);
+    const acknowledged_revision = try revision(fixture.engine.?);
+    var duplicate = try rpc(fixture.engine.?, .control, "enrollment.start", original_params);
+    defer duplicate.deinit();
+    try std.testing.expectEqualStrings(admitted.bytes, duplicate.bytes);
+    try std.testing.expectEqual(acknowledged_revision, try revision(fixture.engine.?));
+    var conflicting = try rpc(fixture.engine.?, .control, "enrollment.start", .{ .source_id = source, .include_operation_generation = false, .operation_id = original_id[0..64], .expected_revision = original_revision });
+    defer conflicting.deinit();
+    try conflicting.expectError("OperationIdConflict");
+    try expectJob(fixture.engine.?, old, "running");
+
+    try fixture.restart();
+    const engine = fixture.engine.?;
+    try holdEnrollmentStart(engine);
+    var replayed = try rpc(engine, .control, "enrollment.start", original_params);
+    defer replayed.deinit();
+    try std.testing.expectEqualStrings(admitted.bytes, replayed.bytes);
+    try expectJob(engine, old, "running");
+    const retained = try budget(engine);
+    // Legacy source reconciliation and background fixture polling retain the
+    // missing-transport owner; an original explicit mutation replay also does.
+    var automatic = try rpc(engine, .control, "source.reconcile", .{ .source_id = source, .include_operation_generation = true });
+    defer automatic.deinit();
+    try std.testing.expectEqual(old.generation, control.get(try automatic.result(), "operation_generation").?.integer);
+    try expectZeroProviderSubmissions(engine, "fixture.pollSources");
+    try expectJob(engine, old, "running");
+    try std.testing.expectEqual(retained.credits_bytes, (try budget(engine)).credits_bytes);
+    try expectZeroProviderSubmissions(engine, "fixture.providerSubmissions");
+
+    const fresh_id = try generatedValue();
+    defer allocator.free(fresh_id);
+    const fresh_params = .{ .source_id = source, .include_operation_generation = true, .operation_id = fresh_id[0..64], .expected_revision = try revision(engine) };
+    var fresh_reply = try rpc(engine, .control, "enrollment.start", fresh_params);
+    defer fresh_reply.deinit();
+    const selected = try wait.selection(fresh_reply.parsed.value);
+    try std.testing.expectEqual(original.operation_generation + 1, selected.operation_generation);
+    try std.testing.expectEqualStrings(original.operation_id, selected.operation_id);
+    var fresh: HeldImport = .{ .operation_id = try allocator.dupe(u8, selected.operation_id), .generation = @intCast(selected.operation_generation) };
+    defer fresh.deinit();
+    try expectJob(engine, fresh, "running");
+    try std.testing.expectEqual(@as(usize, 1), (try budget(engine)).credit_count);
+    var fresh_duplicate = try rpc(engine, .control, "enrollment.start", fresh_params);
+    defer fresh_duplicate.deinit();
+    try std.testing.expectEqualStrings(fresh_reply.bytes, fresh_duplicate.bytes);
+    var coalesced = try rpc(engine, .control, "enrollment.start", .{ .source_id = source, .include_operation_generation = true });
+    defer coalesced.deinit();
+    try std.testing.expectEqual(fresh.generation, control.get(try coalesced.result(), "operation_generation").?.integer);
+    var original_again = try rpc(engine, .control, "enrollment.start", original_params);
+    defer original_again.deinit();
+    try std.testing.expectEqualStrings(admitted.bytes, original_again.bytes);
+    var state = try rpc(engine, .control, "state.snapshot", .{});
+    defer state.deinit();
+    try std.testing.expectError(error.EnrollmentSuperseded, wait.observe(original, state.parsed.value));
+    try expectOldImportAbsent(engine, source, old, response);
+    try expectZeroProviderSubmissions(engine, "fixture.providerSubmissions");
+    try completeImport(engine, source, fresh, response, null);
+    try expectJob(engine, fresh, "completed");
+    try std.testing.expectEqual(@as(usize, 0), (try budget(engine)).credit_count);
+    try assertNoPlaintext(&fixture, token);
+}
+
+test "ordinary explicit enrollment retains source disconnect and identity forget fences" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const source = try nativeEnrollmentSource(&fixture, token);
+    defer allocator.free(source);
+    const engine = fixture.engine.?;
+    try holdEnrollmentStart(engine);
+    const response = try identityResponse();
+    defer allocator.free(response);
+    var started = try rpc(engine, .control, "enrollment.start", .{ .source_id = source, .include_operation_generation = true });
+    defer started.deinit();
+    const selected = try @import("enrollment_wait.zig").selection(started.parsed.value);
+    var held: HeldImport = .{ .operation_id = try allocator.dupe(u8, selected.operation_id), .generation = @intCast(selected.operation_generation) };
+    defer held.deinit();
+    try completeImport(engine, source, held, response, null);
+    const account = try firstAccount(engine);
+    defer allocator.free(account);
+    try success(engine, .control, "account.forget", .{ .account_id = account });
+    var forgotten = try rpc(engine, .control, "enrollment.start", .{ .source_id = source, .include_operation_generation = true });
+    defer forgotten.deinit();
+    const next = try @import("enrollment_wait.zig").selection(forgotten.parsed.value);
+    var attempted: HeldImport = .{ .operation_id = try allocator.dupe(u8, next.operation_id), .generation = @intCast(next.operation_generation) };
+    defer attempted.deinit();
+    try std.testing.expect(attempted.generation > held.generation);
+    // Explicit authorization to verify is not permission to clear tombstones.
+    try completeImport(engine, source, attempted, response, "IdentityNotAdmitted");
+    var state = try rpc(engine, .control, "state.snapshot", .{});
+    defer state.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(try state.result(), "accounts").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, 0), (try budget(engine)).credit_count);
+    try success(engine, .control, "source.disconnect", .{ .source_id = source });
+    var disconnected = try rpc(engine, .control, "enrollment.start", .{ .source_id = source, .include_operation_generation = true });
+    defer disconnected.deinit();
+    try disconnected.expectError("SourceUnauthorized");
+    try expectJob(engine, attempted, "failed");
+    try expectZeroProviderSubmissions(engine, "fixture.providerSubmissions");
+    try assertNoPlaintext(&fixture, token);
+}
+
 fn firstAccount(engine: *engine_module.Engine) ![]u8 {
     var reply = try rpc(engine, .control, "state.snapshot", .{});
     defer reply.deinit();
     const accounts = control.get(try reply.result(), "accounts").?.array.items;
     try std.testing.expectEqual(@as(usize, 1), accounts.len);
     return allocator.dupe(u8, try control.string(accounts[0], "id"));
+}
+
+test "fresh explicit enrollment reverifies identical ready grant with immutable original mutation and live coalescing" {
+    const wait = @import("enrollment_wait.zig");
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const source = try nativeEnrollmentSource(&fixture, token);
+    defer allocator.free(source);
+    const engine = fixture.engine.?;
+    try holdEnrollmentStart(engine);
+    const response = try identityResponse();
+    defer allocator.free(response);
+    const original_id = try generatedValue();
+    defer allocator.free(original_id);
+    const original_params = .{ .source_id = source, .include_operation_generation = true, .operation_id = original_id[0..64], .expected_revision = try revision(engine) };
+    var initial = try rpc(engine, .control, "enrollment.start", original_params);
+    defer initial.deinit();
+    const original = try wait.selection(initial.parsed.value);
+    var completed: HeldImport = .{ .operation_id = try allocator.dupe(u8, original.operation_id), .generation = @intCast(original.operation_generation) };
+    defer completed.deinit();
+    try completeImport(engine, source, completed, response, null);
+    try expectJob(engine, completed, "completed");
+    var automatic = try rpc(engine, .control, "source.reconcile", .{ .source_id = source, .include_operation_generation = true });
+    defer automatic.deinit();
+    try std.testing.expect(control.get(try automatic.result(), "operation_id").? == .null);
+    try std.testing.expect(control.get(try automatic.result(), "operation_generation").? == .null);
+    try std.testing.expectEqualStrings("reconciled", try control.string(try automatic.result(), "status"));
+    {
+        const capability = try engine.capabilityForTest("enrollment");
+        var polled = try rpc(engine, .adapter, "fixture.pollSources", .{ .application = "enrollment", .capability = capability[0..] });
+        defer polled.deinit();
+        const submitted = try polled.result();
+        // The completed ready grant is eligible for a test-only capacity
+        // observation; implicit polling must not submit identity verification.
+        try std.testing.expectEqual(@as(i64, 0), control.get(submitted, "identity_submissions").?.integer);
+        try std.testing.expectEqual(@as(i64, 1), control.get(submitted, "observation_submissions").?.integer);
+    }
+    try expectJob(engine, completed, "completed");
+    const fresh_id = try generatedValue();
+    defer allocator.free(fresh_id);
+    const fresh_params = .{ .source_id = source, .include_operation_generation = true, .operation_id = fresh_id[0..64], .expected_revision = try revision(engine) };
+    var admitted = try rpc(engine, .control, "enrollment.start", fresh_params);
+    defer admitted.deinit();
+    const selected = try wait.selection(admitted.parsed.value);
+    try std.testing.expectEqual(original.operation_generation + 1, selected.operation_generation);
+    try std.testing.expectEqualStrings(original.operation_id, selected.operation_id);
+    var fresh: HeldImport = .{ .operation_id = try allocator.dupe(u8, selected.operation_id), .generation = @intCast(selected.operation_generation) };
+    defer fresh.deinit();
+    var coalesced = try rpc(engine, .control, "enrollment.start", .{ .source_id = source, .include_operation_generation = true });
+    defer coalesced.deinit();
+    try std.testing.expectEqual(fresh.generation, control.get(try coalesced.result(), "operation_generation").?.integer);
+    try std.testing.expectEqual(@as(usize, 1), (try budget(engine)).credit_count);
+    const before_replays = try revision(engine);
+    var new_replay = try rpc(engine, .control, "enrollment.start", fresh_params);
+    defer new_replay.deinit();
+    try std.testing.expectEqualStrings(admitted.bytes, new_replay.bytes);
+    var old_replay = try rpc(engine, .control, "enrollment.start", original_params);
+    defer old_replay.deinit();
+    try std.testing.expectEqualStrings(initial.bytes, old_replay.bytes);
+    try std.testing.expectEqual(before_replays, try revision(engine));
+    try expectJob(engine, fresh, "running");
+    var pending = try rpc(engine, .control, "state.snapshot", .{});
+    defer pending.deinit();
+    try std.testing.expectError(error.EnrollmentSuperseded, wait.observe(original, pending.parsed.value));
+    try std.testing.expectEqual(wait.State.pending, try wait.observe(selected, pending.parsed.value));
+    {
+        const capability = try engine.capabilityForTest("enrollment");
+        var counters = try rpc(engine, .adapter, "fixture.providerSubmissions", .{ .application = "enrollment", .capability = capability[0..] });
+        defer counters.deinit();
+        const submitted = try counters.result();
+        try std.testing.expectEqual(@as(i64, 0), control.get(submitted, "identity_submissions").?.integer);
+        try std.testing.expectEqual(@as(i64, 1), control.get(submitted, "observation_submissions").?.integer);
+    }
+    try completeImport(engine, source, fresh, response, null);
+    try expectJob(engine, fresh, "completed");
+    const account = try firstAccount(engine);
+    defer allocator.free(account);
+    try std.testing.expectEqual(@as(usize, 0), (try budget(engine)).credit_count);
+    try assertNoPlaintext(&fixture, token);
 }
 
 fn expectJob(engine: *engine_module.Engine, held: HeldImport, status: []const u8) !void {

@@ -512,6 +512,7 @@ pub const Engine = struct {
     fixture_identity_submissions: usize = 0,
     fixture_observation_submissions: usize = 0,
     fixture_force_poll: bool = false,
+    fixture_hold_enrollment_start: bool = false,
     fixture_lifecycle_fault: enum { none, preparation, sqlite_commit, native_preparation_allocation } = .none,
     fixture_native_allocation_failed: bool = false,
     outcome_intents: std.ArrayList(OutcomeIntent) = .empty,
@@ -2952,6 +2953,12 @@ pub const Engine = struct {
                 };
                 return error.NotFound;
             }
+            if (eql(method, "fixture.importEnrollmentHold")) {
+                // Actor-owned test transport hold for the ordinary control RPC;
+                // neither a production parameter nor persisted authorization.
+                self.fixture_hold_enrollment_start = true;
+                return control.success(allocator, request.id, .{ .held = true });
+            }
             if (eql(method, "fixture.importComplete")) {
                 const source_id = try control.string(params, "source_id");
                 const generation = control.get(params, "generation") orelse return error.InvalidParams;
@@ -3239,7 +3246,12 @@ pub const Engine = struct {
             // Parse before reconciliation can perform external I/O. Generation
             // is the admitted persisted job, never inferred from a later snapshot.
             const include_generation = try control.boolean(params, "include_operation_generation", false);
-            const operation = try self.reconcileSource(source_id);
+            // Only a newly admitted explicit enrollment may fence stranded
+            // import ownership. Mutation replay returns before this dispatch.
+            const operation = if (eql(method, "enrollment.start"))
+                try self.reconcileSourceAuthorization(source_id, builtin.is_test and self.fixture_hold_enrollment_start, true)
+            else
+                try self.reconcileSource(source_id);
             return self.sourceReconcileReply(allocator, request.id, operation, include_generation);
         }
         if (eql(method, "repair.start")) {
@@ -3824,6 +3836,10 @@ pub const Engine = struct {
     }
 
     fn reconcileSourceMode(self: *Engine, source_id: []const u8, fixture_hold: bool) !?[]const u8 {
+        return self.reconcileSourceAuthorization(source_id, fixture_hold, false);
+    }
+
+    fn reconcileSourceAuthorization(self: *Engine, source_id: []const u8, fixture_hold: bool, explicit_authorization: bool) !?[]const u8 {
         if (fixture_hold and !builtin.is_test) return error.TestOnly;
         var source_value: ?domain.Source = null;
         for (self.state.sources.items) |source| if (eql(source.id, source_id)) {
@@ -3857,7 +3873,9 @@ pub const Engine = struct {
                     source = try self.connectImportSource(restored);
                     try self.persist(&.{});
                 }
-                for (self.state.grants.items) |grant| if (eql(grant.source_id, source_id) and grant.status == .ready) {
+                // Polling may reuse identical usable custody. A fresh explicit
+                // enrollment needs an admitted identity-verification generation.
+                if (!explicit_authorization) for (self.state.grants.items) |grant| if (eql(grant.source_id, source_id) and grant.status == .ready) {
                     var secret = self.db.?.loadGrant(.{ .key_id = self.root_id.?, .account_id = grant.account_id, .grant_id = grant.id, .generation = grant.generation, .purpose = "request", .scope = grant.audience }) catch continue;
                     defer secret.deinit();
                     const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, secret.bytes, .{ .allocate = .alloc_always });
@@ -3872,7 +3890,7 @@ pub const Engine = struct {
                     const same_custody_ceiling = if (grant.custody_expires_at) |retained| retained <= candidate.custody_expires_at else false;
                     if (eql(previous, candidate.access_token) and same_hint and grant.credential_kind == candidate.credential_kind and same_provider_expiry and same_custody_ceiling and (grant.custody_expires_at == null or grant.custody_expires_at.? > self.now() + 300)) return null;
                 };
-                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, false);
+                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, explicit_authorization);
             },
         }
     }
