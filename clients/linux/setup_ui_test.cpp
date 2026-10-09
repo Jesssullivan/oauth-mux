@@ -78,8 +78,15 @@ int main(int argc, char **argv) {
     }
     bool duplicate = false;
     bool decline = false;
+    int connections = 0;
     int mutations = 0;
+    int reopenRequests = 0;
+    int readinessRequests = 0;
+    bool strictReopen = true;
+    bool custodyReady = true;
+    QJsonValue reopenCapability(QJsonValue::Undefined); // Absent capability is the installed-old-service case.
     QObject::connect(&server, &QLocalServer::newConnection, &server, [&] {
+        ++connections;
         auto *socket = server.nextPendingConnection();
         socket->setParent(&server);
         auto buffer = std::make_shared<QByteArray>();
@@ -96,9 +103,31 @@ int main(int argc, char **argv) {
                     continue;
                 }
                 QJsonObject result;
-                if (method == "system.handshake") result = {{"protocol_version", 2}};
-                else if (method == "state.snapshot") result = {{"revision", 1}, {"custody_available", true}};
-                else if (method == "setup.readiness") result = report(duplicate);
+                if (method == "system.handshake") {
+                    result = {{"protocol_version", 2}};
+                    if (!reopenCapability.isUndefined())
+                        result.insert("capabilities", QJsonObject{{"custody_reopen", reopenCapability}});
+                }
+                else if (method == "state.snapshot") result = {{"revision", 1}, {"custody_available", custodyReady}};
+                else if (method == "setup.readiness") {
+                    ++readinessRequests;
+                    result = report(duplicate);
+                    if (!custodyReady && !duplicate) {
+                        auto findings = result.value("findings").toArray();
+                        findings[2] = QJsonObject{{"phase", "vault"}, {"reason", "locked"},
+                            {"action", "unlock_platform_vault_then_reopen_custody"}};
+                        result.insert("findings", findings);
+                    }
+                }
+                else if (method == "custody.reopen") {
+                    ++reopenRequests;
+                    strictReopen = strictReopen && request.value("params").isObject()
+                        && request.value("params").toObject().isEmpty()
+                        && reopenCapability.isBool() && reopenCapability.toBool();
+                    custodyReady = true;
+                    result = {{"reopened", true}, {"custody_available", true}, {"account_count", 0},
+                        {"provider_request_initiated", false}, {"live_handoff_proven", false}};
+                }
                 else if (method == "integrations.status") result = {{"integrations", QJsonArray{}}};
                 else ++mutations;
                 socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
@@ -117,6 +146,12 @@ int main(int argc, char **argv) {
         auto *notice = window.findChild<QLabel *>("setupNotice");
         if (!table || !notice || !until([&] { return table->rowCount() == 7; })) return 2;
         if (table->item(6, 1)->text() != "unknown" || !notice->text().contains("Home Manager")) return 3;
+        // Ordinary connection/readiness must not trigger an automatic reopen.
+        if (reopenRequests != 0) return 11;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Resume after vault unlock") button->click();
+        if (!until([&] { return notice->text().contains("requires an update"); })
+            || reopenRequests != 0) return 12;
         duplicate = true;
         for (auto *button : window.findChildren<QPushButton *>())
             if (button->text() == "Check setup") button->click();
@@ -127,7 +162,44 @@ int main(int argc, char **argv) {
         if (!until([&] { return notice->text().contains("CustodyLocked"); })) return 6;
         window.close();
     }
+    duplicate = false;
+    decline = false;
+    // Fresh private mock connections exercise false/non-boolean advertisements
+    // and the supported explicit action. Every other effect-bearing RPC fails
+    // the final mutation check; no normal daemon or vault is used.
+    for (const auto capability : {QJsonValue(false), QJsonValue(QString("true")), QJsonValue(true)}) {
+        reopenCapability = capability;
+        custodyReady = false;
+        OmuxTray window(socketPath, false, true);
+        window.show();
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Reconnect") button->click();
+        auto *table = window.findChild<QTableWidget *>("setupReadiness");
+        auto *notice = window.findChild<QLabel *>("setupNotice");
+        if (!table || !notice || !until([&] {
+                return table->rowCount() == 7 && table->item(2, 1)->text() == "locked";
+            }) || reopenRequests != 0) return 13;
+        const int beforeReadiness = readinessRequests;
+        const int beforeConnections = connections;
+        bool clicked = false;
+        for (auto *button : window.findChildren<QPushButton *>()) {
+            if (button->text() == "Resume after vault unlock") {
+                button->click();
+                clicked = true;
+            }
+        }
+        if (!clicked) return 14;
+        if (!capability.isBool() || !capability.toBool()) {
+            if (!until([&] { return notice->text().contains("requires an update"); })
+                || reopenRequests != 0) return 15;
+        } else {
+            if (!until([&] { return reopenRequests == 1 && readinessRequests > beforeReadiness
+                    && table->rowCount() == 7 && table->item(2, 1)->text() == "ready"; })
+                || !strictReopen || mutations != 0 || connections != beforeConnections) return 16;
+        }
+        window.close();
+    }
     // UI close/destruction sends no shutdown, mutation, or removal request.
     QApplication::processEvents();
-    return server.isListening() && mutations == 0 ? 0 : 5;
+    return server.isListening() && mutations == 0 && reopenRequests == 1 && strictReopen ? 0 : 5;
 }

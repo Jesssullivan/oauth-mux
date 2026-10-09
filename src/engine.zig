@@ -6215,7 +6215,9 @@ const ReopenCaller = struct {
     reopened: bool = false,
     failure: ?anyerror = null,
     fn run(self: *ReopenCaller) void {
-        self.call() catch |err| self.failure = err;
+        self.call() catch |err| {
+            self.failure = err;
+        };
     }
     fn call(self: *ReopenCaller) !void {
         var reply = try reopenTestReply(self.engine, "custody.reopen", .control);
