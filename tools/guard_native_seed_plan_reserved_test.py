@@ -1,6 +1,7 @@
 """Synthetic kernel files + real own pidfd; no installed/runtime qualification."""
 from contextlib import ExitStack
 import copy
+import json
 import os
 from pathlib import Path
 import stat
@@ -406,8 +407,10 @@ class ProofWorkerModels(unittest.TestCase):
             reads=Mock(side_effect=[owned,final]);authorize=Mock();stop=Mock()
             summary=reserved.cleanup_retained(deadline=15,readback=reads,authorize=authorize,
                 stop=stop,observe=Mock(return_value="empty"),clock=lambda:0)
+            expected=reserved.post_stop_projection(final,(owned["Id"],owned["InvocationID"],owned["ExecMainPID"]))
+            expected["original_cgroup_state"]="empty"
             self.assertEqual(summary,{"state":"empty","stop":"succeeded","ownership":"verified",
-                "readback_attempts":2})
+                "readback_attempts":2,"post_stop":expected})
             stop.assert_called_once();authorize.assert_called_once_with(owned)
         for changes in ({"ActiveState":"active"},{"InvocationID":"b"*32},{"ExecMainPID":"5678"},
             {"MainPID":"1234"}):
@@ -442,6 +445,58 @@ class ProofWorkerModels(unittest.TestCase):
         self.assertIs(reserved.release_worker(witness),True)
         self.assertIs(reserved.release_worker(None),True)
         with self.assertRaises(ValueError):reserved.release_worker(Mock())
+
+
+    def test_actual_post_stop_diagnostic_names_failure_without_relaxing_acceptance(self):
+        owned=self.terminal(ActiveState="active",SubState="exited",MainPID="0",RemainAfterExit="yes")
+        post={**owned,"ActiveState":"inactive","SubState":"dead","LoadState":"loaded"}
+        failures=(({"LoadState":"loaded","InvocationID":""},"invocation-mismatch"),
+            ({"ExecMainPID":"0"},"exec-main-pid-mismatch"),({"Id":"foreign"},"unit-id-mismatch"),
+            ({"ActiveState":"failed","SubState":"failed"},"not-inactive"),({"SubState":"exited"},"not-dead"),
+            ({"MainPID":"987654321"},"main-pid-not-zero"))
+        for changes,predicate in failures:
+            read=Mock(side_effect=[owned,{**post,**changes}]);observe=Mock(return_value="empty")
+            summary=reserved.cleanup_retained(deadline=15,readback=read,authorize=Mock(),stop=Mock(),
+                observe=observe,clock=lambda:0)
+            self.assertEqual(summary["state"],"unproved")
+            self.assertEqual(summary["post_stop"]["predicate"],predicate)
+            if changes.get("ActiveState")=="failed":
+                self.assertEqual(summary["post_stop"]["ActiveState"],"failed")
+                self.assertEqual(summary["post_stop"]["SubState"],"failed")
+            self.assertEqual(summary["post_stop"]["original_cgroup_state"],"not-observed")
+            self.assertEqual(read.call_count,2)
+            self.assertEqual(observe.call_count,2)
+        for original in ("populated","changed","unproved","empty","absent"):
+            summary=reserved.cleanup_retained(deadline=15,readback=Mock(side_effect=[owned,post]),
+                authorize=Mock(),stop=Mock(),observe=Mock(side_effect=["empty","empty",original]),clock=lambda:0)
+            self.assertEqual(summary["post_stop"]["original_cgroup_state"],original)
+            self.assertEqual(summary["state"],"empty" if original in ("empty","absent") else "unproved")
+        summary=reserved.cleanup_retained(deadline=15,
+            readback=Mock(side_effect=[owned,OSError("unprinted transport detail")]),
+            authorize=Mock(),stop=Mock(),observe=lambda:"empty",clock=lambda:0)
+        self.assertEqual(summary["state"],"unproved")
+        self.assertEqual(summary["post_stop"]["predicate"],"post-read-failed")
+
+    def test_post_stop_projection_is_closed_bounded_and_never_reflects_metadata(self):
+        identity=(self.UNIT,"a"*32,"1234")
+        raw={"Id":"unsupported-unit-value","InvocationID":"unsupported-invocation-value",
+            "ExecMainPID":"unsupported-pid-value","MainPID":"99999999999999999999999",
+            "LoadState":"unsupported-load-value","ActiveState":"unsupported-active-value",
+            "SubState":"unsupported-sub-value","Environment":"unsupported-environment-value"}
+        value=reserved.post_stop_projection(raw,identity)
+        self.assertEqual(set(value),{"schema_version","scope","LoadState","ActiveState","SubState",
+            "MainPID","Id_matches","InvocationID_matches","ExecMainPID_matches",
+            "original_cgroup_state","predicate"})
+        for name in ("Id_matches","InvocationID_matches","ExecMainPID_matches"):
+            self.assertIs(type(value[name]),bool);self.assertIs(value[name],False)
+        for name in ("LoadState","ActiveState","SubState","MainPID"):
+            self.assertEqual(value[name],"other")
+        encoded=json.dumps(value,sort_keys=True)
+        self.assertLess(len(encoded),1024)
+        self.assertNotIn("unsupported",encoded)
+        for pid in (None,False,0,[],{}):
+            value=reserved.post_stop_projection({**raw,"MainPID":pid},identity)
+            self.assertIn(value["MainPID"],("missing","other"))
 
 # Keep the actual production walker captured before per-constructor injection.
 reserved_open=reserved.open_chain

@@ -407,11 +407,40 @@ def release_worker(witness):
     return True
 
 
+def post_stop_projection(actual, identity):
+    """Closed diagnostic only: never return unit/PID/invocation strings."""
+    def field(name, allowed):
+        value=actual.get(name)
+        return "missing" if value is None else value if type(value) is str and value in allowed else "other"
+    pid=actual.get("MainPID")
+    pid_state=("missing" if pid is None else "zero" if pid=="0" else "nonzero"
+        if type(pid) is str and re.fullmatch(r"[1-9][0-9]{0,9}",pid) else "other")
+    value={"schema_version":1,"scope":"reserved-owned-post-stop-diagnostic-v1",
+        "LoadState":field("LoadState",("loaded","not-found","error","masked","bad-setting","stub","merged")),
+        "ActiveState":field("ActiveState",("active","inactive","failed","activating","deactivating","reloading")),
+        "SubState":field("SubState",("dead","exited","running","failed","start","start-pre","start-post",
+            "stop","stop-sigterm","stop-sigkill","stop-post","auto-restart")),
+        "MainPID":pid_state,"Id_matches":actual.get("Id")==identity[0],
+        "InvocationID_matches":actual.get("InvocationID")==identity[1],
+        "ExecMainPID_matches":actual.get("ExecMainPID")==identity[2],
+        "original_cgroup_state":"not-observed","predicate":"manager-predicate-passed"}
+    if not value["Id_matches"]:value["predicate"]="unit-id-mismatch"
+    elif actual.get("ActiveState")!="inactive":value["predicate"]="not-inactive"
+    elif actual.get("SubState")!="dead":value["predicate"]="not-dead"
+    elif actual.get("MainPID")!="0":value["predicate"]="main-pid-not-zero"
+    elif actual.get("LoadState")!="not-found" and not value["InvocationID_matches"]:
+        value["predicate"]="invocation-mismatch"
+    elif actual.get("LoadState")!="not-found" and not value["ExecMainPID_matches"]:
+        value["predicate"]="exec-main-pid-mismatch"
+    return value
+
+
 def cleanup_retained(*, deadline, readback, authorize, stop, observe,
                      clock=time.monotonic, pause=time.sleep):
     """Same owned cleanup budget; an empty cgroup does not release an active retained unit."""
     from execution_guard import CLEANUP_READ_SECONDS, CONTROLLER_TIMEOUT
-    summary={"state":"unproved","stop":"not-requested","ownership":"unproved","readback_attempts":0}
+    summary={"state":"unproved","stop":"not-requested","ownership":"unproved","readback_attempts":0,
+        "post_stop":None}
     def state():
         try:
             return observe()
@@ -458,15 +487,25 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
         summary["readback_attempts"]+=1
         try:
             actual=readback(min(CLEANUP_READ_SECONDS,deadline-clock()),deadline)
+            summary["post_stop"]=post_stop_projection(actual,identity)
             missing=actual.get("LoadState")=="not-found"
             require(actual.get("Id")==identity[0] and actual.get("ActiveState")=="inactive"
                 and actual.get("SubState")=="dead" and actual.get("MainPID")=="0"
                 and (missing or (actual.get("InvocationID")==identity[1]
                     and actual.get("ExecMainPID")==identity[2])))
-            if clock()<deadline and state() in ("empty","absent"):
-                summary["state"]="empty"
-                return summary
+            if clock()<deadline:
+                original=state()
+                summary["post_stop"]["original_cgroup_state"]=(original
+                    if original in ("empty","absent","populated","changed","unproved") else "other")
+                if original in ("empty","absent"):
+                    summary["state"]="empty"
+                    return summary
+                summary["post_stop"]["predicate"]="original-group-not-empty"
+            else:
+                summary["post_stop"]["predicate"]="original-deadline-exhausted"
         except (OSError,ValueError,subprocess.SubprocessError):
-            pass
+            if summary["post_stop"] is None:
+                summary["post_stop"]=post_stop_projection({},identity)
+                summary["post_stop"]["predicate"]="post-read-failed"
     summary["state"]="deadline-exhausted" if clock()>=deadline else "unproved"
     return summary
