@@ -866,6 +866,119 @@ class VerifiedProcExitModels(unittest.TestCase):
                     reserved.monitor(reserved.PROFILE, witness, lambda: {**base, **changes}, 1,
                         lambda: None, clock=lambda: 0)
 
+class TerminalConfirmedProcExitModels(unittest.TestCase):
+    UNIT = ProofWorkerModels.UNIT
+    worker = VerifiedProcExitModels.worker
+
+    def run_missing(self, actual, readiness, *, readback_error=None, clock=None):
+        witness = self.worker()
+        query = Mock(side_effect=readback_error) if readback_error else Mock(return_value=actual)
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", side_effect=readiness) as polled, \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private proc")):
+            try:
+                result = reserved.monitor(reserved.PROFILE, witness, query, 1, lambda: None,
+                    clock=clock or (lambda: 0), pause=Mock(side_effect=AssertionError("unexpected wait")))
+            except (reserved.ReservationOSError, reserved.ReservationValueError) as error:
+                result = error
+        return witness, query, polled, result
+
+    def test_ready_after_one_terminal_query_uses_original_manager_exit_and_frozen_custody(self):
+        base = ProofWorkerModels.terminal(self)
+        for changes, expected in (({}, 0),
+                ({"ActiveState": "failed", "SubState": "failed", "Result": "exit-code", "ExecMainStatus": "3"}, 3),
+                ({"ActiveState": "failed", "SubState": "failed", "Result": "exit-code", "ExecMainStatus": "125"}, 125)):
+            witness, query, polled, result = self.run_missing({**base, **changes},
+                [([], [], []), ([], [], []), ([11], [], [])])
+            self.assertEqual(result, expected)
+            self.assertEqual(witness.proc_exit_confirmation, "verified-terminal")
+            self.assertFalse(witness.proc_exit_pending)
+            query.assert_called_once_with()
+            self.assertEqual(polled.call_count, 3)
+            self.assertEqual(witness.check_bounds.call_count, 2)
+            witness.check_process.assert_not_called()
+            witness.read.assert_not_called()
+
+    def test_active_wrong_identity_and_false_success_refuse_before_third_pidfd_poll(self):
+        base = ProofWorkerModels.terminal(self)
+        for changes in ({"ActiveState": "active", "SubState": "running", "MainPID": "1234"},
+                {"Id": "wrong"}, {"InvocationID": "b" * 32}, {"ExecMainPID": "9999"},
+                {"Result": "exit-code"}, {"ActiveState": "activating"}):
+            witness, query, polled, result = self.run_missing({**base, **changes},
+                [([], [], []), ([], [], [])])
+            self.assertIsInstance(result, reserved.ReservationValueError)
+            self.assertEqual(reserved.diagnostic_projection(result)["proc_exit_confirmation"], "manager-terminal-refused")
+            self.assertEqual(witness.proc_exit_confirmation, "manager-terminal-refused")
+            query.assert_called_once_with()
+            self.assertEqual(polled.call_count, 2)
+
+    def test_notready_query_error_deadline_and_other_proc_errors_still_refuse(self):
+        base = ProofWorkerModels.terminal(self)
+        witness, query, polled, result = self.run_missing(base,
+            [([], [], []), ([], [], []), ([], [], [])])
+        self.assertIsInstance(result, reserved.ReservationValueError)
+        self.assertEqual(reserved.diagnostic_projection(result), {"phase": "proc-exit-readiness", "errno": "none",
+            "proc_exit_confirmation": "pidfd-not-ready"})
+        self.assertEqual(polled.call_count, 3)
+        query.assert_called_once_with()
+        witness, query, polled, result = self.run_missing(base, [([], [], []), ([], [], [])],
+            readback_error=OSError(5, "private unit"))
+        self.assertEqual(reserved.diagnostic_projection(result), {"phase": "terminal-manager-readback", "errno": "EIO",
+            "proc_exit_confirmation": "manager-query-refused"})
+        self.assertEqual(polled.call_count, 2)
+        times = iter((0, 0, 0, 1))  # loop, iteration, pre-query, post-query original cutoff.
+        witness, query, polled, result = self.run_missing(base, [([], [], []), ([], [], [])],
+            clock=lambda: next(times))
+        self.assertEqual(result, 124)
+        self.assertEqual(witness.proc_exit_confirmation, "deadline-refused")
+        self.assertEqual(polled.call_count, 2)
+        query.assert_called_once_with()
+        for error in (OSError(13, "private"), reserved.ReservationOSError("worker-cgroup-bounds", 2)):
+            witness = self.worker()
+            query = Mock(side_effect=AssertionError("unexpected manager read"))
+            with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                    patch.object(reserved.poll, "select", return_value=([], [], [])) as polled, \
+                    patch.object(reserved, "process", side_effect=error):
+                with self.assertRaises(reserved.ReservationOSError):
+                    reserved.monitor(reserved.PROFILE, witness, query, 1, lambda: None, clock=lambda: 0)
+            self.assertEqual(polled.call_count, 1)
+            query.assert_not_called()
+
+    def test_ready_after_query_custody_drift_and_unconsumed_confirmation_refuse(self):
+        witness = self.worker()
+        witness.check_directory.side_effect = [True, ValueError("private drift")]
+        query = Mock(return_value=ProofWorkerModels.terminal(self))
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", side_effect=[([], [], []), ([], [], []), ([11], [], [])]), \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")):
+            with self.assertRaises(reserved.ReservationValueError) as rejected:
+                reserved.monitor(reserved.PROFILE, witness, query, 1, lambda: None, clock=lambda: 0)
+        self.assertEqual(reserved.diagnostic_projection(rejected.exception)["proc_exit_confirmation"], "custody-refused")
+        self.assertNotIn("private", guard.rejection_diagnostic(rejected.exception, "private-epoch"))
+        self.assertIn("proc_exit_confirmation=custody-refused", guard.rejection_diagnostic(rejected.exception, "private-epoch"))
+        query.reset_mock()
+        with self.assertRaises(reserved.ReservationValueError): witness.confirm_proc_exit(query, 1, lambda: 0)
+        query.assert_not_called()
+        witness = self.worker()
+        caps = {"memory.max": str(reserved.MEMORY), "memory.swap.max": "0",
+            "pids.max": str(reserved.TASKS), "cpu.max": "190000 100000", "memory.oom.group": "1"}
+        witness.bounds = dict(caps)
+        reads = []
+        def read(name):
+            reads.append(name)
+            return "481" if name == "pids.max" and len(reads) > 5 else caps[name]
+        witness.read = Mock(side_effect=read)
+        witness.check_bounds = reserved.WorkloadWitness.check_bounds.__get__(witness)
+        query = Mock(return_value=ProofWorkerModels.terminal(self))
+        with patch.object(reserved.time, "monotonic_ns", return_value=200 * 10**9), \
+                patch.object(reserved.poll, "select", side_effect=[([], [], []), ([], [], []), ([11], [], [])]), \
+                patch.object(reserved, "process", side_effect=FileNotFoundError(2, "private")):
+            with self.assertRaises(reserved.ReservationValueError) as rejected:
+                reserved.monitor(reserved.PROFILE, witness, query, 1, lambda: None, clock=lambda: 0)
+        self.assertEqual(reserved.diagnostic_projection(rejected.exception),
+            {"phase": "worker-cgroup-bounds", "errno": "none", "proc_exit_confirmation": "custody-refused"})
+        query.assert_called_once_with()
+
 # Keep the actual production walker captured before per-constructor injection.
 reserved_open=reserved.open_chain
 

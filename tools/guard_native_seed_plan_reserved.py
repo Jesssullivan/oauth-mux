@@ -44,7 +44,10 @@ MODE = "OMUX_NATIVE_SEED_RESERVED_PROFILE"
 DIAGNOSTIC_PHASES = frozenset(("unknown", "resident-sample", "resident-completion",
     "worker-pidfd-readiness", "worker-cgroup-custody", "worker-cgroup-bounds",
     "worker-proc-identity", "worker-proc-security", "worker-membership", "worker-alive",
-    "monitor-iteration", "terminal-manager-readback", "terminal-recheck", "terminal-result"))
+    "monitor-iteration", "terminal-manager-readback", "terminal-recheck", "terminal-result",
+    "proc-exit-confirmation", "proc-exit-manager", "proc-exit-readiness"))
+PROC_EXIT_OUTCOMES = frozenset(("not-requested", "manager-query-refused", "manager-terminal-refused",
+    "pidfd-not-ready", "custody-refused", "deadline-refused", "verified-terminal"))
 DIAGNOSTIC_ERRNOS = frozenset(("ENOENT", "ESRCH", "EACCES", "EPERM", "ENOTDIR",
     "ELOOP", "EBADF", "EIO", "EINVAL", "EMFILE", "ENFILE"))
 
@@ -65,7 +68,11 @@ def diagnostic_projection(error):
     phase = phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else "unknown"
     number = error.errno if type(error) is ReservationOSError else None
     symbol = errno.errorcode.get(number, "other") if type(number) is int else "none"
-    return {"phase": phase, "errno": symbol if symbol in DIAGNOSTIC_ERRNOS or symbol == "none" else "other"}
+    result = {"phase": phase, "errno": symbol if symbol in DIAGNOSTIC_ERRNOS or symbol == "none" else "other"}
+    outcome = getattr(error, "reservation_proc_exit", None)
+    if type(outcome) is str and outcome in PROC_EXIT_OUTCOMES:
+        result["proc_exit_confirmation"] = outcome
+    return result
 
 def diagnostic_call(phase, invoke, *arguments, **keywords):
     try:
@@ -296,6 +303,8 @@ class WorkloadWitness:
         self.entry,self.deadline = entry,deadline
         self.resources,self.chain,self.directory = [],[],None
         self.pin,self.bounds = pin,None
+        self.proc_exit_pending = False
+        self.proc_exit_confirmation = "not-requested"
         try:
             require(profile in WORKLOAD_PROFILES and actual.get("ActiveState")=="active" and actual.get("RemainAfterExit")=="yes"
                 and actual.get("MainPID")==str(original_pid)
@@ -336,6 +345,7 @@ class WorkloadWitness:
 
     @diagnostic_method("worker-alive")
     def alive(self):
+        self.proc_exit_pending = False
         remaining(self.entry,self.deadline)
         require(self.directory is not None)
         exited=bool(diagnostic_call("worker-pidfd-readiness", poll.select, [self.pidfd], [], [], 0)[0])
@@ -356,6 +366,7 @@ class WorkloadWitness:
                     raise
                 if not diagnostic_call("worker-pidfd-readiness", poll.select,
                         [self.pidfd], [], [], 0)[0]:
+                    self.proc_exit_pending = True
                     raise
                 named=self.check_directory(True)
                 if named:
@@ -452,6 +463,42 @@ class WorkloadWitness:
         result=int(status)
         return 125 if result==0 and (actual.get("Result")!="success" or code!="1") else result
 
+    @diagnostic_method("proc-exit-confirmation")
+    def confirm_proc_exit(self, readback, deadline, clock):
+        """One terminal query for the admitted ENOENT path; never wait for readiness."""
+        require(self.proc_exit_pending is True and self.bounds is not None)
+        self.proc_exit_pending = False  # Consume the finite branch before querying.
+        self.proc_exit_confirmation = "deadline-refused"
+        if clock() >= deadline:
+            return 124
+        remaining(self.entry, self.deadline)
+        self.proc_exit_confirmation = "manager-query-refused"
+        actual = diagnostic_call("terminal-manager-readback", readback)
+        self.proc_exit_confirmation = "deadline-refused"
+        if clock() >= deadline:
+            return 124
+        remaining(self.entry, self.deadline)
+        self.proc_exit_confirmation = "manager-terminal-refused"
+        if actual.get("ActiveState") not in ("active", "inactive", "failed"):
+            raise ReservationValueError("proc-exit-manager")
+        result = self.terminal(actual)  # Original identity/status parser stays mandatory.
+        if actual.get("ExecMainStatus") == "0" and result != 0:
+            raise ReservationValueError("proc-exit-manager")
+        self.proc_exit_confirmation = "pidfd-not-ready"
+        if not diagnostic_call("proc-exit-readiness", poll.select, [self.pidfd], [], [], 0)[0]:
+            raise ReservationValueError("proc-exit-readiness")
+        self.proc_exit_confirmation = "custody-refused"
+        named = self.check_directory(True)
+        if named:
+            self.check_bounds()
+        self.check_directory(True)
+        self.proc_exit_confirmation = "deadline-refused"
+        remaining(self.entry, self.deadline)
+        if clock() >= deadline:
+            return 124
+        self.proc_exit_confirmation = "verified-terminal"
+        return result
+
 
 def monitor(profile, witness, readback, deadline, on_iteration, *,
             clock=time.monotonic, pause=time.sleep):
@@ -461,7 +508,18 @@ def monitor(profile, witness, readback, deadline, on_iteration, *,
         diagnostic_call("monitor-iteration", on_iteration)
         if clock()>=deadline:
             return 124
-        alive=witness.alive()
+        try:
+            alive=witness.alive()
+        except ReservationOSError as error:
+            if (type(error) is not ReservationOSError or error.reservation_phase != "worker-proc-identity"
+                    or error.errno != errno.ENOENT or getattr(witness, "proc_exit_pending", False) is not True
+                    or witness.bounds is None):
+                raise
+            try:
+                return witness.confirm_proc_exit(readback, deadline, clock)
+            except (ReservationOSError, ReservationValueError) as refusal:
+                refusal.reservation_proc_exit = witness.proc_exit_confirmation
+                raise
         if clock()>=deadline:
             return 124
         if not alive:

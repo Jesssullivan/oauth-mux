@@ -514,6 +514,8 @@ def rejection_diagnostic(error, stage):
         diagnostic = reservation.diagnostic_projection(error)
         if diagnostic is not None:
             result += '; reserved_phase=' + diagnostic['phase'] + '; reserved_errno=' + diagnostic['errno']
+            if 'proc_exit_confirmation' in diagnostic:
+                result += '; proc_exit_confirmation=' + diagnostic['proc_exit_confirmation']
     return result
 
 
@@ -2661,6 +2663,10 @@ def _main(argv, admission_resources):
                        'authority': 'AGENTS.md; R-N11; R-N13'}
             if seed_selected:
                 receipt['reserved_failure'] = seed_failure
+                outcome = getattr(proof_worker, 'proc_exit_confirmation', 'not-requested')
+                import guard_native_seed_plan_reserved as reservation_diagnostic
+                receipt['reserved_proc_exit_confirmation'] = (outcome if type(outcome) is str
+                    and outcome in reservation_diagnostic.PROC_EXIT_OUTCOMES else 'unknown')
                 try:
                     seed_reserved.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns,cleanup=True)
                 except ValueError:
