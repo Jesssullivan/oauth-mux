@@ -780,6 +780,7 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
 ORDINARY_MARKER = b"OMUX_INSTALLED_RETAINED_ORDINARY_NATIVE_TUI_OK\n"
 ORDINARY_FAILURE_MARKER = "installed legacy ordinary native refusal "
 ORDINARY_FAILURE_MESSAGES = {
+    "retained ordinary export changed process or committed attachment": "ordinary-export-preservation",
     "legacy native discovery lacks exact installed owner": "ordinary-discovery-installed-owner",
     "legacy discovery owner identity differs": "ordinary-discovery-owner-identity",
     "legacy native thread identity differs": "ordinary-discovery-thread-identity",
@@ -787,11 +788,24 @@ ORDINARY_FAILURE_MESSAGES = {
     "legacy discovery disagrees with committed attached ledger": "ordinary-discovery-ledger",
 }
 ORDINARY_FAILURES = (*RESUME_FAILURES, *ORDINARY_FAILURE_MESSAGES.values())
+ORDINARY_METADATA_DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
+    "metadata-database-busy", "metadata-database-query", "metadata-database-error",
+    "rollout-file-absent", "rollout-json", "metadata-other-predicate")
 ORDINARY_PHASES = ("private-context", "runtime-verification", "keyring-startup", "daemon-startup",
     "bootstrap-native", "integration-install", "ordinary-tui-startup",
     "native-history-materialization", "native-rename", "selected-detach",
     "native-preservation", "ordinary-clean-exit", "cold-native-resume",
     "resumed-preservation", "resumed-detach", "durable-inspection", "owned-cleanup")
+
+
+def emit_ordinary_metadata_failure(error):
+    # Emit only the retained finite reason from this exact timeout and phase.
+    # No history read, terminal pump or inference from a generic ValueError.
+    if (PHASE == "native-history-materialization" and isinstance(error, ValueError)
+            and len(error.args) == 1 and type(error.args[0]) is str
+            and error.args[0] == "ordinary native metadata did not flush"
+            and DIAGNOSTIC in ORDINARY_METADATA_DIAGNOSTICS):
+        sys.stderr.write("installed legacy native terminal diagnostic " + DIAGNOSTIC + "\n")
 
 
 def ordinary_first_history(binary, environment, work, home, cli, config, configured,
@@ -846,6 +860,7 @@ def ordinary_first_history(binary, environment, work, home, cli, config, configu
                 category = ORDINARY_FAILURE_MESSAGES.get(primary.args[0], category)
             if category in ORDINARY_FAILURES:
                 sys.stderr.write(ORDINARY_FAILURE_MARKER + category + "\n")
+            emit_ordinary_metadata_failure(primary)
         except BaseException:
             pass
         if terminal is not None and failure_observer is not None:

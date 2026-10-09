@@ -308,5 +308,59 @@ class OrdinaryFirstModels(unittest.TestCase):
                         entrypoint=Path(ordinary.__file__).absolute() if ordinary_mode else None), 1)
                     self.assertEqual(sink.getvalue(), expected)
 
+    def test_metadata_timeout_emits_only_existing_closed_reason_for_exact_export_phase(self):
+        for diagnostic in legacy.ORDINARY_METADATA_DIAGNOSTICS:
+            with self.subTest(diagnostic=diagnostic), \
+                    mock.patch.object(legacy, "PHASE", "native-history-materialization"), \
+                    mock.patch.object(legacy, "DIAGNOSTIC", diagnostic), \
+                    contextlib.redirect_stderr(io.StringIO()) as sink:
+                legacy.emit_ordinary_metadata_failure(ValueError("ordinary native metadata did not flush"))
+                self.assertEqual(sink.getvalue(),
+                    "installed legacy native terminal diagnostic " + diagnostic + "\n")
+        for phase, error, diagnostic in (
+                ("native-rename", ValueError("ordinary native metadata did not flush"), "metadata-row-cardinality"),
+                ("native-history-materialization", ValueError("synthetic-private-history"), "metadata-row-cardinality"),
+                ("native-history-materialization", TimeoutError("ordinary native metadata did not flush"), "metadata-row-cardinality"),
+                ("native-history-materialization", ValueError("ordinary native metadata did not flush"), "synthetic-private"),
+                ("native-history-materialization", ValueError("ordinary native metadata did not flush"), "unclassified")):
+            with self.subTest(phase=phase, error_type=type(error).__name__, diagnostic=diagnostic), \
+                    mock.patch.object(legacy, "PHASE", phase), \
+                    mock.patch.object(legacy, "DIAGNOSTIC", diagnostic), \
+                    contextlib.redirect_stderr(io.StringIO()) as sink:
+                legacy.emit_ordinary_metadata_failure(error)
+                self.assertEqual(sink.getvalue(), "")
+
+    def test_metadata_timeout_keeps_primary_and_records_before_owned_close(self):
+        world = NativeModel()
+        primary = ValueError("ordinary native metadata did not flush")
+        observer = mock.Mock()
+        observer.record.return_value = legacy.TERMINAL_MARKER + "exit-unavailable/unrecognized\n"
+        def record(child):
+            self.assertIs(child, world)
+            self.assertIn("installed legacy native terminal diagnostic metadata-row-cardinality\n", sink.getvalue())
+            return observer.record.return_value
+        observer.record.side_effect = record
+        with mock.patch.object(legacy, "DIAGNOSTIC", "metadata-row-cardinality"), \
+                contextlib.redirect_stderr(io.StringIO()) as sink:
+            with self.assertRaises(ValueError) as caught:
+                self.run_checkpoint(world, wait_failure=primary, failure_observer=observer)
+        self.assertIs(caught.exception, primary)
+        observer.record.assert_called_once_with(world)
+        self.assertEqual(world.commands, ["/export omux-native-resume-fixture.md\r"])
+        self.assertEqual(world.closes, [False])
+        self.assertEqual(world.discovery_count, 1)
+
+    def test_post_export_preservation_refusal_is_distinct_from_metadata_deadline(self):
+        for witness_changed in (False, True):
+            world = NativeModel()
+            world.change_attachment = not witness_changed
+            with contextlib.redirect_stderr(io.StringIO()) as sink:
+                with self.assertRaises(ValueError):
+                    self.run_checkpoint(world, witness_changed=witness_changed)
+            self.assertIn(legacy.ORDINARY_FAILURE_MARKER + "ordinary-export-preservation\n", sink.getvalue())
+            self.assertNotIn("installed legacy native terminal diagnostic metadata-", sink.getvalue())
+            self.assertEqual(world.commands, ["/export omux-native-resume-fixture.md\r"])
+            self.assertEqual(world.closes, [False])
+
 if __name__ == "__main__":
     unittest.main()

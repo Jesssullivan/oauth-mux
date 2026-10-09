@@ -332,7 +332,7 @@ class PidsObservation:
 
 
 def workload_pids_observation(settings, profile):
-    if profile in ('yoga-install-inputs','native-seed-plan-reserved','native-seed-plan-reserved-models','default-archive-reserved','query-registration-reserved'):
+    if profile in ('yoga-install-inputs','native-seed-plan-reserved','native-seed-plan-reserved-models','default-archive-reserved','query-registration-reserved','resident-models-reserved'):
         return PidsObservation(480)
     return PidsObservation(settings.PROOF_TASKS
         if profile in ('resident-enrollment','resident-sources','codex-device-component-reserved') else 512)
@@ -882,6 +882,8 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         import guard_default_archive_reserved as seed_reserved
     elif profile == 'query-registration-reserved':
         import guard_query_registration_reserved as seed_reserved
+    elif profile == 'resident-models-reserved':
+        import guard_resident_models_reserved as seed_reserved
     seed_proof = profile in seed_reserved.PROFILES
     expected = (component.proof_properties(PROPERTIES,profile) if component_reserved else
         resident_dispatch.proof_properties(PROPERTIES) if resident_proof else PROPERTIES)
@@ -1240,7 +1242,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved'), default='standard')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1320,6 +1322,8 @@ def _main(argv, admission_resources):
         import guard_default_archive_reserved as seed_reserved
     elif args.profile == 'query-registration-reserved':
         import guard_query_registration_reserved as seed_reserved
+    elif args.profile == 'resident-models-reserved':
+        import guard_resident_models_reserved as seed_reserved
     seed_selected = seed_reserved.request(args,arguments)
     seed_reservation,seed_verified_after,seed_after = None,None,None
     resident_input = None
@@ -2646,6 +2650,9 @@ def _main(argv, admission_resources):
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
                 elif args.profile == 'query-registration-reserved':
                     receipt['query_registration_reservation'] = seed_reserved.projection(
+                        delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                elif args.profile == 'resident-models-reserved':
+                    receipt['resident_models_reservation'] = seed_reserved.projection(
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
                 else:
                     receipt['native_seed_plan_reservation'] = {
