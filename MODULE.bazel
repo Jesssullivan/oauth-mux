@@ -179,6 +179,10 @@ codex_owner_status_binding_inputs(name = "omux_codex_owner_status_binding_inputs
 codex_owner_status_persistence_inputs = use_repo_rule("//tools:codex_owner_status_persistence_source_inputs.bzl", "codex_owner_status_persistence_source_inputs")
 codex_owner_status_persistence_inputs(name = "omux_codex_owner_status_persistence_source_inputs")
 
+# Actual N3 source binding only, separate from all SDK/runtime selectors.
+codex_owner_status_persistence_binding_inputs = use_repo_rule("//tools:codex_owner_status_persistence_binding_inputs.bzl", "codex_owner_status_persistence_binding_inputs")
+codex_owner_status_persistence_binding_inputs(name = "omux_codex_owner_status_persistence_binding_inputs")
+
 # Actual successful source output and independently read public operator control.
 # This declares inputs only; metadata/SDK/native success remains unproved.
 codex_protocol_history_metadata_inputs = use_repo_rule("//tools:codex_protocol_history_metadata_inputs.bzl", "codex_protocol_history_metadata_inputs")

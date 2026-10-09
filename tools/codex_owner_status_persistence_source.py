@@ -81,18 +81,10 @@ def transform(files, raw):
     return result
 
 
-def produce(output, seconds):
-    global PHASE
-    source.require(type(seconds) is int and 1 <= seconds <= 840)
-    source.DEADLINE = time.monotonic() + seconds
-    PHASE = "parent"
-    report, before = parent.load_verified_source()
-    PHASE = "patch"
-    source.require(source.sha(status.read_patch(REVIEWED_NATIVE_NAME)) == REVIEWED_NATIVE_SHA)
-    source.require(source.sha(status.read_patch(NORMALIZED_NATIVE_NAME)) == NORMALIZED_NATIVE_SHA)
-    result = transform(before, status.read_patch(PATCH_NAME))
+def expected_receipt(report, result):
+    """Pure exact receipt construction shared by production and reconstruction."""
     inventory = status.inventory(result)
-    receipt = {
+    return {
         "schema_version": 1, "kind": KIND,
         "status": "verified-owner-status-persistence-source-pending-sdk-and-schema",
         "commit": source.COMMIT, "parent_source_root": str(parent.ROOT),
@@ -113,6 +105,19 @@ def produce(output, seconds):
         "native_compile_passed": False, "native_support": False,
         "provider_evaluation": False, "live_handoff_proven": False,
     }
+
+
+def produce(output, seconds):
+    global PHASE
+    source.require(type(seconds) is int and 1 <= seconds <= 840)
+    source.DEADLINE = time.monotonic() + seconds
+    PHASE = "parent"
+    report, before = parent.load_verified_source()
+    PHASE = "patch"
+    source.require(source.sha(status.read_patch(REVIEWED_NATIVE_NAME)) == REVIEWED_NATIVE_SHA)
+    source.require(source.sha(status.read_patch(NORMALIZED_NATIVE_NAME)) == NORMALIZED_NATIVE_SHA)
+    result = transform(before, status.read_patch(PATCH_NAME))
+    receipt = expected_receipt(report, result)
     PHASE = "output"
     root = source.write_source(output, result)
     try:
