@@ -18,7 +18,10 @@ import nix_interpreter_closure as closure
 
 KIND = "omux-fixed-query-registration-v1"
 TARGET = "//tools:codex_query_registration_producer"
+RESERVED_TARGET = "//tools:codex_query_registration_reserved_producer"
 CANDIDATE_KIND = "omux-protocol-history-query-registration-selection-v1"
+RESERVED_CANDIDATE_KIND = "omux-protocol-history-query-registration-reserved-selection-v1"
+CANDIDATE_KINDS = (CANDIDATE_KIND, RESERVED_CANDIDATE_KIND)
 COORDINATORS = ("/home/jess/.local/state/omux-execution-20261005",
     "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005")
 UUID = r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}"
@@ -206,12 +209,22 @@ def validate_success(candidate,raw,project,plan):
     def decode(data):
         return json.loads(data,object_pairs_hook=unique)
     receipt=decode(raw["candidate_receipt"])
+    reserved = receipt.get("profile") == "query-registration-reserved"
+    if reserved:
+        require(candidate.get("kind") == RESERVED_CANDIDATE_KIND)
+        import guard_query_registration_reserved as reservation
+        require(reservation.LABEL == RESERVED_TARGET)
+        reservation.validate_qualification(receipt)
+        target = RESERVED_TARGET
+    else:
+        require(candidate.get("kind") == CANDIDATE_KIND and receipt.get("profile") == "standard")
+        target = TARGET
     epoch=guard_epoch(str(Path(producer["receipt"]["path"]).parent))
     parent=str(Path(producer["receipt"]["path"]).parent)
     require(receipt["id"]==receipt["artifact_epoch"]==epoch
         and receipt["unit"]=="omux-execution-"+epoch+".service"
-        and receipt["profile"]=="standard" and receipt["manager"]=="system"
-        and receipt["verb"]=="test" and receipt["targets"]==[TARGET]
+        and receipt["manager"]=="system"
+        and receipt["verb"]=="test" and receipt["targets"]==[target]
         and type(receipt["exit"]) is int and receipt["exit"]==0
         and type(receipt["workload_exit"]) is int and receipt["workload_exit"]==0
         and receipt["controller_failure"] is None and receipt["descendants_empty"] is True
@@ -224,11 +237,16 @@ def validate_success(candidate,raw,project,plan):
     expected={"MemoryMax":"4294967296","MemorySwapMax":"0","TasksMax":"512",
         "PrivateNetwork":"yes","KillMode":"control-group","SendSIGKILL":"yes","OOMPolicy":"kill",
         "NoNewPrivileges":"yes","CapabilityBoundingSet":"","AmbientCapabilities":""}
+    if reserved:
+        expected.update(MemoryMax="4026531840", TasksMax="480")
+        output=parent+"/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/"+target.split(":")[1]+"/test.outputs/"
+        require(all(candidate[name]["path"] == output+leaf for name, leaf in (
+            ("registration", "registration"), ("paths", "store-paths"), ("report", "query-registration.json"))))
     observed=receipt["observed_properties"]
     require(type(observed) is dict and all(observed.get(key)==value for key,value in expected.items()))
     cpu=observed.get("CPUQuotaPerSecUSec")
     match=re.fullmatch(r"([0-9]{1,7}(?:[.][0-9]{1,6})?)(us|ms|s)",cpu) if type(cpu) is str else None
-    require(match is not None and Decimal(match[1])*{"us":1,"ms":1000,"s":1000000}[match[2]]==2000000)
+    require(match is not None and Decimal(match[1])*{"us":1,"ms":1000,"s":1000000}[match[2]]==(1900000 if reserved else 2000000))
     duration=observed.get("RuntimeMaxUSec")
     match=re.fullmatch(r"([1-9][0-9]*)(us|ms|s|min)",duration) if type(duration) is str else None
     require(match is not None and 0<int(match[1])*{"us":1,"ms":1000,"s":1000000,"min":60000000}[match[2]]<=1200*1000000)
@@ -237,9 +255,9 @@ def validate_success(candidate,raw,project,plan):
     require(type(evidence["schema"]) is int and evidence["schema"]==1
         and type(evidence["bazel_exit"]) is int and evidence["bazel_exit"]==0
         and type(evidence["epoch_start_ns"]) is int and evidence["epoch_start_ns"]==receipt["epoch_start_ns"]
-        and evidence["targets"]==[TARGET] and len(evidence["results"])==1)
+        and evidence["targets"]==[target] and len(evidence["results"])==1)
     result=evidence["results"][0]
-    require(result["target"]==TARGET and result["state"]=="observed")
+    require(result["target"]==target and result["state"]=="observed")
     for name in ("log","xml"):
         rows=[row for row in result["files"] if row["source"]=="test."+name]
         require(len(rows)==1 and rows[0]["state"]=="copied"
@@ -288,13 +306,17 @@ def persist(directory,values,deadline):
     finally:os.close(fd)
     tick(deadline)
 
-def main():
+def main(*, absolute_deadline=None):
     entry=float(time.monotonic())
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ("flake","lock","zig-index","archives"):parser.add_argument("--"+name,required=True)
     args=parser.parse_args()
     require(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR") and os.environ.get("TEST_TIMEOUT"))
-    deadline=float(entry+min(MAX_SECONDS,int(os.environ["TEST_TIMEOUT"])-5));tick(deadline)
+    deadline=float(entry+min(MAX_SECONDS,int(os.environ["TEST_TIMEOUT"])-5))
+    if absolute_deadline is not None:
+        require(type(absolute_deadline) is float and math.isfinite(absolute_deadline))
+        deadline=min(deadline,absolute_deadline)
+    tick(deadline)
     epoch=guard_epoch(os.environ.get("OMUX_EXECUTION_GUARD"))
     locations=dict(zip(PROJECT_FILES,(args.flake,args.lock,args.zig_index,args.archives)))
     project={name:read_project(path,deadline) for name,path in locations.items()}

@@ -119,6 +119,7 @@ protocol_history_query_tools_repository = repository_rule(
         "generator": attr.label(default = Label("//tools:codex_protocol_history_query_tools.py"), allow_single_file = True),
         "generator_sources": attr.label_list(default = [
             Label("//tools:codex_query_registration.py"),
+            Label("//tools:guard_query_registration_reserved.py"),
             Label("//tools:native_flake_seed_plan_inputs.py"), Label("//tools:native_flake_seed_plan.py"),
             Label("//tools:native_flake_schedule.py"), Label("//tools:native_flake_sources.py"),
             Label("//tools:nar_descriptor.py"), Label("//tools:verify_declared_nars.py"),

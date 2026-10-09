@@ -89,7 +89,7 @@ def selection(value):
             == str(Path(candidate["paths"]["path"]).parent))
     else:
         require(set(candidate)=={"kind","registration","paths","report","producer"}
-            and candidate["kind"]==registration.CANDIDATE_KIND)
+            and candidate["kind"] in registration.CANDIDATE_KINDS)
         producer=candidate["producer"]
         require(type(producer) is dict and set(producer)=={
             "receipt","evidence","log","xml","source_commit","graph_sha256"})
@@ -105,7 +105,8 @@ def selection(value):
         for name in ("log","xml"):
             require(re.fullmatch(re.escape(parent)+r"/test-evidence/[a-f0-9]{64}[.]evidence",
                 producer[name]["path"]) is not None)
-        output=parent+"/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_query_registration_producer/test.outputs/"
+        target = registration.RESERVED_TARGET if candidate["kind"] == registration.RESERVED_CANDIDATE_KIND else registration.TARGET
+        output=parent+"/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/"+target.split(":")[1]+"/test.outputs/"
         for name,leaf in (("registration","registration"),("paths","store-paths"),("report","query-registration.json")):
             inputs.pin(candidate[name],registration.MAX_OUTPUT)
             require(candidate[name]["path"]==output+leaf)
@@ -118,7 +119,7 @@ def roles(top, selected):
     result.update({"plan_" + name: top["plan"][name]
         for name in ("receipt", "evidence", "log", "xml", "result")})
     result.update({"candidate_" + name: top["candidates"][name] for name in ("registration", "paths")})
-    if top["candidates"].get("kind")==registration.CANDIDATE_KIND:
+    if top["candidates"].get("kind") in registration.CANDIDATE_KINDS:
         result["candidate_report"]=top["candidates"]["report"]
         result.update({"candidate_"+name:top["candidates"]["producer"][name]
             for name in ("receipt","evidence","log","xml")})
@@ -332,7 +333,7 @@ def raw_inputs(top, deadline):
 
 
 def candidate_records(top, raw, project=None):
-    if top["candidates"].get("kind")==registration.CANDIDATE_KIND:
+    if top["candidates"].get("kind") in registration.CANDIDATE_KINDS:
         return registration.validate_success(top["candidates"],raw,project,top["plan"])
     # This new purpose admits canonical current-flake names without changing
     # the declared runtime-seed grammar or its4096 root/reference ceiling.

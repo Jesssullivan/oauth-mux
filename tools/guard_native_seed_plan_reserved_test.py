@@ -70,6 +70,68 @@ class ReservationModels(unittest.TestCase):
                         "--source-dirty","false",*parts,"--","test",reserved.LABEL])
             tools.assert_not_called()
 
+    def test_integrated_model_cohort_requires_all_eleven_in_exact_order_before_tools(self):
+        expected=["test","//tools:guard_native_seed_plan_reserved_test",
+            "//tools:guard_query_registration_reserved_test","//tools:guard_default_archive_reserved_test",
+            "//tools:guard_resident_owned_update_test","//tools:codex_query_registration_test",
+            "//tools:codex_protocol_history_query_tools_test","//tools:codex_protocol_history_metadata_test",
+            "//tools:codex_protocol_history_sdk_export_test","//tools:native_flake_seed_plan_carrier_test",
+            "//tools:execution_guard_test","//:docs_check"]
+        self.assertEqual(reserved.INTEGRATED_MODELS,expected)
+        self.assertTrue(reserved.request(self.args(reserved.MODEL_PROFILE),expected))
+        for cohort in (reserved.MODELS,reserved.RECOVERY_MODELS,reserved.QUERY_MODELS,
+                reserved.ARCHIVE_MODELS,reserved.REGISTRATION_MODELS,reserved.REGISTRATION_RESERVED_MODELS):
+            self.assertTrue(reserved.request(self.args(reserved.MODEL_PROFILE),list(cohort)))
+        invalid=[list(reversed(expected)),expected[:-1],expected+["//:engine_test"],
+            expected+[expected[1]],expected+["--test_filter=untrusted"],
+            ["run",*expected[1:]],["test","//tools:codex_query_registration_producer"],
+            ["test","//tools:codex_query_registration_reserved_producer"],
+            ["test",reserved.LABEL]]
+        swapped=list(expected);swapped[1],swapped[2]=swapped[2],swapped[1];invalid.append(swapped)
+        for label in ("//tools:codex_query_registration_producer",
+                "//tools:codex_query_registration_reserved_producer",reserved.LABEL):
+            replaced=list(expected);replaced[2]=label;invalid.append(replaced)
+        for arguments in invalid:
+            with self.assertRaises(ValueError):reserved.request(self.args(reserved.MODEL_PROFILE),arguments)
+        with self.assertRaises(ValueError):reserved.request(self.args(reserved.PROFILE),expected)
+        with patch.object(guard,"immutable",side_effect=AssertionError("unexpected tool IO")) as tools:
+            for arguments in invalid:
+                with self.assertRaises(ValueError):
+                    guard.main(["--profile",reserved.MODEL_PROFILE,"--manager","system",
+                        "--source-commit","a"*40,"--source-dirty","false","--",*arguments])
+            for options in (["--manager","user"],["--reuse-owned-cache"]):
+                with self.assertRaises(ValueError):
+                    guard.main(["--profile",reserved.MODEL_PROFILE,"--manager","system",
+                        "--source-commit","a"*40,"--source-dirty","false",*options,"--",*expected])
+            tools.assert_not_called()
+
+    def test_integrated_model_command_keeps_exact_targets_original_cutoff_and_caps(self):
+        with patch.object(reserved.time,"monotonic_ns",return_value=200*10**9):
+            actual=reserved.command(guard.bazel_command,"bazel",Path("/model/epoch"),
+                reserved.INTEGRATED_MODELS,reserved.MODEL_PROFILE,100*10**9,1300*10**9)
+        self.assertEqual(actual[-11:],reserved.INTEGRATED_MODELS[1:])
+        for flag in ("--repository_disable_download","--repo_contents_cache=","--lockfile_mode=error",
+                "--sandbox_default_allow_network=false","--remote_executor=","--remote_cache=",
+                "--nocache_test_results"):
+            self.assertIn(flag,actual)
+        for marker in (reserved.MODE,reserved.ENTRY,reserved.DEADLINE):
+            self.assertFalse(any(flag.startswith("--test_env="+marker+"=") for flag in actual))
+        self.assertEqual(reserved.properties(guard.PROPERTIES)["MemoryMax"],"4026531840")
+        self.assertEqual(reserved.properties(guard.PROPERTIES)["TasksMax"],"480")
+        self.assertEqual(reserved.properties(guard.PROPERTIES)["CPUQuotaPerSecUSec"],"1.9s")
+        self.assertEqual(reserved.envelope(100*10**9,1300*10**9),1270*10**9)
+        with patch.object(reserved.time,"monotonic_ns",return_value=1270*10**9):
+            with self.assertRaises(ValueError):
+                reserved.command(guard.bazel_command,"bazel",Path("/model/epoch"),
+                    reserved.INTEGRATED_MODELS,reserved.MODEL_PROFILE,100*10**9,1300*10**9)
+        builder=Mock()
+        with patch.object(reserved.time,"monotonic_ns",return_value=200*10**9):
+            with self.assertRaises(ValueError):
+                reserved.command(builder,"bazel",Path("/model/epoch"),
+                    reserved.INTEGRATED_MODELS+["//tools:codex_query_registration_reserved_producer"],
+                    reserved.MODEL_PROFILE,100*10**9,1300*10**9)
+        builder.assert_not_called()
+
     def test_registration_model_cohort_is_exact_ordered_and_not_collector_authority(self):
         expected=["test","//tools:codex_query_registration_test",
             "//tools:codex_protocol_history_query_tools_test",
@@ -363,6 +425,20 @@ class ProofWorkerModels(unittest.TestCase):
                         readback=Mock(side_effect=[owned,post]),authorize=witness.authorize_cleanup,
                         stop=stop,observe=pin.observe,clock=lambda:0)
                     self.assertEqual(summary["state"],"empty");self.assertEqual(len(calls),1)
+                    # A failed test result remains failed after positively owned cleanup.
+                    (fixture.root/"cgroup.events").write_text("populated 1\n")
+                    (fixture.root/"cgroup.procs").write_text(str(os.getpid())+"\n")
+                    failed={**owned,"LoadState":"loaded","ActiveState":"failed","SubState":"failed",
+                        "ExecMainCode":"1","ExecMainStatus":"3","Result":"exit-code"}
+                    self.assertEqual(witness.terminal(failed),3)
+                    calls.clear()
+                    reads=Mock(side_effect=[failed,failed])
+                    summary=reserved.cleanup_retained(deadline=15,readback=reads,
+                        authorize=witness.authorize_cleanup,stop=stop,observe=pin.observe,clock=lambda:0)
+                    self.assertEqual(summary["state"],"empty");self.assertEqual(len(calls),1)
+                    self.assertEqual(reads.call_count,2)
+                    self.assertEqual(summary["post_stop"]["predicate"],"owned-failed-terminal-predicate-passed")
+                    self.assertEqual(witness.terminal(failed),3)
                     (fixture.root/"cgroup.events").write_text("populated 1\n")
                     (fixture.root/"cgroup.procs").write_text(str(os.getpid())+"\n")
                 for name,value in (("memory.max",str(reserved.MEMORY+1)),("pids.max","481"),
@@ -516,6 +592,88 @@ class ProofWorkerModels(unittest.TestCase):
             authorize=Mock(),stop=Mock(),observe=lambda:"empty",clock=lambda:0)
         self.assertEqual(summary["state"],"unproved")
         self.assertEqual(summary["post_stop"]["predicate"],"post-read-failed")
+
+
+    def test_failed_terminal_cleanup_requires_unchanged_nonzero_exit_and_successful_owned_stop(self):
+        owned=self.terminal(LoadState="loaded",ActiveState="failed",SubState="failed",
+            ExecMainStatus="3",Result="exit-code")
+        for original in ("empty","absent"):
+            stop=Mock();read=Mock(side_effect=[owned,owned])
+            summary=reserved.cleanup_retained(deadline=15,readback=read,authorize=Mock(),stop=stop,
+                observe=Mock(side_effect=["empty","empty",original]),clock=lambda:0)
+            self.assertEqual(summary["state"],"empty")
+            self.assertEqual(summary["post_stop"]["predicate"],"owned-failed-terminal-predicate-passed")
+            self.assertEqual(summary["post_stop"]["original_cgroup_state"],original)
+            stop.assert_called_once();self.assertEqual(read.call_count,2)
+            self.assertEqual(self.worker().terminal(owned),3)
+            reservation=reserved.Witness.__new__(reserved.Witness)
+            reservation.observe=Mock()
+            with self.assertRaises(ValueError):reservation.complete(3,True,True,True)
+            reservation.observe.assert_not_called()
+        for original in ("populated","changed","unproved"):
+            summary=reserved.cleanup_retained(deadline=15,readback=Mock(side_effect=[owned,owned]),
+                authorize=Mock(),stop=Mock(),observe=Mock(side_effect=["empty","empty",original]),clock=lambda:0)
+            self.assertEqual(summary["state"],"unproved")
+            self.assertEqual(summary["post_stop"]["predicate"],"original-group-not-empty")
+        summary=reserved.cleanup_retained(deadline=15,readback=Mock(side_effect=[owned,owned]),
+            authorize=Mock(),stop=Mock(side_effect=OSError("unprinted")),observe=lambda:"empty",clock=lambda:0)
+        self.assertEqual(summary["state"],"unproved")
+        self.assertEqual(summary["stop"],"unresolved")
+
+    def test_failed_terminal_cleanup_refuses_incomplete_changed_or_other_terminal_outcomes(self):
+        owned=self.terminal(LoadState="loaded",ActiveState="failed",SubState="failed",
+            ExecMainStatus="3",Result="exit-code")
+        changes=({"ExecMainCode":None},{"ExecMainCode":"2","Result":"signal"},
+            {"Result":"timeout"},{"Result":"success"},{"ExecMainStatus":"0"},
+            {"ExecMainStatus":False},{"ExecMainStatus":3},{"ExecMainStatus":"03"},
+            {"ExecMainStatus":"256"},{"ExecMainStatus":"+3"},{"ExecMainStatus":"4"},
+            {"ExecMainCode":True},{"LoadState":"not-found"},{"RemainAfterExit":"no"},
+            {"ActiveState":"active"},{"SubState":"dead"},{"MainPID":"1234"},
+            {"InvocationID":"b"*32},{"ExecMainPID":"5678"},{"Id":"foreign"})
+        for bad in changes:
+            with self.subTest(bad=bad):
+                read=Mock(side_effect=[owned,{**owned,**bad}]);observe=Mock(return_value="empty")
+                summary=reserved.cleanup_retained(deadline=15,readback=read,authorize=Mock(),
+                    stop=Mock(),observe=observe,clock=lambda:0)
+                self.assertEqual(summary["state"],"unproved")
+                self.assertEqual(summary["post_stop"]["original_cgroup_state"],"not-observed")
+                self.assertEqual(read.call_count,2);self.assertEqual(observe.call_count,2)
+        # A later valid failed report cannot repair an unqualified original result.
+        for bad in changes[:12]:
+            summary=reserved.cleanup_retained(deadline=15,
+                readback=Mock(side_effect=[{**owned,**bad},owned]),authorize=Mock(),stop=Mock(),
+                observe=lambda:"empty",clock=lambda:0)
+            self.assertEqual(summary["state"],"unproved")
+        stop=Mock()
+        summary=reserved.cleanup_retained(deadline=15,readback=Mock(return_value=owned),
+            authorize=Mock(side_effect=ValueError("original ownership refused")),stop=stop,
+            observe=lambda:"empty",clock=lambda:0)
+        self.assertEqual(summary["ownership"],"refused");stop.assert_not_called()
+
+    def test_failed_terminal_cleanup_requires_original_exited_worker_and_original_cutoff(self):
+        witness=self.worker();witness.pidfd=42
+        witness.entry=time.monotonic_ns();witness.deadline=witness.entry+1200*10**9
+        witness.check_directory=Mock(return_value=True);witness.check_bounds=Mock()
+        witness.pin=SimpleNamespace(path=Path("/sys/fs/cgroup/system.slice")/self.UNIT,
+            observe=Mock(return_value="empty"))
+        owned=self.terminal(LoadState="loaded",ActiveState="failed",SubState="failed",
+            ExecMainStatus="3",Result="exit-code",ControlGroup="/system.slice/"+self.UNIT)
+        with patch.object(reserved.poll,"select",return_value=([],[],[])):
+            stop=Mock()
+            summary=reserved.cleanup_retained(deadline=15,readback=Mock(return_value=owned),
+                authorize=witness.authorize_cleanup,stop=stop,observe=lambda:"empty",clock=lambda:0)
+            self.assertEqual(summary["ownership"],"refused");stop.assert_not_called()
+        now=[0];reads=[]
+        def read(timeout,deadline):
+            reads.append((timeout,deadline))
+            if len(reads)==2:now[0]=deadline
+            return owned
+        observe=Mock(return_value="empty")
+        summary=reserved.cleanup_retained(deadline=15,readback=read,authorize=Mock(),stop=Mock(),
+            observe=observe,clock=lambda:now[0])
+        self.assertEqual(summary["state"],"deadline-exhausted")
+        self.assertEqual(summary["post_stop"]["predicate"],"original-deadline-exhausted")
+        self.assertEqual(observe.call_count,2);self.assertEqual(len(reads),2)
 
     def test_post_stop_projection_is_closed_bounded_and_never_reflects_metadata(self):
         identity=(self.UNIT,"a"*32,"1234")

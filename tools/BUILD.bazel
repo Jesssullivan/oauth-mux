@@ -13,7 +13,7 @@ load(":codex_fresh_native_package_visibility_test.bzl", "codex_fresh_native_pack
 load(":codex_metadata_query_tools_declaration_test.bzl", "codex_metadata_query_tools_declaration_test")
 
 _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES = [
-    "codex_query_registration.py",
+    "codex_query_registration.py", "guard_query_registration_reserved.py",
     "codex_protocol_history_query_tools.py", "native_flake_seed_plan_inputs.py",
     "native_flake_seed_plan.py", "native_flake_schedule.py", "native_flake_sources.py",
     "nar_descriptor.py", "verify_declared_nars.py", "verify_cached_nars.py",
@@ -1131,7 +1131,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -2110,7 +2110,7 @@ python_test(
 )
 
 # Fixed metadata only. No Nix executable or ambient database option.
-exports_files(["codex_query_registration.py"])
+exports_files(["codex_query_registration.py", "guard_query_registration_reserved.py"])
 python_test(
     name = "codex_query_registration_test",
     main = "codex_query_registration_test.py",
@@ -2137,5 +2137,36 @@ python_test(
     env_inherit = ["OMUX_EXECUTION_GUARD"],
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "short",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Distinct singleton admission; same fixed read-only DB and four project inputs.
+python_test(
+    name = "codex_query_registration_reserved_producer",
+    main = "codex_query_registration_reserved_producer.py",
+    srcs = ["codex_query_registration.py", "cached_nix_inventory.py", "nix_interpreter_closure.py",
+        "guard_query_registration_reserved.py", "guard_native_seed_plan_reserved.py", "guard_resident_observation.py"],
+    data = ["//:flake.nix", "//:flake.lock", "zig-index.json", "codex_upstream_archives.json"],
+    args = [
+        "--flake", "$(location //:flake.nix)", "--lock", "$(location //:flake.lock)",
+        "--zig-index", "$(location :zig-index.json)",
+        "--archives", "$(location :codex_upstream_archives.json)",
+    ],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "guard_query_registration_reserved_test",
+    main = "guard_query_registration_reserved_test.py",
+    srcs = depset(_NATIVE_ACQUISITION_MODEL_SOURCES + [
+        "guard_native_seed_plan_reserved_test.py", "codex_query_registration_reserved_producer.py",
+        "codex_query_registration_test.py", "cached_nix_inventory.py", "codex_protocol_history_query_tools_test.py",
+        "native_flake_seed_plan_carrier_test.py", "native_flake_seed_plan_qualification.py",
+        "native_flake_seed_plan_test.py", "native_flake_schedule_test.py", "native_flake_sources_test.py",
+        "nix_private_store_qualification_test.py",
+    ]).to_list(),
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )

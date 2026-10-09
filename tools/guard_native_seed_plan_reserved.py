@@ -12,7 +12,7 @@ PROFILE = "native-seed-plan-reserved"
 MODEL_PROFILE = "native-seed-plan-reserved-models"
 PROFILES = (PROFILE, MODEL_PROFILE)
 # Kernel worker reuse only; archive admission has its own exact BUILD helper.
-WORKLOAD_PROFILES = (*PROFILES, "default-archive-reserved")
+WORKLOAD_PROFILES = (*PROFILES, "default-archive-reserved", "query-registration-reserved")
 LABEL = "//tools:native_flake_seed_plan_qualification"
 MODELS = ["test", "//tools:guard_native_seed_plan_reserved_test", "//tools:execution_guard_test",
     "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
@@ -24,6 +24,15 @@ QUERY_MODELS = ["test", "//tools:codex_protocol_history_query_tools_test",
 ARCHIVE_MODELS = ["test", "//tools:guard_default_archive_reserved_test",
     "//tools:guard_resident_owned_update_test", "//tools:execution_guard_test", "//:docs_check"]
 REGISTRATION_MODELS = ["test", "//tools:codex_query_registration_test", *QUERY_MODELS[1:]]
+REGISTRATION_RESERVED_MODELS = ["test", "//tools:guard_query_registration_reserved_test",
+    "//tools:codex_query_registration_test", "//tools:codex_protocol_history_query_tools_test",
+    "//tools:execution_guard_test", "//:docs_check"]
+INTEGRATED_MODELS = ["test", "//tools:guard_native_seed_plan_reserved_test",
+    "//tools:guard_query_registration_reserved_test", "//tools:guard_default_archive_reserved_test",
+    "//tools:guard_resident_owned_update_test", "//tools:codex_query_registration_test",
+    "//tools:codex_protocol_history_query_tools_test", "//tools:codex_protocol_history_metadata_test",
+    "//tools:codex_protocol_history_sdk_export_test", "//tools:native_flake_seed_plan_carrier_test",
+    "//tools:execution_guard_test", "//:docs_check"]
 MEMORY, TASKS, CPU = resident.PROOF_MEMORY, resident.PROOF_TASKS, resident.PROOF_CPU_PERCENT
 RESERVE_NS = 30 * 10**9
 ENTRY = "OMUX_NATIVE_SEED_ROOT_ENTRY_NS"
@@ -36,7 +45,7 @@ def require(value):
 
 def selected(profile, arguments):
     require(profile in PROFILES and (arguments==["test",LABEL] if profile==PROFILE
-        else arguments in (MODELS,RECOVERY_MODELS,QUERY_MODELS,ARCHIVE_MODELS,REGISTRATION_MODELS)))
+        else arguments in (MODELS,RECOVERY_MODELS,QUERY_MODELS,ARCHIVE_MODELS,REGISTRATION_MODELS,REGISTRATION_RESERVED_MODELS,INTEGRATED_MODELS)))
     return {"PrivateNetwork": "yes"}
 
 def request(args, arguments):
@@ -440,6 +449,18 @@ def post_stop_projection(actual, identity):
     return value
 
 
+def failed_terminal_exit(actual):
+    """Only a retained normal nonzero exit may qualify the failed cleanup branch."""
+    status=actual.get("ExecMainStatus")
+    if (actual.get("LoadState")=="loaded" and actual.get("ActiveState")=="failed"
+            and actual.get("SubState")=="failed" and actual.get("MainPID")=="0"
+            and actual.get("RemainAfterExit")=="yes" and actual.get("ExecMainCode")=="1"
+            and actual.get("Result")=="exit-code" and type(status) is str
+            and re.fullmatch(r"[1-9][0-9]{0,2}",status) and int(status)<=255):
+        return ("1",status,"exit-code")
+    return None
+
+
 def cleanup_retained(*, deadline, readback, authorize, stop, observe,
                      clock=time.monotonic, pause=time.sleep):
     """Same owned cleanup budget; an empty cgroup does not release an active retained unit."""
@@ -452,6 +473,7 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
         except (OSError,ValueError,UnicodeError):
             return "unproved"
     identity=None
+    failed_terminal=None
     while clock()<deadline and summary["readback_attempts"]<8:
         current=state()
         if current in ("changed","unproved"):
@@ -471,6 +493,7 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
             if authorize(actual) is False:
                 continue
             identity=(actual["Id"],actual["InvocationID"],actual["ExecMainPID"])
+            failed_terminal=failed_terminal_exit(actual)
             summary["ownership"]="verified"
         except (OSError,ValueError,KeyError):
             summary["ownership"]="refused"
@@ -494,10 +517,16 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
             actual=readback(min(CLEANUP_READ_SECONDS,deadline-clock()),deadline)
             summary["post_stop"]=post_stop_projection(actual,identity)
             missing=actual.get("LoadState")=="not-found"
-            require(actual.get("Id")==identity[0] and actual.get("ActiveState")=="inactive"
-                and actual.get("SubState")=="dead" and actual.get("MainPID")=="0"
-                and (missing or (actual.get("InvocationID")==identity[1]
-                    and actual.get("ExecMainPID")==identity[2])))
+            same_terminal_identity=(actual.get("InvocationID")==identity[1]
+                and actual.get("ExecMainPID")==identity[2])
+            ordinary=(actual.get("ActiveState")=="inactive" and actual.get("SubState")=="dead"
+                and (missing or same_terminal_identity))
+            owned_failed=(failed_terminal is not None and summary["stop"]=="succeeded"
+                and same_terminal_identity and failed_terminal_exit(actual)==failed_terminal)
+            require(actual.get("Id")==identity[0] and actual.get("MainPID")=="0"
+                and (ordinary or owned_failed))
+            if owned_failed:
+                summary["post_stop"]["predicate"]="owned-failed-terminal-predicate-passed"
             if clock()<deadline:
                 original=state()
                 summary["post_stop"]["original_cgroup_state"]=(original
