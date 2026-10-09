@@ -8,7 +8,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import execution_guard as guard
 import guard_native_seed_plan_reserved as reserved
 import guard_resident_observation as resident
@@ -47,11 +47,15 @@ class ReservationModels(unittest.TestCase):
         self.assertTrue(reserved.request(self.args(),["test",reserved.LABEL]))
         self.assertTrue(reserved.request(self.args(reserved.MODEL_PROFILE),list(reserved.MODELS)))
         self.assertTrue(reserved.request(self.args(reserved.MODEL_PROFILE),list(reserved.RECOVERY_MODELS)))
+        self.assertTrue(reserved.request(self.args(reserved.MODEL_PROFILE),list(reserved.QUERY_MODELS)))
         self.assertFalse(reserved.request(self.args("standard"),["test","//:docs_check"]))
         for profile,args in ((reserved.PROFILE,["test",reserved.LABEL,"//:docs_check"]),
             (reserved.PROFILE,["run",reserved.LABEL]),
             (reserved.MODEL_PROFILE,["test",reserved.LABEL]),
-            (reserved.MODEL_PROFILE,list(reversed(reserved.MODELS)))):
+            (reserved.MODEL_PROFILE,list(reversed(reserved.MODELS))),
+            (reserved.MODEL_PROFILE,list(reversed(reserved.QUERY_MODELS))),
+            (reserved.MODEL_PROFILE,reserved.QUERY_MODELS+["//:engine_test"]),
+            (reserved.PROFILE,list(reserved.QUERY_MODELS))):
             with self.assertRaises(ValueError): reserved.request(self.args(profile),args)
         for key,value in (("manager","user"),("reuse_owned_cache",True),("source_dirty","true"),
             ("native_mode","schema"),("resident_manifest",Path("/model/input.json")),
@@ -190,6 +194,257 @@ class ReservationModels(unittest.TestCase):
             ("cpu.max","10000 0"),("cpu.max","10001 100000"),("pids.max","0"),
             ("pids.max","032"),("memory.max","max"),("memory.swap.max","1")):
             with self.assertRaises(ValueError):reserved.kernel_bounds({**good,key:value})
+
+
+class ProofWorkerModels(unittest.TestCase):
+    UNIT="omux-execution-11111111-1111-1111-1111-111111111111.service"
+
+    def worker(self):
+        witness=reserved.WorkloadWitness.__new__(reserved.WorkloadWitness)
+        witness.unit,witness.invocation,witness.pid=self.UNIT,"a"*32,1234
+        return witness
+
+    def terminal(self, **changes):
+        return {"Id":self.UNIT,"InvocationID":"a"*32,"ExecMainPID":"1234",
+            "ActiveState":"inactive","Result":"success","ExecMainCode":"1","ExecMainStatus":"0",
+            "MainPID":"0","RemainAfterExit":"yes",**changes}
+
+    def test_only_closed_query_cohort_uses_standard_command_without_native_inputs(self):
+        self.assertEqual(reserved.QUERY_MODELS,["test","//tools:codex_protocol_history_query_tools_test",
+            "//tools:codex_protocol_history_metadata_test","//tools:codex_protocol_history_sdk_export_test",
+            "//tools:native_flake_seed_plan_carrier_test","//:docs_check"])
+        with patch.object(reserved.time,"monotonic_ns",return_value=200*10**9):
+            command=reserved.command(guard.bazel_command,"bazel",Path("/model/epoch"),
+                reserved.QUERY_MODELS,reserved.MODEL_PROFILE,100*10**9,1300*10**9)
+        self.assertEqual(command[-5:],reserved.QUERY_MODELS[1:])
+        self.assertIn("--repository_disable_download",command)
+        self.assertFalse(any(option.startswith("--test_env="+reserved.MODE+"=") for option in command))
+
+    def test_live_worker_has_no_manager_poll_and_one_bound_terminal_read(self):
+        for profile in reserved.PROFILES:
+            witness=self.worker()
+            witness.alive=Mock(side_effect=[True,True,False,False])
+            now=[0.0];samples=[];reads=[]
+            def pause(seconds): now[0]+=seconds
+            def read(): reads.append(now[0]);return self.terminal()
+            result=reserved.monitor(profile,witness,read,10,lambda:samples.append(now[0]),
+                clock=lambda:now[0],pause=pause)
+            self.assertEqual(result,0)
+            self.assertEqual(reads,[1.0])
+            self.assertEqual(samples,[0.0,0.5,1.0])
+            self.assertEqual(witness.alive.call_count,4)
+
+    def test_exit_never_supplies_success_or_adopts_other_epoch(self):
+        witness=self.worker();witness.alive=Mock(return_value=False)
+        for changes,expected in (({"Result":"signal"},125),({"ExecMainStatus":"7"},7),
+            ({"ExecMainCode":"2","ExecMainStatus":"15","Result":"signal"},15),
+            ({"ExecMainCode":"2"},125),({"ExecMainCode":"3"},125),
+            ({"ActiveState":"activating"},125),({"ActiveState":"failed","ExecMainStatus":"9"},9)):
+            self.assertEqual(reserved.monitor(reserved.PROFILE,witness,
+                lambda:self.terminal(**changes),10,lambda:None,clock=lambda:0),expected)
+        for changes in ({"Id":"foreign.service"},{"InvocationID":"b"*32},{"ExecMainPID":"1235"},
+            {"ExecMainStatus":"not-an-integer"},{"ExecMainStatus":False},
+            {"ExecMainStatus":"256"},{"ExecMainCode":"0"},{"ExecMainCode":True},
+            {"MainPID":"1235"},{"RemainAfterExit":"no"}):
+            with self.assertRaises(ValueError):
+                reserved.monitor(reserved.PROFILE,witness,lambda:self.terminal(**changes),
+                    10,lambda:None,clock=lambda:0)
+
+    def test_original_deadline_live_expiry_late_terminal_and_query_fault(self):
+        witness=self.worker();witness.alive=Mock(return_value=True)
+        now=[0.0];read=Mock()
+        def pause(seconds):now[0]+=seconds
+        self.assertEqual(reserved.monitor(reserved.MODEL_PROFILE,witness,read,0.75,
+            lambda:None,clock=lambda:now[0],pause=pause),124)
+        read.assert_not_called();self.assertEqual(now[0],0.75)
+        witness.alive=Mock(return_value=False)
+        for status in ("0","3"):
+            now[0]=0
+            def late():now[0]=1;return self.terminal(ExecMainStatus=status)
+            self.assertEqual(reserved.monitor(reserved.PROFILE,witness,late,1,
+                lambda:None,clock=lambda:now[0]),124)
+        with self.assertRaises(OSError):
+            reserved.monitor(reserved.PROFILE,witness,Mock(side_effect=OSError("fixed model")),
+                1,lambda:None,clock=lambda:0)
+        for profile,candidate in (("standard",witness),(reserved.PROFILE,Mock())):
+            with self.assertRaises(ValueError):
+                reserved.monitor(profile,candidate,read,1,lambda:None,clock=lambda:0)
+
+    def test_actual_held_fixture_caps_replacement_and_process_identity(self):
+        # Synthetic cgroup files, real own pidfd/proc identity. Only proc membership
+        # and privilege metadata are mocked because this test is not a service worker.
+        with Fixture() as fixture:
+            fixture.witness.close()
+            for name,value in (("memory.max",str(reserved.MEMORY)),("pids.max","480"),
+                ("cpu.max","190000 100000"),("memory.oom.group","1")):
+                (fixture.root/name).write_text(value+"\n")
+            pin=guard.CgroupPin(fixture.root)
+            fixture.stack.callback(pin.close)
+            path=Path("/sys/fs/cgroup/system.slice")/self.UNIT
+            proxy=SimpleNamespace(path=path,identity=pin.identity,observe=pin.observe)
+            entry=time.monotonic_ns()
+            actual={"Id":self.UNIT,"InvocationID":"a"*32,"ActiveState":"active",
+                "MainPID":str(os.getpid()),"ExecMainPID":str(os.getpid()),
+                "ControlGroup":"/system.slice/"+self.UNIT,"RemainAfterExit":"yes"}
+            with patch.object(reserved,"open_chain",lambda selected: reserved_open(fixture.root)), \
+                    patch.object(reserved.WorkloadWitness,"check_process",return_value=None):
+                witness=reserved.WorkloadWitness(reserved.PROFILE,entry,entry+1200*10**9,
+                    proxy,actual,os.getpid(),resident.start_ticks(os.getpid()))
+                fixture.stack.callback(witness.close)
+                self.assertTrue(witness.alive())
+                owned={**actual,"MainPID":"0","SubState":"exited"}
+                post={**owned,"LoadState":"loaded","ActiveState":"inactive","SubState":"dead"}
+                with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])):
+                    # Original worker has exited, but owned descendants may remain.
+                    # At the actual work cutoff cleanup still uses only original D.
+                    with patch.object(reserved.time,"monotonic_ns",
+                            return_value=witness.deadline-reserved.RESERVE_NS):
+                        witness.authorize_cleanup(owned)
+                    for key,value in (("ControlGroup",""),("ControlGroup","/foreign")):
+                        stop=Mock()
+                        summary=reserved.cleanup_retained(deadline=15,
+                            readback=Mock(return_value={**owned,key:value}),authorize=witness.authorize_cleanup,
+                            stop=stop,observe=pin.observe,clock=lambda:0)
+                        self.assertEqual(summary["ownership"],"refused");stop.assert_not_called()
+                    prior=(fixture.root/"cpu.max").read_text()
+                    (fixture.root/"cpu.max").write_text("180000 100000\n")
+                    stop=Mock()
+                    summary=reserved.cleanup_retained(deadline=15,readback=Mock(return_value=owned),
+                        authorize=witness.authorize_cleanup,stop=stop,observe=pin.observe,clock=lambda:0)
+                    self.assertEqual(summary["ownership"],"refused");stop.assert_not_called()
+                    (fixture.root/"cpu.max").write_text(prior)
+                    calls=[]
+                    def stop(timeout,deadline):
+                        calls.append((timeout,deadline))
+                        (fixture.root/"cgroup.events").write_text("populated 0\n")
+                        (fixture.root/"cgroup.procs").write_text("\n")
+                    summary=reserved.cleanup_retained(deadline=15,
+                        readback=Mock(side_effect=[owned,post]),authorize=witness.authorize_cleanup,
+                        stop=stop,observe=pin.observe,clock=lambda:0)
+                    self.assertEqual(summary["state"],"empty");self.assertEqual(len(calls),1)
+                    (fixture.root/"cgroup.events").write_text("populated 1\n")
+                    (fixture.root/"cgroup.procs").write_text(str(os.getpid())+"\n")
+                for name,value in (("memory.max",str(reserved.MEMORY+1)),("pids.max","481"),
+                    ("cpu.max","190001 100000"),("memory.swap.max","1"),("memory.oom.group","0"),
+                    ("cgroup.procs",""),("cgroup.events","populated 0")):
+                    prior=(fixture.root/name).read_text();(fixture.root/name).write_text(value+"\n")
+                    with self.assertRaises(ValueError):witness.alive()
+                    (fixture.root/name).write_text(prior)
+                with patch.object(reserved,"process",return_value=("different",)):
+                    with self.assertRaises(ValueError):witness.alive()
+                with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])):
+                    self.assertFalse(witness.alive())  # Exit readiness still carries no status.
+                    fixture.root.rename(fixture.parent/"retired-group")
+                    fixture.root.mkdir(mode=0o700)
+                    with self.assertRaises(ValueError):witness.alive()
+
+    def test_pidfd_capture_failure_closes_every_adopted_ancestor(self):
+        with Fixture() as fixture:
+            fixture.witness.close()
+            chain=reserved.open_chain(fixture.root)
+            proxy=SimpleNamespace(path=Path("/sys/fs/cgroup/system.slice")/self.UNIT,
+                identity=chain[-1][2][:2])
+            actual={"Id":self.UNIT,"InvocationID":"a"*32,"ActiveState":"active",
+                "MainPID":"1234","ExecMainPID":"1234","ControlGroup":"/system.slice/"+self.UNIT,"RemainAfterExit":"yes"}
+            entry=time.monotonic_ns()
+            with patch.object(reserved,"open_chain",return_value=chain), \
+                    patch.object(reserved.os,"pidfd_open",side_effect=OSError("capture fault")):
+                with self.assertRaises(OSError):
+                    reserved.WorkloadWitness(reserved.PROFILE,entry,entry+1200*10**9,
+                        proxy,actual,1234,"1")
+            for _,fd,_ in chain:
+                with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_fixed_proc_metadata_join_and_capability_drift(self):
+        witness=self.worker()
+        witness.pid=os.getpid()
+        witness.pin=SimpleNamespace(path=Path("/sys/fs/cgroup/system.slice")/self.UNIT)
+        cgroup=("0::/system.slice/"+self.UNIT+"\n").encode()
+        status=("Uid:\t"+" ".join([str(os.getuid())]*4)+"\nGid:\t"+
+            " ".join([str(os.getgid())]*4)+"\nNoNewPrivs:\t1\nCapEff:\t0000\n"+
+            "CapPrm:\t0000\nCapAmb:\t0000\n").encode()
+        def check(first,second):
+            with patch.object(reserved.os,"open",return_value=99), \
+                    patch.object(reserved.os,"read",side_effect=[first,b"",second,b""]), \
+                    patch.object(reserved.os,"close") as close:
+                witness.check_process()
+                self.assertEqual(close.call_count,2)
+        check(cgroup,status)
+        for first,second in ((b"0::/foreign\n",status),(cgroup,status.replace(b"NoNewPrivs:\t1",b"NoNewPrivs:\t0")),
+            (cgroup,status.replace(b"CapEff:\t0000",b"CapEff:\t0001")),
+            (cgroup,status.replace(b"Uid:\t",b"Uid:\t99999 "))):
+            with self.assertRaises(ValueError):check(first,second)
+
+
+    def test_retained_exit_requires_original_pidfd_and_exact_terminal_substate(self):
+        witness=self.worker()
+        good=self.terminal(ActiveState="active",SubState="exited",MainPID="0",RemainAfterExit="yes")
+        self.assertEqual(witness.terminal(good),0)
+        for key,value in (("MainPID","1234"),("SubState","running"),("RemainAfterExit","no")):
+            with self.assertRaises(ValueError):witness.terminal({**good,key:value})
+        witness.pidfd=42
+        witness.entry=time.monotonic_ns();witness.deadline=witness.entry+1200*10**9
+        witness.check_directory=Mock(return_value=True);witness.check_bounds=Mock()
+        witness.pin=SimpleNamespace(path=Path("/sys/fs/cgroup/system.slice")/self.UNIT,
+            observe=Mock(return_value="empty"))
+        good={**good,"ControlGroup":"/system.slice/"+self.UNIT}
+        with patch.object(reserved.poll,"select",return_value=([42],[],[])):
+            witness.authorize_cleanup(good)
+            for key,value in (("InvocationID","b"*32),("ExecMainPID","99"),
+                ("ControlGroup","/foreign"),("SubState","running")):
+                with self.assertRaises(ValueError):witness.authorize_cleanup({**good,key:value})
+            witness.pin.observe.return_value="changed"
+            with self.assertRaises(ValueError):witness.authorize_cleanup(good)
+        witness.pin.observe.return_value="empty"
+        with patch.object(reserved.poll,"select",return_value=([],[],[])):
+            with self.assertRaises(ValueError):witness.authorize_cleanup(good)
+
+    def test_empty_retained_unit_still_requires_owned_stop_and_postread(self):
+        owned=self.terminal(ActiveState="active",SubState="exited",MainPID="0",RemainAfterExit="yes")
+        post={**owned,"ActiveState":"inactive","SubState":"dead","LoadState":"loaded"}
+        for final in (post,{**post,"LoadState":"not-found","InvocationID":"","ExecMainPID":"0"}):
+            reads=Mock(side_effect=[owned,final]);authorize=Mock();stop=Mock()
+            summary=reserved.cleanup_retained(deadline=15,readback=reads,authorize=authorize,
+                stop=stop,observe=Mock(return_value="empty"),clock=lambda:0)
+            self.assertEqual(summary,{"state":"empty","stop":"succeeded","ownership":"verified",
+                "readback_attempts":2})
+            stop.assert_called_once();authorize.assert_called_once_with(owned)
+        for changes in ({"ActiveState":"active"},{"InvocationID":"b"*32},{"ExecMainPID":"5678"},
+            {"MainPID":"1234"}):
+            summary=reserved.cleanup_retained(deadline=15,
+                readback=Mock(side_effect=[owned,{**post,**changes}]),authorize=Mock(),stop=Mock(),
+                observe=lambda:"empty",clock=lambda:0)
+            self.assertEqual(summary["state"],"unproved")
+
+    def test_retained_cleanup_foreign_or_changed_never_signals_and_late_refuses(self):
+        owned=self.terminal(ActiveState="active",SubState="exited",MainPID="0",RemainAfterExit="yes")
+        stop=Mock()
+        summary=reserved.cleanup_retained(deadline=15,readback=Mock(return_value=owned),
+            authorize=Mock(side_effect=ValueError("foreign")),stop=stop,
+            observe=lambda:"empty",clock=lambda:0)
+        self.assertEqual(summary["ownership"],"refused");stop.assert_not_called()
+        read=Mock()
+        summary=reserved.cleanup_retained(deadline=15,readback=read,authorize=Mock(),
+            stop=stop,observe=lambda:"changed",clock=lambda:0)
+        read.assert_not_called();stop.assert_not_called()
+        now=[0]
+        def late(timeout,deadline):now[0]=deadline;return owned
+        summary=reserved.cleanup_retained(deadline=15,readback=late,authorize=Mock(),stop=stop,
+            observe=lambda:"empty",clock=lambda:now[0])
+        self.assertEqual(summary["state"],"deadline-exhausted");stop.assert_not_called()
+
+    def test_worker_release_fault_is_refusal_before_success_and_fallback_idempotent(self):
+        witness=self.worker()
+        witness.resources,witness.chain,witness.directory=[99],[],99
+        with patch.object(resident,"close_owned_resources",side_effect=OSError("owned close")):
+            self.assertIs(reserved.release_worker(witness),False)
+        self.assertEqual(witness.resources,[]);self.assertIsNone(witness.directory)
+        self.assertIs(reserved.release_worker(witness),True)
+        self.assertIs(reserved.release_worker(None),True)
+        with self.assertRaises(ValueError):reserved.release_worker(Mock())
+
+# Keep the actual production walker captured before per-constructor injection.
+reserved_open=reserved.open_chain
 
 if __name__=="__main__":
     unittest.main()

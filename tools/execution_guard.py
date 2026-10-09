@@ -1835,6 +1835,7 @@ def _main(argv, admission_resources):
         original_pid = None
         original_ticks = None
         started = False
+        proof_worker = None
         result = 125
         cleanup = False
         controller_failure = None
@@ -2058,7 +2059,7 @@ def _main(argv, admission_resources):
                 delivery_runtime_seconds = int(seed_reserved.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns))
                 if delivery_runtime_seconds < 1: raise ValueError('native-seed-reservation-expired')
                 settings.update(MemoryMax=str(seed_reserved.MEMORY),TasksMax=str(seed_reserved.TASKS),
-                    CPUQuota='190%',RuntimeMaxSec=str(delivery_runtime_seconds))
+                    CPUQuota='190%',RuntimeMaxSec=str(delivery_runtime_seconds),RemainAfterExit='yes')
             if dev_stage_proof:
                 delivery_runtime_seconds = dev_stage_runtime(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
                 settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
@@ -2099,6 +2100,8 @@ def _main(argv, admission_resources):
                                     'User', 'Group', 'PrivateUsers', 'CapabilityBoundingSet',
                                     'AmbientCapabilities', 'StandardInput', 'MainPID',
                                     'TemporaryFileSystem', 'InaccessiblePaths', 'BindReadOnlyPaths', 'BindPaths')}
+            if seed_selected:
+                observed_properties['RemainAfterExit'] = actual.get('RemainAfterExit')
             if live_input is not None:
                 observed_properties = live.receipt_properties(observed_properties)
                 live_binding_readback = fresh_live.binding_facts(actual,live_binds) if fresh_input else live.binding_facts(actual,live_input.binding())
@@ -2181,6 +2184,12 @@ def _main(argv, admission_resources):
                 yoga_launch.admit_worker(yoga_support, ready, properties=actual, source_snapshot=source_snapshot,
                     effective_readonly_binds=actual.get('BindReadOnlyPaths', '').split(),
                     effective_writable_binds=actual.get('BindPaths', '').split())
+            if seed_selected:
+                unit_epoch_identity(actual,unit=unit,manager=args.manager,run=run,
+                    python=python,worker=str(Path(__file__).resolve()))
+                proof_worker = seed_reserved.WorkloadWitness(args.profile,delivery_entry_monotonic_ns,
+                    delivery_entry_deadline_ns,cgroup_pin,actual,original_pid,original_ticks)
+                resources.callback(proof_worker.close)
             epoch_start_ns = time.time_ns()
             if not yoga:
                 pids_observation.sample(cgroup_pin, 'baseline')
@@ -2214,8 +2223,14 @@ def _main(argv, admission_resources):
                     for progress in yoga_launch.read_progress(yoga_support):
                         print(json.dumps(progress, sort_keys=True), flush=True)
                     yoga.pump_event(yoga_admission, yoga_support, yoga_operator_writer)
-            result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--property=ActiveState,Result,ExecMainStatus', unit],
-                operation='unit-readback', phase='monitor')), deadline, iteration)
+            if seed_selected:
+                result = seed_reserved.monitor(args.profile,proof_worker,
+                    lambda: properties(call([control,manager_flag,'show',
+                        '--property=Id,InvocationID,ExecMainPID,MainPID,RemainAfterExit,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus',unit],
+                        operation='unit-readback',phase='monitor')),deadline,iteration)
+            else:
+                result = monitor_workload(lambda: properties(call([control, manager_flag, 'show', '--property=ActiveState,Result,ExecMainStatus', unit],
+                    operation='unit-readback', phase='monitor')), deadline, iteration)
         except (ValueError, OSError) as error:
             rejection = (resident_settings.rejection(error) if resident_settings else live.rejection_category(error) if args.profile == 'codex-live'
                          else str(error) if isinstance(error, ValueError) else None)
@@ -2254,15 +2269,21 @@ def _main(argv, admission_resources):
                         cgroup = cgroup_pin.path
                         resources.callback(cgroup_pin.close)
                         return False
-                    authorize_cleanup(owned, unit=unit, manager=args.manager, run=run,
-                        python=python, worker=selected_worker,
-                        cgroup=cgroup, original_pid=original_pid, original_ticks=original_ticks)
+                    if seed_selected and proof_worker is not None:
+                        unit_epoch_identity(owned,unit=unit,manager=args.manager,run=run,
+                            python=python,worker=selected_worker)
+                        proof_worker.authorize_cleanup(owned)
+                    else:
+                        authorize_cleanup(owned, unit=unit, manager=args.manager, run=run,
+                            python=python, worker=selected_worker,
+                            cgroup=cgroup, original_pid=original_pid, original_ticks=original_ticks)
                     if yoga:
                         yoga.owns_unit(owned, unit=unit, run=run, nonce=yoga_launch_nonce,
                             plan_sha256=environment['OMUX_YOGA_WORKER_PLAN_SHA256'],
                             worker=str(Path(yoga_launch.__file__).resolve()), python=python, cgroup=cgroup,
                             worker_identity=yoga_worker_identity)
-                cleanup_summary = cleanup_owned(deadline=cleanup_deadline,
+                cleanup_method = seed_reserved.cleanup_retained if seed_selected else cleanup_owned
+                cleanup_summary = cleanup_method(deadline=cleanup_deadline,
                     readback=lambda timeout, absolute: properties(call([control, manager_flag, 'show', '--all', unit],
                         operation='unit-readback', phase='cleanup', timeout=timeout, deadline=absolute)),
                     authorize=authorize,
@@ -2271,6 +2292,9 @@ def _main(argv, admission_resources):
                         timeout=timeout, deadline=absolute),
                     observe=lambda: cgroup_pin.observe() if cgroup_pin is not None else 'uncaptured')
                 cleanup = cleanup_summary['state'] == 'empty'
+            if seed_selected and not seed_reserved.release_worker(proof_worker):
+                cleanup = False
+                result = 125
             if delivery_settings:
                 try:
                     delivery_settings.budget(delivery_entry_deadline_ns)

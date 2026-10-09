@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import select as poll
 import stat
+import subprocess
 import time
 import guard_resident_observation as resident
 
@@ -15,6 +16,9 @@ MODELS = ["test", "//tools:guard_native_seed_plan_reserved_test", "//tools:execu
     "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
 RECOVERY_MODELS = ["test", "//clients/linux:codex_account_acquisition_test",
     "//clients/linux:setup_ui_test", "//:engine_test", "//:snapshot_import_test", "//:format_test", "//:docs_check"]
+QUERY_MODELS = ["test", "//tools:codex_protocol_history_query_tools_test",
+    "//tools:codex_protocol_history_metadata_test", "//tools:codex_protocol_history_sdk_export_test",
+    "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
 MEMORY, TASKS, CPU = resident.PROOF_MEMORY, resident.PROOF_TASKS, resident.PROOF_CPU_PERCENT
 RESERVE_NS = 30 * 10**9
 ENTRY = "OMUX_NATIVE_SEED_ROOT_ENTRY_NS"
@@ -27,7 +31,7 @@ def require(value):
 
 def selected(profile, arguments):
     require(profile in PROFILES and (arguments==["test",LABEL] if profile==PROFILE
-        else arguments in (MODELS,RECOVERY_MODELS)))
+        else arguments in (MODELS,RECOVERY_MODELS,QUERY_MODELS)))
     return {"PrivateNetwork": "yes"}
 
 def request(args, arguments):
@@ -48,7 +52,7 @@ def request(args, arguments):
 
 def properties(base):
     return {**base, "MemoryMax": str(MEMORY), "TasksMax": str(TASKS),
-        "CPUQuotaPerSecUSec": "1.9s"}
+        "CPUQuotaPerSecUSec": "1.9s", "RemainAfterExit": "yes"}
 
 def envelope(entry, deadline):
     require(type(entry) is int and type(deadline) is int and entry > 0
@@ -219,3 +223,250 @@ class Witness:
         resources = list(dict.fromkeys([row[1] for row in self.chain]+resources))
         self.directory,self.chain = None,[]
         resident.close_owned_resources(resources)
+
+
+class WorkloadWitness:
+    """Only the admitted reserved proof worker; exit readiness is not exit success."""
+    read = Witness.read
+    close = Witness.close
+
+    def __init__(self, profile, entry, deadline, pin, actual, original_pid, original_ticks):
+        self.entry,self.deadline = entry,deadline
+        self.resources,self.chain,self.directory = [],[],None
+        self.pin,self.bounds = pin,None
+        try:
+            require(profile in PROFILES and actual.get("ActiveState")=="active" and actual.get("RemainAfterExit")=="yes"
+                and actual.get("MainPID")==str(original_pid)
+                and actual.get("ExecMainPID")==str(original_pid)
+                and re.fullmatch(r"[0-9a-f]{32}",actual.get("InvocationID","")))
+            self.unit,self.invocation,self.pid = actual["Id"],actual["InvocationID"],original_pid
+            require(re.fullmatch(r"omux-execution-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}[.]service",self.unit)
+                and pin.path==Path("/sys/fs/cgroup")/actual["ControlGroup"].lstrip("/")
+                and pin.path.name==self.unit)
+            remaining(entry,deadline)
+            self.chain=open_chain(pin.path)
+            self.resources.extend(row[1] for row in self.chain)
+            self.directory=self.chain[-1][1]
+            self.identity=self.chain[-1][2]
+            require(self.identity[:2]==pin.identity)
+            self.pidfd=os.pidfd_open(original_pid,0)
+            self.resources.append(self.pidfd)
+            self.worker=process(original_pid)
+            require(str(self.worker[0])==str(original_ticks))
+            require(self.alive())
+        except BaseException:
+            self.close()
+            raise
+
+    def check_directory(self, exited):
+        for index,(path,fd,identity) in enumerate(self.chain):
+            require(resident.stable(os.fstat(fd))==identity)
+            try:
+                named=path.stat(follow_symlinks=False) if index==0 else os.stat(path.name,
+                    dir_fd=self.chain[index-1][1],follow_symlinks=False)
+            except FileNotFoundError:
+                require(exited and index==len(self.chain)-1 and self.pin.observe()=="absent")
+                return False
+            require(resident.stable(named)==identity)
+        require(self.chain[-1][2]==self.identity)
+        return True
+
+    def alive(self):
+        remaining(self.entry,self.deadline)
+        require(self.directory is not None)
+        exited=bool(poll.select([self.pidfd],[],[],0)[0])
+        named=self.check_directory(exited)
+        if not named:
+            remaining(self.entry,self.deadline)
+            return False
+        values=self.check_bounds()
+        if not exited:
+            require(process(self.pid)==self.worker)
+            self.check_process()
+            rows=self.read("cgroup.procs").splitlines()
+            require(len(rows)<=TASKS and all(re.fullmatch(r"[1-9][0-9]{0,9}",v) for v in rows)
+                and len(set(rows))==len(rows) and str(self.pid) in rows)
+            require(self.pin.observe()=="populated")
+            current=self.read("pids.current")
+            require(re.fullmatch(r"[1-9][0-9]{0,2}",current) and int(current)<=TASKS)
+        self.check_directory(exited)
+        remaining(self.entry,self.deadline)
+        self.bounds=values
+        return not exited
+
+    def check_bounds(self):
+        values={name:self.read(name) for name in
+            ("memory.max","memory.swap.max","pids.max","cpu.max","memory.oom.group")}
+        require(values["memory.max"]==str(MEMORY) and values["memory.swap.max"]=="0"
+            and values["pids.max"]==str(TASKS) and values["memory.oom.group"]=="1")
+        fields=values["cpu.max"].split()
+        require(len(fields)==2 and all(re.fullmatch(r"[1-9][0-9]{0,8}",v) for v in fields)
+            and int(fields[0])*10==19*int(fields[1]))
+        require(self.bounds is None or values==self.bounds)
+        return values
+
+    def check_process(self):
+        # Fixed public proc metadata only; no cmdline/environment/credential bytes.
+        def read(name):
+            fd=os.open("/proc/"+str(self.pid)+"/"+name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            try:
+                raw=os.read(fd,8193)
+                require(len(raw)<=8192 and not os.read(fd,1))
+                return raw.decode("ascii")
+            finally:
+                os.close(fd)
+        require(read("cgroup").splitlines()==
+            ["0::/"+str(self.pin.path.relative_to("/sys/fs/cgroup"))])
+        fields={}
+        for line in read("status").splitlines():
+            key,separator,value=line.partition(":")
+            if separator:
+                require(key not in fields)
+                fields[key]=value.split()
+        require(fields.get("Uid")==[str(os.getuid())]*4
+            and fields.get("Gid")==[str(os.getgid())]*4
+            and fields.get("NoNewPrivs")==["1"]
+            and all(fields.get(key) and len(fields[key])==1
+                and re.fullmatch(r"[0-9a-fA-F]{1,16}",fields[key][0])
+                and int(fields[key][0],16)==0 for key in ("CapEff","CapPrm","CapAmb")))
+
+    def authorize_cleanup(self, actual):
+        require(actual.get("Id")==self.unit and actual.get("InvocationID")==self.invocation
+            and actual.get("ExecMainPID")==str(self.pid) and actual.get("RemainAfterExit")=="yes")
+        group="/"+str(self.pin.path.relative_to("/sys/fs/cgroup"))
+        remaining(self.entry,self.deadline,cleanup=True)
+        exited=bool(poll.select([self.pidfd],[],[],0)[0])
+        named=self.check_directory(exited)
+        if named:
+            self.check_bounds()  # Never reset the pre-GO frozen tuple in cleanup.
+        state=self.pin.observe()
+        if actual.get("MainPID")=="0":
+            require(exited and state in ("populated","empty","absent"))
+            require(actual.get("ControlGroup")==group if state=="populated"
+                else actual.get("ControlGroup") in ("",group))
+            require(state!="populated" or named)
+            require(actual.get("ActiveState") in ("inactive","failed")
+                or actual.get("ActiveState")=="active" and actual.get("SubState")=="exited")
+        else:
+            require(named and state=="populated" and actual.get("MainPID")==str(self.pid)
+                and actual.get("ControlGroup")==group and not exited and process(self.pid)==self.worker)
+        self.check_directory(exited)
+        remaining(self.entry,self.deadline,cleanup=True)
+
+    def terminal(self, actual):
+        require(actual.get("Id")==self.unit and actual.get("InvocationID")==self.invocation
+            and actual.get("ExecMainPID")==str(self.pid))
+        if actual.get("ActiveState")=="active":
+            require(actual.get("SubState")=="exited" and actual.get("MainPID")=="0"
+                and actual.get("RemainAfterExit")=="yes")
+        elif actual.get("ActiveState") not in ("inactive","failed"):
+            return 125
+        code,status=actual.get("ExecMainCode"),actual.get("ExecMainStatus")
+        require(actual.get("MainPID")=="0" and actual.get("RemainAfterExit")=="yes"
+            and code in ("1","2","3") and type(status) is str
+            and re.fullmatch(r"0|[1-9][0-9]{0,2}",status) and int(status)<=255)
+        result=int(status)
+        return 125 if result==0 and (actual.get("Result")!="success" or code!="1") else result
+
+
+def monitor(profile, witness, readback, deadline, on_iteration, *,
+            clock=time.monotonic, pause=time.sleep):
+    """No routine manager reads; one terminal read still owns the exit/result fact."""
+    require(profile in PROFILES and type(witness) is WorkloadWitness)
+    while clock()<deadline:
+        on_iteration()
+        if clock()>=deadline:
+            return 124
+        alive=witness.alive()
+        if clock()>=deadline:
+            return 124
+        if not alive:
+            actual=readback()
+            if clock()>=deadline:
+                return 124
+            require(not witness.alive())
+            if clock()>=deadline:
+                return 124
+            return witness.terminal(actual)
+        left=deadline-clock()
+        if left<=0:
+            return 124
+        pause(min(0.5,left))
+    return 124
+
+
+def release_worker(witness):
+    """Detach new FDs before any receipt can promote success; fallback is idempotent."""
+    if witness is None:
+        return True
+    require(type(witness) is WorkloadWitness)
+    try:
+        witness.close()
+    except (OSError,ValueError):
+        return False
+    return True
+
+
+def cleanup_retained(*, deadline, readback, authorize, stop, observe,
+                     clock=time.monotonic, pause=time.sleep):
+    """Same owned cleanup budget; an empty cgroup does not release an active retained unit."""
+    from execution_guard import CLEANUP_READ_SECONDS, CONTROLLER_TIMEOUT
+    summary={"state":"unproved","stop":"not-requested","ownership":"unproved","readback_attempts":0}
+    def state():
+        try:
+            return observe()
+        except (OSError,ValueError,UnicodeError):
+            return "unproved"
+    identity=None
+    while clock()<deadline and summary["readback_attempts"]<8:
+        current=state()
+        if current in ("changed","unproved"):
+            summary["state"]="original-"+current
+            return summary
+        summary["readback_attempts"]+=1
+        try:
+            actual=readback(min(CLEANUP_READ_SECONDS,deadline-clock()),deadline)
+        except (OSError,subprocess.SubprocessError):
+            left=deadline-clock()
+            if left>0:pause(min(0.1,left))
+            continue
+        if clock()>=deadline:break
+        try:
+            require(actual.get("RemainAfterExit")=="yes"
+                and re.fullmatch(r"[0-9a-f]{32}",actual.get("InvocationID","")))
+            if authorize(actual) is False:
+                continue
+            identity=(actual["Id"],actual["InvocationID"],actual["ExecMainPID"])
+            summary["ownership"]="verified"
+        except (OSError,ValueError,KeyError):
+            summary["ownership"]="refused"
+            return summary
+        if state() in ("changed","unproved"):
+            summary["state"]="original-unproved"
+            return summary
+        left=deadline-clock()
+        if left<=0.1:break
+        summary["stop"]="unresolved"
+        try:
+            stop(min(CONTROLLER_TIMEOUT,left-0.1),deadline)
+            summary["stop"]="succeeded"
+        except (OSError,ValueError,subprocess.SubprocessError):
+            pass
+        break
+    # No adoption after stop: query once within the same immutable cleanup cutoff.
+    if identity is not None and clock()<deadline:
+        summary["readback_attempts"]+=1
+        try:
+            actual=readback(min(CLEANUP_READ_SECONDS,deadline-clock()),deadline)
+            missing=actual.get("LoadState")=="not-found"
+            require(actual.get("Id")==identity[0] and actual.get("ActiveState")=="inactive"
+                and actual.get("SubState")=="dead" and actual.get("MainPID")=="0"
+                and (missing or (actual.get("InvocationID")==identity[1]
+                    and actual.get("ExecMainPID")==identity[2])))
+            if clock()<deadline and state() in ("empty","absent"):
+                summary["state"]="empty"
+                return summary
+        except (OSError,ValueError,subprocess.SubprocessError):
+            pass
+    summary["state"]="deadline-exhausted" if clock()>=deadline else "unproved"
+    return summary
