@@ -64,7 +64,7 @@ class NativeModel:
 
 class OrdinaryFirstModels(unittest.TestCase):
     def run_checkpoint(self, world, *, wait_failure=None, detach_failure=None, metadata_changed=False,
-                       witness_changed=False):
+                       witness_changed=False, failure_observer=None):
         observed_names = []
         witness_calls = 0
 
@@ -103,9 +103,9 @@ class OrdinaryFirstModels(unittest.TestCase):
             try:
                 result = legacy.ordinary_first_history(Path("/public/codex"), {"TOKIO_WORKER_THREADS": "2"},
                     Path("/public/work"), Path("/public/home"), world.cli, Path("/public/config"),
-                    b"configured", Path("/public/capability"), b"cap", None)
+                    b"configured", Path("/public/capability"), b"cap", failure_observer)
                 terminal.assert_called_once_with(Path("/public/codex"), {"TOKIO_WORKER_THREADS": "2"},
-                    Path("/public/work"), failure_observer=None)
+                    Path("/public/work"), failure_observer=failure_observer)
                 self.assertEqual(observed_names, [None, legacy.tui.FIXTURE_NAME])
                 selected_detach.assert_called_once()
                 self.assertEqual(selected_detach.call_args.args[2], result["attachment"])
@@ -215,6 +215,98 @@ class OrdinaryFirstModels(unittest.TestCase):
                 ordinary.main()
         self.assertNotEqual(legacy.MARKER, legacy.ORDINARY_MARKER)
 
+
+    def test_partial_failure_records_before_cleanup_without_repeating_work(self):
+        cases = ((ValueError("ordinary native terminal exited early"), "resume-terminal-exited"),
+                 (TimeoutError("synthetic-private-timeout"), "resume-os-other"),
+                 *((ValueError(message), category) for message, category in legacy.ORDINARY_FAILURE_MESSAGES.items()))
+        for primary, category in cases:
+            for diagnostic_fault in (None, KeyboardInterrupt(), SystemExit()):
+                for cleanup_fault in (False, True):
+                    with self.subTest(category=category, diagnostic_fault=type(diagnostic_fault).__name__,
+                                      cleanup_fault=cleanup_fault):
+                        events = []
+                        child = SimpleNamespace(process=SimpleNamespace(pid=314))
+                        def close():
+                            self.assertIn(legacy.ORDINARY_FAILURE_MARKER + category + "\n", sink.getvalue())
+                            events.append("close")
+                            if cleanup_fault:
+                                raise RuntimeError("synthetic-private-cleanup")
+                        child.close = close
+                        def record(terminal):
+                            self.assertIs(terminal, child)
+                            events.append("record")
+                            if diagnostic_fault is not None:
+                                raise diagnostic_fault
+                            return legacy.TERMINAL_MARKER + "exit-one/config-load\n"
+                        observer = SimpleNamespace(record=record)
+                        with mock.patch.object(legacy.tui, "TerminalProcess", return_value=child) as launch, \
+                                mock.patch.object(legacy, "wait_attached", side_effect=primary) as attached, \
+                                mock.patch.object(legacy, "detach") as detach, \
+                                contextlib.redirect_stderr(io.StringIO()) as sink:
+                            with self.assertRaises(type(primary)) as caught:
+                                legacy.ordinary_first_history(None, {}, None, None, None,
+                                    None, None, None, None, observer)
+                        self.assertIs(caught.exception, primary)
+                        self.assertEqual(events, ["record", "close"])
+                        launch.assert_called_once()
+                        attached.assert_called_once()
+                        detach.assert_not_called()
+                        self.assertIn(legacy.ORDINARY_FAILURE_MARKER + category + "\n", sink.getvalue())
+                        self.assertNotIn("synthetic", sink.getvalue())
+                        if cleanup_fault:
+                            self.assertIn("retained ordinary owned terminal cleanup refused", primary.__notes__)
+
+    def test_terminal_constructor_refusal_retains_primary_without_cleanup_or_record(self):
+        primary = PermissionError("synthetic-private-path")
+        observer = mock.Mock()
+        with mock.patch.object(legacy.tui, "TerminalProcess", side_effect=primary) as launch, \
+                mock.patch.object(legacy, "wait_attached") as attached, \
+                contextlib.redirect_stderr(io.StringIO()) as sink:
+            with self.assertRaises(PermissionError) as caught:
+                legacy.ordinary_first_history(None, {}, None, None, None,
+                    None, None, None, None, observer)
+        self.assertIs(caught.exception, primary)
+        launch.assert_called_once()
+        attached.assert_not_called()
+        observer.record.assert_not_called()
+        self.assertEqual(sink.getvalue(), legacy.ORDINARY_FAILURE_MARKER + "resume-permission\n")
+
+    def test_lost_ack_observation_never_repeats_detach_or_terminal_commands(self):
+        world = NativeModel()
+        primary = TimeoutError("synthetic-private-lost-ACK")
+        observer = mock.Mock()
+        observer.record.return_value = legacy.TERMINAL_MARKER + "exit-unavailable/unrecognized\n"
+        with contextlib.redirect_stderr(io.StringIO()) as sink:
+            with self.assertRaises(TimeoutError) as caught:
+                self.run_checkpoint(world, detach_failure=primary, failure_observer=observer)
+        self.assertIs(caught.exception, primary)
+        observer.record.assert_called_once_with(world)
+        self.assertEqual(len(world.commands), 2)
+        self.assertEqual(world.closes, [False])
+        self.assertEqual(world.discovery_count, 2)
+        self.assertNotIn("synthetic", sink.getvalue())
+
+    def test_outer_refusal_projection_rejects_suffixes_and_preserves_seed_default(self):
+        valid = (legacy.ORDINARY_FAILURE_MARKER + "resume-terminal-exited\n").encode()
+        invalid = (valid.rstrip() + b"/synthetic-private\n"
+                   + valid.replace(b"resume-terminal-exited", b"synthetic-private"))
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TEST_TMPDIR")) as directory:
+            paths = [Path(directory) / str(i) for i in range(6)]
+            for path in paths:
+                path.write_bytes(b"public model input")
+            for ordinary_mode, diagnostics, expected in ((True, invalid, ""),
+                    (True, invalid + valid + valid, valid.decode("ascii")),
+                    (False, valid, "")):
+                with self.subTest(ordinary_mode=ordinary_mode, expected=expected), \
+                        mock.patch.object(sys, "argv", ["fixture", *(str(path) for path in paths)]), \
+                        mock.patch.object(legacy.subprocess, "Popen"), \
+                        mock.patch.object(legacy.support, "bounded_private_session",
+                                          return_value=(1, b"", diagnostics)), \
+                        contextlib.redirect_stderr(io.StringIO()) as sink:
+                    self.assertEqual(legacy.main(ordinary_first=ordinary_mode,
+                        entrypoint=Path(ordinary.__file__).absolute() if ordinary_mode else None), 1)
+                    self.assertEqual(sink.getvalue(), expected)
 
 if __name__ == "__main__":
     unittest.main()

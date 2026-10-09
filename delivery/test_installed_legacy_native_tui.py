@@ -778,6 +778,15 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
 
 
 ORDINARY_MARKER = b"OMUX_INSTALLED_RETAINED_ORDINARY_NATIVE_TUI_OK\n"
+ORDINARY_FAILURE_MARKER = "installed legacy ordinary native refusal "
+ORDINARY_FAILURE_MESSAGES = {
+    "legacy native discovery lacks exact installed owner": "ordinary-discovery-installed-owner",
+    "legacy discovery owner identity differs": "ordinary-discovery-owner-identity",
+    "legacy native thread identity differs": "ordinary-discovery-thread-identity",
+    "legacy committed reference differs": "ordinary-discovery-reference",
+    "legacy discovery disagrees with committed attached ledger": "ordinary-discovery-ledger",
+}
+ORDINARY_FAILURES = (*RESUME_FAILURES, *ORDINARY_FAILURE_MESSAGES.values())
 ORDINARY_PHASES = ("private-context", "runtime-verification", "keyring-startup", "daemon-startup",
     "bootstrap-native", "integration-install", "ordinary-tui-startup",
     "native-history-materialization", "native-rename", "selected-detach",
@@ -794,8 +803,9 @@ def ordinary_first_history(binary, environment, work, home, cli, config, configu
     """
     global PHASE
     PHASE = "ordinary-tui-startup"
-    terminal = tui.TerminalProcess(binary, environment, work, failure_observer=failure_observer)
+    terminal = None
     try:
+        terminal = tui.TerminalProcess(binary, environment, work, failure_observer=failure_observer)
         first_pid = terminal.process.pid
         endpoint, thread, first = wait_attached(cli, home, terminal)
         witness = tui.process_witness(first_pid)
@@ -829,8 +839,23 @@ def ordinary_first_history(binary, environment, work, home, cli, config, configu
         return {"pid": first_pid, "endpoint": endpoint, "witness": witness,
                 "thread": thread, "attachment": first, "before": before, "operation": operation}
     except BaseException as primary:
+        # Collect finite recognition before cleanup, without pumping output.
         try:
-            terminal.close()
+            category = classify_resume_failure(primary)
+            if isinstance(primary, ValueError) and len(primary.args) == 1 and type(primary.args[0]) is str:
+                category = ORDINARY_FAILURE_MESSAGES.get(primary.args[0], category)
+            if category in ORDINARY_FAILURES:
+                sys.stderr.write(ORDINARY_FAILURE_MARKER + category + "\n")
+        except BaseException:
+            pass
+        if terminal is not None and failure_observer is not None:
+            try:
+                sys.stderr.write(failure_observer.record(terminal))
+            except BaseException:
+                pass
+        try:
+            if terminal is not None:
+                terminal.close()
         except BaseException:
             primary.add_note("retained ordinary owned terminal cleanup refused")
         raise
@@ -1197,6 +1222,14 @@ def main(*, ordinary_first=False, entrypoint=None):
                 if role not in seen_thread_roles and len(seen_thread_roles) < len(native_threads.ROLES):
                     seen_thread_roles.add(role)
                     print(projected.decode("ascii"), end="", file=sys.stderr)
+            if ordinary_first:
+                for line in diagnostics.splitlines():
+                    if not line.startswith(ORDINARY_FAILURE_MARKER.encode("ascii")):
+                        continue
+                    category = line[len(ORDINARY_FAILURE_MARKER):]
+                    if category in tuple(value.encode("ascii") for value in ORDINARY_FAILURES):
+                        print(line.decode("ascii"), file=sys.stderr)
+                        break
             if FD2_OBSERVER:
                 fixed_detach = b"installed legacy native detach cli observation "
                 for line in diagnostics.splitlines():
