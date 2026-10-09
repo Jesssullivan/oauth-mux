@@ -99,13 +99,21 @@ class SelectedSdkModels(unittest.TestCase):
             root=Path(temporary);document={"synthetic":"declared"}
             environment={"TEST_TIMEOUT":"900","TEST_TMPDIR":str(root),
                 "TEST_UNDECLARED_OUTPUTS_DIR":str(root)}
+            repository=root/"declared-query-tools"
+            def declared_selection():
+                # Model the real declaration's required query repository handoff.
+                selected.producer.QUERY_REPOSITORY=repository
+                return document,"f"*64
             with patch.dict(os.environ,environment),patch.object(selected.os,"umask"),patch.object(
-                    selected.producer,"declared_selection",return_value=(document,"f"*64)),patch.object(
+                    selected.producer,"QUERY_REPOSITORY"),patch.object(
+                    selected.producer,"declared_selection",side_effect=declared_selection),patch.object(
                     selected.time,"monotonic",return_value=100.0),patch.object(
-                    selected.producer,"produce") as generate,patch.object(selected,"export") as export:
+                    selected.producer,"produce") as generate,patch.object(selected,"export") as export,patch.object(
+                    selected.producer.query_tools,"verify_repository",return_value={"inputs_rechecked":True}) as verify:
                 selected.main()
             self.assertEqual(generate.call_args.kwargs["absolute_deadline"],940.0)
             self.assertEqual(export.call_args.args[-1],940.0)
+            verify.assert_called_once_with(repository,940.0)
 
     def test_same_absolute_deadline_cannot_be_extended_by_copy(self):
         with tempfile.TemporaryDirectory() as temporary:

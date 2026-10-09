@@ -68,8 +68,11 @@ def qualification_output(receipt,qualification):
     """Match the guard's canonical argument and exact chosen cache/epoch namespace."""
     path = resident.canonical(qualification["path"])
     epoch = path.parent.name
+    if type(receipt) is dict and receipt.get("profile") == "default-archive-reserved":
+        import guard_default_archive_reserved as archive
+        archive.validate_qualification(receipt)
     resident.require(type(receipt) is dict and receipt["id"] == epoch and receipt["artifact_epoch"] == epoch
-        and receipt["profile"] == "standard" and receipt["verb"] == "build"
+        and receipt["profile"] in ("standard", "default-archive-reserved") and receipt["verb"] == "build"
         and receipt["targets"] == ["//delivery:default_instance_archive"]
         and type(receipt["exit"]) is int and receipt["exit"] == 0
         and type(receipt["workload_exit"]) is int and receipt["workload_exit"] == 0

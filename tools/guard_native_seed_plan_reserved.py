@@ -11,6 +11,8 @@ import guard_resident_observation as resident
 PROFILE = "native-seed-plan-reserved"
 MODEL_PROFILE = "native-seed-plan-reserved-models"
 PROFILES = (PROFILE, MODEL_PROFILE)
+# Kernel worker reuse only; archive admission has its own exact BUILD helper.
+WORKLOAD_PROFILES = (*PROFILES, "default-archive-reserved")
 LABEL = "//tools:native_flake_seed_plan_qualification"
 MODELS = ["test", "//tools:guard_native_seed_plan_reserved_test", "//tools:execution_guard_test",
     "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
@@ -19,6 +21,9 @@ RECOVERY_MODELS = ["test", "//clients/linux:codex_account_acquisition_test",
 QUERY_MODELS = ["test", "//tools:codex_protocol_history_query_tools_test",
     "//tools:codex_protocol_history_metadata_test", "//tools:codex_protocol_history_sdk_export_test",
     "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
+ARCHIVE_MODELS = ["test", "//tools:guard_default_archive_reserved_test",
+    "//tools:guard_resident_owned_update_test", "//tools:execution_guard_test", "//:docs_check"]
+REGISTRATION_MODELS = ["test", "//tools:codex_query_registration_test", *QUERY_MODELS[1:]]
 MEMORY, TASKS, CPU = resident.PROOF_MEMORY, resident.PROOF_TASKS, resident.PROOF_CPU_PERCENT
 RESERVE_NS = 30 * 10**9
 ENTRY = "OMUX_NATIVE_SEED_ROOT_ENTRY_NS"
@@ -31,7 +36,7 @@ def require(value):
 
 def selected(profile, arguments):
     require(profile in PROFILES and (arguments==["test",LABEL] if profile==PROFILE
-        else arguments in (MODELS,RECOVERY_MODELS,QUERY_MODELS)))
+        else arguments in (MODELS,RECOVERY_MODELS,QUERY_MODELS,ARCHIVE_MODELS,REGISTRATION_MODELS)))
     return {"PrivateNetwork": "yes"}
 
 def request(args, arguments):
@@ -235,7 +240,7 @@ class WorkloadWitness:
         self.resources,self.chain,self.directory = [],[],None
         self.pin,self.bounds = pin,None
         try:
-            require(profile in PROFILES and actual.get("ActiveState")=="active" and actual.get("RemainAfterExit")=="yes"
+            require(profile in WORKLOAD_PROFILES and actual.get("ActiveState")=="active" and actual.get("RemainAfterExit")=="yes"
                 and actual.get("MainPID")==str(original_pid)
                 and actual.get("ExecMainPID")==str(original_pid)
                 and re.fullmatch(r"[0-9a-f]{32}",actual.get("InvocationID","")))
@@ -372,7 +377,7 @@ class WorkloadWitness:
 def monitor(profile, witness, readback, deadline, on_iteration, *,
             clock=time.monotonic, pause=time.sleep):
     """No routine manager reads; one terminal read still owns the exit/result fact."""
-    require(profile in PROFILES and type(witness) is WorkloadWitness)
+    require(profile in WORKLOAD_PROFILES and type(witness) is WorkloadWitness)
     while clock()<deadline:
         on_iteration()
         if clock()>=deadline:

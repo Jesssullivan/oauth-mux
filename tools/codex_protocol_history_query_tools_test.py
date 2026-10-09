@@ -249,7 +249,10 @@ class ReservedPlanModels(unittest.TestCase):
                 "outer_work_deadline_monotonic_ns":deadline-30*10**9,
                 "private_cleanup_deadline_monotonic_ns":work+30*10**9})
         raw={"plan_result":query.inputs.encode(report),"plan_log":b"modeled bounded plan log\n",
-            "plan_xml":b'<testsuite tests="1" failures="0" errors="0" skipped="0"/>\n'}
+            "plan_xml":b'<testsuite tests="1" failures="0" errors="0" skipped="0"/>\n',
+            # The real declared query input bundle includes the entire producer
+            # role map, including obligations and any selected candidates.
+            **{"producer_"+name:fixture.raw[name] for name in query.inputs.metadata_roles(fixture.selected)}}
         pin=lambda path,data:{"path":str(path),"sha256":seed.sha(data),"bytes":len(data)}
         plan={name:pin(parent/"test-evidence"/(seed.sha(raw["plan_"+name])+".evidence"),raw["plan_"+name])
             for name in ("log","xml")}

@@ -24,6 +24,7 @@ import nix_private_store_seed as seed
 import nix_private_store_qualification as proof
 import nix_interpreter_closure as closure
 import nar_descriptor as nar
+import codex_query_registration as registration
 from verify_declared_nars import open_declared, metadata_alias_roots
 from guard_native_seed_plan_reserved import kernel_bounds
 
@@ -78,12 +79,36 @@ def selection(value):
     suffix = "/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/native_flake_seed_plan_qualification/test.outputs/native-flake-seed-plan.json"
     require(run["result"]["path"] == parent+"/output-base"+suffix)
     candidate = value["candidates"]
-    require(type(candidate) is dict and set(candidate) == {"registration", "paths"})
-    for name, leaf in (("registration", "registration"), ("paths", "store-paths")):
-        inputs.pin(candidate[name], seed.MAX_METADATA)
-        require(re.fullmatch(seed.STORE + "/" + leaf, candidate[name]["path"]) is not None)
-    require(str(Path(candidate["registration"]["path"]).parent)
-        == str(Path(candidate["paths"]["path"]).parent))
+    require(type(candidate) is dict)
+    if set(candidate)=={"registration","paths"}:
+        # Historical immutable linkFarm metadata route remains unchanged.
+        for name, leaf in (("registration", "registration"), ("paths", "store-paths")):
+            inputs.pin(candidate[name], seed.MAX_METADATA)
+            require(re.fullmatch(seed.STORE + "/" + leaf, candidate[name]["path"]) is not None)
+        require(str(Path(candidate["registration"]["path"]).parent)
+            == str(Path(candidate["paths"]["path"]).parent))
+    else:
+        require(set(candidate)=={"kind","registration","paths","report","producer"}
+            and candidate["kind"]==registration.CANDIDATE_KIND)
+        producer=candidate["producer"]
+        require(type(producer) is dict and set(producer)=={
+            "receipt","evidence","log","xml","source_commit","graph_sha256"})
+        for name in ("receipt","evidence","log","xml"):
+            inputs.pin(producer[name],registration.MAX_OUTPUT)
+        require(inputs.coordinator_leaf(producer["receipt"]["path"],"receipt.json")
+            and type(producer["source_commit"]) is str
+            and re.fullmatch(r"[a-f0-9]{40}",producer["source_commit"]) is not None
+            and type(producer["graph_sha256"]) is str and inputs.HEX.fullmatch(producer["graph_sha256"]) is not None
+            and producer["source_commit"]==run["source_commit"] and producer["graph_sha256"]==run["graph_sha256"])
+        parent=str(Path(producer["receipt"]["path"]).parent)
+        require(producer["evidence"]["path"]==parent+"/test-evidence.json")
+        for name in ("log","xml"):
+            require(re.fullmatch(re.escape(parent)+r"/test-evidence/[a-f0-9]{64}[.]evidence",
+                producer[name]["path"]) is not None)
+        output=parent+"/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_query_registration_producer/test.outputs/"
+        for name,leaf in (("registration","registration"),("paths","store-paths"),("report","query-registration.json")):
+            inputs.pin(candidate[name],registration.MAX_OUTPUT)
+            require(candidate[name]["path"]==output+leaf)
     return value
 
 
@@ -93,6 +118,10 @@ def roles(top, selected):
     result.update({"plan_" + name: top["plan"][name]
         for name in ("receipt", "evidence", "log", "xml", "result")})
     result.update({"candidate_" + name: top["candidates"][name] for name in ("registration", "paths")})
+    if top["candidates"].get("kind")==registration.CANDIDATE_KIND:
+        result["candidate_report"]=top["candidates"]["report"]
+        result.update({"candidate_"+name:top["candidates"]["producer"][name]
+            for name in ("receipt","evidence","log","xml")})
     return result
 
 
@@ -302,7 +331,9 @@ def raw_inputs(top, deadline):
     return selected, raw
 
 
-def candidate_records(top, raw):
+def candidate_records(top, raw, project=None):
+    if top["candidates"].get("kind")==registration.CANDIDATE_KIND:
+        return registration.validate_success(top["candidates"],raw,project,top["plan"])
     # This new purpose admits canonical current-flake names without changing
     # the declared runtime-seed grammar or its4096 root/reference ceiling.
     paths = raw["candidate_paths"].decode("ascii").splitlines()
@@ -317,7 +348,7 @@ def generate(raw, digest, runtime_raw, source_raw, project, wrapper, implementat
     top = selection(decode(raw, inputs.MAX_SELECTION))
     selected, metadata = raw_inputs(top, deadline)
     body = lineage(top, metadata, runtime_raw, source_raw, project, wrapper, implementations, deadline)
-    descriptor, records = choose(body, candidate_records(top, metadata))
+    descriptor, records = choose(body, candidate_records(top, metadata, project))
     objects, regular, entries, total = {}, [], 0, 0
     for root in sorted(records):
         proof.tick(deadline)
@@ -398,7 +429,7 @@ def qualify(top_raw, digest, bundle_raw, mapping_sha256, bundle_path,
         for index, name in enumerate(sorted(expected))))
     raw = read_metadata(expected)
     body = lineage(top, raw, runtime_raw, source_raw, project, wrapper, implementations, deadline)
-    descriptor, records = choose(body, candidate_records(top, raw))
+    descriptor, records = choose(body, candidate_records(top, raw, project))
     require(bundle["query_tools"] == descriptor)
     labels = set()
     for root, row in bundle["objects"].items():

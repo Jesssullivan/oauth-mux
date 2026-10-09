@@ -70,6 +70,46 @@ class ReservationModels(unittest.TestCase):
                         "--source-dirty","false",*parts,"--","test",reserved.LABEL])
             tools.assert_not_called()
 
+    def test_registration_model_cohort_is_exact_ordered_and_not_collector_authority(self):
+        expected=["test","//tools:codex_query_registration_test",
+            "//tools:codex_protocol_history_query_tools_test",
+            "//tools:codex_protocol_history_metadata_test","//tools:codex_protocol_history_sdk_export_test",
+            "//tools:native_flake_seed_plan_carrier_test","//:docs_check"]
+        self.assertEqual(reserved.REGISTRATION_MODELS,expected)
+        self.assertTrue(reserved.request(self.args(reserved.MODEL_PROFILE),expected))
+        for cohort in (reserved.MODELS,reserved.RECOVERY_MODELS,reserved.QUERY_MODELS,reserved.ARCHIVE_MODELS):
+            self.assertTrue(reserved.request(self.args(reserved.MODEL_PROFILE),list(cohort)))
+        invalid=[list(reversed(expected)),expected+["//:engine_test"],expected[:-1],
+            ["test","//tools:codex_query_registration_producer"],expected+["//tools:codex_query_registration_producer"],
+            ["run",*expected[1:]],["test",*expected[1:],expected[1]]]
+        swapped=list(expected);swapped[1],swapped[2]=swapped[2],swapped[1];invalid.append(swapped)
+        for arguments in invalid:
+            with self.assertRaises(ValueError):reserved.request(self.args(reserved.MODEL_PROFILE),arguments)
+        with self.assertRaises(ValueError):reserved.request(self.args(reserved.PROFILE),expected)
+        with patch.object(guard,"immutable",side_effect=AssertionError("unexpected tool IO")) as tools:
+            for arguments in invalid:
+                with self.assertRaises(ValueError):
+                    guard.main(["--profile",reserved.MODEL_PROFILE,"--manager","system",
+                        "--source-commit","a"*40,"--source-dirty","false","--",*arguments])
+            tools.assert_not_called()
+
+    def test_registration_model_command_keeps_reserved_clock_and_offline_caps(self):
+        with patch.object(reserved.time,"monotonic_ns",return_value=200*10**9):
+            actual=reserved.command(guard.bazel_command,"bazel",Path("/model/epoch"),
+                reserved.REGISTRATION_MODELS,reserved.MODEL_PROFILE,100*10**9,1300*10**9)
+        self.assertEqual(actual[-6:],reserved.REGISTRATION_MODELS[1:])
+        for flag in ("--repository_disable_download","--repo_contents_cache=","--lockfile_mode=error",
+                "--sandbox_default_allow_network=false","--remote_executor=","--remote_cache="):
+            self.assertIn(flag,actual)
+        self.assertFalse(any(flag.startswith("--test_env="+reserved.MODE+"=") for flag in actual))
+        self.assertEqual(reserved.properties(guard.PROPERTIES)["MemoryMax"],"4026531840")
+        self.assertEqual(reserved.properties(guard.PROPERTIES)["TasksMax"],"480")
+        self.assertEqual(reserved.properties(guard.PROPERTIES)["CPUQuotaPerSecUSec"],"1.9s")
+        with patch.object(reserved.time,"monotonic_ns",return_value=1270*10**9):
+            with self.assertRaises(ValueError):
+                reserved.command(guard.bazel_command,"bazel",Path("/model/epoch"),
+                    reserved.REGISTRATION_MODELS,reserved.MODEL_PROFILE,100*10**9,1300*10**9)
+
     def test_actual_standard_command_preserves_offline_veto_and_original_envelope(self):
         with patch.object(reserved.time,"monotonic_ns",return_value=200*10**9):
             command=reserved.command(guard.bazel_command,"/nix/store/model/bin/bazel",Path("/model/epoch"),

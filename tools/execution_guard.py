@@ -332,7 +332,7 @@ class PidsObservation:
 
 
 def workload_pids_observation(settings, profile):
-    if profile in ('yoga-install-inputs','native-seed-plan-reserved','native-seed-plan-reserved-models'):
+    if profile in ('yoga-install-inputs','native-seed-plan-reserved','native-seed-plan-reserved-models','default-archive-reserved'):
         return PidsObservation(480)
     return PidsObservation(settings.PROOF_TASKS
         if profile in ('resident-enrollment','resident-sources','codex-device-component-reserved') else 512)
@@ -878,6 +878,8 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
     component_reserved = profile == component.RESERVED_PROFILE
     install_stage = profile == 'yoga-install-inputs'
     import guard_native_seed_plan_reserved as seed_reserved
+    if profile == 'default-archive-reserved':
+        import guard_default_archive_reserved as seed_reserved
     seed_proof = profile in seed_reserved.PROFILES
     expected = (component.proof_properties(PROPERTIES,profile) if component_reserved else
         resident_dispatch.proof_properties(PROPERTIES) if resident_proof else PROPERTIES)
@@ -1236,7 +1238,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved'), default='standard')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
     parser.add_argument('--native-source-sha256')
@@ -1312,6 +1314,8 @@ def _main(argv, admission_resources):
     import guard_resident_dispatch as resident_dispatch
     resident_settings = resident_dispatch.select(args, arguments)
     import guard_native_seed_plan_reserved as seed_reserved
+    if args.profile == 'default-archive-reserved':
+        import guard_default_archive_reserved as seed_reserved
     seed_selected = seed_reserved.request(args,arguments)
     seed_reservation,seed_verified_after,seed_after = None,None,None
     resident_input = None
@@ -2633,13 +2637,17 @@ def _main(argv, admission_resources):
                 except ValueError:
                     seed_verified_after=False
                     final_status=receipt['exit']=125
-                receipt['native_seed_plan_reservation'] = {
-                    'scope':'native-seed-plan-reserved-v1','mode':'qualification' if args.profile==seed_reserved.PROFILE else 'models',
-                    'original_entry_monotonic_ns':delivery_entry_monotonic_ns,
-                    'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
-                    'verified_after_cleanup':seed_verified_after,'resident':seed_after,
-                    'seed_qualification':False,'seed_qualification_requires_matching_outer_success':True,
-                    'native_runtime_qualified':False,'complete_build_seed_qualified':False}
+                if args.profile == 'default-archive-reserved':
+                    receipt['default_archive_reservation'] = seed_reserved.projection(
+                        delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                else:
+                    receipt['native_seed_plan_reservation'] = {
+                        'scope':'native-seed-plan-reserved-v1','mode':'qualification' if args.profile==seed_reserved.PROFILE else 'models',
+                        'original_entry_monotonic_ns':delivery_entry_monotonic_ns,
+                        'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
+                        'verified_after_cleanup':seed_verified_after,'resident':seed_after,
+                        'seed_qualification':False,'seed_qualification_requires_matching_outer_success':True,
+                        'native_runtime_qualified':False,'complete_build_seed_qualified':False}
             record_resident_lifecycle(receipt,resident_input)
             if dev_stage_proof:
                 receipt['development_stage'] = {'scope':DEV_STAGE_SCOPE,'stage_child':'dev-stage-complete',
