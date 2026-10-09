@@ -406,5 +406,38 @@ class CarrierModels(unittest.TestCase):
                 self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")),[])
 
 
+class ReservedEnvelopeModels(unittest.TestCase):
+    def test_delayed_entry_keeps_private_tail_before_original_outer_reserve(self):
+        entry,deadline=100*10**9,1300*10**9
+        environment={"OMUX_NATIVE_SEED_RESERVED_PROFILE":"native-seed-plan-reserved",
+            "OMUX_NATIVE_SEED_ROOT_ENTRY_NS":str(entry),
+            "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS":str(deadline)}
+        work,record=carrier.work_envelope(1000.0,"1200",environment)
+        self.assertAlmostEqual(work,1240.0)
+        self.assertLess(work,1240.0)
+        self.assertEqual(record["original_entry_monotonic_ns"],entry)
+        self.assertEqual(record["outer_work_deadline_monotonic_ns"],1270*10**9)
+        self.assertLessEqual(record["private_cleanup_deadline_monotonic_ns"],1270*10**9)
+        self.assertLess(work,1000+min(carrier.schedule.MAX_SECONDS,1170))
+        self.assertEqual(carrier.work_envelope(1000.0,"1200",{}),
+            (float(1000+min(carrier.schedule.MAX_SECONDS,1170)),None))
+
+    def test_partial_wrong_profile_longer_clock_and_late_start_do_not_renew(self):
+        good={"OMUX_NATIVE_SEED_RESERVED_PROFILE":"native-seed-plan-reserved",
+            "OMUX_NATIVE_SEED_ROOT_ENTRY_NS":str(100*10**9),
+            "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS":str(1300*10**9)}
+        for key in good:
+            wrong=dict(good);wrong.pop(key)
+            with self.assertRaises(ValueError):carrier.work_envelope(1000.0,"1200",wrong)
+        for key,value in (("OMUX_NATIVE_SEED_RESERVED_PROFILE","standard"),
+            ("OMUX_NATIVE_SEED_RESERVED_PROFILE","native-seed-plan-reserved-models"),
+            ("OMUX_NATIVE_SEED_ROOT_ENTRY_NS",True),("OMUX_NATIVE_SEED_ROOT_ENTRY_NS","0"),
+            ("OMUX_NATIVE_SEED_ROOT_DEADLINE_NS",str(1301*10**9))):
+            with self.assertRaises(ValueError):
+                carrier.work_envelope(1000.0,"1200",{**good,key:value})
+        with self.assertRaises(ValueError):carrier.work_envelope(1240.0,"1200",good)
+        with self.assertRaises(ValueError):carrier.work_envelope(99.0,"1200",good)
+
+
 if __name__ == "__main__":
     unittest.main()

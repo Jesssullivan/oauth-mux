@@ -1121,7 +1121,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -1855,6 +1855,14 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Two closed reserved selectors reuse the standard graph; no selected native data here.
+python_test(
+    name="guard_native_seed_plan_reserved_test",
+    main="guard_native_seed_plan_reserved_test.py",
+    srcs=_NATIVE_ACQUISITION_MODEL_SOURCES,
+    target_compatible_with=["@platforms//os:linux"],
 )
 
 

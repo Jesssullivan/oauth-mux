@@ -191,6 +191,80 @@ struct CodexAcquisitionModels {
             && read(runtime->intent.value,16384)==intent
             && ::fstatat(held.value,"active.json",&pointer,AT_SYMLINK_NOFOLLOW)<0 && errno==ENOENT;
     }
+    static bool terminalIntent(const QString &root) {
+        int sequence=0;
+        const auto attempt=[&](QJsonObject s,bool retire,bool replace=false,bool expired=false) {
+            const auto parent=root+"/terminal-"+QString::number(++sequence); auto held=ensure(parent);
+            const auto profile=parent+"/native-login-"+QString(32,'a');
+            if (::mkdirat(held.value,("native-login-"+QString(32,'a')).toUtf8().constData(),0700)!=0) return false;
+            OmuxClient client(root+"/terminal-control.sock"); CodexAccountAcquisition acq(client,nullptr);
+            acq.phase_=CodexAccountAcquisition::Phase::Verifying; acq.elapsed_.start();
+            acq.profile_=profile; acq.sourceID_=QString(64,'a'); acq.jobID_="reconcile-"+acq.sourceID_;
+            acq.jobGeneration_=9; acq.connectRevision_=12; acq.enrollmentRevision_=27;
+            acq.connectID_=QString(64,'d'); acq.enrollmentID_=QString(64,'e');
+            auto runtime=std::make_shared<CodexAcquisitionRuntime>();
+            runtime->componentSha=QString(64,'f'); runtime->sourceParentPath=parent;
+            runtime->sourceParent=FD(::dup(held.value)); runtime->profile=directory(profile); runtime->profilePath=profile;
+            acq.runtime_=runtime; if (!runtime->takeSourceLease()) return false;
+            acq.checkpoint("identity-verification-admitted");
+            const auto raw=read(runtime->intent.value,16384);
+            const auto original=s;
+            if (expired) acq.elapsed_.invalidate();
+            if (replace) {
+                if (::renameat(runtime->enrollment.value,"input.json",runtime->enrollment.value,"saved.json")!=0) return false;
+                FD replacement(::openat(runtime->enrollment.value,"input.json",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600));
+                if (replacement.value<0 || ::write(replacement.value,raw.constData(),size_t(raw.size()))!=raw.size()) return false;
+            }
+            acq.observe(s);
+            struct stat pointer{}; const auto result=::fstatat(held.value,"active.json",&pointer,AT_SYMLINK_NOFOLLOW);
+            if ((retire ? result>=0 || errno!=ENOENT : result!=0)
+                || read(runtime->intent.value,16384)!=raw || s!=original
+                || acq.native_.state()!=QProcess::NotRunning || client.hasUncertainOperations()) return false;
+            if (!retire) return true;
+            if (acq.busy()) return false;
+            // Explicit next workflow sees no pointer; old journal IDs survive.
+            runtime->sourceLease=FD();
+            CodexAccountAcquisition next(client,nullptr); next.elapsed_.start();
+            next.phase_=CodexAccountAcquisition::Phase::Preparing;
+            auto selected=std::make_shared<CodexAcquisitionRuntime>();
+            selected->sourceParentPath=parent; selected->sourceParent=directory(parent); next.runtime_=selected;
+            if (!selected->takeSourceLease() || next.recoverIntent()) return false;
+            next.connectSource();
+            return next.connectID_!=acq.connectID_ && next.enrollmentID_!=acq.enrollmentID_
+                && next.connectID_!=next.enrollmentID_ && read(runtime->intent.value,16384)==raw
+                && !client.hasUncertainOperations();
+        };
+        auto failed=snapshot(); failed["revision"]=28; failed["captured_at"]=100;
+        auto jobs=failed.value("jobs").toArray(); auto job=jobs[0].toObject();
+        job["account_id"]=""; job["status"]="failed"; jobs[0]=job; failed["jobs"]=jobs;
+        if (!attempt(failed,true)) return false;
+        for (const auto *outcome:{"pending","running","completed","failed"}) {
+            auto newer=failed; auto rows=newer.value("jobs").toArray(); auto row=rows[0].toObject();
+            row["operation_generation"]=10; row["status"]=outcome; rows[0]=row; newer["jobs"]=rows;
+            if (!attempt(newer,true)) return false;
+        }
+        for (const auto &generation:{QJsonValue(),QJsonValue(true),QJsonValue(0),QJsonValue(8)}) {
+            auto invalid=failed; auto rows=invalid.value("jobs").toArray(); auto row=rows[0].toObject();
+            row["operation_generation"]=generation; rows[0]=row; invalid["jobs"]=rows;
+            if (!attempt(invalid,false)) return false;
+        }
+        for (const auto *outcome:{"pending","running","unknown"}) {
+            auto unresolved=failed; auto rows=unresolved.value("jobs").toArray(); auto row=rows[0].toObject();
+            row["status"]=outcome; rows[0]=row; unresolved["jobs"]=rows;
+            if (!attempt(unresolved,false)) return false;
+        }
+        auto invalid=failed; invalid["jobs"]=QJsonArray{}; if (!attempt(invalid,false)) return false;
+        invalid=failed; auto duplicate=invalid.value("jobs").toArray(); duplicate.append(duplicate[0]);
+        invalid["jobs"]=duplicate; if (!attempt(invalid,false)) return false;
+        invalid=failed; invalid["custody_available"]=false; if (!attempt(invalid,false)) return false;
+        invalid=failed; invalid["revision"]=26; if (!attempt(invalid,false)) return false;
+        invalid=failed; invalid["revision"]=true; if (!attempt(invalid,false)) return false;
+        invalid=failed; auto wrong=job; wrong["kind"]="repair"; invalid["jobs"]=QJsonArray{wrong};
+        if (!attempt(invalid,false)) return false;
+        invalid=failed; auto sources=invalid.value("sources").toArray(); auto source=sources[0].toObject();
+        source["provider"]="github"; sources[0]=source; invalid["sources"]=sources;
+        return attempt(invalid,false) && attempt(failed,false,true) && attempt(failed,false,false,true);
+    }
     static bool component(const QString &root) {
         const auto data=root+"/data", state=root+"/state", parent=data+"/omux-acquisition/codex",
             record=state+"/omux-acquisition/codex", leaf=parent+"/"+backendPin;
@@ -429,5 +503,6 @@ int main(int argc,char **argv) {
     if (!CodexAcquisitionModels::recoveredConnection(root.path())) return 9;
     if (!CodexAcquisitionModels::freshIntent(root.path())) return 10;
     if (!CodexAcquisitionModels::workflowLease(root.path())) return 11;
+    if (!CodexAcquisitionModels::terminalIntent(root.path())) return 12;
     return 0;
 }

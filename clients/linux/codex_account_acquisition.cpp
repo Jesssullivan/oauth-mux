@@ -1040,6 +1040,12 @@ bool CodexAccountAcquisition::recoverIntent() {
 void CodexAccountAcquisition::clearIntent() {
     if (!runtime_ || runtime_->active.value<0) return;
     runtime_->recheckSourceLease();
+    recheckDirectory(profile_,runtime_->profile.value);
+    recheckDirectory(profile_+"/enrollment-inputs",runtime_->enrollment.value);
+    entries(runtime_->enrollment.value,{"input.json"});
+    FD intent(::openat(runtime_->enrollment.value,"input.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
+    require(intent.value>=0 && same(metadata(intent.value),runtime_->intentIdentity)
+        && same(metadata(runtime_->intent.value),runtime_->intentIdentity));
     FD named(::openat(runtime_->sourceParent.value,"active.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
     require(named.value>=0 && same(metadata(named.value),runtime_->activeIdentity)
         && same(metadata(runtime_->active.value),runtime_->activeIdentity));
@@ -1153,11 +1159,44 @@ void CodexAccountAcquisition::observe(const QJsonObject &s) {
         return;
     }
     if (phase_ != Phase::Verifying) return;
+    // Retire this UI observation only. Invalid/lower generations prove nothing;
+    // a greater latest-row generation independently proves supersession.
+    qint64 revision, captured, current;
+    QJsonObject latest;
+    int matches=0, origins=0;
+    bool observed=within() && integer(s.value("revision"),&revision) && revision>=enrollmentRevision_
+        && enrollmentRevision_>=0 && integer(s.value("captured_at"),&captured) && captured>=0
+        && handle(sourceID_) && jobID_=="reconcile-"+sourceID_ && jobGeneration_>0
+        && s.value("jobs").isArray() && s.value("sources").isArray();
+    for (const auto &v:s.value("sources").toArray()) {
+        if (!v.isObject()) { observed=false; continue; }
+        const auto source=v.toObject();
+        if (source.value("id")==sourceID_) {
+            ++origins;
+            if (source.value("kind")!="native_store" || source.value("provider")!="codex") observed=false;
+        }
+    }
+    for (const auto &v:s.value("jobs").toArray()) {
+        if (!v.isObject()) { observed=false; continue; }
+        if (v.toObject().value("id")==jobID_) { latest=v.toObject(); ++matches; }
+    }
+    const auto outcome=latest.value("status").toString();
+    observed=observed && origins==1 && matches==1
+        && keys(latest,{"id","kind","account_id","status","operation_generation"})
+        && latest.value("kind")=="enrollment" && latest.value("account_id").isString()
+        && (latest.value("account_id").toString().isEmpty() || handle(latest.value("account_id").toString()))
+        && (outcome=="pending" || outcome=="running" || outcome=="completed" || outcome=="failed")
+        && integer(latest.value("operation_generation"),&current) && current>0;
+    if (observed && ((current==jobGeneration_ && outcome=="failed") || current>jobGeneration_)) {
+        if (onSourceConnected) onSourceConnected(sourceID_);
+        finish("The original enrollment failed or was superseded. Its source and private native profile are retained. New sign-in is available; no mutation was replayed.",false);
+        return;
+    }
     for (const auto &v : s.value("jobs").toArray()) {
         const auto j = v.toObject(); qint64 generation;
         if (j.value("id") == jobID_ && (!integer(j.value("operation_generation"),&generation)
             || generation != jobGeneration_ || j.value("status") == "failed")) {
-            finish("Identity verification failed or was superseded. The source is retained; no usable grant is claimed."); return;
+            finish("The original enrollment outcome or generation cannot be confirmed as usable. The private intent and source are retained; no mutation was replayed."); return;
         }
     }
     if (usableEnrollment(s,sourceID_,jobID_,jobGeneration_,QDateTime::currentSecsSinceEpoch()))

@@ -5,6 +5,7 @@ The matching successful outer execution receipt is a separate required join.
 """
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -121,6 +122,31 @@ def qualify(selected_raw, selection_sha256, bundle_raw, mapping_sha256, bundle_p
     return result
 
 
+def work_envelope(entry, timeout, environment):
+    """Old TEST clock stays unchanged; only the fixed reserved route clamps it."""
+    inputs.require(re.fullmatch(r"[0-9]{1,5}",timeout) and int(timeout)>proof.CLEANUP_SECONDS)
+    deadline = float(entry+min(schedule.MAX_SECONDS,int(timeout)-proof.CLEANUP_SECONDS))
+    names = ("OMUX_NATIVE_SEED_RESERVED_PROFILE","OMUX_NATIVE_SEED_ROOT_ENTRY_NS",
+        "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS")
+    values = tuple(environment.get(name) for name in names)
+    if all(value is None for value in values):
+        return deadline,None
+    inputs.require(all(type(value) is str for value in values)
+        and values[0]=="native-seed-plan-reserved"
+        and all(re.fullmatch(r"[1-9][0-9]{0,19}",value) for value in values[1:]))
+    original_entry,original_deadline = map(int,values[1:])
+    now = int(entry*10**9)
+    inputs.require(original_deadline-original_entry==1200*10**9
+        and original_entry<=now<original_deadline-60*10**9)
+    # restore_plan's existing finally has a30s private cleanup tail. Keep that
+    # tail before the guardian's separate final30s, without renewing either.
+    deadline = min(deadline,math.nextafter((original_deadline-60*10**9)/10**9,-math.inf))
+    return deadline,{"profile":values[0],"original_entry_monotonic_ns":original_entry,
+        "original_deadline_monotonic_ns":original_deadline,
+        "outer_work_deadline_monotonic_ns":original_deadline-30*10**9,
+        "private_cleanup_deadline_monotonic_ns":int(deadline*10**9)+30*10**9}
+
+
 def main():
     entry = float(time.monotonic())
     os.umask(0o077)
@@ -134,8 +160,7 @@ def main():
     inputs.require(any(re.fullmatch(re.escape(root)+"/"+inputs.UUID, marker)
         for root in inputs.COORDINATORS))
     timeout = os.environ.get("TEST_TIMEOUT", "")
-    inputs.require(re.fullmatch(r"[0-9]{1,5}", timeout) and int(timeout) > proof.CLEANUP_SECONDS)
-    deadline = float(entry+min(schedule.MAX_SECONDS, int(timeout)-proof.CLEANUP_SECONDS))
+    deadline,reservation = work_envelope(entry,timeout,os.environ)
     with open("/proc/self/status", encoding="ascii") as stream:
         platform = proof.platform(stream.read(65537), os.getuid())
     files = {"selection": (args.selection, inputs.MAX_SELECTION),
@@ -161,6 +186,8 @@ def main():
     result.update(platform=platform, guard_epoch=Path(marker).name,
         original_entry_monotonic_ns=int(entry*10**9), original_work_deadline_monotonic_ns=int(deadline*10**9),
         declared_files_rechecked=True, producer_implementation_rechecked=True)
+    if reservation is not None:
+        result["reserved_execution_envelope"] = reservation
     output = Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"])/"native-flake-seed-plan.json"
     raw = inputs.encode(result)
     inputs.require(len(raw) <= proof.MAX_OUTPUT)
