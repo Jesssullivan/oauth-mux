@@ -12,6 +12,8 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         "codex_native_acquisition_peer_test.py",
         "codex_native_acquisition_process.py", "codex_native_acquisition_process_test.py",
         "nar_descriptor.py",
+        "codex_native_acquisition_bridge_material.py", "nix_interpreter_closure.py",
+        "//delivery:portable.py",
     ]).to_list()
     data = depset(parent_data + sdk_data + [
         "//integrations/codex-upstream:native_source_context_patch",
@@ -62,9 +64,31 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
                     "codex_native_acquisition_runtime_qualification_test",
                     "codex_native_acquisition_runtime_qualification_producer"):
             target_data = target_data + ["//:native_peer_runtime_bridge.so"]
+        if name == "codex_native_acquisition_runtime_qualification_producer":
+            target_data = target_data + ["//integrations/codex-upstream:native_acquisition_runtime_configuration"]
         python_test(name = name, main = main, srcs = depset(sources + [main]).to_list(),
             data = target_data,
             timeout = "long", tags = ["manual", "no-remote", "no-cache"])
     python_test(name = "guard_native_acquisition_inputs_reserved_test",
         main = "guard_native_acquisition_inputs_reserved_test.py",
         srcs = depset(guard_sources + ["guard_native_acquisition_inputs_reserved.py"]).to_list())
+    python_test(name = "codex_native_acquisition_bridge_material_test",
+        main = "codex_native_acquisition_bridge_material_test.py",
+        srcs = depset(sources + guard_sources).to_list(),
+        tags = ["manual", "no-remote", "no-cache"])
+    python_test(name = "codex_native_acquisition_bridge_material_producer",
+        main = "codex_native_acquisition_bridge_material.py",
+        srcs = depset(sources + guard_sources).to_list(),
+        data = ["//:native_peer_runtime_bridge.so", "//:src/platform/native_peer_runtime_bridge.c",
+            "//:src/platform/native_peer.c", "//:src/platform/native_peer.h",
+            "@omux_nix//:all_tools", "@omux_nix//:native.json", "@omux_nix//:store-paths",
+            "@omux_nix//:registration", "@omux_nix//:file-inventory.json"],
+        args = ["--bridge", "$(location //:native_peer_runtime_bridge.so)",
+            "--native", "$(location @omux_nix//:native.json)",
+            "--paths", "$(location @omux_nix//:store-paths)",
+            "--registration", "$(location @omux_nix//:registration)",
+            "--inventory", "$(location @omux_nix//:file-inventory.json)",
+            "--source", "$(location //:src/platform/native_peer_runtime_bridge.c)",
+            "--source", "$(location //:src/platform/native_peer.c)",
+            "--source", "$(location //:src/platform/native_peer.h)"],
+        timeout = "long", tags = ["manual", "no-remote", "no-cache"])

@@ -11,7 +11,13 @@ QUERY = "native-acquisition-query-reserved"
 COMPILE = "native-acquisition-compilation-reserved"
 RUNTIME = "native-acquisition-runtime-qualification-reserved"
 PACKAGE = "native-acquisition-package-reserved"
+BRIDGE = "native-acquisition-bridge-material-reserved"
+BRIDGE_MODELS = "native-acquisition-bridge-models-reserved"
 COHORTS = {
+    BRIDGE: ("//tools:codex_native_acquisition_bridge_material_producer",),
+    BRIDGE_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
+        "//tools:codex_native_acquisition_bridge_material_test",
+        "//tools:codex_native_acquisition_runtime_qualification_test", "//:docs_check"),
     MODEL: ("//tools:guard_native_acquisition_inputs_reserved_test",
             "//tools:codex_native_acquisition_metadata_sdk_test",
             "//tools:codex_native_acquisition_compilation_test",
@@ -80,6 +86,18 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
         result[index:index] = ["--test_env=OMUX_NATIVE_PACKAGE_MODE=" + PACKAGE,
             "--test_env=OMUX_NATIVE_PACKAGE_ENTRY_NS=" + str(entry),
             "--test_env=OMUX_NATIVE_PACKAGE_DEADLINE_NS=" + str(deadline)]
+    if profile == RUNTIME:
+        result[index:index] = ["--test_env=OMUX_NATIVE_RUNTIME_MODE=" + RUNTIME,
+            "--test_env=OMUX_NATIVE_RUNTIME_ENTRY_NS=" + str(entry),
+            "--test_env=OMUX_NATIVE_RUNTIME_DEADLINE_NS=" + str(deadline)]
+    if profile == BRIDGE:
+        from execution_guard import graph_digest
+        from pathlib import Path
+        result[index:index] = ["--test_env=OMUX_NATIVE_BRIDGE_MODE=" + BRIDGE,
+            "--test_env=OMUX_NATIVE_BRIDGE_ENTRY_NS=" + str(entry),
+            "--test_env=OMUX_NATIVE_BRIDGE_DEADLINE_NS=" + str(deadline),
+            "--test_env=OMUX_NATIVE_BRIDGE_SOURCE_COMMIT=" + kwargs["source_commit"],
+            "--test_env=OMUX_NATIVE_BRIDGE_GRAPH_SHA256=" + graph_digest(Path.cwd())[0]]
     return result
 
 

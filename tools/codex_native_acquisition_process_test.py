@@ -175,5 +175,109 @@ class ProcessTests(unittest.TestCase):
         self.assertIs(caught.exception,primary);self.assertIs(child.cleanup_failure,cleanup)
         self.assertIn('native-runtime-owned-child-cleanup-incomplete',primary.__notes__)
         self.assertFalse(child.go_attempted);self.assertEqual(child.pidfd,fd)
+        if child.stdin is not None:self.addCleanup(os.close,child.stdin)
+    def test_private_broker_config_and_codex_home_are_actual_child_inputs(self):
+        image=self.registered();child=process.OwnedChild(image);self.addCleanup(child.close)
+        root=self.root/'private'
+        def observe(image_fd,argv,environment):
+            correct=environment['CODEX_HOME']==environment['HOME']==str(root/'home')
+            correct=correct and set(environment)=={'HOME','CODEX_HOME','XDG_RUNTIME_DIR',
+                'XDG_CACHE_HOME','XDG_CONFIG_HOME','XDG_STATE_HOME'}
+            os._exit(7 if correct else 8)
+        with patch.object(os,'execve',side_effect=observe):child.launch(('codex','app-server'),root)
+        raw=(root/'home/config.toml').read_text()
+        self.assertEqual(raw,'[omux_broker]\nbroker_socket = '+process.json.dumps(str(root/'runtime/adapter.sock'))+
+            '\ncapability_path = '+process.json.dumps(str(root/'runtime/codex.capability'))+'\n')
+        self.assertEqual((root/'home/config.toml').stat().st_mode&0o777,0o600)
+        s=root.lstat();self.assertEqual(child.private_identity,(s.st_dev,s.st_ino,s.st_uid,s.st_mode))
+        self.assertTrue(select.select([child.pidfd],[],[],2)[0]);self.assertEqual(child.reap(),7)
+        child.close();self.assertIsNone(child.stdin)
+    def test_owned_stdio_keeps_stdin_and_suppresses_child_output(self):
+        image=self.registered();child=process.OwnedChild(image);self.addCleanup(child.close)
+        def observe(*args):
+            import stat
+            valid=stat.S_ISFIFO(os.fstat(0).st_mode)
+            dev=os.stat('/dev/null').st_rdev
+            valid=valid and os.fstat(1).st_rdev==dev and os.fstat(2).st_rdev==dev
+            valid=valid and os.read(0,1)==b'G'
+            os.write(1,b'synthetic-suppressed');os.write(2,b'synthetic-suppressed')
+            os._exit(7 if valid else 8)
+        with patch.object(os,'execve',side_effect=observe):child.launch(('codex','app-server'),self.root/'private')
+        self.assertIsNotNone(child.stdin);os.write(child.stdin,b'G')
+        self.assertTrue(select.select([child.pidfd],[],[],2)[0]);self.assertEqual(child.reap(),7)
+        child.close();self.assertIsNone(child.stdin)
+    def test_stdio_pipe_setup_failure_closes_owned_parent_descriptors(self):
+        child=process.OwnedChild(self.registered())
+        original=os.pipe2;calls=[];fds=[]
+        def fail_second(flags):
+            calls.append(1)
+            if len(calls)==2:raise OSError('fixture pipe creation failed')
+            result=original(flags);fds.extend(result);return result
+        with patch.object(os,'pipe2',side_effect=fail_second):
+            with self.assertRaises(OSError):child.launch(('codex','app-server'),self.root/'private')
+        self.assertIsNone(child.pid);self.assertIsNone(child.stdin)
+        for fd in fds:
+            with self.assertRaises(OSError):os.fstat(fd)
+    def test_inside_exchange_identity_fence_does_not_replace_full_material_check(self):
+        image=self.registered();calls=[];image.revalidate=lambda:calls.append('full')
+        image.check_identity();self.assertEqual(calls,[])
+        image.check();self.assertEqual(calls,['full'])
+        child=process.OwnedChild(image);child.pid=123;child.pidfd=99;child.start=5
+        class Peer:
+            def fence_child(self,fd):calls.append(('original',fd))
+        with patch.object(process.select,'select',return_value=([],[],[])),\
+             patch.object(process,'process_start',return_value=5):child.fence(Peer())
+        self.assertEqual(calls,['full',('original',99)])
+    def test_lightweight_capture_closes_peer_on_original_child_refusal(self):
+        import codex_native_acquisition_peer as native
+        child=process.OwnedChild(self.registered());closed=[]
+        class Peer:
+            def close(self):closed.append(1)
+        with patch.object(native,'Peer',return_value=Peer()),\
+             patch.object(child,'fence',side_effect=ValueError('original-child-refused')):
+            with self.assertRaises(ValueError):child.capture_peer(object(),object())
+        self.assertEqual(closed,[1])
+    def test_original_work_expiry_keeps_only_exact_cleanup_reserve(self):
+        image=self.registered();child=process.OwnedChild(image,cleanup_deadline=self.deadline+30)
+        original=os.open('/dev/null',os.O_RDONLY|os.O_CLOEXEC)
+        child.pid=123;child.pidfd=original;child.go_attempted=True;child.go_released=True
+        self.addCleanup(lambda:os.close(child.pidfd) if child.pidfd is not None else None)
+        timeouts=[]
+        def ready(read,write,error,timeout):
+            timeouts.append(timeout)
+            return ([],[],[]) if len(timeouts)==1 else ([original],[],[])
+        with patch.object(process.time,'monotonic',return_value=self.deadline+1):
+            with self.assertRaises(ValueError):image.check_identity()
+            with patch.object(process.select,'select',side_effect=ready),\
+                 patch.object(process.signal,'pidfd_send_signal') as send,\
+                 patch.object(os,'waitpid',return_value=(123,0)):
+                child.close();send.assert_called_once_with(original,signal.SIGKILL,None,0)
+        self.assertEqual(timeouts,[0,29]);self.assertTrue(child.reaped)
+        self.assertEqual(image.deadline,self.deadline);self.assertEqual(child.cleanup_deadline,self.deadline+30)
+        with self.assertRaises(AttributeError):child.cleanup_deadline=self.deadline+60
+    def test_wrong_cleanup_pair_refuses_without_process_or_new_clock(self):
+        image=self.registered()
+        with patch.object(os,'fork',side_effect=AssertionError('no process')):
+            for value in (self.deadline,self.deadline+29,self.deadline+31,'future',float('inf'),float('nan')):
+                with self.subTest(value=value):
+                    with self.assertRaises(ValueError):process.OwnedChild(image,cleanup_deadline=value)
+        self.assertEqual(process.OwnedChild(image).cleanup_deadline,self.deadline)
+    def test_reaped_pidfd_close_error_still_attempts_stdin_without_retry(self):
+        child=self.fake_admitted();pidfd=child.pidfd
+        read,child.stdin=os.pipe2(os.O_CLOEXEC);stdin=child.stdin
+        self.addCleanup(os.close,read)
+        child.reaped=True;child.status=7
+        original=os.close;calls=[];failure=OSError('fixture close reported failure after release')
+        def close(fd):
+            calls.append(fd);original(fd)
+            if fd==pidfd:raise failure
+        with patch.object(os,'close',side_effect=close):
+            with self.assertRaises(OSError) as caught:child.close()
+            self.assertIs(caught.exception,failure)
+            with self.assertRaises(OSError):child.close()
+        self.assertEqual(calls,[pidfd,stdin]);self.assertTrue(child.reaped);self.assertEqual(child.status,7)
+        self.assertIsNone(child.pidfd);self.assertIsNone(child.stdin)
+        self.assertIs(child.cleanup_failure,failure)
+        with self.assertRaises(OSError):os.fstat(stdin)
 
 if __name__=='__main__':unittest.main()

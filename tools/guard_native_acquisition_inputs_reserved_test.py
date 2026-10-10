@@ -9,13 +9,61 @@ import guard_native_acquisition_inputs_reserved as source
 
 
 class AdmissionModels(unittest.TestCase):
+    def test_bridge_has_exact_producer_and_shared_closure_model_vectors(self):
+        self.assertEqual(source.COHORTS[source.BRIDGE],('//tools:codex_native_acquisition_bridge_material_producer',))
+        self.assertEqual(source.COHORTS[source.BRIDGE_MODELS],(
+            '//tools:guard_native_acquisition_inputs_reserved_test',
+            '//tools:codex_native_acquisition_bridge_material_test',
+            '//tools:codex_native_acquisition_runtime_qualification_test','//:docs_check'))
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9), \
+                patch.object(guard,'graph_digest',return_value=('b'*64,{})) as graph:
+            result=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),
+                ['test',*source.COHORTS[source.BRIDGE]],source.BRIDGE,100*10**9,1300*10**9,
+                source_commit='a'*40,source_dirty='false')
+            values=[part for part in result if part.startswith('--test_env=OMUX_NATIVE_BRIDGE_')]
+            self.assertEqual(values,['--test_env=OMUX_NATIVE_BRIDGE_MODE='+source.BRIDGE,
+                '--test_env=OMUX_NATIVE_BRIDGE_ENTRY_NS='+str(100*10**9),
+                '--test_env=OMUX_NATIVE_BRIDGE_DEADLINE_NS='+str(1300*10**9),
+                '--test_env=OMUX_NATIVE_BRIDGE_SOURCE_COMMIT='+'a'*40,
+                '--test_env=OMUX_NATIVE_BRIDGE_GRAPH_SHA256='+'b'*64])
+            graph.assert_called_once()
+        with patch.object(guard,'graph_digest',side_effect=AssertionError('no unadmitted source read')) as graph:
+            with self.assertRaises(ValueError):
+                source.command(Mock(),'bazel',Path('/model/epoch'),['test',*source.COHORTS[source.BRIDGE],'//:docs_check'],
+                    source.BRIDGE,100*10**9,1300*10**9,source_commit='a'*40)
+            graph.assert_not_called()
+
+    def test_runtime_transports_only_the_original_admitted_clock(self):
+        entry=100*10**9;deadline=1300*10**9
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9), patch.object(guard,'graph_digest',return_value=('b'*64,{})):
+            for profile,targets in source.COHORTS.items():
+                command=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),
+                    ['test',*targets],profile,entry,deadline,source_commit='a'*40,source_dirty='false')
+                values=[v for v in command if v.startswith('--test_env=OMUX_NATIVE_RUNTIME_')]
+                self.assertEqual(values,(['--test_env=OMUX_NATIVE_RUNTIME_MODE='+source.RUNTIME,
+                    '--test_env=OMUX_NATIVE_RUNTIME_ENTRY_NS='+str(entry),
+                    '--test_env=OMUX_NATIVE_RUNTIME_DEADLINE_NS='+str(deadline)]
+                    if profile==source.RUNTIME else []))
+            builder=Mock()
+            for end,args in ((deadline+1,['test',*source.COHORTS[source.RUNTIME]]),
+                    (deadline,['run',*source.COHORTS[source.RUNTIME]]),
+                    (deadline,['test',*source.COHORTS[source.RUNTIME],'--test_env=OMUX_NATIVE_RUNTIME_ENTRY_NS=0'])):
+                with self.assertRaises(ValueError):
+                    source.command(builder,'bazel',Path('/model/epoch'),args,source.RUNTIME,entry,end)
+            builder.assert_not_called()
+        with patch.object(kernel.time,'monotonic_ns',return_value=1270*10**9):
+            with self.assertRaises(ValueError):
+                source.command(builder,'bazel',Path('/model/epoch'),['test',*source.COHORTS[source.RUNTIME]],
+                    source.RUNTIME,entry,deadline)
+        builder.assert_not_called()
+
     def test_package_transports_original_clock_only_after_exact_admission(self):
         entry=100*10**9;deadline=1300*10**9
-        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9):
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9), patch.object(guard,'graph_digest',return_value=('b'*64,{})):
             for profile,targets in source.COHORTS.items():
                 arguments=['test',*targets]
                 command=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),arguments,
-                    profile,entry,deadline)
+                    profile,entry,deadline,source_commit='a'*40,source_dirty='false')
                 clock_flags=[part for part in command if part.startswith('--test_env=OMUX_NATIVE_PACKAGE_')]
                 self.assertEqual(clock_flags,([
                     '--test_env=OMUX_NATIVE_PACKAGE_MODE='+source.PACKAGE,
@@ -65,9 +113,9 @@ class AdmissionModels(unittest.TestCase):
     def test_real_guard_command_fresh_offline_and_original_cutoff(self):
         for profile,targets in source.COHORTS.items():
             arguments=["test",*targets]
-            with patch.object(kernel.time,"monotonic_ns",return_value=200*10**9):
+            with patch.object(kernel.time,"monotonic_ns",return_value=200*10**9), patch.object(guard,"graph_digest",return_value=("b"*64,{})):
                 command=source.command(guard.bazel_command,"bazel",Path("/model/epoch"),arguments,
-                    profile,100*10**9,1300*10**9)
+                    profile,100*10**9,1300*10**9,source_commit='a'*40,source_dirty='false')
             self.assertEqual(command[-len(targets):],list(targets))
             for flag in ("--repository_disable_download","--repo_contents_cache=","--lockfile_mode=error",
                 "--sandbox_default_allow_network=false","--remote_executor=","--remote_cache=",
@@ -76,7 +124,7 @@ class AdmissionModels(unittest.TestCase):
             builder=Mock()
             with patch.object(kernel.time,"monotonic_ns",return_value=1270*10**9):
                 with self.assertRaises(ValueError):
-                    source.command(builder,"bazel",Path("/model/epoch"),arguments,profile,100*10**9,1300*10**9)
+                    source.command(builder,"bazel",Path("/model/epoch"),arguments,profile,100*10**9,1300*10**9,source_commit='a'*40,source_dirty='false')
                 self.assertEqual(source.remaining(100*10**9,1300*10**9,cleanup=True),30)
             builder.assert_not_called()
             with patch.object(kernel.time,"monotonic_ns",return_value=1300*10**9):

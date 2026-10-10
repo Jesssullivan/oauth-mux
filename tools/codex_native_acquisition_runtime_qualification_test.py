@@ -101,4 +101,177 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(all(receipt[name] is False for name in runtime.FALSE_FLAGS))
         with self.assertRaises(ValueError):runtime.unavailable_receipt({**inputs,'runtime_qualified':True})
 
+
+class MainCallerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.deadline=time.monotonic()+10.0
+
+    def test_unconfigured_selection_refuses_before_any_selected_role_io(self):
+        raw=b'{"schema_version":1,"kind":"omux-native-acquisition-runtime-inputs-v1","status":"unconfigured","selection":null}'
+        with patch.object(runtime,'qualify_runtime',side_effect=AssertionError('no runtime IO')):
+            with self.assertRaises(ValueError):runtime.runtime_selection(raw)
+        for value in (raw.replace(b'null',b'{}'),raw.replace(b'"unconfigured"',b'"selected"')):
+            with self.assertRaises(ValueError):runtime.runtime_selection(value)
+
+    def test_original_runtime_clock_requires_exact_guard_mode_and_pair(self):
+        now=time.monotonic_ns();entry=now-1_000_000
+        env={'OMUX_NATIVE_RUNTIME_MODE':runtime.PROFILE,'OMUX_NATIVE_RUNTIME_ENTRY_NS':str(entry),
+            'OMUX_NATIVE_RUNTIME_DEADLINE_NS':str(entry+1200*10**9)}
+        self.assertEqual(runtime.runtime_deadline(env),(entry+1170*10**9)/10**9)
+        for change in ({'OMUX_NATIVE_RUNTIME_MODE':'standard'},
+            {'OMUX_NATIVE_RUNTIME_DEADLINE_NS':str(entry+1201*10**9)},
+            {'OMUX_NATIVE_RUNTIME_ENTRY_NS':'01'}):
+            with self.assertRaises(ValueError):runtime.runtime_deadline({**env,**change})
+        with self.assertRaises(ValueError):runtime.runtime_deadline({})
+
+    def test_main_missing_clock_refuses_before_declaration_and_launch(self):
+        with patch.object(runtime.sys,'argv',['producer']),patch.dict(runtime.os.environ,{},clear=True),\
+                patch.object(runtime,'qualify_runtime',side_effect=AssertionError('no native IO')):
+            with self.assertRaises(ValueError):runtime.main()
+
+    def test_metadata_duplicate_wrong_id_error_and_extra_payload_refuse(self):
+        self.assertEqual(runtime.metadata_reply(b'{"jsonrpc":"2.0","id":"owner/source/context","result":{}}',
+            'owner/source/context'),{})
+        for raw in (b'{"jsonrpc":"2.0","id":"x","id":"owner/source/context","result":{}}',
+            b'{"jsonrpc":"2.0","id":"x","result":{}}',
+            b'{"jsonrpc":"2.0","id":"owner/source/context","error":{}}',
+            b'{"jsonrpc":"2.0","id":"owner/source/context","result":{},"payload":"unexpected"}'):
+            with self.assertRaises(ValueError):runtime.metadata_reply(raw,'owner/source/context')
+
+    def test_real_private_fixture_cleanup_and_replaced_root_refusal(self):
+        root=self.root/'owned';root.mkdir(mode=0o700);(root/'home').mkdir(mode=0o700)
+        (root/'home/auth.json').write_bytes(b'synthetic-fixture')
+        info=root.lstat();witness=(info.st_dev,info.st_ino,info.st_uid,info.st_mode)
+        runtime.cleanup_fixture(root,witness,self.deadline);self.assertFalse(root.exists())
+        root.mkdir(mode=0o700);info=root.lstat();witness=(info.st_dev,info.st_ino,info.st_uid,info.st_mode)
+        root.rename(self.root/'old');root.mkdir(mode=0o700);(root/'foreign').write_bytes(b'preserve')
+        with self.assertRaises(ValueError):runtime.cleanup_fixture(root,witness,self.deadline)
+        self.assertEqual((root/'foreign').read_bytes(),b'preserve')
+
+    def test_fixture_symlink_never_reads_or_removes_foreign_target(self):
+        root=self.root/'owned';root.mkdir(mode=0o700);foreign=self.root/'foreign';foreign.write_bytes(b'preserve')
+        (root/'link').symlink_to(foreign)
+        info=root.lstat();witness=(info.st_dev,info.st_ino,info.st_uid,info.st_mode)
+        with self.assertRaises(ValueError):runtime.cleanup_fixture(root,witness,self.deadline)
+        self.assertEqual(foreign.read_bytes(),b'preserve');self.assertTrue((root/'link').is_symlink())
+
+    def test_expired_cleanup_retains_owned_fixture_and_no_positive_receipt(self):
+        root=self.root/'owned';root.mkdir(mode=0o700)
+        info=root.lstat();witness=(info.st_dev,info.st_ino,info.st_uid,info.st_mode)
+        with self.assertRaises(ValueError):runtime.cleanup_fixture(root,witness,time.monotonic()-1.0)
+        self.assertTrue(root.is_dir())
+
+
+    def test_authenticated_fresh_context_drives_request_not_initial_hint(self):
+        hint={'ownerId':'a'*64,'processNonce':'b'*64,'endpointGeneration':'1','contextId':'c'*64}
+        owner={name:hint[name] for name in ('ownerId','processNonce','endpointGeneration')}
+        context={'protocolVersion':2,**owner,'status':'available','sourceContextId':'d'*64,
+            'sourceContextGeneration':'2','storePresent':True,'credentialAcquisitionAuthorized':False}
+        capability={'protocolVersion':2,**owner,'nativeVersion':'fixture-only','capabilities':
+            {'protocol_version':1,**{name:True for name in ('late_thread_binding','per_request_auth',
+                'exclusive_refresh_owner','preacceptance_failure','account_transport_invalidation','native_context_reconstruction')}}}
+        key=b'\x01'*32
+        origin={'protocolVersion':2,**owner,'sourceContextId':'d'*64,'sourceContextGeneration':'2',
+            'sourceOriginId':'e'*64,'status':'available','credentialAcquisitionAuthorized':False}
+        body=('\n'.join(('omux-native-source-origin-v1','2','a'*64,'b'*64,'1','d'*64,'2','e'*64,'available','false'))+'\n').encode()
+        import hmac
+        origin['originProof']=hmac.new(key,body,hashlib.sha256).hexdigest()
+        with patch.object(runtime,'metadata_exchange',side_effect=[capability,context,origin]) as exchange:
+            request=runtime.source_request(None,None,hint,None,None,key,self.deadline)
+            self.assertEqual(exchange.call_count,3)
+            self.assertEqual(request['sourceContextId'],'d'*64);self.assertEqual(request['sourceContextGeneration'],'2')
+            self.assertNotEqual(request['sourceContextId'],hint['contextId'])
+        with patch.object(runtime,'metadata_exchange',side_effect=[capability,context,{**origin,'originProof':'0'*64}]):
+            with self.assertRaises(ValueError):runtime.source_request(None,None,hint,None,None,key,self.deadline)
+        with patch.object(runtime,'metadata_exchange',side_effect=[capability,{**context,'storePresent':False}]) as exchange:
+            with self.assertRaises(ValueError):runtime.source_request(None,None,hint,None,None,key,self.deadline)
+            self.assertEqual(exchange.call_count,2)
+
+    def test_failed_final_proof_closes_exchange_without_accepting_metadata(self):
+        left,right=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+        self.addCleanup(left.close);self.addCleanup(right.close)
+        endpoint=self.root/'endpoint';endpoint.write_bytes(b'fixture-witness');original=endpoint.lstat()
+        from unittest.mock import Mock
+        peer=Mock();peer.receive_packet.return_value=b'{"jsonrpc":"2.0","id":"owner/source/context","result":{}}'
+        child=Mock();child.registered.check.side_effect=ValueError('fixture-final-proof-refused')
+        with patch.object(runtime,'owner_connection',return_value=(left,peer,original)):
+            with self.assertRaises(ValueError):runtime.metadata_exchange(child,Mock(),{'ownerEndpoint':str(endpoint)},
+                None,None,'owner/source/context',{},self.deadline)
+        peer.close.assert_called_once();self.assertEqual(left.fileno(),-1)
+        child.registered.check.assert_called_once()
+
+    def test_peer_close_failure_still_closes_socket_and_checks_both_materials(self):
+        from unittest.mock import Mock
+        left,right=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+        self.addCleanup(left.close);self.addCleanup(right.close)
+        peer=Mock();peer.close.side_effect=OSError('fixture-peer-close')
+        child=Mock();bridge=Mock()
+        with self.assertRaises(OSError):runtime.finish_exchange(child,bridge,peer,left,self.deadline)
+        self.assertEqual(left.fileno(),-1)
+        child.registered.check.assert_called_once();bridge.recheck.assert_called_once()
+
+    def test_registered_close_failure_still_closes_bridge(self):
+        from unittest.mock import Mock
+        registered=Mock();bridge=Mock();registered.close.side_effect=OSError('fixture-registered-close')
+        with self.assertRaises(OSError):runtime.close_materials(registered,bridge)
+        bridge.close.assert_called_once()
+
+    def test_postproof_failure_still_checks_bridge_without_accepting_result(self):
+        from unittest.mock import Mock
+        left,right=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+        self.addCleanup(left.close);self.addCleanup(right.close)
+        child=Mock();bridge=Mock();peer=Mock()
+        child.registered.check.side_effect=ValueError('fixture-full-proof')
+        with self.assertRaises(ValueError):runtime.finish_exchange(child,bridge,peer,left,self.deadline)
+        self.assertEqual(left.fileno(),-1);bridge.recheck.assert_called_once()
+
+    def test_fixture_close_failure_attempts_every_owned_descriptor(self):
+        root=self.root/'owned';root.mkdir(mode=0o700);(root/'leaf').write_bytes(b'fixture')
+        info=root.lstat();witness=(info.st_dev,info.st_ino,info.st_uid,info.st_mode)
+        real_close=os.close;attempts=[]
+        def close(descriptor):
+            attempts.append(descriptor);real_close(descriptor)
+            if len(attempts)==1:raise OSError('fixture-close-after-release')
+        with patch.object(runtime.os,'close',side_effect=close):
+            with self.assertRaises(OSError):runtime.cleanup_fixture(root,witness,self.deadline)
+        self.assertGreaterEqual(len(attempts),2);self.assertFalse(root.exists())
+
+    def test_unsafe_temporary_parent_refuses_before_acquiring_bridge(self):
+        from unittest.mock import Mock
+        import codex_native_acquisition_bridge_material as bridge_material
+        unsafe=Mock(st_mode=stat.S_IFDIR|0o777,st_uid=0)
+        with patch.object(runtime.compilation,'selected_document',return_value={}), \
+                patch.object(runtime.compilation,'readback'), \
+                patch.object(runtime.Path,'lstat',return_value=unsafe), \
+                patch.object(bridge_material,'load_registered_bridge',side_effect=AssertionError('no owned bridge')) as load:
+            with self.assertRaises(ValueError):runtime.qualify_runtime(
+                {'compiler_document':{'path':'/model-input','sha256':'a'*64},'compiler_result':{},'bridge':{}},
+                self.deadline,self.deadline+30.0)
+        load.assert_not_called()
+
+    def test_hint_root_close_after_release_still_closes_runtime_descriptor_once(self):
+        from types import SimpleNamespace
+        root=self.root/'hint-owned';root.mkdir(mode=0o700);(root/'runtime').mkdir(mode=0o700)
+        info=root.lstat()
+        child=SimpleNamespace(private_root=root,private_identity=(info.st_dev,info.st_ino,info.st_uid,info.st_mode),
+            pidfd=None,reaped=False)
+        real_open=os.open;real_close=os.close;opened=[];attempts=[]
+        def opened_fd(*args,**kwargs):
+            descriptor=real_open(*args,**kwargs);opened.append(descriptor);return descriptor
+        def close(descriptor):
+            attempts.append(descriptor);real_close(descriptor)
+            if descriptor==opened[0]:raise OSError('fixture-root-close-after-release')
+        try:
+            with patch.object(runtime.os,'open',side_effect=opened_fd),patch.object(runtime.os,'close',side_effect=close):
+                with self.assertRaisesRegex(OSError,'fixture-root-close-after-release'):
+                    runtime.private_hint(root,child,self.deadline)
+            self.assertEqual(len(opened),2)
+            self.assertCountEqual(attempts,opened)
+            self.assertEqual(len(attempts),len(set(attempts)))
+        finally:
+            # Test teardown owns any leaked fixture fd if the regression returns.
+            for descriptor in opened:
+                if descriptor not in attempts:real_close(descriptor)
+
 if __name__=='__main__':unittest.main()

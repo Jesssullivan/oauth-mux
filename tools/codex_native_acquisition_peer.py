@@ -41,6 +41,8 @@ class Bridge:
             'omux_runtime_capture':(ctypes.c_int,[ctypes.c_int,ctypes.c_uint,ctypes.c_int,ctypes.POINTER(ctypes.c_void_p)]),
             'omux_runtime_recheck':(ctypes.c_int,[ctypes.c_void_p]),
             'omux_runtime_child':(ctypes.c_int,[ctypes.c_void_p,ctypes.c_int]),
+            'omux_runtime_packet':(ctypes.c_int,[ctypes.c_void_p,ctypes.c_void_p,
+                ctypes.c_size_t,ctypes.POINTER(ctypes.c_size_t)]),
             'omux_runtime_receive':(ctypes.c_int,[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,
                 ctypes.POINTER(ctypes.c_size_t),ctypes.POINTER(ctypes.c_int)]),
             'omux_runtime_close':(None,[ctypes.c_void_p]),
@@ -82,6 +84,23 @@ class Peer:
             self.recheck()
             require(self.bridge.library.omux_runtime_child(self.handle,original_pidfd)==0)
             self.recheck()
+
+    def receive_packet(self,connection,maximum=65536):
+        """Authenticated single metadata frame; unexpected application rights refuse."""
+        with self.lock:
+            require(type(maximum) is int and 0<maximum<=65536)
+            info=os.fstat(connection.fileno())
+            require((info.st_dev,info.st_ino)==self.socket_identity)
+            self.recheck();cutoff=min(self.deadline,time.monotonic()+8)
+            remaining=cutoff-time.monotonic();require(remaining>0)
+            readable,_,_=select.select([connection],[],[],remaining);require(bool(readable))
+            require(time.monotonic()<cutoff)
+            buffer=ctypes.create_string_buffer(maximum);count=ctypes.c_size_t()
+            status=self.bridge.library.omux_runtime_packet(self.handle,buffer,maximum,ctypes.byref(count))
+            require(status==0 and 0<count.value<=maximum)
+            require(time.monotonic()<cutoff)
+            self.recheck();require(time.monotonic()<cutoff)
+            return buffer.raw[:count.value]
 
     def _receive(self,connection,maximum):
         require(type(maximum) is int and 0<maximum<=65536)

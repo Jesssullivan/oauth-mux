@@ -28,6 +28,9 @@ filegroup(
 )
 
 exports_files([
+    "src/platform/native_peer_runtime_bridge.c",
+    "src/platform/native_peer.c",
+    "src/platform/native_peer.h",
     "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
     "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
     "nix/home-manager-qualified-evaluation.nix", "nix/consume-bazel-artifact.nix",

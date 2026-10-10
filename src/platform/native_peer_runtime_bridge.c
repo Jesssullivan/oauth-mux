@@ -88,4 +88,23 @@ void omux_runtime_close(struct omux_runtime_peer *peer) {
     omux_peer_close(&peer->context); free(peer);
 }
 
+/* Authenticated metadata has no application right. Native receive consumes and
+ * closes every unexpected SCM_RIGHTS and authenticates the packet writer pidfd. */
+int omux_runtime_packet(struct omux_runtime_peer *peer, unsigned char *buffer,
+                        size_t capacity, size_t *received) {
+    if (!received) return OMUX_PEER_INVALID;
+    *received = 0;
+    if (!peer || !buffer || !capacity || capacity > OMUX_PEER_MAX_PACKET)
+        return OMUX_PEER_INVALID;
+    int status = omux_runtime_recheck(peer);
+    if (status == OMUX_PEER_OK)
+        status = omux_peer_receive(&peer->context, buffer, capacity, 1, received);
+    if (status == OMUX_PEER_OK) status = omux_runtime_recheck(peer);
+    if (status != OMUX_PEER_OK) {
+        *received = 0;
+        for (size_t index = 0; index < capacity; ++index) buffer[index] = 0;
+    }
+    return status;
+}
+
 unsigned int omux_runtime_abi_version(void) { return 1; }

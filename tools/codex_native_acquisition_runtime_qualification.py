@@ -23,7 +23,6 @@ KIND='omux-native-acquisition-runtime-qualification-v1'
 TARGET='//tools:codex_native_acquisition_runtime_qualification_producer'
 PROFILE='native-acquisition-runtime-qualification-reserved'
 # Deliberately absent, rather than a false positive inherited from old validator.
-NATIVE_PRIMARY_IMAGE_REGISTRATION=None
 MAX_PACKET=64*1024
 MAX_PAYLOAD=16*1024
 REQUEST_FIELDS=('ownerId','processNonce','endpointGeneration','sourceOriginId',
@@ -273,11 +272,372 @@ def unavailable_receipt(inputs):
         'owned_child_cleanup_qualified':False,'outer_cleanup_qualified':False,
         'runtime_qualified':False,**{name:False for name in FALSE_FLAGS}}
 
+def metadata_identity(info):
+    return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid,info.st_nlink,
+        info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+
+RUNTIME_CONFIG='integrations/codex-upstream/native-acquisition-runtime-inputs.json'
+RUNTIME_INPUT_KIND='omux-native-acquisition-runtime-inputs-v1'
+
+
+def runtime_deadline(environment):
+    """The existing guardian's original absolute clock; no restarted budget."""
+    import guard_native_seed_plan_reserved as kernel
+    require(environment.get('OMUX_NATIVE_RUNTIME_MODE')==PROFILE)
+    raw=[environment.get('OMUX_NATIVE_RUNTIME_'+name+'_NS') for name in ('ENTRY','DEADLINE')]
+    require(all(type(value) is str and re.fullmatch('[1-9][0-9]{0,18}',value) for value in raw))
+    entry,until=map(int,raw)
+    kernel.remaining(entry,until)
+    require(until-entry==1200*10**9)
+    deadline=(until-30*10**9)/10**9
+    compilation.tick(deadline)
+    return deadline
+
+
+def runtime_selection(raw):
+    """Tracked selection is independent of outputs; null refuses before role IO."""
+    require(type(raw) is bytes and 0<len(raw)<=16384)
+    value=json.loads(raw,object_pairs_hook=compilation.unique)
+    require(type(value) is dict and set(value)=={'schema_version','kind','status','selection'}
+        and type(value['schema_version']) is int and value['schema_version']==1
+        and value['kind']==RUNTIME_INPUT_KIND)
+    require(value['status']=='selected' and type(value['selection']) is dict)
+    selected=value['selection']
+    require(set(selected)=={'compiler_document','compiler_result','package','bridge'})
+    for name in ('compiler_document','compiler_result'):
+        row=selected[name]
+        require(type(row) is dict and set(row)==({'path','sha256'} if name=='compiler_document'
+            else {'path','sha256','producer'}) and type(row['path']) is str
+            and Path(row['path']).is_absolute() and '..' not in Path(row['path']).parts
+            and type(row['sha256']) is str and re.fullmatch('[0-9a-f]{64}',row['sha256']) is not None)
+    require(type(selected['package']) is dict and set(selected['package'])=={'root','producer','receipt','registration','outputs'})
+    require(type(selected['bridge']) is dict)
+    return selected
+
+
+def private_hint(root,child,deadline):
+    """Bounded own fixture namespace only. The hint is a locator, not authority."""
+    compilation.tick(deadline)
+    require(root==child.private_root and tuple(child.private_identity[:2])==
+        (root.lstat().st_dev,root.lstat().st_ino))
+    root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    runtime_fd=None
+    try:
+        info=os.fstat(root_fd)
+        require((info.st_dev,info.st_ino,info.st_uid,info.st_mode)==tuple(child.private_identity))
+        runtime_fd=os.open('runtime',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
+        runtime_info=os.fstat(runtime_fd)
+        require(runtime_info.st_uid==os.getuid() and stat.S_IMODE(runtime_info.st_mode)==0o700)
+        cutoff=min(deadline,time.monotonic()+8.0)
+        while True:
+            compilation.tick(cutoff)
+            require(child.pidfd is not None and not child.reaped)
+            import select
+            require(not select.select([child.pidfd],[],[],0)[0])
+            try:
+                held=os.open('omux-native-owners',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=runtime_fd)
+            except FileNotFoundError:
+                time.sleep(min(0.01,max(0.0,cutoff-time.monotonic())))
+                continue
+            try:
+                anchor=os.fstat(held)
+                require(anchor.st_uid==os.getuid() and stat.S_IMODE(anchor.st_mode)==0o700)
+                import itertools
+                with os.scandir(held) as scan:names=list(itertools.islice(scan,2))
+                require(len(names)<=1)
+                if not names:
+                    time.sleep(min(0.01,max(0.0,cutoff-time.monotonic())))
+                    continue
+                name=names[0].name
+                require(re.fullmatch('[0-9a-f]{64}\\.json',name) is not None)
+                leaf=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=held)
+                try:
+                    before=os.fstat(leaf)
+                    require(stat.S_ISREG(before.st_mode) and before.st_uid==os.getuid()
+                        and before.st_nlink==1 and stat.S_IMODE(before.st_mode)==0o600
+                        and 0<before.st_size<=16384)
+                    raw=os.read(leaf,16385)
+                    require(len(raw)==before.st_size and metadata_identity(before)==metadata_identity(os.fstat(leaf))
+                        and metadata_identity(before)==metadata_identity(os.stat(name,dir_fd=held,follow_symlinks=False)))
+                    hint=json.loads(raw,object_pairs_hook=compilation.unique)
+                    require(type(hint) is dict and set(hint)=={'protocolVersion','contextId','contextGeneration',
+                        'ownerId','processNonce','endpointGeneration','ownerEndpoint'} and type(hint['protocolVersion']) is int
+                        and hint['protocolVersion']==1)
+                    for field in ('contextId','ownerId','processNonce'):
+                        require(type(hint[field]) is str and re.fullmatch('[0-9a-f]{64}',hint[field])
+                            and hint[field]!='0'*64)
+                    generation(hint['contextGeneration']);generation(hint['endpointGeneration'])
+                    require(name==hint['contextId']+'.json'
+                        and hint['ownerEndpoint']==str(root/'home'/('omux-owner-'+hint['ownerId'][:16])/'owner.sock')
+                        and len(os.fsencode(hint['ownerEndpoint']))<=107
+                        and (anchor.st_dev,anchor.st_ino)==(os.stat('omux-native-owners',dir_fd=runtime_fd,follow_symlinks=False).st_dev,os.stat('omux-native-owners',dir_fd=runtime_fd,follow_symlinks=False).st_ino))
+                    compilation.tick(cutoff)
+                    return hint
+                finally:os.close(leaf)
+            finally:os.close(held)
+    finally:
+        # Each owned numeric descriptor gets one close attempt, even if another
+        # close releases its descriptor and then reports failure.
+        try:
+            if runtime_fd is not None:os.close(runtime_fd)
+        finally:os.close(root_fd)
+
+
+def metadata_reply(raw,request_id):
+    require(type(raw) is bytes and 0<len(raw)<=MAX_PACKET)
+    value=json.loads(raw,object_pairs_hook=compilation.unique)
+    require(type(value) is dict and set(value)=={'jsonrpc','id','result'}
+        and value['jsonrpc']=='2.0' and type(value['id']) is str and value['id']==request_id
+        and type(value['result']) is dict)
+    return value['result']
+
+
+def owner_connection(child,bridge,hint,document,selection,deadline):
+    compilation.tick(deadline)
+    child.registered.check()  # full retained proof BEFORE native connection's deadline starts
+    compilation.tick(deadline)
+    endpoint=Path(hint['ownerEndpoint'])
+    before=endpoint.lstat()
+    require(stat.S_ISSOCK(before.st_mode) and before.st_uid==os.getuid()
+        and stat.S_IMODE(before.st_mode)==0o600)
+    connection=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET|socket.SOCK_CLOEXEC)
+    peer=None
+    try:
+        bridge.enable(connection)  # credential/writer-pidfd delivery enabled BEFORE connect
+        connection.settimeout(min(8.0,deadline-time.monotonic()))
+        connection.connect(str(endpoint))
+        require(metadata_identity(before)==metadata_identity(endpoint.lstat()))
+        peer=child.capture_peer(bridge,connection)
+        return connection,peer,before
+    except BaseException:
+        close_exchange(peer,connection)
+        raise
+
+
+def close_exchange(peer,connection):
+    """Attempt both owned closes; a close refusal never becomes acceptance."""
+    try:
+        if peer is not None:peer.close()
+    finally:
+        connection.close()
+
+
+def close_materials(registered,bridge_owner):
+    try:
+        if registered is not None:registered.close()
+    finally:
+        bridge_owner.close()
+
+
+def finish_exchange(child,bridge_owner,peer,connection,deadline):
+    try:
+        close_exchange(peer,connection)
+    finally:
+        # Even failed close attempts cannot skip either full post-exchange proof.
+        try:
+            child.registered.check()
+        finally:
+            try:bridge_owner.recheck()
+            finally:compilation.tick(deadline)
+
+
+def metadata_exchange(child,bridge_owner,hint,document,selection,method,params,deadline):
+    bridge_owner.recheck()
+    connection,peer,original=owner_connection(child,bridge_owner.bridge,hint,document,selection,deadline)
+    try:
+        raw=json.dumps({'jsonrpc':'2.0','id':method,'method':method,'params':params},
+            sort_keys=True,separators=(',',':')).encode()
+        require(len(raw)<=MAX_PACKET)
+        child.fence(peer)
+        require(connection.send(raw)==len(raw))
+        result=metadata_reply(peer.receive_packet(connection,MAX_PACKET),method)
+        child.fence(peer)
+        require(metadata_identity(Path(hint['ownerEndpoint']).lstat())==metadata_identity(original))
+        compilation.tick(deadline)
+        return result
+    finally:
+        finish_exchange(child,bridge_owner,peer,connection,deadline)
+
+
+def source_request(child,bridge,hint,document,selection,key,deadline):
+    owner={field:hint[field] for field in ('ownerId','processNonce','endpointGeneration')}
+    capabilities=metadata_exchange(child,bridge,hint,document,selection,'owner/capabilities',
+        {'protocolVersion':2},deadline)
+    require(set(capabilities)=={'protocolVersion','ownerId','processNonce','endpointGeneration','nativeVersion','capabilities'}
+        and type(capabilities['nativeVersion']) is str and 0<len(capabilities['nativeVersion'])<=256
+        and type(capabilities['capabilities']) is dict
+        and set(capabilities['capabilities'])=={'protocol_version','late_thread_binding','per_request_auth',
+            'exclusive_refresh_owner','preacceptance_failure','account_transport_invalidation','native_context_reconstruction'}
+        and type(capabilities['capabilities']['protocol_version']) is int
+        and capabilities['capabilities']['protocol_version']==1
+        and all(value is True for field,value in capabilities['capabilities'].items() if field!='protocol_version')
+        and all(capabilities.get(field)==value for field,value in owner.items())
+        and type(capabilities.get('protocolVersion')) is int and capabilities['protocolVersion']==2)
+    context=metadata_exchange(child,bridge,hint,document,selection,'owner/source/context',
+        {'protocolVersion':2,**owner},deadline)
+    require(set(context)=={'protocolVersion','ownerId','processNonce','endpointGeneration','status',
+        'sourceContextId','sourceContextGeneration','storePresent','credentialAcquisitionAuthorized'}
+        and type(context['protocolVersion']) is int and context['protocolVersion']==2
+        and all(context[field]==value for field,value in owner.items()) and context['status']=='available'
+        and context['storePresent'] is True and context['credentialAcquisitionAuthorized'] is False)
+    require(type(context['sourceContextId']) is str and re.fullmatch('[0-9a-f]{64}',context['sourceContextId'])
+        and context['sourceContextId']!='0'*64)
+    generation(context['sourceContextGeneration'])
+    selector={field:context[field] for field in ('sourceContextId','sourceContextGeneration')}
+    origin=metadata_exchange(child,bridge,hint,document,selection,'owner/source/origin',
+        {'protocolVersion':2,**owner,**selector},deadline)
+    require(set(origin)=={'protocolVersion','ownerId','processNonce','endpointGeneration','sourceContextId',
+        'sourceContextGeneration','sourceOriginId','status','credentialAcquisitionAuthorized','originProof'}
+        and type(origin['protocolVersion']) is int and origin['protocolVersion']==2
+        and all(origin[field]==value for field,value in {**owner,**selector}.items())
+        and origin['status']=='available' and origin['credentialAcquisitionAuthorized'] is False)
+    require(type(origin['sourceOriginId']) is str and re.fullmatch('[0-9a-f]{64}',origin['sourceOriginId'])
+        and origin['sourceOriginId']!='0'*64 and type(origin['originProof']) is str)
+    canonical_origin=('\n'.join(('omux-native-source-origin-v1','2',owner['ownerId'],owner['processNonce'],
+        owner['endpointGeneration'],selector['sourceContextId'],selector['sourceContextGeneration'],
+        origin['sourceOriginId'],'available','false'))+'\n').encode()
+    require(hmac.compare_digest(origin['originProof'],hmac.new(key,canonical_origin,hashlib.sha256).hexdigest()))
+    compilation.tick(deadline)
+    return {**owner,**selector,'sourceOriginId':origin['sourceOriginId'],
+        'operationId':os.urandom(32).hex(),'consentId':os.urandom(32).hex(),'sourceId':os.urandom(32).hex(),
+        'consentGeneration':'1','sourceGeneration':'1','forgetEpoch':'0','custodySeconds':'60',
+        'consentExpiresAt':str(int(time.time())+60)}
+
+
+def cleanup_fixture(root,original,deadline):
+    """After owned child terminal: remove only bounded retained own identities."""
+    compilation.tick(deadline)
+    held=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    descriptors=[held];entries=[];payload_bytes=0
+    def unchanged_directory(info,expected):
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid==os.getuid() and not info.st_mode&0o022
+            and (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid)==
+                (expected.st_dev,expected.st_ino,expected.st_mode,expected.st_uid,expected.st_gid))
+    try:
+        initial=os.fstat(held)
+        require((initial.st_dev,initial.st_ino,initial.st_uid,initial.st_mode)==tuple(original))
+        unchanged_directory(root.lstat(),initial)
+        def capture(parent,depth):
+            nonlocal payload_bytes
+            require(depth<=16)
+            with os.scandir(parent) as scan:
+                for item in scan:
+                    compilation.tick(deadline);require(len(entries)<4096)
+                    info=os.stat(item.name,dir_fd=parent,follow_symlinks=False)
+                    require(info.st_uid==os.getuid() and not stat.S_ISLNK(info.st_mode)
+                        and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode) or stat.S_ISSOCK(info.st_mode)))
+                    if stat.S_ISREG(info.st_mode):
+                        payload_bytes+=info.st_size;require(payload_bytes<=512*1024*1024)
+                    fd=os.open(item.name,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
+                    descriptors.append(fd);require(metadata_identity(info)==metadata_identity(os.fstat(fd)))
+                    entries.append((parent,item.name,fd,info))
+                    if stat.S_ISDIR(info.st_mode):
+                        child=os.open(item.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
+                        descriptors.append(child);unchanged_directory(os.fstat(child),info)
+                        capture(child,depth+1)
+        capture(held,0)
+        for parent,name,fd,info in reversed(entries):
+            compilation.tick(deadline)
+            current=os.stat(name,dir_fd=parent,follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                unchanged_directory(current,info);unchanged_directory(os.fstat(fd),info)
+                os.rmdir(name,dir_fd=parent)
+            else:
+                require(metadata_identity(current)==metadata_identity(info) and metadata_identity(os.fstat(fd))==metadata_identity(info))
+                os.unlink(name,dir_fd=parent)
+        unchanged_directory(root.lstat(),initial);unchanged_directory(os.fstat(held),initial)
+        os.rmdir(root)
+        compilation.tick(deadline)
+        require(not root.exists())
+    finally:
+        failure=None
+        for descriptor in reversed(descriptors):
+            try:os.close(descriptor)
+            except OSError as error:
+                if failure is None:failure=error
+        if failure is not None:raise failure
+
+
+def qualify_runtime(selected,deadline,original_deadline):
+    """Actual selected compiler + package + bridge; no fixture authority carriers."""
+    import codex_native_acquisition_process as process
+    import codex_native_acquisition_bridge_material as bridge_material
+    require(type(original_deadline) is float and original_deadline-deadline==30.0)
+    document=compilation.selected_document(selected['compiler_document']['path'],
+        selected['compiler_document']['sha256'],deadline)
+    compilation.readback(document,selected['compiler_result'],deadline)
+    # This genuine producer verifier must qualify full bridge bytes and its
+    # selected dynamic runtime before any ctypes load or child/profile IO.
+    registered=child=None;root=Path('/tmp')/('omux-nq-'+os.urandom(8).hex())
+    result=None
+    temporary_parent=Path('/tmp').lstat()
+    require(stat.S_ISDIR(temporary_parent.st_mode) and temporary_parent.st_uid==0
+        and temporary_parent.st_mode&stat.S_ISVTX and not stat.S_ISLNK(temporary_parent.st_mode))
+    bridge_owner=bridge_material.load_registered_bridge(selected['bridge'],deadline)
+    try:
+        registered=registration(document,selected['compiler_result'],selected['package'],deadline)
+        compilation.tick(deadline)
+        child=process.OwnedChild(registered,cleanup_deadline=original_deadline)
+        child.launch(('codex','app-server'),root)
+        hint=private_hint(root,child,deadline)
+        key,payload,_=child.context
+        request=source_request(child,bridge_owner,hint,document,selected['compiler_result'],key,deadline)
+        frame,request=acquisition_frame(request,key)
+        bridge_owner.recheck()
+        connection,peer,original=owner_connection(child,bridge_owner.bridge,hint,document,
+            selected['compiler_result'],deadline)
+        try:
+            child.fence(peer);require(connection.send(frame)==len(frame))
+            result=receive_owned_acquisition(child,peer,connection,request,key,payload,deadline)
+            require(metadata_identity(Path(hint['ownerEndpoint']).lstat())==metadata_identity(original))
+            child.fence(peer);compilation.tick(deadline)
+        finally:
+            finish_exchange(child,bridge_owner,peer,connection,deadline)
+        inputs=dict(registered.inputs)
+    finally:
+        # Do not turn attempted cancellation into terminal cleanup evidence.
+        try:
+            if child is not None:
+                child.close()
+                require((child.pid is None or child.reaped) and child.pidfd is None)
+                if getattr(child,'private_identity',None) is not None:
+                    cleanup_fixture(root,child.private_identity,original_deadline)
+        finally:
+            close_materials(registered,bridge_owner)
+    require(result is not None and child.reaped and child.pid is not None and child.pidfd is None)
+    compilation.tick(deadline)
+    return {'schema_version':1,'kind':KIND,'status':'isolated-native-protocol-qualified',
+        'purpose':'provider-free-runtime-evaluation','launch_artifact':'compiler-native-cli',
+        'installed_package_primary_qualified':False,'ordinary_tui_qualified':False,'native_support':False,
+        'native_source_finalized':False,'material':inputs['material'],
+        'compiled_receipt_sha256':inputs['compiled_receipt_sha256'],
+        'primary_elf_sha256':inputs['primary_elf_sha256'],'config_schema_sha256':inputs['config_schema_sha256'],
+        'backend':inputs['backend'],'acquisition_contract':'unsupported',
+        'pidfd_qualified':True,'primary_main_exe_qualified':True,
+        'pt_interp_and_runtime_nar_inventory_qualified':True,'received_fd_qualified':True,
+        'owned_child_cleanup_qualified':True,'fixture_cleanup_qualified':True,
+        'outer_cleanup_qualified':False,'runtime_qualified':True,
+        'owned_child_exit':child.status,'payload':result,**{name:False for name in FALSE_FLAGS}}
+
+
 def main():
     require(len(sys.argv)==1)
-    # Refuse before any child/provider/default-home IO while primary authority is
-    # unregistered. Future registration must own original child pidfd/cleanup and
-    # compiler.readback joins; this packet alone cannot prove runtime readiness.
-    registration()
+    deadline=runtime_deadline(os.environ)
+    import codex_native_acquisition_binding as binding
+    selected=runtime_selection(binding.ninth.parent.declared(RUNTIME_CONFIG,16384))
+    receipt=qualify_runtime(selected,deadline,deadline+30.0)
+    compilation.tick(deadline)
+    output=os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR')
+    require(type(output) is str and Path(output).is_absolute())
+    directory=Path(output)/'native-acquisition-runtime-qualification'
+    directory.mkdir(mode=0o700)
+    raw=compilation.encoded(receipt)
+    with (directory/'receipt.json').open('xb') as stream:
+        stream.write(raw);stream.flush();os.fsync(stream.fileno())
+    os.chmod(directory/'receipt.json',0o444);os.chmod(directory,0o555)
+    compilation.tick(deadline)
+    require((directory/'receipt.json').read_bytes()==raw)
+    print('omux-native-runtime-output-sha256='+hashlib.sha256(raw).hexdigest(),flush=True)
 
 if __name__=='__main__':main()

@@ -6,6 +6,7 @@ is held. Native peer capture is additionally fenced to that original child.
 """
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -157,10 +158,13 @@ class RegisteredImage:
         self.image=image;self.loader=loader;self.image_identity=image_identity
         self.loader_identity=loader_identity;self.inputs=inputs;self.deadline=deadline
         self.revalidate=revalidate;self.closed=False
-    def check(self):
+    def check_identity(self):
+        """Bounded held inode/deadline fence, not a full material qualification."""
         compilation.tick(self.deadline);require(not self.closed
             and identity(self.image)==self.image_identity and identity(self.loader)==self.loader_identity
             and self.image_identity[:2]!=self.loader_identity[:2])
+    def check(self):
+        self.check_identity()
         self.revalidate();compilation.tick(self.deadline)
     def close(self):
         if not self.closed:
@@ -262,10 +266,18 @@ class OwnedChild:
     This component has no ordinary-resume command selector. The rollout authority
     must supply its exact reviewed argv to launch; registration alone never does.
     """
-    def __init__(self,registered):
+    def __init__(self,registered,cleanup_deadline=None):
         require(isinstance(registered,RegisteredImage));self.registered=registered
+        require(type(registered.deadline) is float and math.isfinite(registered.deadline))
+        require(cleanup_deadline is None or (type(cleanup_deadline) is float
+            and math.isfinite(cleanup_deadline) and cleanup_deadline==registered.deadline+30))
+        self._cleanup_deadline=registered.deadline if cleanup_deadline is None else cleanup_deadline
         self.pid=None;self.pidfd=None;self.start=None;self.reaped=False;self.status=None
         self.go_attempted=False;self.go_released=False;self.cleanup_failure=None
+        self.stdin=None
+        self.descriptor_cleanup_failure=None
+    @property
+    def cleanup_deadline(self):return self._cleanup_deadline
     def launch(self,argv,private_root):
         require(self.pid is None and argv==('codex','app-server')
             and isinstance(private_root,Path) and private_root.is_absolute())
@@ -274,21 +286,40 @@ class OwnedChild:
         self.registered.check()
         import codex_native_acquisition_runtime_qualification as runtime
         self.context=runtime.isolated_context(private_root)
+        self.private_root=private_root
+        private_stat=private_root.lstat()
+        self.private_identity=(private_stat.st_dev,private_stat.st_ino,private_stat.st_uid,private_stat.st_mode)
+        compilation.tick(self.registered.deadline)
+        config=('[omux_broker]\nbroker_socket = '+json.dumps(str(private_root/'runtime/adapter.sock'))+
+            '\ncapability_path = '+json.dumps(str(self.context[2]))+'\n').encode('ascii')
+        require(len(config)<=4096)
+        with (private_root/'home/config.toml').open('xb') as stream:
+            os.fchmod(stream.fileno(),0o600);stream.write(config);stream.flush();os.fsync(stream.fileno())
+        compilation.tick(self.registered.deadline)
         environment={key:str(private_root/name) for key,name in (
             ('HOME','home'),('XDG_RUNTIME_DIR','runtime'),('XDG_CACHE_HOME','cache'),
             ('XDG_CONFIG_HOME','config'),('XDG_STATE_HOME','state'))}
+        environment['CODEX_HOME']=environment['HOME']
         cwd=private_root
-        read,write=os.pipe2(os.O_CLOEXEC)
+        read=write=stdin_read=null=None
         try:
+            read,write=os.pipe2(os.O_CLOEXEC)
+            stdin_read,self.stdin=os.pipe2(os.O_CLOEXEC)
+            null=os.open('/dev/null',os.O_WRONLY|os.O_CLOEXEC|os.O_NOFOLLOW)
+            require(stat.S_ISCHR(os.fstat(null).st_mode))
+            require(min(read,write,stdin_read,self.stdin,null)>=3)
             self.pid=os.fork()
             if self.pid==0:
                 try:
                     os.close(write)
+                    os.close(self.stdin)
                     if os.read(read,1)!=b'G':os._exit(125)
-                    os.close(read);os.chdir(cwd)
+                    os.close(read);os.dup2(stdin_read,0);os.dup2(null,1);os.dup2(null,2)
+                    os.close(stdin_read);os.close(null);os.chdir(cwd)
                     os.execve(self.registered.image,argv,environment)
                 except BaseException:os._exit(125)
             os.close(read);read=None
+            os.close(stdin_read);stdin_read=None;os.close(null);null=None
             self.pidfd=os.pidfd_open(self.pid,0)
             self.start=process_start(self.pid,self.registered.deadline)
             self.registered.check();self.go_attempted=True
@@ -306,12 +337,30 @@ class OwnedChild:
         finally:
             if read is not None:os.close(read)
             if write is not None:os.close(write)
+            if stdin_read is not None:os.close(stdin_read)
+            if null is not None:os.close(null)
+            if self.pid is None and self.stdin is not None:os.close(self.stdin);self.stdin=None
     def fence(self,peer):
         require(self.pidfd is not None and not self.reaped)
         require(not select.select([self.pidfd],[],[],0)[0])
         require(process_start(self.pid,self.registered.deadline)==self.start)
-        self.registered.check()
+        # Full check remains mandatory BEFORE connect and AFTER closed exchange.
+        # Accepted native packets have a fixed eight-second cutoff; inside that
+        # window only original held-image/process/kernel peer fences run.
+        self.registered.check_identity()
         peer.fence_child(self.pidfd)
+    def capture_peer(self,bridge,connection):
+        """Already-registered image; caller brackets connection with full check.
+
+        No parsed metadata/acquisition result becomes authority until caller
+        closes the connection and repeats registered.check. It owns cleanup of
+        every received right if that final qualification refuses.
+        """
+        import codex_native_acquisition_peer as native
+        self.registered.check_identity()
+        peer=native.Peer(bridge,connection,self.registered.image,self.registered.deadline)
+        try:self.fence(peer);return peer
+        except BaseException:peer.close();raise
     def reap(self):
         require(self.pid is not None)
         if self.reaped:return self.status
@@ -321,8 +370,10 @@ class OwnedChild:
         return self.status
     def close(self):
         if self.pid is None:return
+        if self.descriptor_cleanup_failure is not None:
+            raise self.descriptor_cleanup_failure
         # Cleanup consumes only original clock reserve, never extends deadline.
-        cutoff=self.registered.deadline
+        cutoff=self.cleanup_deadline
         try:
             if not self.reaped:
                 if self.pidfd is None:
@@ -344,5 +395,22 @@ class OwnedChild:
             # An interrupted/expired cleanup retains original process custody.
             # A later bounded attempt may use that same pidfd and same cutoff;
             # it can never fall back to a numeric-PID signal or pre-GO branch.
-            if self.reaped and self.pidfd is not None:
-                os.close(self.pidfd);self.pidfd=None
+            if self.reaped:
+                # Consume each owned handle exactly once after actual reap. A
+                # Linux close error can already have released the fd; retrying
+                # that number could close an unrelated subsequently-opened fd.
+                pidfd,stdin=self.pidfd,self.stdin;self.pidfd=self.stdin=None
+                failure=None
+                try:
+                    if pidfd is not None:
+                        try:os.close(pidfd)
+                        except BaseException as error:failure=error
+                finally:
+                    if stdin is not None:
+                        try:os.close(stdin)
+                        except BaseException as error:
+                            if failure is None:failure=error
+                            else:failure.add_note('native-runtime-stdin-close-also-refused')
+                if failure is not None:
+                    self.descriptor_cleanup_failure=self.cleanup_failure=failure
+                    raise failure

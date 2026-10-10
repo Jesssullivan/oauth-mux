@@ -13,7 +13,16 @@
       "graph_sha256": "bc8456643603297b194726e5c55869888cc701b3138fbe7e00bd8f5c81745838"
     }
   },
-  "binding": null,
+  "binding": {
+    "path": "/home/jess/.local/state/omux-execution-20261005/afddd8a5-0e26-4483-87ab-601d81f19c2c/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_acquisition_binding_producer/test.outputs/native-acquisition-binding/receipt.json",
+    "sha256": "506e05870f323c7c148bc50c99b7f2422db39f669c460074e0770f67a1329a84",
+    "producer": {
+      "receipt": "/home/jess/.local/state/omux-execution-20261005/afddd8a5-0e26-4483-87ab-601d81f19c2c/receipt.json",
+      "sha256": "0b932a23f115fbc9f8076aff17b6531355813db5a8d220debc8c12af4580710b",
+      "source_commit": "c35bfba68469374618c1b8fe89af7df8bbd5bbf8",
+      "graph_sha256": "7ab36223c9af7e498f361665604c9af185461005ba11ece21e04da298bce972d"
+    }
+  },
   "metadata": null,
   "sdk": null,
   "compile": null

@@ -265,7 +265,8 @@ def producer_policy(receipt, target):
             '//tools:codex_native_acquisition_plan_producer':admission.PLAN,
             '//tools:codex_native_acquisition_query_producer':admission.QUERY,
             '//tools:codex_native_acquisition_compilation_producer':admission.COMPILE,
-            '//tools:codex_native_acquisition_runtime_package':admission.PACKAGE}
+            '//tools:codex_native_acquisition_runtime_package':admission.PACKAGE,
+            '//tools:codex_native_acquisition_bridge_material_producer':admission.BRIDGE}
         require(target in policies)
         profile = policies[target]
         targets = list(admission.COHORTS[profile])

@@ -82,3 +82,11 @@ filegroup(name = "native_source_acquisition_preimages", srcs = glob(["acquisitio
 exports_files(["native-acquisition-inputs.json", "native-acquisition-n9-binding.json"])
 filegroup(name="native_acquisition_input_configuration", srcs=["native-acquisition-inputs.json"], visibility=["//visibility:public"])
 filegroup(name="native_acquisition_n9_binding", srcs=["native-acquisition-n9-binding.json"], visibility=["//visibility:public"])
+
+# Explicit runtime selections stay closed until independently qualified outputs exist.
+exports_files(["native-acquisition-runtime-inputs.json"])
+filegroup(
+    name = "native_acquisition_runtime_configuration",
+    srcs = ["native-acquisition-runtime-inputs.json"],
+    visibility = ["//visibility:public"],
+)
