@@ -71,7 +71,7 @@ def _impl(ctx):
     aliases, names, total = {}, [], 0
     for index, role in enumerate(sorted(entries)):
         pin = entries[role]
-        if type(pin) != "dict" or sorted(pin.keys()) != ["bytes", "path", "sha256"] or not _path(pin["path"]) or not _sha(pin["sha256"]) or type(pin["bytes"]) != "int" or not 0 < pin["bytes"] <= (512 * 1024 * 1024 if role == "codex" else 16 * 1024 * 1024):
+        if type(pin) != "dict" or sorted(pin.keys()) != ["bytes", "path", "sha256"] or not _path(pin["path"]) or not _sha(pin["sha256"]) or type(pin["bytes"]) != "int" or not (0 < pin["bytes"] and pin["bytes"] <= (512 * 1024 * 1024 if role == "codex" else 16 * 1024 * 1024)):
             fail("package bounded literal row differs")
         if not any([pin["path"].startswith(root) for root in _ROOTS]):
             fail("package input leaves finite owned public roots")
