@@ -90,4 +90,86 @@ class PrerequisiteModels(unittest.TestCase):
         for key in ('copy_performed','installation_qualified','seat_qualified','toolbar_consent_proved','credential_acquisition'):
             self.assertIs(value[key],False)
 
+    def test_real_shared_deadline_and_complete_qualified_delivery_interfaces(self):
+        self.assertIs(route.CLEANUP_RESERVE_NS,readonly.CLEANUP_RESERVE_NS)
+        self.assertEqual(route.CLEANUP_RESERVE_NS,15*10**9)
+        for name in ('finite','tools','budget','lock_witness','finish'):
+            self.assertIs(getattr(route,name),getattr(readonly,name))
+        for name in ('MEMORY','TASKS','CPU','Witness','WorkloadWitness','monitor',
+                'cleanup_retained','release_worker','properties','remaining'):
+            self.assertIs(getattr(route,name),getattr(route.kernel,name))
+        entry,deadline=100*10**9,1300*10**9
+        # This is the actual shared calculation called by guard main. It has no
+        # clock read or validation of its own; the existing admission owns those.
+        with patch.object(guard.time,'monotonic',side_effect=AssertionError('clock-reset')):
+            self.assertEqual(guard.delivery_monitor_deadline(deadline,route),1285)
+            self.assertEqual(guard.delivery_monitor_deadline(deadline,readonly),1285)
+        with patch.object(route.kernel.time,'monotonic_ns',return_value=entry):
+            self.assertEqual(route.kernel.envelope(entry,deadline),1270*10**9)
+            self.assertEqual(route.runtime_seconds(deadline),1170)
+            self.assertEqual(route.remaining(entry,deadline),1170)
+            self.assertEqual(route.budget(deadline,30*10**9),1170)
+        with patch.object(route.kernel.time,'monotonic_ns',return_value=1270*10**9):
+            with self.assertRaises(ValueError):route.runtime_seconds(deadline)
+            with self.assertRaises(ValueError):route.remaining(entry,deadline)
+            self.assertEqual(route.remaining(entry,deadline,cleanup=True),30)
+        with patch.object(route.kernel.time,'monotonic_ns',return_value=deadline):
+            with self.assertRaises(ValueError):route.remaining(entry,deadline,cleanup=True)
+            with self.assertRaises(ValueError):route.budget(deadline)
+        # Retain the existing kernel's exact integer/original-envelope predicates.
+        for changed_entry,changed_deadline in ((True,deadline),(entry,True),(entry,deadline+1),(0,1200*10**9)):
+            with self.assertRaises(ValueError):route.kernel.envelope(changed_entry,changed_deadline)
+
+    def test_real_qualification_constructor_and_readonly_dispatch_without_launch(self):
+        entry,deadline=100*10**9,1300*10**9
+        with patch.object(route.kernel.time,'monotonic_ns',return_value=entry), \
+                patch.object(guard,'controller_run',side_effect=AssertionError('controller-launch')):
+            route.finite(route.ARGUMENTS,'system',None,())
+            route.tools(dict(readonly.TOOLS),readonly.NATIVE,readonly.executable.BOOTSTRAP_SHA)
+            command=route.command(None,'/fixed/bazel',Path('/fixed/run'),route.ARGUMENTS,route.PROFILE,
+                entry,deadline,source_commit='a'*40,source_dirty='false')
+            self.assertEqual(command[command.index('run')+1:command.index('run')+3],
+                ['--repository_disable_download','--repo_contents_cache='])
+            self.assertEqual(command[-1],route.ARGUMENTS[1])
+            self.assertIn('--run_env=OMUX_YOGA_DELIVERY_DEADLINE_NS='+str(deadline),command)
+            self.assertIn('--run_env=OMUX_YOGA_DELIVERY_MODE=qualify',command)
+            self.assertIn('--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256=',command)
+            self.assertIn('--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=',command)
+            self.assertIn('--output_base=/fixed/run/output-base',command)
+            for value in ('--remote_executor=','--remote_cache=','--lockfile_mode=error'):
+                self.assertIn(value,command)
+            with self.assertRaises(ValueError):route.finite(route.ARGUMENTS,'system','a'*36,())
+            with self.assertRaises(ValueError):route.tools(dict(readonly.TOOLS,bazel='/other'),
+                readonly.NATIVE,readonly.executable.BOOTSTRAP_SHA)
+            unproved=route.finish(Path('/unused'),route.ARGUMENTS,125,True,True,deadline,{'fixture':True})
+            self.assertEqual(unproved['mode'],'qualify')
+            self.assertIsNone(unproved['qualification'])
+            self.assertIs(unproved['copy_performed'],False)
+
+    def test_actual_guard_qualification_caps_and_exact_runtime_readback(self):
+        import tempfile
+        import guard_resident_observation as resident
+        caps=route.properties(guard.PROPERTIES)
+        caps.update(MemoryMax=str(route.MEMORY),TasksMax=str(route.TASKS),
+            CPUQuotaPerSecUSec=str(route.CPU*10000)+'us')
+        self.assertEqual(route.MEMORY+resident.RESIDENT_MEMORY,4*1024**3)
+        self.assertEqual(route.TASKS+resident.RESIDENT_TASKS,512)
+        self.assertEqual(route.CPU+resident.RESIDENT_CPU_PERCENT,200)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for name,value in guard.CGROUP.items():
+                (root/name).write_text({'memory.max':str(route.MEMORY),'pids.max':str(route.TASKS)}.get(name,value))
+            (root/'cpu.max').write_text(str(route.CPU*1000)+' 100000')
+            actual={**caps,**route.selected(route.PROFILE,route.ARGUMENTS),**guard.SANDBOX,
+                'PrivateNetwork':'no','RuntimeMaxUSec':'17s',
+                'TemporaryFileSystem':guard.system_masks(profile='standard'),
+                'UnsetEnvironment':' '.join(guard.DELEGATION_ENV)}
+            isolation={**guard.SANDBOX,**route.selected(route.PROFILE,route.ARGUMENTS)}
+            guard.verify(actual,root,'system',isolation,route.PROFILE,runtime_seconds=17)
+            for key,value in (('MemoryMax','4294967296'),('TasksMax','512'),('CPUQuotaPerSecUSec','2s'),
+                    ('RuntimeMaxUSec','16s'),('RuntimeMaxUSec','18s'),('RuntimeMaxUSec','infinity'),
+                    ('PrivateNetwork','yes')):
+                with self.subTest(property=key,value=value),self.assertRaises(ValueError):
+                    guard.verify({**actual,key:value},root,'system',isolation,route.PROFILE,runtime_seconds=17)
+
 if __name__=='__main__':unittest.main()

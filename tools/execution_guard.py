@@ -1187,6 +1187,10 @@ def yoga_command(bazel, run, arguments, admission, *, manager, source_commit=Non
     return command
 
 
+def delivery_monitor_deadline(deadline_ns, settings):
+    return (deadline_ns - settings.CLEANUP_RESERVE_NS) / 10**9
+
+
 def yoga_delivery_command(bazel, run, arguments, deadline_ns, prior=None, *, source_commit=None, source_dirty=None, repository_cache=None, nixpkgs_source=None):
     if arguments == ['run','//tools:yoga_sealed_transfer_stage']:
         import guard_yoga_sealed_transfer_profile as delivery_profile
@@ -2375,7 +2379,7 @@ def _main(argv, admission_resources):
             deadline = ((args.yoga_deadline_monotonic_ns - yoga.CLEANUP_RESERVE_NS) / 10**9
                         if yoga else time.monotonic() + 1200)
             if delivery_settings:
-                deadline = (delivery_entry_deadline_ns - delivery_settings.CLEANUP_RESERVE_NS) / 10**9
+                deadline = delivery_monitor_deadline(delivery_entry_deadline_ns, delivery_settings)
             elif native_sdk:
                 deadline = args.native_deadline - 120
             elif reservation_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:

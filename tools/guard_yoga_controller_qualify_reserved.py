@@ -9,6 +9,7 @@ STATE_PROFILE='yoga-controller-delivery'
 PROFILES=(PROFILE,)
 ARGUMENTS=['run','//tools:yoga_controller_qualify']
 STATE,COORDINATION=readonly.profile.STATE,readonly.profile.COORDINATION
+CLEANUP_RESERVE_NS=readonly.CLEANUP_RESERVE_NS
 MEMORY,TASKS,CPU=kernel.MEMORY,kernel.TASKS,kernel.CPU
 Witness=kernel.Witness
 WorkloadWitness=kernel.WorkloadWitness
