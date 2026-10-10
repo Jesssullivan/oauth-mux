@@ -456,6 +456,19 @@ def portable_process_images(exe_name,exe_identity,maps,loader,backend):
             and any("x" in permission for offset,permission in rows))
     return loader.identity[:2],backend.identity[:2]
 
+def archive_custody_reopen_reference(archive_files):
+    """Capability metadata from the already qualified, held public archive."""
+    raw = archive_files.get("share/omux/reference.json")
+    resident.require(type(raw) is bytes and 0 < len(raw) <= 8*1024*1024)
+    value = json.loads(raw,object_pairs_hook=resident.unique)
+    resident.require(type(value) is dict and type(value.get("api")) is dict)
+    api = value["api"]
+    resident.require(type(api.get("version")) is int and api["version"] == 2
+        and type(api.get("methods")) is list
+        and all(type(row) is dict for row in api["methods"])
+        and sum(row.get("name") == "custody.reopen" for row in api["methods"]) == 1)
+
+
 class OwnedCustodyReopen:
     """Qualified installed software and stable singleton; private bytes unread."""
     def __init__(self,selected,home,deadline):
@@ -475,11 +488,9 @@ class OwnedCustodyReopen:
             backend_path = Path(selected["prefix"])/"lib/omux/libexec/omuxd.bin"
             self.loader = next(public for public in self.files if public.path == loader_path)
             self.backend = next(public for public in self.files if public.path == backend_path)
-            # Software reference and every installed byte are already archive-bound.
-            reference = next(public for public in self.files if public.path == Path(selected["prefix"])/"share/omux/reference.json")
-            value = json.loads(reference.raw,object_pairs_hook=resident.unique)
-            resident.require(value["api"]["version"] == 2 and type(value["api"]["version"]) is int
-                and sum(row.get("name") == "custody.reopen" for row in value["api"]["methods"]) == 1)
+            # installation_plan omits share metadata. The held archive is
+            # qualified in full; every installed byte remains checked separately.
+            archive_custody_reopen_reference(archive_files)
             self.directory = resident.open_directory(self.state,private=True)
             self.root_identity = resident.stable(os.fstat(self.directory))
             self.lock = os.open("daemon.lock",os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.directory)

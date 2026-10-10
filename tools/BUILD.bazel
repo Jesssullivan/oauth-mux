@@ -37,6 +37,10 @@ _CODEX_SDK_SOURCES = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + [
 ]
 
 _CODEX_PROTOCOL_HISTORY_SOURCES = [
+    "codex_persistence_package_family.py", "codex_owner_status_source.py", "codex_owner_status_binding.py",
+    "codex_owner_status_persistence_source.py", "codex_owner_status_persistence_binding.py",
+    "codex_owner_status_persistence_metadata_producer.py", "codex_owner_status_persistence_sdk_export.py",
+    "guard_native_metadata_sdk_reserved.py", "guard_resident_owner_status_persistence_source_reserved.py",
     "codex_protocol_history_native.py", "codex_protocol_history_completed_inputs.py",
     "codex_protocol_history_cli.py", "codex_protocol_history_source.py",
     "codex_protocol_history_metadata.py", "codex_protocol_history_metadata_producer.py",
@@ -1939,6 +1943,36 @@ python_test(
     timeout = "long",
 )
 exports_files(["codex_fresh_native_package_inputs.bzl", "codex_fresh_native_runtime.py"])
+# Separate material-family target. Selection remains unconfigured until actual
+# SDK, schema, compiled CLI and runtime receipts have independently been pinned.
+python_test(
+    name = "codex_persistence_native_runtime_package",
+    main = "codex_fresh_native_runtime.py",
+    srcs = depset(["guard_cache.py", "//integrations/codex-owner-runtime:runtime_package.py",
+        "//delivery:portable.py"] + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES).to_list(),
+    data = _OWNER_STATUS_PERSISTENCE_METADATA_DATA + [
+        "@omux_fresh_native_package_data//:inputs", ":fresh_native_runtime_files",
+        "@omux_nix//:ca_bundle", "@omux_nix//:tool_wrappers/strip", "@omux_nix//:patchelf"],
+    args = [
+        "--selection", "$(location @omux_fresh_native_package_data//:package-selection.json)",
+        "--selection-sha-file", "$(location @omux_fresh_native_package_data//:package-selection.sha256)",
+        "--input-aliases", "$(location @omux_fresh_native_package_data//:input-aliases.json)",
+        "--strip", "$(location @omux_nix//:tool_wrappers/strip)",
+        "--patchelf", "$(location @omux_nix//:patchelf)",
+        "--ca-bundle", "$(location @omux_nix//:ca_bundle)",
+        "--runtime-files-manifest", "$(location :fresh_native_runtime_files)",
+        "--tool-path", NIX_COREUTILS_BIN],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+python_test(
+    name = "codex_persistence_package_family_test",
+    main = "codex_persistence_package_family_test.py",
+    srcs = depset(["codex_persistence_package_family_test.py"] + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + _RESIDENT_GUARD_SOURCES +
+        ["codex_fresh_native_runtime.py", "guard_cache.py", "//delivery:portable.py",
+         "//integrations/codex-owner-runtime:runtime_package.py"]).to_list(),
+    target_compatible_with = ["@platforms//os:linux"],
+)
 python_test(
     name = "codex_staged_native_package_consumer_test",
     main = "codex_staged_native_package_consumer_test.py",

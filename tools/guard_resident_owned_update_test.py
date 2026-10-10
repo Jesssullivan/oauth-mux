@@ -3,7 +3,9 @@ import copy
 import errno
 import fcntl
 import hashlib
+import io
 import json
+import tarfile
 import os
 from pathlib import Path
 import tempfile
@@ -60,6 +62,74 @@ def fixture_directory(path,private=False):
         raise
 
 class UpdateModels(unittest.TestCase):
+    def reference_archive(self,reference):
+        files = {"bin/"+name:b"public fixture executable" for name in update.install.BINARIES}
+        files.update({"lib/omux/lib/ld-fixture.so":b"public loader",
+            "lib/omux/libexec/omuxd.bin":b"public backend",
+            "share/omux/services/omux.service.in":b"[Service]\nExecStart=@EXEC@\n"})
+        if reference is not None:
+            files["share/omux/reference.json"] = reference
+        manifest = {"target":"x86_64-linux","channel":"release",
+            "runtime":{"loader":"lib/omux/lib/ld-fixture.so"},
+            "artifacts":[{"path":name,"mode":"0755"} for name in files]}
+        files["release-manifest.json"] = json.dumps(manifest).encode()
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output,mode="w:gz") as archive:
+            for name,raw in files.items():
+                member = tarfile.TarInfo(name)
+                member.size,member.mode = len(raw),0o755
+                archive.addfile(member,io.BytesIO(raw))
+        return output.getvalue(),manifest,files
+
+    def test_reopen_constructor_uses_archive_reference_omitted_by_real_installation_plan(self):
+        reference = b'{"api":{"version":2,"methods":[{"name":"custody.reopen"}]}}'
+        payload,manifest,files = self.reference_archive(reference)
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            state = self.runtime(root)
+            selected = {"prefix":str(root/"prefix"),"records":str(root/"records"),
+                "service_path":str(root/"ai.xoxd.omux.service"),"runtime_state":str(state),"start":{}}
+            plan = update.install.installation_plan(manifest,files,Path(selected["prefix"]),
+                Path(selected["records"]),Path(selected["service_path"]),"linux",daemon_state_dir=state)
+            self.assertNotIn(Path(selected["prefix"])/"share/omux/reference.json",[row[0] for row in plan])
+            held = [mock.Mock(raw=b"public qualification"),mock.Mock(raw=payload)]
+            held.extend(mock.Mock(path=path,raw=raw) for path,raw,mode in plan)
+            software = mock.Mock(files=held)
+            with mock.patch.object(update,"QualifiedExistingEnrollment",return_value=software), \
+                    mock.patch.object(resident,"open_directory",side_effect=fixture_directory):
+                custody = update.OwnedCustodyReopen(selected,root,time.monotonic_ns()+30*10**9)
+                self.assertEqual(custody.loader.path,Path(selected["prefix"])/manifest["runtime"]["loader"])
+                self.assertEqual(custody.backend.path,Path(selected["prefix"])/"lib/omux/libexec/omuxd.bin")
+                custody.recheck()
+                custody.close()
+            software.close.assert_called_once_with()
+
+    def test_archive_reference_refuses_missing_malformed_duplicate_or_wrong_capability(self):
+        good = {"api":{"version":2,"methods":[{"name":"custody.reopen"}]}}
+        bad_values = [None,b"not json",b'{"api":{},"api":{}}',
+            json.dumps({"api":{"version":True,"methods":good["api"]["methods"]}}).encode(),
+            json.dumps({"api":{"version":1,"methods":good["api"]["methods"]}}).encode(),
+            json.dumps({"api":{"version":2,"methods":[]}}).encode(),
+            json.dumps({"api":{"version":2,"methods":good["api"]["methods"]*2}}).encode(),
+            json.dumps({"api":{"version":2,"methods":[None]}}).encode()]
+        for raw in bad_values:
+            with self.subTest(raw=raw):
+                payload,_,_ = self.reference_archive(raw)
+                files,_ = update.pack.archive_contents(payload)
+                with self.assertRaises((ValueError,json.JSONDecodeError)):
+                    update.archive_custody_reopen_reference(files)
+        with self.assertRaises(ValueError):
+            update.archive_custody_reopen_reference({"share/omux/reference.json":b" "*(8*1024*1024+1)})
+        # Duplicate tar members refuse before capability validation too.
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output,mode="w:gz") as archive:
+            for _ in range(2):
+                member = tarfile.TarInfo("share/omux/reference.json")
+                member.size,member.mode = 2,0o644
+                archive.addfile(member,io.BytesIO(b"{}"))
+        with self.assertRaises(ValueError):
+            update.pack.archive_contents(output.getvalue())
+
     def start_manifest(self):
         value = manifest()
         value["action"] = "start-existing"

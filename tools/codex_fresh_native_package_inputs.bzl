@@ -47,7 +47,7 @@ def receipt_producer(role, path):
 _PROTOCOL_ROLES = _ROLES + ["protocol_run","protocol_artifacts","schema_artifacts","cli_artifacts"]
 _FAST = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/"
 
-def _protocol_producer(role, source):
+def _protocol_producer(role, source, persistence = False):
     roots = [root for root in [_HOME, _FAST] if source.startswith(root)]
     if len(roots) != 1:
         return False
@@ -57,6 +57,13 @@ def _protocol_producer(role, source):
     prefix = ["output-base","execroot","_main","bazel-out"]
     target = "codex_protocol_history_source_producer" if role == "source" else "codex_protocol_history_sdk_export_producer"
     output = ["protocol-history-source","source-receipt.json"] if role == "source" else ["protocol-history-sdk-export","receipt.json"]
+    if persistence:
+        if not _receipt_uuid(parts[0]):
+            return False
+        if role == "source" and source != _FAST + "95f10057-c0be-4a94-98f8-291dedec0d48/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_owner_status_persistence_source_producer/test.outputs/owner-status-persistence-source/source-receipt.json":
+            return False
+        target = "codex_owner_status_persistence_source_producer" if role == "source" else "codex_owner_status_persistence_sdk_export_producer"
+        output = ["owner-status-persistence-source","source-receipt.json"] if role == "source" else ["owner-status-persistence-sdk-export","receipt.json"]
     return len(parts) == 12 and parts[1:5] == prefix and parts[5] and all([c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for c in parts[5].elems()]) and parts[6:] == ["testlogs","tools",target,"test.outputs"] + output
 
 def _protocol_output(source, prefix, tail):
@@ -72,11 +79,12 @@ def _protocol_run(source, leaf):
     return len(parts) == 2 and _receipt_uuid(parts[0]) and parts[1] == leaf
 
 def _protocol_selected(ctx, raw, value):
+    persistence = value.get("kind") == "omux-owner-status-persistence-native-package-selection-v1"
     if sorted(value.keys()) != sorted(["kind","source_root","export_root","patch_sha256","files","protocol_schema_files","protocol_schema_roots","native_cli_selection","protocol_history_artifact_files"]) or sorted(value.get("files",{}).keys()) != sorted(_PROTOCOL_ROLES):
         fail("protocol-history package requires exact thirteen-role document")
     if value["files"]["source"].get("path") != value["source_root"]+"/source-receipt.json" or value["files"]["export"].get("path") != value["export_root"]+"/receipt.json":
         fail("protocol-history source SDK roots differ")
-    if type(value["patch_sha256"]) != "list" or len(value["patch_sha256"]) != 4 or not all([type(pin) == "string" and _hash(pin) for pin in value["patch_sha256"]]):
+    if type(value["patch_sha256"]) != "list" or len(value["patch_sha256"]) != (6 if persistence else 4) or not all([type(pin) == "string" and _hash(pin) for pin in value["patch_sha256"]]):
         fail("protocol-history package requires four pinned transformations")
     extra = value["protocol_history_artifact_files"]
     pins = value["protocol_schema_files"]
@@ -102,7 +110,7 @@ def _protocol_selected(ctx, raw, value):
             fail("protocol-history bounded literal input pin differs")
         source = pin["path"]
         if role in ["source","export"]:
-            if not _protocol_producer(role,source):
+            if not _protocol_producer(role,source,persistence):
                 fail("protocol-history receipt leaves exact declared producer")
         elif role in ["protocol_run","compile","qualification_run","schema_run"]:
             if not _protocol_run(source,"receipt.json"):
@@ -191,7 +199,7 @@ def _selected_impl(ctx):
     if len(raw) > 16 * 1024 * 1024:
         fail("fresh package selection exceeds finite metadata bound")
     value = json.decode(raw)
-    if value.get("kind") == "omux-protocol-history-native-package-selection-v1":
+    if value.get("kind") in ["omux-protocol-history-native-package-selection-v1", "omux-owner-status-persistence-native-package-selection-v1"]:
         _protocol_selected(ctx, raw, value)
         return
     staged = value.get("kind") == "omux-staged-native-package-selection-v1"

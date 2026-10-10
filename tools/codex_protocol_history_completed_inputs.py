@@ -54,6 +54,21 @@ def validate_selection(document):
 def exported_plan(report,document):
     """Only immutable command mappings. Complete SDK validation stays in its owner."""
     root=Path(document['sdk']['root'])
+    if document['kind'] == 'omux-owner-status-persistence-native-selection-v1':
+        from codex_persistence_package_family import SDK_EXTRA, export
+        require(type(report) is dict and set(report) == protocol.SDK_FIELDS | SDK_EXTRA
+            and report['kind'] == export.KIND and report['status'] == 'verified-selected-owner-status-persistence-sdk'
+            and report['source_root'] == document['source']['root']
+            and report['source_receipt_sha256'] == document['source']['receipt_sha256']
+            and report['source_inventory_sha256'] == document['source']['inventory_sha256']
+            and report['inventory_sha256'] == document['sdk']['inventory_sha256']
+            and report['sdk_export_qualified'] is True
+            and all(report[name] is False for name in ('schema_producer_qualified','live_handoff_proven',
+                'native_compile_passed','native_support','provider_evaluation')), 'closed persistence SDK command mapping differs')
+        return {'repositories':{row['canonical_name']:str(root/'repositories'/row['canonical_name']) for row in report['repositories']},
+            'module_overrides':{name:str(root/'repositories'/row['canonical_name']) for name,row in report['modules'].items()},
+            'registry_cache':str(root/'registry-cache'),'inventory_sha256':document['sdk']['inventory_sha256'],
+            'mapping_sha256':report['mapping_sha256']}
     require(type(report) is dict and set(report)==protocol.SDK_FIELDS
         and report['kind']==protocol.selected_sdk.KIND
         and report['status']=='verified-selected-protocol-history-sdk'
@@ -322,9 +337,7 @@ def load_completed_inputs(selection,patches,deadline,verify_previous=None):
     validate_selection(selection);document=selection['inputs']
     require(protocol.read_json(protocol.SELECTOR,selection['input_selection_sha256'],deadline)==document,
         'original selected input bytes differ')
-    for role,target,output in (
-        ('source','//tools:codex_protocol_history_source_producer','protocol-history-source'),
-        ('sdk','//tools:codex_protocol_history_sdk_export_producer','protocol-history-sdk-export')):
+    for role,target,output in protocol.producer_roles(document):
         prior=protocol.producer_success(document[role],target,output,deadline)
         if verify_previous is not None:
             require(verify_previous(prior) is True, 'completed producer unit/cgroup no longer empty')

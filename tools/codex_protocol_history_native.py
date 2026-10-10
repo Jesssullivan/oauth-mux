@@ -141,7 +141,7 @@ def validate_selection(document):
         'schema_version','kind','source','sdk','controller_source_commit','controller_graph_sha256'},
         'closed selected native document required')
     require(type(document['schema_version']) is int and document['schema_version']==1
-        and document['kind']==SELECTION_KIND
+        and document['kind'] in (SELECTION_KIND, 'omux-owner-status-persistence-native-selection-v1')
         and type(document['controller_source_commit']) is str
         and re.fullmatch(r'[0-9a-f]{40}',document['controller_source_commit']),
         'selected native kind/source required')
@@ -151,8 +151,12 @@ def validate_selection(document):
         require(type(row) is dict and set(row)=={'root','receipt_sha256','inventory_sha256','producer'},
             'closed selected source/SDK pin required')
         path(row['root']);pin(row['receipt_sha256']);pin(row['inventory_sha256']);producer_pin(row['producer'])
-        require((SOURCE_SCOPE if role=='source' else SDK_SCOPE).fullmatch(row['root']),
-            'selected source/SDK role namespace required before IO')
+        if document['kind'] == 'omux-owner-status-persistence-native-selection-v1':
+            from codex_persistence_package_family import role_root
+            role_root(role, row['root'])
+        else:
+            require((SOURCE_SCOPE if role=='source' else SDK_SCOPE).fullmatch(row['root']),
+                'selected source/SDK role namespace required before IO')
     require(document['source']['producer']['receipt']!=document['sdk']['producer']['receipt'],
         'source and SDK must have independent actual producer epochs')
     return document
@@ -160,18 +164,23 @@ def validate_selection(document):
 
 def producer_success(selection, target, output_name, deadline):
     value=selection['producer'];receipt=read_json(path(value['receipt']),value['sha256'],deadline)
-    sealed_io.verify_caps(receipt)
+    if target in ('//tools:codex_owner_status_persistence_source_producer', '//tools:codex_owner_status_persistence_sdk_export_producer'):
+        from codex_persistence_package_family import producer_policy
+        profile, targets = producer_policy(receipt, target)
+    else:
+        profile, targets = 'standard', [target]
+        sealed_io.verify_caps(receipt)
     native.phase2_effective_runtime(receipt['observed_properties']['RuntimeMaxUSec'],1200)
     require(receipt['id']==Path(value['receipt']).parent.name
         and receipt['unit']=='omux-execution-'+receipt['id']+'.service'
-        and receipt['profile']=='standard' and receipt['manager']=='system'
+        and receipt['profile']==profile and receipt['manager']=='system'
         and type(receipt['exit']) is int and receipt['exit']==0
         and type(receipt['workload_exit']) is int and receipt['workload_exit']==0
         and receipt['controller_failure'] is None and receipt['descendants_empty'] is True
         and receipt['cleanup']['state']=='empty' and receipt['source_dirty']=='false'
         and receipt['source_commit']==value['source_commit']
         and receipt['graph_sha256']==value['graph_sha256']
-        and receipt['verb']=='test' and receipt['targets']==[target]
+        and receipt['verb']=='test' and receipt['targets']==targets
         and receipt['test_evidence']['state']=='preserved', 'successful outer producer required')
     output=path(receipt['output_base']);root=path(selection['root'])
     prefix=str(output)+'/execroot/_main/bazel-out/'
@@ -184,10 +193,16 @@ def producer_success(selection, target, output_name, deadline):
     require(type(evidence['schema']) is int and evidence['schema']==1
         and type(evidence['bazel_exit']) is int and evidence['bazel_exit']==0
         and evidence['epoch_start_ns']==receipt['epoch_start_ns']
-        and evidence['targets']==[target] and len(evidence['results'])==1,
+        and evidence['targets']==targets and len(evidence['results'])==len(targets)
+        and [row['target'] for row in evidence['results']]==targets,
         'producer evidence epoch/target mismatch')
-    row=evidence['results'][0]
+    row=next(row for row in evidence['results'] if row['target']==target)
     require(row['target']==target and row['state']=='observed', 'producer evidence absent')
+    if profile != 'standard':
+        require(all(item['state'] == 'observed' and all(
+            len([file for file in item['files'] if file['source'] == member and file['state'] == 'copied']) == 1
+            for member in ('test.log','test.xml')) for item in evidence['results']),
+            'reserved producer cohort evidence incomplete')
     for member in ('test.log','test.xml'):
         entries=[entry for entry in row['files'] if entry['source']==member]
         require(len(entries)==1 and entries[0]['state']=='copied', 'producer evidence not copied')
@@ -222,6 +237,9 @@ METADATA_FIELDS = frozenset(('schema_version','kind','status','selector_sha256',
 
 
 def validate_source(root, receipt_sha256, patch_pins, deadline=None):
+    if str(root).endswith('/test.outputs/owner-status-persistence-source'):
+        from codex_persistence_package_family import load_source
+        return load_source(root, receipt_sha256, patch_pins, deadline)[0]
     source.DEADLINE=deadline;inputs.DEADLINE=deadline
     document={'kind':inputs.KIND,'source_root':str(root),'source_receipt_sha256':receipt_sha256,
         'export_root':str(inputs.EXPORT_ROOT),'export_receipt_sha256':inputs.EXPORT_SHA}
@@ -232,6 +250,10 @@ def validate_source(root, receipt_sha256, patch_pins, deadline=None):
 
 
 def verify_selected_export(root, receipt_pin, source_report, document, deadline):
+    if document['kind'] == 'omux-owner-status-persistence-native-selection-v1':
+        from codex_persistence_package_family import verify_sdk
+        return verify_sdk(root, receipt_pin, source_report, document, deadline,
+            SDK_FIELDS, METADATA_FIELDS, read_json)[1]
     source.DEADLINE=deadline;inputs.DEADLINE=deadline
     budget=sdk.Budget(time.time()+max(0.001,min(1200,deadline-time.monotonic())),lambda count:tick(deadline))
     report=read_json(root/'receipt.json',receipt_pin,deadline,64*1024*1024)
@@ -351,6 +373,15 @@ def selected(args):
     pin(values[1]);return True
 
 
+def producer_roles(document):
+    validate_selection(document)
+    if document['kind'] == 'omux-owner-status-persistence-native-selection-v1':
+        return (('source','//tools:codex_owner_status_persistence_source_producer','owner-status-persistence-source'),
+            ('sdk','//tools:codex_owner_status_persistence_sdk_export_producer','owner-status-persistence-sdk-export'))
+    return (('source','//tools:codex_protocol_history_source_producer','protocol-history-source'),
+        ('sdk','//tools:codex_protocol_history_sdk_export_producer','protocol-history-sdk-export'))
+
+
 def verify_inputs(args):
     require(selected(args), 'distinct selected native inputs required')
     document=validate_selection(read_json(SELECTOR,args.native_protocol_history_sha256,args.native_deadline))
@@ -360,10 +391,13 @@ def verify_inputs(args):
         and document['sdk']['receipt_sha256']==args.native_export_sha256
         and document['controller_source_commit']==args.source_commit and args.source_dirty=='false',
         'selected native CLI/source mismatch')
-    producer_success(document['source'],'//tools:codex_protocol_history_source_producer',
-        'protocol-history-source',args.native_deadline)
-    producer_success(document['sdk'],'//tools:codex_protocol_history_sdk_export_producer',
-        'protocol-history-sdk-export',args.native_deadline)
+    persistence = document['kind'] == 'omux-owner-status-persistence-native-selection-v1'
+    producer_success(document['source'],'//tools:codex_owner_status_persistence_source_producer' if persistence else
+        '//tools:codex_protocol_history_source_producer',
+        'owner-status-persistence-source' if persistence else 'protocol-history-source',args.native_deadline)
+    producer_success(document['sdk'],'//tools:codex_owner_status_persistence_sdk_export_producer' if persistence else
+        '//tools:codex_protocol_history_sdk_export_producer',
+        'owner-status-persistence-sdk-export' if persistence else 'protocol-history-sdk-export',args.native_deadline)
     report=validate_source(args.native_source_root,args.native_source_sha256,args.native_patch_sha256,args.native_deadline)
     require(report['inventory_sha256']==document['source']['inventory_sha256'], 'source inventory differs')
     exported=verify_selected_export(args.native_export_root,args.native_export_sha256,report,document,args.native_deadline)
@@ -466,8 +500,7 @@ class Admission:
             self.document=validate_selection(read_json(SELECTOR,args.native_protocol_history_sha256,args.native_deadline))
             # Outer pinned receipts bind role paths to their actual output_base
             # BEFORE opening any selected source/SDK role directory.
-            for role,target,output in (('source','//tools:codex_protocol_history_source_producer','protocol-history-source'),
-                ('sdk','//tools:codex_protocol_history_sdk_export_producer','protocol-history-sdk-export')):
+            for role,target,output in producer_roles(self.document):
                 producer_success(self.document[role],target,output,args.native_deadline)
             for root in (Path(self.document['source']['root']),Path(self.document['sdk']['root']),inputs.EXPORT_ROOT):
                 self.input_holds.append((root,inputs.hold_root(root)))
@@ -633,8 +666,7 @@ class Admission:
         qualified=verify_inputs(self.args) if qualified is None else qualified
         verify_inventory(self.source_fd,qualified[0]['source_inventory'],EXPORT_MODE_POLICY,
             on_read=lambda count:tick(self.args.native_deadline))
-        for role,target,output in (('source','//tools:codex_protocol_history_source_producer','protocol-history-source'),
-            ('sdk','//tools:codex_protocol_history_sdk_export_producer','protocol-history-sdk-export')):
+        for role,target,output in producer_roles(self.document):
             prior=producer_success(self.document[role],target,output,self.args.native_deadline)
             require(self.verify_previous(prior) is True, 'selected producer owned unit/cgroup no longer empty')
         for root,held in self.input_holds:inputs.recheck_root(root,held)

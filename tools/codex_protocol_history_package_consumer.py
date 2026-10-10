@@ -30,15 +30,25 @@ SOURCE_FIELDS = frozenset(("schema_version","kind","status","commit","parent_sou
 
 
 def selected(value):
-    return type(value) is dict and value.get("kind")==KIND
+    return type(value) is dict and value.get("kind") in (KIND, "omux-owner-status-persistence-native-package-selection-v1")
 
 
-def validate_producer_graph(paths):
+def validate_producer_graph(paths, persistence=False):
     fresh.require(type(paths) is list and len(paths)==len(set(paths)) and 0<len(paths)<=4096
         and {"tools/codex_fresh_native_runtime.py","tools/codex_protocol_history_package_consumer.py",
             "tools/codex_protocol_history_completed_inputs.py","tools/codex_protocol_history_cli.py",
             "tools/codex_protocol_history_native.py"}<=set(paths),
         "protocol-history package graph omitted its actual verification ABI")
+    if persistence:
+        fresh.require({'tools/codex_persistence_package_family.py',
+            'tools/codex_owner_status_persistence_metadata_producer.py',
+            'tools/codex_owner_status_persistence_sdk_export.py',
+            'tools/codex_owner_status_persistence_source.py',
+            'tools/codex_owner_status_persistence_binding.py',
+            'tools/codex_owner_status_source.py','tools/codex_owner_status_binding.py',
+            'tools/guard_native_metadata_sdk_reserved.py',
+            'tools/guard_resident_owner_status_persistence_source_reserved.py'} <= set(paths),
+            'persistence package graph omitted its material verification ABI')
 
 
 def file_pin(pin, mode=False, maximum=SMALL):
@@ -88,7 +98,14 @@ def validate_paths(selection):
         "protocol-history exact thirteen-role selection required")
     for role,pin in selection["files"].items():
         file_pin(pin,maximum=fresh.runtime.MAX_ORIGINAL_BYTES if role=="codex" else fresh.MAX_METADATA)
-        if role in ("source","export"):_producer_path(role,pin["path"])
+        if role in ("source","export"):
+            if selection['kind'] == 'omux-owner-status-persistence-native-package-selection-v1':
+                from codex_persistence_package_family import role_root
+                suffix = '/source-receipt.json' if role == 'source' else '/receipt.json'
+                fresh.require(pin['path'].endswith(suffix), 'persistence receipt leaf differs')
+                role_root('source' if role == 'source' else 'sdk', pin['path'][:-len(suffix)])
+            else:
+                _producer_path(role,pin["path"])
         elif role in ("protocol_run","compile","qualification_run","schema_run"):
             _run_path(pin["path"],"receipt.json")
         elif role in ("protocol_artifacts","schema_artifacts"):_run_path(pin["path"],protocol.ARTIFACTS)
@@ -130,6 +147,26 @@ def _without_mode(pin):
 
 
 def source_sdk(selection,values):
+    if selection['kind'] == 'omux-owner-status-persistence-native-package-selection-v1':
+        from codex_persistence_package_family import load_source, verify_sdk, INPUT_KIND
+        document = selection['native_cli_selection']['inputs']
+        protocol.validate_selection(document)
+        fresh.require(document['kind'] == INPUT_KIND, 'persistence package requires its distinct native input family')
+        report, _, _ = load_source(Path(selection['source_root']), selection['files']['source']['sha256'],
+            selection['patch_sha256'], fresh.DEADLINE)
+        fresh.require(fresh.parse(values['source']) == report, 'actual reconstructed N3 source receipt differs')
+        for role, root_role in (('source','source'),('export','sdk')):
+            row = document[root_role]
+            fresh.require(row['root'] == selection[role + '_root']
+                and row['receipt_sha256'] == selection['files'][role]['sha256'], 'persistence native input receipt join differs')
+        protocol.producer_success(document['source'], '//tools:codex_owner_status_persistence_source_producer',
+            'owner-status-persistence-source', fresh.DEADLINE)
+        protocol.producer_success(document['sdk'], '//tools:codex_owner_status_persistence_sdk_export_producer',
+            'owner-status-persistence-sdk-export', fresh.DEADLINE)
+        exported, qualified = verify_sdk(Path(selection['export_root']), selection['files']['export']['sha256'],
+            report, document, fresh.DEADLINE, protocol.SDK_FIELDS, protocol.METADATA_FIELDS, protocol.read_json)
+        fresh.require(fresh.parse(values['export']) == exported, 'actual SDK receipt bytes differ')
+        return report, exported, qualified
     source,exported=fresh.parse(values["source"]),fresh.parse(values["export"])
     fresh.require(type(source) is dict and set(source)==SOURCE_FIELDS
         and type(source["schema_version"]) is int and source["schema_version"]==1
@@ -463,7 +500,9 @@ def validate_chain(selection,values,protocol_values,extra):
             "protocol-history actual schema output custody differs")
     schema_inventory(selection,receipts)
     facts=receipts["qualification_run"]["native_protocol_history_cli"]
-    return {"upstream_commit":fresh.COMMIT,"patch_sha256":selection["patch_sha256"],
+    return {**({'material_family':selection['kind']} if selection['kind'] ==
+        'omux-owner-status-persistence-native-package-selection-v1' else {}),
+        "upstream_commit":fresh.COMMIT,"patch_sha256":selection["patch_sha256"],
         "source_inventory_sha256":source["inventory_sha256"],"export_inventory_sha256":exported["inventory_sha256"],
         "candidate_cache_key":facts["key"],"candidate_provenance_sha256":facts["provenance_sha256"],
         "configuration":config,"compile_invocation_id":receipts["qualification_run"]["id"],

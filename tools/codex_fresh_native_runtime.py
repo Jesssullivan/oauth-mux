@@ -199,7 +199,7 @@ def validate_export_producer(selection, exported):
 
 def validate_selection_paths(selection):
     """Refuse reads outside the exact public producer/guard output namespaces."""
-    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+    if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import validate_paths
         return validate_paths(selection)
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
@@ -242,7 +242,7 @@ def validate_selection_paths(selection):
 
 def validate_protocol_inventory(selection):
     """Enumerate only the complete two declared public JSON schema subtrees."""
-    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+    if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import validate_protocol_inventory as verify
         return verify(selection)
     roots = selection['protocol_schema_roots']
@@ -527,7 +527,7 @@ def validate_combined_cli(group, selection, values, receipt, source, exported):
         'combined actual CLI bytes differ from post-cleanup artifact evidence')
 
 def package_roles(selection):
-    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+    if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import ROLES as protocol_roles
         return protocol_roles
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
@@ -539,7 +539,7 @@ def package_roles(selection):
 
 def validate_chain(selection, values, protocol_values, staged_values=None):
     """Consume independently selected source/build/test/schema evidence bytes."""
-    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+    if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import validate_chain as verify
         require(isinstance(staged_values,dict), 'protocol-history declared actual evidence required')
         return verify(selection,values,protocol_values,staged_values)
@@ -717,7 +717,9 @@ def verify_runtime_files(payload, receipt):
         and manifest['chain'] == receipt['chain'] and manifest['executable'] == receipt['executable']
         and manifest['selection_sha256'] == receipt['selection_sha256']
         and manifest['producer_source_sha256'] == receipt['producer_source_sha256']
-        and manifest['producer_target'] == receipt['producer_target'] == '//tools:codex_fresh_native_runtime_package',
+        and manifest['producer_target'] == receipt['producer_target'] == (
+            '//tools:codex_persistence_native_runtime_package' if receipt['chain'].get('material_family') ==
+            'omux-owner-status-persistence-native-package-selection-v1' else '//tools:codex_fresh_native_runtime_package'),
         'fresh runtime manifest identity differs')
     require(set(files) == set(manifest['files']) | {runtime.MANIFEST}
         and sum(len(v) for n,v in files.items() if n != runtime.MANIFEST) <= runtime.MAX_RUNTIME_BYTES,
@@ -791,7 +793,8 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
         'chain':chain,'executable':executable,'runtime':runtime_info,'files':inventory,
         'selection_sha256':args.selected_sha256,
         'producer_source_sha256':digest(Path(__file__).read_bytes()),
-        'producer_target':'//tools:codex_fresh_native_runtime_package',
+        'producer_target':('//tools:codex_persistence_native_runtime_package' if selection.get('kind') ==
+            'omux-owner-status-persistence-native-package-selection-v1' else '//tools:codex_fresh_native_runtime_package'),
         'loader_relocation':witness,
         'declared_tools':{'strip_sha256':digest(portable._read(args.strip.resolve())),
             'patchelf_sha256':digest(portable._read(args.patchelf.resolve()))}}
@@ -801,7 +804,7 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
         'chain':chain,'executable':executable,'runtime':runtime_info,
         'selection_sha256':args.selected_sha256,
         'producer_source_sha256':manifest['producer_source_sha256'],
-        'producer_target':'//tools:codex_fresh_native_runtime_package',
+        'producer_target':manifest['producer_target'],
         'archive_sha256':digest(payload),'archive_bytes':len(payload),
         'manifest_sha256':digest(encoded(manifest)),
         'runtime_inventory':{n:{'sha256':r['sha256'],'bytes':r['bytes'],
@@ -842,7 +845,7 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
         after = read_extra(selection,envelopes(selection,values,receipts),receipts)
         require(validate_chain(selection,values,protocol_values,after) == chain,
             'staged complete chain/output rehash changed after packaging cleanup')
-    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+    if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import load_inputs
         after_values,after_protocol,after_extra = load_inputs(selection,
             lambda role,pin,maximum:read_selected(canonical_path(pin['path']),pin,maximum))
@@ -882,7 +885,7 @@ def main():
     entries = {**selection['files'],
         **{'protocol/'+n:p for n,p in selection['protocol_schema_files'].items()}}
     staged_values = None
-    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+    if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         entries.update({'protocol-history/'+name:pin for name,pin in selection['protocol_history_artifact_files'].items()})
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
         entries.update({'staged/'+name:pin for name,pin in selection['staged_artifact_files'].items()})
@@ -895,7 +898,7 @@ def main():
         path = alias.resolve(strict=True)
         require(str(path) == pin['path'], 'fresh runtime declared alias resolution differs')
         return path
-    if selection.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+    if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import load_inputs
         values,protocol_values,staged_values = load_inputs(selection,
             lambda role,pin,maximum:read_selected(selected_alias(role,pin),pin,maximum),selected_alias)

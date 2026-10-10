@@ -6,7 +6,14 @@ MODEL = "native-metadata-sdk-models-reserved"
 DESCRIPTOR = "native-query-descriptor-reserved"
 METADATA = "native-persistence-metadata-reserved"
 SDK = "native-persistence-sdk-reserved"
+PACKAGE_MODEL = "native-persistence-package-models-reserved"
 COHORTS = {
+    PACKAGE_MODEL: ("//tools:guard_native_metadata_sdk_reserved_test",
+        "//tools:codex_persistence_package_family_test",
+        "//tools:codex_protocol_history_package_consumer_test",
+        "//tools:codex_protocol_history_completed_inputs_test",
+        "//tools:codex_protocol_history_native_test",
+        "//tools:codex_protocol_history_cli_test", "//:docs_check"),
     MODEL: ("//tools:guard_native_metadata_sdk_reserved_test",
             "//tools:codex_owner_status_persistence_metadata_sdk_test",
             "//tools:codex_protocol_history_query_tools_test",

@@ -114,7 +114,12 @@ evaluation_source(
 cached_site = use_repo_rule("//tools:cached_site_repository.bzl", "cached_site_repository")
 yoga_selection = use_repo_rule("//tools:yoga_selection_inputs.bzl", "yoga_selection_inputs")
 yoga_selection(name = "omux_yoga_selection_inputs")
-cached_site(name = "omux_cached_site")
+cached_site(
+    name = "omux_cached_site",
+    inventory_path = "/home/jess/.local/state/omux-execution-20261005/cache-bc988dbbbbc771e13245d8d338d52eed07f226e2f4dc71dcae1e46246cbbef88/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/cached_site_inventory_probe/test.outputs/inventory.json",
+    inventory_sha256 = "1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931",
+    bootstrap_closure = "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
+)
 
 cached_nar = use_repo_rule("//tools:cached_nar_repository.bzl", "cached_nar_repository")
 cached_nar(name = "omux_cached_nars")

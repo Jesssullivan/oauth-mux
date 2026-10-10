@@ -14,6 +14,11 @@ def execute_existing(systemctl,session_probe,manifest):
     home = Path(os.environ["HOME"])
     guard.manifest_schema(manifest,home)
     guard.carrier_purpose(guard.EXISTING_ENROLLMENT_LABEL,manifest["action"],"existing_archive" in manifest)
+    if manifest["action"] == "enroll-default-existing":
+        resident.DEADLINE_NS = deadline
+        import resident_default_enrollment
+        environment = resident.controller_environment(os.environ,manifest["instance"])
+        return resident_default_enrollment.execute(systemctl,manifest,environment,resident.bounded,resident.remaining,deadline)
     resident.PHASE = "installation"
     witness = owned.QualifiedExistingEnrollment(manifest,home,deadline-resident.CLEANUP_RESERVE_NS)
     try:

@@ -19,6 +19,17 @@ class SourceReservationModels(unittest.TestCase):
         return SimpleNamespace(profile=source.PROFILE, manager="system", reuse_owned_cache=False,
             source_commit="a" * 40, source_dirty="false", repository_cache=None, nixpkgs_source=None)
 
+    def test_default_source_models_are_finite_and_have_no_live_selection(self):
+        expected=["test", "//tools:guard_resident_custody_runtime_reserved_test",
+            "//delivery:resident_default_enrollment_contract_test", "//delivery:resident_existing_enrollment_contract_test",
+            "//delivery:resident_custody_reopen_contract_test", "//:docs_check"]
+        self.assertEqual(source.COHORTS[source.DEFAULT_MODEL_PROFILE],expected)
+        row=source.projection(100*10**9,1300*10**9,True,{},source.DEFAULT_MODEL_PROFILE)
+        self.assertEqual(row["mode"],"isolated-default-source-models")
+        self.assertIs(row["normal_vault_observed"],False)
+        self.assertIs(row["source_mutation_requested"],False)
+        with self.assertRaises(ValueError): source.selected(source.DEFAULT_MODEL_PROFILE, ["run","//delivery:resident_codex_existing_enrollment"])
+
     def test_installed_custody_models_have_distinct_exact_offline_vector(self):
         self.assertEqual(source.COHORTS[source.MODEL_PROFILE], ["test",
             "//tools:guard_resident_custody_runtime_reserved_test", "//tools:guard_resident_namespace_profile_test",

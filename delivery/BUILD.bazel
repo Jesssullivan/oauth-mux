@@ -1373,7 +1373,7 @@ python_test(
 python_binary(
     name = "resident_codex_existing_enrollment",
     main = "resident_existing_enrollment.py",
-    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+    srcs = ["resident_default_enrollment.py","resident_custody_reopen.py","resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
         "//tools:guard_resident_enrollment_profile.py","//tools:resident_owned_update_sources"],
     data = ["@omux_nix//:systemctl",":resident_session_services"],
     args = ["$(location @omux_nix//:systemctl)","$(location :resident_session_services)"],
@@ -1384,7 +1384,15 @@ python_binary(
 python_test(
     name = "resident_existing_enrollment_contract_test",
     main = "test_resident_existing_enrollment.py",
-    srcs = ["resident_existing_enrollment.py","resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+    srcs = ["resident_default_enrollment.py","resident_custody_reopen.py","resident_existing_enrollment.py","resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:resident_owned_update_sources"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "resident_default_enrollment_contract_test",
+    main = "test_resident_default_enrollment.py",
+    srcs = ["resident_existing_enrollment.py","resident_default_enrollment.py","resident_custody_reopen.py","resident_enrollment.py","install.py","pack.py","portable.py",
         "//tools:guard_resident_enrollment_profile.py","//tools:resident_owned_update_sources"],
     target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
 )

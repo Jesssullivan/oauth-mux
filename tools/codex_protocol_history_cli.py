@@ -267,8 +267,7 @@ class Admission:
             self.document=self.selection['inputs']
             # Outer pinned receipts bind role paths to their actual output_base
             # BEFORE opening any selected source/SDK role directory.
-            for role,target,output in (('source','//tools:codex_protocol_history_source_producer','protocol-history-source'),
-                ('sdk','//tools:codex_protocol_history_sdk_export_producer','protocol-history-sdk-export')):
+            for role,target,output in protocol.producer_roles(self.document):
                 protocol.producer_success(self.document[role],target,output,args.native_deadline)
             for root in (Path(self.document['source']['root']),Path(self.document['sdk']['root']),protocol.inputs.EXPORT_ROOT):
                 self.input_holds.append((root,protocol.inputs.hold_root(root)))
@@ -438,8 +437,7 @@ class Admission:
         qualified=verify_inputs(self.args) if qualified is None else qualified
         verify_inventory(self.source_fd,qualified[0]['source_inventory'],EXPORT_MODE_POLICY,
             on_read=lambda count:tick(self.args.native_deadline))
-        for role,target,output in (('source','//tools:codex_protocol_history_source_producer','protocol-history-source'),
-            ('sdk','//tools:codex_protocol_history_sdk_export_producer','protocol-history-sdk-export')):
+        for role,target,output in protocol.producer_roles(self.document):
             prior=protocol.producer_success(self.document[role],target,output,self.args.native_deadline)
             require(self.verify_previous(prior) is True, 'selected producer owned unit/cgroup no longer empty')
         for root,held in self.input_holds:protocol.inputs.recheck_root(root,held)

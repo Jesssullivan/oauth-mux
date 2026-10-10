@@ -59,6 +59,7 @@ def classify(before,after,envelope):
     return "safe_refusal",error["message"]
 
 class Channel:
+    METHODS = ("system.health","system.handshake","custody.reopen")
     def __init__(self,path,pid,deadline):
         self.path,self.pid,self.deadline=path,pid,deadline
         self.serial=0
@@ -79,13 +80,17 @@ class Channel:
         pid,uid,gid=struct.unpack("3i",self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
         guard.require(pid == self.pid and uid == os.getuid() and gid == os.getgid())
         return guard.stable(self.path.stat(follow_symlinks=False)),pid,resident.process_identity(pid)
-    def rpc(self,method):
-        guard.require(method in ("system.health","system.handshake","custody.reopen"))
+    def parameters(self,method,params):
+        guard.require(params is None or type(params) is dict and not params)
+        return {}
+    def rpc(self,method,params=None):
+        guard.require(method in self.METHODS)
+        parameters=self.parameters(method,params)
         call_deadline=min(self.deadline,time.monotonic_ns()+15*10**9)
         guard.require(self.identity() == self.peer)
         self.serial+=1
         self.connection.settimeout(self.timeout(call_deadline))
-        self.connection.sendall(json.dumps({"jsonrpc":"2.0","id":self.serial,"method":method,"params":{}},separators=(",",":")).encode()+b"\n")
+        self.connection.sendall(json.dumps({"jsonrpc":"2.0","id":self.serial,"method":method,"params":parameters},separators=(",",":")).encode()+b"\n")
         raw=bytearray()
         while b"\n" not in raw:
             self.connection.settimeout(self.timeout(call_deadline))

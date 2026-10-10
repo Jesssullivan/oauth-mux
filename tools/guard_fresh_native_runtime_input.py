@@ -124,16 +124,20 @@ class Admission:
         fresh.require(producer_run['profile'] == 'standard' and producer_run['exit'] == 0
             and producer_run['workload_exit'] == 0 and producer_run['descendants_empty'] is True
             and producer_run['controller_failure'] is None
-            and producer_run['targets'] == ['//tools:codex_fresh_native_runtime_package']
+            and producer_run['targets'] == [('//tools:codex_persistence_native_runtime_package' if
+                package.get('kind') == 'omux-owner-status-persistence-native-package-selection-v1'
+                else '//tools:codex_fresh_native_runtime_package')]
             and producer_run['test_evidence']['state'] == 'preserved'
             and fresh.HASH.fullmatch(selected['producer_graph_sha256'])
             and producer_run['graph_sha256'] == selected['producer_graph_sha256'])
         graph_inputs = producer_run['graph_inputs']
         fresh.require('tools/codex_fresh_native_runtime.py' in graph_inputs
             and fresh.HASH.fullmatch(selected['producer_source_sha256']))
-        if package.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        if package.get('kind') in ('omux-protocol-history-native-package-selection-v1',
+                'omux-owner-status-persistence-native-package-selection-v1'):
             from codex_protocol_history_package_consumer import validate_producer_graph
-            validate_producer_graph(graph_inputs)
+            validate_producer_graph(graph_inputs, package.get('kind') ==
+                'omux-owner-status-persistence-native-package-selection-v1')
             fresh.require(type(producer_run['exit']) is int and producer_run['exit'] == 0
                 and type(producer_run['workload_exit']) is int and producer_run['workload_exit'] == 0
                 and producer_run['manager'] == 'system' and producer_run['cleanup']['state'] == 'empty'
@@ -144,7 +148,7 @@ class Admission:
             validate_producer_graph(graph_inputs)
         fresh.require(set(package['files']) == fresh.package_roles(package))
         staged_values = None
-        if package.get('kind') == 'omux-protocol-history-native-package-selection-v1':
+        if package.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
             from codex_protocol_history_package_consumer import load_inputs
             values,protocol_values,staged_values = load_inputs(package,
                 lambda role,pin,maximum:read(pin,maximum))
@@ -178,7 +182,9 @@ class Admission:
         for evidence in (receipt, manifest):
             fresh.require(evidence['selection_sha256'] == selected['package_selection']['sha256']
                 and evidence['producer_source_sha256'] == selected['producer_source_sha256']
-                and evidence['producer_target'] == '//tools:codex_fresh_native_runtime_package')
+                and evidence['producer_target'] == ('//tools:codex_persistence_native_runtime_package' if
+                    package.get('kind') == 'omux-owner-status-persistence-native-package-selection-v1'
+                    else '//tools:codex_fresh_native_runtime_package'))
         rows = {name:{'sha256':fresh.digest(raw),'bytes':len(raw),
             'mode':0o444 if name == fresh.runtime.CA else 0o555} for name,raw in files.items()}
         fresh.require(receipt['runtime_inventory'] == rows and len(rows) <= fresh.MAX_RUNTIME_FILES)
