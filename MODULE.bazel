@@ -260,7 +260,7 @@ codex_native_source_context_refresh_inputs(name="omux_codex_native_source_contex
 codex_native_acquisition_inputs = use_repo_rule("//tools:codex_native_acquisition_inputs.bzl", "codex_native_acquisition_inputs")
 codex_native_acquisition_inputs(
     name = "omux_native_acquisition_metadata_inputs",
-    manifest = "//integrations/codex-upstream:native_acquisition_input_configuration",
+    manifest = "//integrations/codex-upstream:native-acquisition-inputs.json",
 )
 
 native_acquisition_package_inputs = use_extension("//tools:codex_native_acquisition_package_inputs.bzl", "native_acquisition_package_inputs")

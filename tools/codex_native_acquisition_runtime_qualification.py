@@ -162,6 +162,67 @@ def registration():
     # No implementation is silently selected by a string/path/boolean document.
     raise ValueError('native-acquisition-runtime-registration-unimplemented')
 
+def capture_selected_peer(bridge,connection,held_image,document,selection,deadline):
+    """Register genuine compiled image custody; no ordinary-resume promotion.
+
+    Bridge.enable must have run BEFORE connect. Direct-main launch ownership,
+    exact runtime NAR inventory and native resume authorities are downstream
+    gates; this method cannot launch a process or turn runtime flags true.
+    """
+    import codex_native_acquisition_peer as native
+    import codex_native_acquisition_material as material
+    material.declared_controller(deadline)
+    inputs=compiled_inputs(document,selection,deadline)
+    receipt=compilation.read_json(selection['path'],selection['sha256'],deadline)
+    row=next(value for value in receipt['artifacts'] if value['role']=='native-cli')
+    info=os.fstat(held_image)
+    require(stat.S_ISREG(info.st_mode) and info.st_size==row['bytes']
+        and 64<=info.st_size<=512*1024*1024 and info.st_mode&0o111!=0
+        and info.st_mode&0o022==0 and fcntl.fcntl(held_image,fcntl.F_GETFL)&os.O_ACCMODE==os.O_RDONLY)
+    digest=hashlib.sha256();offset=0
+    while offset<info.st_size:
+        compilation.tick(deadline);raw=os.pread(held_image,min(1024*1024,info.st_size-offset),offset)
+        require(bool(raw));digest.update(raw);offset+=len(raw)
+    after=os.fstat(held_image)
+    require((info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+        ==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)
+        and digest.hexdigest()==inputs['primary_elf_sha256']==row['sha256'])
+    peer=native.Peer(bridge,connection,held_image,deadline)
+    try:
+        captured=os.fstat(held_image)
+        require((info.st_dev,info.st_ino,info.st_size,info.st_mode,info.st_uid,info.st_gid,
+            info.st_nlink,info.st_mtime_ns,info.st_ctime_ns)==
+            (captured.st_dev,captured.st_ino,captured.st_size,captured.st_mode,captured.st_uid,captured.st_gid,
+            captured.st_nlink,captured.st_mtime_ns,captured.st_ctime_ns))
+        require(compiled_inputs(document,selection,deadline)==inputs)
+        peer.recheck()
+        return peer,inputs
+    except BaseException:
+        peer.close();raise
+
+def receive_authenticated_acquisition(peer,connection,request,key,expected_payload,deadline):
+    """Native credential/writer-pidfd checks precede v3 reply/FD parsing."""
+    require(deadline==peer.deadline)
+    raw,fd=peer.receive(connection,MAX_PACKET)
+    handed=False
+    # Existing bounded typed parser owns the authenticated descriptor and closes
+    # it on every success/refusal. Adapter introduces no unauthenticated bytes.
+    class Packet:
+        def settimeout(self,value):pass
+        def recvmsg(self,*args):
+            nonlocal handed
+            handed=True
+            return raw,[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[fd]).tobytes())],0,None
+    try:
+        result=receive_acquisition(Packet(),request,key,expected_payload,deadline)
+    except BaseException:
+        # Parser owns fd immediately after its initial deadline check. If that
+        # check refuses before recvmsg, explicitly release our still-owned right.
+        if not handed:os.close(fd)
+        raise
+    peer.recheck()
+    return result
+
 def compiled_inputs(document,selection,deadline):
     """Same actual ninth backend/config/ELF, never a legacy role alias."""
     report=compilation.readback(document,selection,deadline)

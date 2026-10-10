@@ -8,6 +8,8 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         "guard_native_acquisition_inputs_reserved.py", "guard_resident_native_source_acquisition_source_reserved.py",
         "codex_native_acquisition_compilation.py", "codex_native_acquisition_preflight.py",
         "codex_native_acquisition_runtime_qualification.py", "guard_cache.py",
+        "codex_native_acquisition_peer.py",
+        "codex_native_acquisition_peer_test.py",
     ]).to_list()
     data = depset(parent_data + sdk_data + [
         "//integrations/codex-upstream:native_source_context_patch",
@@ -32,6 +34,7 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         "codex_native_acquisition_preflight_test",
         "codex_native_acquisition_material_test",
         "codex_native_acquisition_runtime_qualification_test",
+        "codex_native_acquisition_peer_test",
     )
     for name, main in [
         ("codex_native_acquisition_binding_producer", "codex_native_acquisition_binding.py"),
@@ -46,12 +49,17 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         ("codex_native_acquisition_query_producer", "codex_native_acquisition_query_producer.py"),
         ("codex_native_acquisition_runtime_qualification_test", "codex_native_acquisition_runtime_qualification_test.py"),
         ("codex_native_acquisition_runtime_qualification_producer", "codex_native_acquisition_runtime_qualification.py"),
+        ("codex_native_acquisition_peer_test", "codex_native_acquisition_peer_test.py"),
     ]:
         target_data = data
         if name in model_targets:
             target_data = []
         elif name == "codex_native_acquisition_binding_producer":
             target_data = binding_data
+        if name in ("codex_native_acquisition_peer_test",
+                    "codex_native_acquisition_runtime_qualification_test",
+                    "codex_native_acquisition_runtime_qualification_producer"):
+            target_data = target_data + ["//:native_peer_runtime_bridge.so"]
         python_test(name = name, main = main, srcs = depset(sources + [main]).to_list(),
             data = target_data,
             timeout = "long", tags = ["manual", "no-remote", "no-cache"])

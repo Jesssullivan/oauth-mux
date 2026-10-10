@@ -3123,6 +3123,9 @@ pub const Engine = struct {
         if (eql(request.method, "setup.refresh")) return self.handleRequest(allocator, request, channel);
         const kind = mutationKind(request.method) orelse return self.handleRequest(allocator, request, channel);
         if (channel != .control) return error.WrongChannel;
+        // This is daemon-local request handling, not the user's end-to-end
+        // start or a timestamp that can be subtracted after restart.
+        const lifecycle_local_start: ?std.Io.Timestamp = if (eql(request.method, "source.disconnect")) std.Io.Clock.awake.now(self.io) else null;
         const operation_id = try control.operationId(request.params);
         const expected_revision = try control.expectedRevision(request.params);
         const fingerprint = try mutationFingerprint(allocator, request.method, request.params, self.root_key);
@@ -3238,6 +3241,11 @@ pub const Engine = struct {
                 .operation_correlation = std.mem.readInt(u64, correlation[0..8], .little),
                 .phase = .remove,
                 .outcome = .success,
+                .local_elapsed_ns = if (lifecycle_local_start) |started| blk: {
+                    const elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+                    // Missing timing preserves the outcome; never invent zero.
+                    break :blk if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @as(u64, @intCast(elapsed)) else null;
+                } else null,
             }) catch |err| switch (err) {
                 error.ClockAnomaly, error.CounterSaturated => blk: {
                     if (err == error.ClockAnomaly) current.clock_anomaly = true else current.saturated = true;
@@ -3985,7 +3993,15 @@ pub const Engine = struct {
                 },
             });
         }
-        if (eql(method, "reliability.lifecycle")) return control.success(allocator, request.id, .{
+        if (eql(method, "reliability.lifecycle")) {
+            // A failed final store commit can leave prepared facts in memory.
+            // Raw diagnostics remain visible; no durable outcome projection is
+            // authorized until the committed custody state is trustworthy.
+            const phase_export: reliability.LifecyclePhaseExport = if (self.poisoned)
+                .{ .phases = null, .unavailable_reason = .custody_unavailable }
+            else
+                reliability.lifecycleExport(self.lifecycle_measurements, self.now());
+            return control.success(allocator, request.id, .{
             .source_disconnect_timing = try lifecycle_source.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
             .native_removal_timing = try native_removal_timing.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
             .setup_verification = try setup_verification.summarize(allocator, self.mutations.snapshot(), self.now()),
@@ -3993,6 +4009,12 @@ pub const Engine = struct {
             .terminal_removal = try terminal_removal.summarize(allocator, self.mutations.snapshot()),
             .schema_version = 1,
             .measurements = self.lifecycle_measurements,
+            .phase_outcomes = phase_export.phases,
+            .phase_outcomes_unavailable_reason = phase_export.unavailable_reason,
+            .source_detachment_local_latency_scope = "daemon_request_to_terminal_before_snapshot_commit",
+            .user_end_to_end_elapsed_measured = false,
+            .supported_demand_readiness_coverage_measured = false,
+            .unobserved_success_phases = .{ "install_and_activate", "adopted_renewal", "ordinary_native_launch_resume", "owned_update_activation" },
             .scope = "terminal_source_removal_native_import_and_authorized_browser_refusal",
             .coverage = if (self.lifecycle_measurements == null) "unmeasured" else "partial",
             .latency = "partial_native_import_admission_to_terminal",
@@ -4001,7 +4023,8 @@ pub const Engine = struct {
             .browser_refusal_coverage = if (self.browser_attempts == null or self.lifecycle_measurements == null) "recorder_unavailable" else if (self.browser_attempts.?.count == browser_attempt.max_records) "authority_capacity_exhausted" else "partial_authorized_context_ingress",
             .browser_refusal_authority = .{ .capacity = browser_attempt.max_records, .retained = if (self.browser_attempts) |ledger| ledger.count else 0, .retirement_supported = false },
             .achieved_slo = false,
-        });
+            });
+        }
         if (eql(method, "reliability.export")) {
             self.metrics_mutex.lockUncancelable(self.io);
             defer self.metrics_mutex.unlock(self.io);
@@ -6742,7 +6765,10 @@ test "public snapshots exclude retained native source authority and private loca
         .native_owners = native_owner.Ledger.init(allocator),
         .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
     };
-    defer current.release();
+    defer {
+        current.release();
+        allocator.free(current.state_dir);
+    }
     const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1),
         .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 },
         .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
@@ -6764,7 +6790,9 @@ test "public snapshots exclude retained native source authority and private loca
     const descriptions = control.get(control.get(parsed.value, "result").?, "source_descriptions").?;
     try std.testing.expectEqual(@as(usize, 2), descriptions.array.items.len);
     for (descriptions.array.items) |description| try std.testing.expectEqual(@as(usize, 4), description.object.count());
-    try std.testing.expectEqualStrings("", try control.string(descriptions.array.items[0], "path"));
+    const native_path = control.get(descriptions.array.items[0], "path").?;
+    try std.testing.expect(native_path == .string);
+    try std.testing.expectEqualStrings("", native_path.string);
     try std.testing.expectEqualStrings("/fixture/declared-legacy", try control.string(descriptions.array.items[1], "path"));
 }
 
@@ -6783,7 +6811,10 @@ test "native import joins actual source lifecycle with retained consent and fres
         .admission = snapshot_admission.Ledger.init(allocator), .native_owners = native_owner.Ledger.init(allocator),
         .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
     };
-    defer current.release();
+    defer {
+        current.release();
+        allocator.free(current.state_dir);
+    }
     const source_handle: [32]u8 = @splat(2);
     const source_id = std.fmt.bytesToHex(source_handle, .lower);
     const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1),
@@ -7685,6 +7716,38 @@ test "external source removal counts terminal completion once and skips telemetr
         } else {
             const windows = try current.?.lifecycle_measurements.?.window(current.?.now());
             try std.testing.expectEqual(@as(u64, 1), windows[@backingInt(reliability.Phase.remove)][@backingInt(reliability.LifecycleOutcome.success)].count);
+            const cell = windows[@backingInt(reliability.Phase.remove)][@backingInt(reliability.LifecycleOutcome.success)];
+            try std.testing.expectEqual(@as(u128, 1), cell.local.timedOpportunities());
+            try std.testing.expectEqual(@as(u64, 1), cell.total.missing_latency);
+            try std.testing.expectEqual(@as(u64, 1), cell.user_provider_wait.missing_latency);
+            const summary = reliability.lifecycleSummary(windows);
+            try std.testing.expectEqual(@as(u64, 1), summary[@backingInt(reliability.Phase.remove)].successful_user_outcomes);
+            try std.testing.expect(summary[@backingInt(reliability.Phase.remove)].supported_user_demands == null);
+            // The actual endpoint must still expose its retained diagnostics
+            // when only the new derived window is unavailable.
+            const recorded_at = current.?.lifecycle_measurements.?.last_recorded_at;
+            current.?.lifecycle_measurements.?.last_recorded_at = current.?.now() + 86_400;
+            var diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", .{});
+            defer diagnostic.deinit();
+            const exported = control.get(diagnostic.value, "result").?;
+            try std.testing.expect(control.get(exported, "phase_outcomes").? == .null);
+            try std.testing.expectEqualStrings("clock_anomaly", try control.string(exported, "phase_outcomes_unavailable_reason"));
+            try std.testing.expect(control.get(exported, "measurements").? == .object);
+            try std.testing.expect(control.get(exported, "source_disconnect_timing") != null);
+            try std.testing.expect(control.get(exported, "terminal_adapter_setup") != null);
+            current.?.lifecycle_measurements.?.last_recorded_at = recorded_at;
+            // Model a prepared, uncommitted outcome left after a failed final
+            // writer call. The poisoned endpoint must not call it durable.
+            try current.?.lifecycle_measurements.?.record(current.?.now(), .{ .operation_correlation = 99, .phase = .enroll, .outcome = .success });
+            current.?.poisoned = true;
+            var poisoned_diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", .{});
+            defer poisoned_diagnostic.deinit();
+            const unavailable = control.get(poisoned_diagnostic.value, "result").?;
+            try std.testing.expect(control.get(unavailable, "phase_outcomes").? == .null);
+            try std.testing.expectEqualStrings("custody_unavailable", try control.string(unavailable, "phase_outcomes_unavailable_reason"));
+            try std.testing.expect(control.get(unavailable, "measurements").? == .object);
+            try std.testing.expect(control.get(unavailable, "terminal_adapter_setup") != null);
+            current.?.poisoned = false;
         }
     }
 }
@@ -8276,7 +8339,11 @@ test "actual runtime commit refuses installation namespace replacement after wor
         .root_key = @splat(73), .test_key = @splat(73),
         .db = try storage.Store.open(io, allocator, database, @splat(73)),
     };
-    defer current.release();
+    defer {
+        current.db.?.close();
+        current.release();
+        allocator.free(current.state_dir);
+    }
     current.native_registry = .{ .phase = .installed, .transaction = @splat(1), .capability_digest = @splat(2) };
     current.adapter_epochs[0] = 1;
     try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(directory.dir.handle, "selected", 0o700));
@@ -8320,7 +8387,7 @@ test "actual runtime commit refuses installation namespace replacement after wor
     const expired: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
     task.invocation.until = expired;
     task.context.deadline = expired;
-    try std.testing.expectError(error.Timeout, current.persistWithRuntimeFence(&.{}, &task));
+    try std.testing.expectError(error.NativeSourceDeadline, current.persistWithRuntimeFence(&.{}, &task));
     try std.testing.expect(current.qualified_native_runtime == null);
     try std.testing.expectEqual(before_revision, current.revision);
     try std.testing.expectEqual(before_rows, current.state.grants.items.len);

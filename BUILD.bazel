@@ -457,6 +457,14 @@ cc_test(
     ],
 )
 
+# Direct-main image attribution is independent of native resume authority.
+cc_binary(
+    name = "native_peer_runtime_bridge.so",
+    srcs = ["src/platform/native_peer_runtime_bridge.c", "src/platform/native_peer.c", "src/platform/native_peer.h"],
+    linkshared = True,
+    linkstatic = False,
+)
+
 zig_test(
     name = "vault_test",
     main = "src/vault.zig",

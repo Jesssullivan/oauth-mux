@@ -13,6 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 import codex_native_acquisition_runtime_qualification as runtime
+from codex_native_acquisition_peer_test import PeerTests
 
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
