@@ -153,9 +153,9 @@ pub fn encodeRequest(a: std.mem.Allocator, request: Request, key: [32]u8) ![]u8 
     const value = try fields(a, request);
     const proof = try requestProof(a, request, key);
     var params: std.json.ObjectMap = .empty;
-    inline for (@typeInfo(Fields).@"struct".fields) |field| {
-        try params.put(a, field.name, if (comptime std.mem.eql(u8, field.name, "protocolVersion"))
-            .{ .integer = 2 } else .{ .string = @field(value, field.name) });
+    inline for (@typeInfo(Fields).@"struct".field_names) |field| {
+        try params.put(a, field, if (comptime std.mem.eql(u8, field, "protocolVersion"))
+            .{ .integer = 2 } else .{ .string = @field(value, field) });
     }
     try params.put(a, "proof", .{ .string = try a.dupe(u8, &proof) });
     return std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = request.operation[0..],
@@ -224,8 +224,8 @@ pub fn verifyReply(a: std.mem.Allocator, value: std.json.Value, request: Request
     const version = value.object.get("protocolVersion").?;
     if (version != .integer or version.integer != 2) return error.InvalidNativeSourcePayload;
     const expected = try fields(a, request);
-    inline for (@typeInfo(Fields).@"struct".fields) |field| {
-        if (comptime !std.mem.eql(u8, field.name, "protocolVersion")) try sameString(value, field.name, @field(expected, field.name));
+    inline for (@typeInfo(Fields).@"struct".field_names) |field| {
+        if (comptime !std.mem.eql(u8, field, "protocolVersion")) try sameString(value, field, @field(expected, field));
     }
     try sameString(value, "payloadFormat", payload_format);
     const payload_bytes = try std.fmt.allocPrint(a, "{d}", .{payload.len});
@@ -251,9 +251,9 @@ pub fn fixtureReply(a: std.mem.Allocator, request: Request, key: [32]u8, payload
     if (!@import("builtin").is_test) return error.TestOnly;
     const expected = try fields(a, request);
     var result: std.json.ObjectMap = .empty;
-    inline for (@typeInfo(Fields).@"struct".fields) |field| {
-        try result.put(a, field.name, if (comptime std.mem.eql(u8, field.name, "protocolVersion"))
-            .{ .integer = 2 } else .{ .string = @field(expected, field.name) });
+    inline for (@typeInfo(Fields).@"struct".field_names) |field| {
+        try result.put(a, field, if (comptime std.mem.eql(u8, field, "protocolVersion"))
+            .{ .integer = 2 } else .{ .string = @field(expected, field) });
     }
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(payload, &digest, .{});

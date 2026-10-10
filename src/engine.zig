@@ -722,7 +722,7 @@ const NativeImportTask = struct {
             self.failure = error.ServiceStopping;
             return;
         }
-        self.perform() catch |err| self.failure = err;
+        self.perform() catch |err| { self.failure = err; };
     }
     fn perform(self: *NativeImportTask) !void {
         const retained = self.pending.native_context orelse return error.NativeSourceFreshCheckRequired;
@@ -1754,21 +1754,21 @@ pub const Engine = struct {
         _ = try std.fmt.hexToBytes(&consent_handle, &consent_id);
         const owner: native_source_consent.Owner = .{ .id = current.owner_id, .nonce = current.native_nonce,
             .endpoint_generation = current.endpoint_generation, .witness = current.witness };
-        const now = self.now();
+        const observed_at = self.now();
         const authority: NativeSourceAuthority = .{ .origin = task.source_origin orelse return error.NativeSourceOriginChanged,
             .consent = .{ .id = consent_handle, .generation = 1, .source_id = source_handle, .source_generation = 1,
-                .owner = owner, .expires_at = try std.math.add(i64, now, selection.consent_seconds),
+                .owner = owner, .expires_at = try std.math.add(i64, observed_at, selection.consent_seconds),
                 .purpose = .native_access_copy_for_identity_and_request, .allow_reenrollment = selection.allow_reenrollment,
                 .forget_epoch = self.import_forget_epoch } };
         const admission = try native_source_consent.admit(.{ .source_id = source_handle, .source_generation = 1,
             .status = .connected, .consent = authority.consent, .owner = owner,
             .context = .{ .id = context.id, .generation = context.generation }, .store_present = true,
-            .forget_epoch = self.import_forget_epoch }, now, 0, @intCast(remaining));
+            .forget_epoch = self.import_forget_epoch }, observed_at, 0, @intCast(remaining));
         if (try self.admitNativeControl(task)) return true;
         self.active_credit = task.credit;
         _ = try self.connectImportSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex",
             .label = (try control.optionalString(task.request.params, "label")) orelse "",
-            .authorized_at = now });
+            .authorized_at = observed_at });
         _ = try self.importSourceGeneration(&source_id);
         const description: SourceDescription = .{ .source_id = &source_id, .provider = "codex",
             .label = (try control.optionalString(task.request.params, "label")) orelse "",
@@ -1781,7 +1781,7 @@ pub const Engine = struct {
         task.source_authority = authority;
         task.source_admission = admission;
         task.source_started_at = started;
-        task.source_copy_now = now;
+        task.source_copy_now = observed_at;
         task.stage = .source_acquire;
         try self.native_workers.?.enqueue(&task.job);
         return false;
@@ -1844,7 +1844,7 @@ pub const Engine = struct {
         task.deployment = .{ .path = root_path, .descriptor = root_fd };
         const parent_path = std.fs.path.dirname(selected.installation_root) orelse return error.InvalidInstallationDestination;
         task.parent = try paths.openPrivateRoot(a, parent_path, false);
-        task.basename = try a.dupeZ(u8, std.fs.path.basename(selected.installation_root));
+        task.basename = try a.dupeSentinel(u8, std.fs.path.basename(selected.installation_root), 0);
         try self.native_workers.?.enqueue(&task.job);
         task.install_response = response;
         self.runtime_installation = task;
@@ -2781,7 +2781,7 @@ pub const Engine = struct {
         // Serialization and capacity work may consume the remaining lifetime.
         // Fence native credential adoption at the actual writer call as well
         // as before the domain mutation. Expiry does not cancel started IO.
-        if (native) |fence| try self.nativeImportCheck(fence.pending, fence.fresh);
+        if (native) |native_fence| try self.nativeImportCheck(native_fence.pending, native_fence.fresh);
         if (runtime) |task| try self.checkRuntimeWriterFence(task);
         self.revision = self.db.?.commit(self.revision, serialized, changes) catch |err| {
             // Ambiguous storage failure fences all further credential service.

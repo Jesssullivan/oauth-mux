@@ -178,12 +178,12 @@ pub fn collect(io: std.Io, allocator: std.mem.Allocator, runtime_path: []const u
     var transfer = false;
     defer if (!transfer) allocator.free(root);
     const runtime = try paths.openPrivateRoot(allocator, runtime_path, false);
-    defer if (!transfer) _ = c.close(runtime);
+    defer { if (!transfer) _ = c.close(runtime); }
     const runtime_original = try metadata.statFd(runtime);
     try private(runtime_original, c.S.IFDIR, 0o700);
     const registry = c.openat(runtime, registry_name, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
     if (registry < 0) return if (c.errno(registry) == .NOENT) null else error.UnsafeNativeSourceContext;
-    defer if (!transfer) _ = c.close(registry);
+    defer { if (!transfer) _ = c.close(registry); }
     const registry_original = try metadata.statFd(registry);
     try private(registry_original, c.S.IFDIR, 0o700);
     var hints: std.ArrayList(Hint) = .empty;

@@ -1061,15 +1061,15 @@ fn modernMaterial(a: std.mem.Allocator,budget: Budget,inputs: Inputs,manifest: s
     try expectText(selection.value,"purpose","evaluation-only");
     const roles=try objectField(selection.value,"files");
     if(roles.object.count()!=12) return error.InvalidRuntimeProvenance;
-    inline for(@typeInfo(ModernRole).@"enum".fields,0..) |role,index| {
-        const row=try objectField(roles,role.name); try exactObject(row,&.{"path","sha256","bytes"});
+    inline for(@typeInfo(ModernRole).@"enum".field_names,0..) |role,index| {
+        const row=try objectField(roles,role); try exactObject(row,&.{"path","sha256","bytes"});
         try canonicalAbsolute(try stringField(row,"path")); try inputRow(row,modern.roles[index]);
     }
     try memberMap(budget,try field(selection.value,"protocol_schema_files"),modern.protocol_schema_files);
     try memberMap(budget,try field(selection.value,"native_acquisition_artifact_files"),modern.native_acquisition_artifact_files);
     const authorities=try objectField(selection.value,"authority_receipts");
     try exactObject(authorities,&.{"source","sdk","plan","query","compiler"});
-    inline for(@typeInfo(ModernAuthorityRole).@"enum".fields,0..) |role,index| try authorityMap(budget,try field(authorities,role.name),modern.authority_receipts[index]);
+    inline for(@typeInfo(ModernAuthorityRole).@"enum".field_names,0..) |role,index| try authorityMap(budget,try field(authorities,role),modern.authority_receipts[index]);
     if(!std.meta.eql(modern.roles[@intFromEnum(ModernRole.source)].sha256,inputs.source_receipt.sha256) or
         modern.roles[@intFromEnum(ModernRole.source)].bytes!=inputs.source_receipt.bytes) return error.RuntimeSelectionDrift;
     // The exact declared PACKAGE producer performs full source/SDK/compiler,
