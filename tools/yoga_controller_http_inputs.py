@@ -6,7 +6,7 @@ from pathlib import Path
 import stat
 import guard_native_seed_plan_reserved as kernel
 
-SOURCE_ROOT=Path('/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008')
+SOURCE_ROOT=Path(__file__).resolve().parent.parent
 CACHE=Path('/srv/fast-local/jess/state/codex/omux-bazel9-owner-coordinator-20261004/cache/repos/v1')
 NAME='yoga-controller-http-inputs'
 MAX_FILE=256*1024**2
