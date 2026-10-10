@@ -4,6 +4,7 @@ import guard_native_seed_plan_reserved as kernel
 
 PROFILE='yoga-sealed-workspace-models-reserved'
 PROFILES=(PROFILE,)
+MEMORY,TASKS,CPU=kernel.MEMORY,kernel.TASKS,kernel.CPU
 MODELS=['test','//tools:guard_yoga_sealed_transfer_models_reserved_test','//tools:guard_yoga_controller_qualify_reserved_test','//tools:yoga_sealed_transfer_test','//tools:yoga_install_inputs_stage_test',
     '//tools:execution_guard_test','//delivery:yoga_installed_workspace_test',
     '//tools:yoga_installed_workspace_test','//tools:guard_yoga_installed_reserved_test',

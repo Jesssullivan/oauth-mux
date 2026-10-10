@@ -170,4 +170,63 @@ class TransferModels(unittest.TestCase):
         self.assertLessEqual(len(code.encode()),120*1024)
         with self.assertRaises(ValueError): stage.program('x'*120*1024,{}, {})
 
+    def test_reserved_model_actual_guard_cap_runtime_and_cgroup_readbacks(self):
+        import guard_yoga_sealed_transfer_models_reserved as reserved
+        import guard_resident_observation as resident
+        caps=reserved.properties(guard.PROPERTIES)
+        # Exercise the same helper attributes read before the real guard launches.
+        caps.update(MemoryMax=str(reserved.MEMORY),TasksMax=str(reserved.TASKS),
+            CPUQuotaPerSecUSec=str(reserved.CPU*10000)+'us')
+        self.assertEqual(reserved.MEMORY+resident.RESIDENT_MEMORY,4*1024**3)
+        self.assertEqual(reserved.TASKS+resident.RESIDENT_TASKS,512)
+        self.assertEqual(reserved.CPU+resident.RESIDENT_CPU_PERCENT,200)
+        self.assertEqual(caps['MemorySwapMax'],'0')
+        self.assertEqual(guard.CONTROLLER_TIMEOUT,15)
+        self.assertEqual(guard.workload_pids_observation(None,reserved.PROFILE).expected_limit,reserved.TASKS)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            expected={**guard.CGROUP,'memory.max':str(reserved.MEMORY),'pids.max':str(reserved.TASKS),
+                'cpu.max':str(reserved.CPU*1000)+' 100000'}
+            for name,value in expected.items(): (root/name).write_text(value)
+            actual={**caps,**guard.SANDBOX,'RuntimeMaxUSec':'17s',
+                'TemporaryFileSystem':guard.system_masks(profile='standard'),
+                'UnsetEnvironment':' '.join(guard.DELEGATION_ENV)}
+            readback=Path.read_text; observed=[]
+            def read(path,*args,**kwargs):
+                observed.append(path)
+                return readback(path,*args,**kwargs)
+            with mock.patch.object(Path,'read_text',autospec=True,side_effect=read):
+                guard.verify(actual,root,'system',guard.SANDBOX,reserved.PROFILE,runtime_seconds=17)
+            self.assertEqual(observed,[root/name for name in expected])
+            for key,value in (('MemoryMax','4294967296'),('TasksMax','512'),
+                    ('CPUQuotaPerSecUSec','2s'),('MemorySwapMax','1'),('PrivateNetwork','no'),
+                    ('RuntimeMaxUSec','16s'),('RuntimeMaxUSec','18s'),('RuntimeMaxUSec','infinity')):
+                with self.subTest(service_property=key,value=value),self.assertRaises(ValueError):
+                    guard.verify({**actual,key:value},root,'system',guard.SANDBOX,reserved.PROFILE,runtime_seconds=17)
+            for name,value in (('memory.max','4294967296'),('pids.max','512'),('memory.swap.max','1'),
+                    ('cpu.max','200000 100000'),('cpu.max','180000 100000'),('cpu.max','max 100000')):
+                (root/name).write_text(value)
+                try:
+                    with self.subTest(cgroup_file=name,value=value),self.assertRaises(ValueError):
+                        guard.verify(actual,root,'system',guard.SANDBOX,reserved.PROFILE,runtime_seconds=17)
+                finally: (root/name).write_text(expected[name])
+
+    def test_reserved_model_shared_lifetime_and_original_deadline(self):
+        import guard_yoga_sealed_transfer_models_reserved as reserved
+        import guard_native_seed_plan_reserved as kernel
+        for name in ('MEMORY','TASKS','CPU','properties','Witness','WorkloadWitness','monitor',
+                'cleanup_retained','release_worker','remaining'):
+            self.assertIs(getattr(reserved,name),getattr(kernel,name))
+        entry,deadline=100*10**9,1300*10**9
+        with mock.patch.object(kernel.time,'monotonic_ns',return_value=entry):
+            self.assertEqual(reserved.remaining(entry,deadline),1170)
+            self.assertEqual(reserved.remaining(entry,deadline,cleanup=True),1200)
+            with self.assertRaises(ValueError): reserved.remaining(entry,deadline+1)
+        with mock.patch.object(kernel.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError): reserved.remaining(entry,deadline)
+            self.assertEqual(reserved.remaining(entry,deadline,cleanup=True),30)
+        with mock.patch.object(kernel.time,'monotonic_ns',return_value=deadline):
+            with self.assertRaises(ValueError): reserved.remaining(entry,deadline,cleanup=True)
+        self.assertTrue(reserved.release_worker(None))
+
 if __name__=='__main__': unittest.main()
