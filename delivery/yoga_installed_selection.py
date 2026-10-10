@@ -21,6 +21,10 @@ _PHASES = frozenset({'request', 'deadline', 'assembly-context', 'origin-receipt'
     'native-manifest', 'retained-runfiles', 'independent-inputs', 'controller-package',
     'controller-files', 'controller-support', 'selection-schema', 'prepublication-recheck',
     'publication', 'postpublication-recheck'})
+_PHASES |= frozenset(prefix + '-' + stage
+    for prefix in ('browser-inventory', 'controller-inventory')
+    for stage in ('alias-shape', 'alias-base', 'alias-role', 'alias-resolution',
+                  'alias-endpoint', 'capture', 'bytes', 'schema', 'roots'))
 
 
 class _AssemblyDiagnostic:
@@ -117,24 +121,71 @@ def output_base(path, *, selected_base=None):
     return COORD / parts[0] / 'output-base'
 
 
-def declared_inventory(alias, name, *, selected_base=None):
+def declared_alias_paths(alias, expected, role, *, selected_base, _assembly_context):
+    """One same-target canonical leaf, never the whole current output base."""
+    alias, expected = workspace.source_path(str(alias)), workspace.source_path(str(expected))
+    base = workspace.assembly_base(selected_base)
+    if role in {repository + '/inventory.json' for repository in INVENTORY_REPOS.values()}:
+        workspace.require(expected == base / 'external' / role)
+    elif re.fullmatch(r'_main/tools/[A-Za-z0-9_-]+\.py', role):
+        workspace.require(expected == CONTROLLER / Path(role).name)
+    else:
+        workspace.require(role == '_main/delivery/codex_device_acquisition_component.py'
+            and expected == support.DELIVERY / 'codex_device_acquisition_component.py')
+    if alias == expected:
+        paths = (alias, expected)
+    else:
+        output_base(alias, selected_base=base)
+        relative = alias.relative_to(base).as_posix()
+        suffix = 'execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_installed_selection.sh.runfiles/' + role
+        workspace.require(re.fullmatch(r'(?:sandbox/(?:linux-sandbox|processwrapper-sandbox)/(?:0|[1-9][0-9]{0,8})/)?'
+            + re.escape(suffix), relative) is not None)
+        canonical = base / suffix
+        paths = (alias, expected) if alias == canonical else (alias, canonical, expected)
+    workspace.require(type(_assembly_context) is workspace.AssemblyContext
+        and _assembly_context.base == base)
+    return paths
+
+
+def declared_inventory(alias, name, *, selected_base=None, _assembly_context=None, _diagnostic=None):
+    prefix = 'browser-inventory' if name == 'browserInventory' else 'controller-inventory'
+    def phase(stage):
+        if _diagnostic is not None:
+            _diagnostic.enter(prefix + '-' + stage)
+    phase('alias-shape')
     alias = workspace.source_path(str(alias))
+    phase('alias-base')
     base = output_base(alias, selected_base=selected_base)
     repository = INVENTORY_REPOS[name]
     expected = base / 'external' / repository / 'inventory.json'
+    phase('alias-role')
     workspace.require(alias == expected or str(alias).endswith('.runfiles/' + repository + '/inventory.json'))
-    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
+    paths = ((alias, expected) if selected_base is None else declared_alias_paths(alias, expected,
+        repository + '/inventory.json', selected_base=selected_base, _assembly_context=_assembly_context))
+    phase('alias-resolution')
+    if _assembly_context is not None:
+        _assembly_context.recheck()
+    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=paths)
+    phase('alias-endpoint')
     workspace.require(physical == expected)
+    if _assembly_context is not None:
+        _assembly_context.recheck()
     return physical
 
 
-def declared_controller(alias, name, *, selected_base=None):
+def declared_controller(alias, name, *, selected_base=None, _assembly_context=None):
     alias = workspace.source_path(str(alias))
     expected = CONTROLLER / name
     workspace.require(alias == expected or (output_base(alias, selected_base=selected_base) and
         str(alias).endswith('.runfiles/_main/tools/' + name)))
-    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
+    paths = ((alias, expected) if selected_base is None else declared_alias_paths(alias, expected,
+        '_main/tools/' + name, selected_base=selected_base, _assembly_context=_assembly_context))
+    if _assembly_context is not None:
+        _assembly_context.recheck()
+    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=paths)
     workspace.require(physical == expected)
+    if _assembly_context is not None:
+        _assembly_context.recheck()
     return physical
 
 
@@ -240,15 +291,21 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
         inventories, roots = {}, set()
         for name, alias in (('browserInventory', browser_alias), ('controllerInventory', controller_alias)):
             phase('browser-inventory' if name == 'browserInventory' else 'controller-inventory')
-            physical = declared_inventory(alias, name, selected_base=selected_base)
+            physical = declared_inventory(alias, name, selected_base=selected_base,
+                _assembly_context=context, _diagnostic=_diagnostic)
+            phase('browser-inventory-capture' if name == 'browserInventory' else 'controller-inventory-capture')
             held = capture(physical, workspace.INVENTORY_SHA[name], workspace.payload.MAX_METADATA,
                            declared_inventory=name, _assembly_context=context)
+            phase('browser-inventory-bytes' if name == 'browserInventory' else 'controller-inventory-bytes')
             content = held.bytes(workspace.payload.MAX_METADATA)
+            phase('browser-inventory-schema' if name == 'browserInventory' else 'controller-inventory-schema')
             value = workspace.decode(content)
             workspace.require(type(value) is dict and type(value.get('paths')) is list and 0 < len(value['paths']) <= 4096)
+            phase('browser-inventory-roots' if name == 'browserInventory' else 'controller-inventory-roots')
             roots.update(row['path'] for row in value['paths'])
             inventories['browser-inventory.json' if name == 'browserInventory' else 'controller-inventory.json'] = content
-            aliases[str(alias)] = (physical, (workspace.source_path(str(alias)), physical))
+            aliases[str(alias)] = (physical, declared_alias_paths(alias, physical,
+                INVENTORY_REPOS[name] + '/inventory.json', selected_base=selected_base, _assembly_context=context))
         phase('inventory-roots')
         workspace.require(all(re.fullmatch(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+', root) for root in roots))
         roots = frozenset(roots)
@@ -309,19 +366,24 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
         phase('controller-files')
         for alias in controller_files:
             name = Path(alias).name
-            physical = declared_controller(alias, name, selected_base=selected_base)
+            physical = declared_controller(alias, name, selected_base=selected_base, _assembly_context=context)
             held = measure(physical, 1024 * 1024, controller_root=CONTROLLER)
             workspace.require(0 < held.size <= 1024 * 1024)
             copied_bytes += held.size
             workspace.require(copied_bytes <= workspace.MAX_COPIED)
             package[name] = {'sha256': held.sha, 'bytes': held.size}
-            aliases[str(alias)] = (physical, (workspace.source_path(str(alias)), physical))
+            aliases[str(alias)] = (physical, declared_alias_paths(alias, physical,
+                '_main/tools/' + name, selected_base=selected_base, _assembly_context=context))
         phase('controller-support')
         alias, expected = support.declared(controller_support,
             lambda path: output_base(path, selected_base=selected_base))
-        physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
+        support_paths = declared_alias_paths(alias, expected, '_main/delivery/codex_device_acquisition_component.py',
+            selected_base=selected_base, _assembly_context=context)
+        context.recheck()
+        physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=support_paths)
         workspace.require(physical == expected)
-        aliases[str(alias)] = (physical, (alias, expected))
+        context.recheck()
+        aliases[str(alias)] = (physical, support_paths)
         held_support = measure(physical, 1024 * 1024, controller_root=support.DELIVERY)
         copied_bytes += held_support.size
         workspace.require(copied_bytes <= workspace.MAX_COPIED)

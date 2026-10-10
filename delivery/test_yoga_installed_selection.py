@@ -15,6 +15,146 @@ import yoga_installed_workspace as workspace
 
 
 class SelectionTests(unittest.TestCase):
+    def hop_fixture(self, temporary, runner='processwrapper-sandbox', identifier='7'):
+        root, base, parent = self.context_fixture(temporary)
+        repository = assembly.INVENTORY_REPOS['browserInventory']
+        expected = base / 'external' / repository / 'inventory.json'
+        expected.parent.mkdir(parents=True, mode=0o755)
+        expected.write_bytes(b'{"public":true}\n'); expected.chmod(0o644)
+        relative = Path('execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_installed_selection.sh.runfiles')
+        canonical = base / relative / repository / 'inventory.json'
+        canonical.parent.mkdir(parents=True, mode=0o755)
+        canonical.symlink_to(expected)
+        sandbox_tree = base / 'sandbox' / runner / identifier / relative
+        sandbox_tree.parent.mkdir(parents=True, mode=0o755)
+        sandbox_tree.symlink_to(base / relative, target_is_directory=True)
+        alias = sandbox_tree / repository / 'inventory.json'
+        return root, base, parent, alias, canonical, expected
+
+    def test_actual_sandbox_to_canonical_leaf_old_refusal_and_corrected_success(self):
+        for runner, identifier in (('linux-sandbox', '0'), ('processwrapper-sandbox', '17')):
+            with self.subTest(runner=runner), tempfile.TemporaryDirectory() as temporary:
+                root, base, parent, alias, canonical, expected = self.hop_fixture(temporary, runner, identifier)
+                with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                        patch.object(workspace.payload, 'parent', side_effect=parent):
+                    context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                    try:
+                        # The existing shared resolver remains strict: the
+                        # undeclared intermediate canonical tree still refuses.
+                        with self.assertRaises(ValueError):
+                            workspace.safe_resolve(alias, frozenset(), declared_paths=(alias, expected))
+                        self.assertEqual(assembly.declared_alias_paths(alias, expected,
+                            assembly.INVENTORY_REPOS['browserInventory'] + '/inventory.json',
+                            selected_base=base, _assembly_context=context), (alias, canonical, expected))
+                        self.assertEqual(assembly.declared_inventory(alias, 'browserInventory',
+                            selected_base=base, _assembly_context=context), expected)
+                        # The exact tuple must survive publication-time rechecks.
+                        paths = assembly.declared_alias_paths(alias, expected,
+                            assembly.INVENTORY_REPOS['browserInventory'] + '/inventory.json',
+                            selected_base=base, _assembly_context=context)
+                        self.assertEqual(workspace.safe_resolve(alias, frozenset(), declared_paths=paths), expected)
+                    finally: context.close()
+
+    def test_sandbox_alternative_requires_live_exact_context(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                with patch.object(workspace.os, 'lstat') as inspected, self.assertRaises(ValueError):
+                    assembly.declared_inventory(alias, 'browserInventory', selected_base=base)
+                inspected.assert_not_called()
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                context.close()
+                with patch.object(workspace.os, 'lstat') as inspected, self.assertRaises(ValueError):
+                    assembly.declared_inventory(alias, 'browserInventory', selected_base=base, _assembly_context=context)
+                inspected.assert_not_called()
+
+    def test_foreign_root_epoch_target_and_sandbox_shapes_refuse_before_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            role = assembly.INVENTORY_REPOS['browserInventory'] + '/inventory.json'
+            suffix = 'execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_installed_selection.sh.runfiles/' + role
+            invalid = [Path('/home/private') / suffix,
+                root.parent / 'other-root' / base.parent.name / 'output-base' / suffix,
+                root / 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' / 'output-base' / suffix,
+                base / suffix.replace('yoga_installed_selection.sh.runfiles', 'other.sh.runfiles'),
+                base / ('sandbox/foreign-sandbox/7/' + suffix),
+                base / ('sandbox/linux-sandbox/01/' + suffix),
+                base / ('sandbox/linux-sandbox/1234567890/' + suffix),
+                base / ('sandbox/linux-sandbox/7/sandbox/processwrapper-sandbox/8/' + suffix)]
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    for selected in invalid:
+                        with self.subTest(alias=selected), patch.object(workspace.os, 'lstat') as inspected, \
+                                patch.object(context, 'recheck') as checked, self.assertRaises(ValueError):
+                            assembly.declared_inventory(selected, 'browserInventory', selected_base=base,
+                                _assembly_context=context)
+                        inspected.assert_not_called(); checked.assert_not_called()
+                finally: context.close()
+
+    def test_private_and_undeclared_hops_refuse_before_outside_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    for outside in (Path('/home/private/inventory.json'), base / 'undeclared-hop/inventory.json'):
+                        canonical.unlink(); canonical.symlink_to(outside)
+                        diagnostic = assembly._AssemblyDiagnostic()
+                        with patch.object(workspace.os, 'lstat', wraps=os.lstat) as inspected, self.assertRaises(ValueError):
+                            assembly.declared_inventory(alias, 'browserInventory', selected_base=base,
+                                _assembly_context=context, _diagnostic=diagnostic)
+                        self.assertEqual(diagnostic.phase, 'browser-inventory-alias-resolution')
+                        self.assertFalse(any(Path(call.args[0]) == outside or Path(call.args[0]).is_relative_to(outside.parent)
+                            for call in inspected.call_args_list))
+                        self.assertNotIn(str(outside), diagnostic.refusal().decode())
+                finally: context.close()
+
+    def test_exact_final_endpoint_stays_required_after_resolution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            diagnostic = assembly._AssemblyDiagnostic()
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    with patch.object(workspace, 'safe_resolve', return_value=expected.with_name('other.json')), \
+                            self.assertRaises(ValueError):
+                        assembly.declared_inventory(alias, 'browserInventory', selected_base=base,
+                            _assembly_context=context, _diagnostic=diagnostic)
+                    self.assertEqual(diagnostic.phase, 'browser-inventory-alias-endpoint')
+                finally: context.close()
+
+    def test_controller_and_eager_support_keep_only_their_exact_canonical_leaf(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            runfiles = canonical.parent.parent
+            sandbox_runfiles = alias.parent.parent
+            tools = root / 'public-tools'; delivery = root / 'public-delivery'
+            tools.mkdir(mode=0o700); delivery.mkdir(mode=0o700)
+            source = tools / 'source.py'; source.write_bytes(b'# public fixture\n')
+            support_file = delivery / 'codex_device_acquisition_component.py'; support_file.write_bytes(b'# public fixture\n')
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent), \
+                    patch.object(assembly, 'CONTROLLER', tools), patch.object(assembly.support, 'DELIVERY', delivery):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    for role, destination in (('_main/tools/source.py', source),
+                            ('_main/delivery/codex_device_acquisition_component.py', support_file)):
+                        direct = runfiles / role; direct.parent.mkdir(parents=True, mode=0o755)
+                        direct.symlink_to(destination)
+                        selected = sandbox_runfiles / role
+                        paths = assembly.declared_alias_paths(selected, destination, role,
+                            selected_base=base, _assembly_context=context)
+                        self.assertEqual(paths, (selected, direct, destination))
+                        self.assertEqual(workspace.safe_resolve(selected, frozenset(), declared_paths=paths), destination)
+                    self.assertEqual(assembly.declared_controller(sandbox_runfiles / '_main/tools/source.py',
+                        'source.py', selected_base=base, _assembly_context=context), source)
+                finally: context.close()
+
     def test_bound_output_base_supports_only_two_existing_roots_and_fresh_uuid(self):
         epoch = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
         for root in workspace._ASSEMBLY_COORDS:
