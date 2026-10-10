@@ -262,3 +262,6 @@ codex_native_acquisition_inputs(
     name = "omux_native_acquisition_metadata_inputs",
     manifest = "//integrations/codex-upstream:native_acquisition_input_configuration",
 )
+
+native_acquisition_package_inputs = use_extension("//tools:codex_native_acquisition_package_inputs.bzl", "native_acquisition_package_inputs")
+use_repo(native_acquisition_package_inputs, "omux_native_acquisition_package_data")

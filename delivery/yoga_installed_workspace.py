@@ -376,8 +376,12 @@ def selected(value):
                     for key, sha in value['fileSha256'].items()))
     package = value['controllerPackage']
     require(type(package) is dict and set(package) == {'root', 'files'}
-            and type(package['root']) is str and re.fullmatch(
-                r'/srv/fast-local/jess/git/oauth-mux(?:-[A-Za-z0-9_-]{1,100})?/tools', package['root']))
+            and type(package['root']) is str)
+    if version2:
+        require(package['root'] == str(support.TOOLS))
+    else:
+        # Preserve the historical standard v1 source family unchanged.
+        require(re.fullmatch(r'/srv/fast-local/jess/git/oauth-mux(?:-[A-Za-z0-9_-]{1,100})?/tools', package['root']))
     source_path(package['root'])
     require(type(package['files']) is dict and 0 < len(package['files']) <= 512
             and all(type(name) is str and re.fullmatch(r'[A-Za-z0-9_-]+\.py', name)

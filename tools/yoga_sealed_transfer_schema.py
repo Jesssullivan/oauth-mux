@@ -149,9 +149,9 @@ def workspace(record, value):
     require(type(record.get('workspaceGraphSha256')) is str and SHA.fullmatch(record['workspaceGraphSha256']) is not None)
     return record
 
-def selected_join(selection, record, receipt, value):
+def selected_join(selection, record, receipt, value, *, controller_root):
     require(selection.get('schemaVersion') == 2 and type(selection.get('controllerPackage')) is dict
-        and selection['controllerPackage'].get('root') == '/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008/tools'
+        and type(controller_root) is str and selection['controllerPackage'].get('root') == controller_root
         and record.get('controllerPackageSha256') == {name: row['sha256']
             for name,row in selection['controllerPackage']['files'].items()}
         and record.get('inputSha256') == selection.get('inputSha256')

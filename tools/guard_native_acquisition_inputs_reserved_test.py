@@ -9,6 +9,34 @@ import guard_native_acquisition_inputs_reserved as source
 
 
 class AdmissionModels(unittest.TestCase):
+    def test_package_transports_original_clock_only_after_exact_admission(self):
+        entry=100*10**9;deadline=1300*10**9
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9):
+            for profile,targets in source.COHORTS.items():
+                arguments=['test',*targets]
+                command=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),arguments,
+                    profile,entry,deadline)
+                clock_flags=[part for part in command if part.startswith('--test_env=OMUX_NATIVE_PACKAGE_')]
+                self.assertEqual(clock_flags,([
+                    '--test_env=OMUX_NATIVE_PACKAGE_MODE='+source.PACKAGE,
+                    '--test_env=OMUX_NATIVE_PACKAGE_ENTRY_NS='+str(entry),
+                    '--test_env=OMUX_NATIVE_PACKAGE_DEADLINE_NS='+str(deadline)]
+                    if profile==source.PACKAGE else []))
+            builder=Mock()
+            for original_end,arguments in ((deadline-1,['test',*source.COHORTS[source.PACKAGE]]),
+                    (deadline,['run',*source.COHORTS[source.PACKAGE]]),
+                    (deadline,['test',*source.COHORTS[source.PACKAGE],'--test_env=OMUX_NATIVE_PACKAGE_ENTRY_NS=0'])):
+                with self.assertRaises(ValueError):
+                    source.command(builder,'bazel',Path('/model/epoch'),arguments,
+                        source.PACKAGE,entry,original_end)
+            builder.assert_not_called()
+        with patch.object(kernel.time,'monotonic_ns',return_value=deadline-30*10**9):
+            builder=Mock()
+            with self.assertRaises(ValueError):
+                source.command(builder,'bazel',Path('/model/epoch'),['test',*source.COHORTS[source.PACKAGE]],
+                    source.PACKAGE,entry,deadline)
+            builder.assert_not_called()
+
     def args(self, profile):
         return SimpleNamespace(profile=profile, manager="system", reuse_owned_cache=False,
             source_commit="a"*40, source_dirty="false", repository_cache=None, nixpkgs_source=None)

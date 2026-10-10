@@ -1,6 +1,7 @@
 //! Native command surfaces; applications never have to launch through Omux.
 const std = @import("std");
 const daemon = @import("daemon.zig");
+const deployment_arguments = @import("native_deployment_arguments.zig");
 const paths = @import("paths.zig");
 const product = @import("product.zig");
 const reference = @import("reference.zig");
@@ -25,22 +26,17 @@ pub fn main(init: std.process.Init) !void {
     const allocator = arena.allocator();
     const raw_args = try init.minimal.args.toSlice(allocator);
     if (raw_args.len == 0) return error.MissingExecutableName;
-    var args: std.ArrayList([]const u8) = .empty;
-    var state_override: ?[]const u8 = null;
-    var i: usize = 1;
-    while (i < raw_args.len) : (i += 1) {
-        if (std.mem.eql(u8, raw_args[i], "--state-dir")) {
-            if (state_override != null or i + 1 == raw_args.len) return error.InvalidArguments;
-            i += 1;
-            state_override = raw_args[i];
-        } else try args.append(allocator, raw_args[i]);
-    }
+    var startup = try deployment_arguments.parse(allocator, raw_args[1..]);
+    defer startup.deinit(allocator);
+    const args = startup.remaining;
+    const state_override = startup.state_override;
     const executable = std.fs.path.basename(raw_args[0]);
     const daemon_default = std.mem.eql(u8, executable, "omuxd");
     const git_default = std.mem.eql(u8, executable, "git-credential-omux");
     const native_default = std.mem.eql(u8, executable, "omux-native-host");
     const command = if (git_default) "git-credential" else if (native_default) "native-host" else if (args.items.len != 0) args.items[0] else if (daemon_default) "daemon" else "help";
     const parameters = if (git_default or native_default) args.items else if (args.items.len != 0) args.items[1..] else &.{};
+    const deployment = try startup.forCommand(command);
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) return help(io, allocator);
     if (std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "version")) return output(io, product.version ++ "\n");
     if (std.mem.eql(u8, command, "reference")) {
@@ -54,6 +50,10 @@ pub fn main(init: std.process.Init) !void {
     const locations = try paths.Locations.fromEnvironmentForInstance(allocator, state, init.environ_map, selection);
     if (std.mem.eql(u8, command, "daemon")) {
         if (parameters.len != 0) return error.InvalidArguments;
+        if (deployment) |configured| return daemon.runWithDeployment(io, init.gpa, locations, .{
+            .registered_package_root = configured.registered_package_root,
+            .installation_root = configured.installation_root,
+        });
         return daemon.run(io, init.gpa, locations);
     }
     if (std.mem.eql(u8, command, "native-host")) {

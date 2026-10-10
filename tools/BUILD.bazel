@@ -1,3 +1,4 @@
+load(":codex_native_acquisition_runtime_targets.bzl", "native_acquisition_runtime_targets")
 load(":codex_native_acquisition_targets.bzl", "native_acquisition_input_targets")
 load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
 load("@rules_zig//zig/translate-c:toolchain.bzl", "translate_c_toolchain")
@@ -2581,3 +2582,12 @@ native_acquisition_input_targets(
 # exports_files(["native-acquisition-inputs.json"])
 # filegroup(name="native_acquisition_input_configuration",
 #     srcs=["native-acquisition-inputs.json"], visibility=["//visibility:public"])
+
+native_acquisition_runtime_targets(
+    source_sources = _NATIVE_SOURCE_ACQUISITION_SOURCES,
+    sdk_sources = _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
+    parent_data = _NATIVE_SOURCE_ACQUISITION_DATA + _NATIVE_SOURCE_CONTEXT_PARENT_DATA + ["@omux_codex_native_source_context_refresh_inputs//:inputs"],
+    sdk_data = _OWNER_STATUS_PERSISTENCE_METADATA_DATA,
+    tool_path = NIX_COREUTILS_BIN,
+)
+exports_files(["codex_native_acquisition_package_inputs.bzl", "codex_native_acquisition_runtime_targets.bzl"])

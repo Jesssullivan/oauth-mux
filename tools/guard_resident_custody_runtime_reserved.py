@@ -8,8 +8,14 @@ LINUX_PROFILE = "resident-custody-runtime-linux-reserved"
 FORMAT_PROFILE = "resident-custody-runtime-format-reserved"
 INSTALLED_MODEL_PROFILE = "resident-installed-custody-models-reserved"
 DEFAULT_MODEL_PROFILE = "resident-default-source-models-reserved"
-PROFILES = (MODEL_PROFILE, PROFILE, LINUX_PROFILE, FORMAT_PROFILE, INSTALLED_MODEL_PROFILE, DEFAULT_MODEL_PROFILE)
+ACQUISITION_UNIT_PROFILE = "resident-native-acquisition-units-reserved"
+PROFILES = (MODEL_PROFILE, PROFILE, LINUX_PROFILE, FORMAT_PROFILE, INSTALLED_MODEL_PROFILE, DEFAULT_MODEL_PROFILE, ACQUISITION_UNIT_PROFILE)
 COHORTS = {
+    ACQUISITION_UNIT_PROFILE: ["test", "//tools:guard_resident_custody_runtime_reserved_test",
+        "//:native_source_acquisition_test", "//:native_source_consent_test",
+        "//:qualified_runtime_delivery_test", "//:native_deployment_arguments_test",
+        "//:runtime_selection_producer_test", "//:engine_test",
+        "//delivery:nix_codex_runtime_test", "//delivery:nix_codex_deployment_test", "//:docs_check"],
     DEFAULT_MODEL_PROFILE: ["test", "//tools:guard_resident_custody_runtime_reserved_test",
         "//delivery:resident_default_enrollment_contract_test", "//delivery:resident_existing_enrollment_contract_test",
         "//delivery:resident_custody_reopen_contract_test", "//:docs_check"],
@@ -87,7 +93,7 @@ def projection(entry, deadline, verified, resident, profile=PROFILE):
     require(profile in PROFILES)
     kernel.envelope(entry, deadline)
     require(verified is None or type(verified) is bool)
-    return {"scope": "fixed-resident-custody-runtime-reserved-v1", "mode": "bounded-source-formatting" if profile == FORMAT_PROFILE else "isolated-installed-custody-models" if profile == INSTALLED_MODEL_PROFILE else "isolated-default-source-models" if profile == DEFAULT_MODEL_PROFILE else "isolated-runtime-units",
+    return {"scope": "fixed-resident-custody-runtime-reserved-v1", "mode": "isolated-production-acquisition-units" if profile == ACQUISITION_UNIT_PROFILE else "bounded-source-formatting" if profile == FORMAT_PROFILE else "isolated-installed-custody-models" if profile == INSTALLED_MODEL_PROFILE else "isolated-default-source-models" if profile == DEFAULT_MODEL_PROFILE else "isolated-runtime-units",
         "original_entry_monotonic_ns": entry, "original_deadline_monotonic_ns": deadline,
         "verified_after_cleanup": verified, "resident": resident,
         "isolated_unit_scope": profile != FORMAT_PROFILE,

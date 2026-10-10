@@ -10,6 +10,7 @@ PLAN = "native-acquisition-plan-reserved"
 QUERY = "native-acquisition-query-reserved"
 COMPILE = "native-acquisition-compilation-reserved"
 RUNTIME = "native-acquisition-runtime-qualification-reserved"
+PACKAGE = "native-acquisition-package-reserved"
 COHORTS = {
     MODEL: ("//tools:guard_native_acquisition_inputs_reserved_test",
             "//tools:codex_native_acquisition_metadata_sdk_test",
@@ -26,6 +27,7 @@ COHORTS = {
     QUERY: ("//tools:codex_native_acquisition_query_producer",),
     COMPILE: ("//tools:codex_native_acquisition_compilation_producer",),
     RUNTIME: ("//tools:codex_native_acquisition_runtime_qualification_producer",),
+    PACKAGE: ("//tools:codex_native_acquisition_runtime_package",),
 }
 PROFILES = tuple(COHORTS)
 MEMORY, TASKS, CPU = kernel.MEMORY, kernel.TASKS, kernel.CPU
@@ -74,6 +76,10 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
     result = builder(bazel, run, arguments, profile="standard", **kwargs)
     index = result.index("test") + 1
     result[index:index] = ["--repository_disable_download", "--repo_contents_cache="]
+    if profile == PACKAGE:
+        result[index:index] = ["--test_env=OMUX_NATIVE_PACKAGE_MODE=" + PACKAGE,
+            "--test_env=OMUX_NATIVE_PACKAGE_ENTRY_NS=" + str(entry),
+            "--test_env=OMUX_NATIVE_PACKAGE_DEADLINE_NS=" + str(deadline)]
     return result
 
 

@@ -146,6 +146,8 @@ ZIG_NATIVE_LINKOPTS = ["-lc"] + NIX_ZIG_LINKOPTS
 ZIG_RUNTIME_DATA = ["@omux_nix//:runtime_libraries"]
 ZIG_SOURCES = glob(["src/**/*.zig"])
 
+zig_test(name = "native_deployment_arguments_test", main = "src/native_deployment_arguments.zig")
+
 zig_test(
     name = "toolchain_test",
     main = "//tools:toolchain_test.zig",
@@ -173,6 +175,15 @@ zig_test(
 )
 
 zig_test(name = "snapshot_admission_test", main = "src/snapshot_admission.zig")
+
+zig_test(
+    name = "native_source_consent_test",
+    main = "src/native_source_consent_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
 
 zig_test(
     name = "native_owner_test",
@@ -601,6 +612,26 @@ zig_test(
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
+)
+
+# Source-only proposal declarations; finite guard admission is separate.
+zig_test(
+    name = "native_source_acquisition_test",
+    main = "src/native_source_acquisition_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "qualified_runtime_delivery_test",
+    main = "src/qualified_runtime_delivery_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 
 zig_test(

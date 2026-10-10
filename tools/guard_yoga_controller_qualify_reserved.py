@@ -1,4 +1,4 @@
-"""Exact reserved read-only qualification; old standard admission retained."""
+"""Three exact reserved readonly roles; old standard admission retained."""
 from pathlib import Path
 import re
 import guard_native_seed_plan_reserved as kernel
@@ -7,8 +7,14 @@ import yoga_controller_http_inputs as http_inputs
 
 PROFILE='yoga-controller-qualify-reserved'
 STATE_PROFILE='yoga-controller-delivery'
-PROFILES=(PROFILE,)
-ARGUMENTS=['run','//tools:yoga_controller_qualify']
+INSPECT_PROFILE='yoga-controller-inspect-reserved'
+VERIFY_PROFILE='yoga-controller-verify-reserved'
+READONLY_PROFILES=(INSPECT_PROFILE,VERIFY_PROFILE)
+ROLES={PROFILE:'//tools:yoga_controller_qualify',
+    INSPECT_PROFILE:'//tools:yoga_controller_inspect',
+    VERIFY_PROFILE:'//tools:yoga_controller_verify'}
+PROFILES=tuple(ROLES)
+ARGUMENTS=['run',ROLES[PROFILE]]
 STATE,COORDINATION=readonly.profile.STATE,readonly.profile.COORDINATION
 CLEANUP_RESERVE_NS=readonly.CLEANUP_RESERVE_NS
 MEMORY,TASKS,CPU=kernel.MEMORY,kernel.TASKS,kernel.CPU
@@ -22,15 +28,19 @@ remaining=kernel.remaining
 SCOPE='fixed-yoga-controller-qualify-reservation-v1'
 
 def selected(profile,arguments):
-    kernel.require(profile==PROFILE and arguments==ARGUMENTS)
+    kernel.require(profile in PROFILES and arguments==['run',ROLES[profile]])
     return {'PrivateNetwork':'no'}
 
 def request(args,arguments):
-    if args.profile!=PROFILE:return False
+    if args.profile not in PROFILES:return False
     selected(args.profile,arguments)
     allowed={'profile','manager','arguments','python','systemd_run','systemctl','bazel','closure',
         'bootstrap_closure','zig_sdk','java_home','source_commit','source_dirty','state_dir',
         'coordination_dir','become_file','initialize_state_dir'}
+    if args.profile in READONLY_PROFILES:
+        allowed.add('yoga_delivery_epoch')
+        kernel.require(type(getattr(args,'yoga_delivery_epoch',None)) is str
+            and readonly.UUID.fullmatch(args.yoga_delivery_epoch) is not None)
     kernel.require(args.manager=='system'
         and not any(value for name,value in vars(args).items() if name not in allowed)
         and type(args.source_commit) is str and re.fullmatch('[a-f0-9]{40}',args.source_commit) is not None
@@ -38,12 +48,25 @@ def request(args,arguments):
         and Path(args.state_dir)==STATE and Path(args.coordination_dir)==COORDINATION)
     return True
 
-def command(builder,bazel,run,arguments,profile,entry,deadline,**kwargs):
+def command(builder,bazel,run,arguments,profile,entry,deadline,*,prior=None,**kwargs):
     selected(profile,arguments);remaining(entry,deadline)
     kernel.require(kwargs.get('repository_cache') is None and kwargs.get('nixpkgs_source') is None
         and kwargs.get('output_base') is None)
+    if profile==PROFILE:
+        kernel.require(prior is None)
+    else:
+        # The guard alone selects this held raw receipt/extraction chain under
+        # the original HOME lock; no caller-selected path/digest is admitted.
+        kernel.require(type(prior) is dict and set(prior)=={'path','sha256','producer_epoch',
+            'producer_receipt_sha256','directory_identity','receipt_identity',
+            'qualification_identity','ancestor_identities'}
+            and type(prior['producer_epoch']) is str
+            and readonly.UUID.fullmatch(prior['producer_epoch']) is not None
+            and prior['path']==str(STATE/prior['producer_epoch']/'qualification.json')
+            and all(type(prior[key]) is str and re.fullmatch('[a-f0-9]{64}',prior[key]) is not None
+                for key in ('sha256','producer_receipt_sha256')))
     from execution_guard import yoga_delivery_command
-    result,_=yoga_delivery_command(bazel,run,arguments,deadline,None,**kwargs)
+    result,_=yoga_delivery_command(bazel,run,arguments,deadline,prior,**kwargs)
     index=result.index('run')+1
     result[index:index]=['--repository_disable_download','--repo_contents_cache=',
         '--repository_cache='+str(http_inputs.cache_path(run))]
@@ -56,6 +79,20 @@ def projection(entry,deadline,verified,resident):
         'original_deadline_monotonic_ns':deadline,'verified_after_cleanup':verified,'resident':resident,
         'copy_performed':False,'installation_qualified':False,'seat_qualified':False,
         'toolbar_consent_proved':False,'credential_acquisition':False}
+
+def readonly_projection(profile,entry,deadline,verified,resident):
+    kernel.require(profile in READONLY_PROFILES)
+    value=projection(entry,deadline,verified,resident)
+    return dict(value,scope='fixed-yoga-controller-readonly-reservation-v1',
+        mode=readonly.profile.MODES[ROLES[profile]])
+
+def select_prior(epoch,graph,limits,deadline,lock,*,source_commit):
+    return readonly.select_prior(epoch,graph,limits,deadline,lock,
+        reserved=True,source_commit=source_commit)
+
+def recheck(prior,graph,limits,deadline,lock,*,source_commit):
+    return readonly.recheck(prior,graph,limits,deadline,lock,
+        reserved=True,source_commit=source_commit)
 
 def verify_runtime(actual,seconds):
     from guard_yoga_sealed_transfer_profile import effective_runtime

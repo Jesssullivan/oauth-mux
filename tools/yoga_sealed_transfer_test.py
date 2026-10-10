@@ -84,14 +84,54 @@ class TransferModels(unittest.TestCase):
             with self.assertRaises(ValueError): schema.producer(bad,selected,value,'selector')
 
     def test_selected_data_join_requires_actual_after_cleanup(self):
-        value=fixture(); selection={'schemaVersion':2,'controllerPackage':{'root':'/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008/tools','files':{'a.py':{'sha256':'d'*64}}},
+        value=fixture(); selection={'schemaVersion':2,'controllerPackage':{'root':str(stage.installed.support.TOOLS),'files':{'a.py':{'sha256':'d'*64}}},
             'inputSha256':{'fixture':'e'*64},'nativeManifestSha256':'f'*64}
         record={'controllerPackageSha256':{'a.py':'d'*64},'inputSha256':{'fixture':'e'*64},'nativeManifestSha256':'f'*64}
         row={'selection_sha256':value['selectedData']['sha256']}
         receipt={'yoga_installed_producer_input':{'before':row,'after':row,'verified_after_cleanup':True}}
-        schema.selected_join(selection,record,receipt,value)
+        schema.selected_join(selection,record,receipt,value,controller_root=str(stage.installed.support.TOOLS))
         receipt['yoga_installed_producer_input']['after']={'selection_sha256':'0'*64}
-        with self.assertRaises(ValueError): schema.selected_join(selection,record,receipt,value)
+        with self.assertRaises(ValueError): schema.selected_join(selection,record,receipt,value,controller_root=str(stage.installed.support.TOOLS))
+
+    def test_selected_join_rejects_mixed_controller_roots(self):
+        value=fixture(); expected=str(stage.installed.support.TOOLS)
+        selection={'schemaVersion':2,'controllerPackage':{'root':expected,'files':{'a.py':{'sha256':'d'*64}}},
+            'inputSha256':{'fixture':'e'*64},'nativeManifestSha256':'f'*64}
+        record={'controllerPackageSha256':{'a.py':'d'*64},'inputSha256':{'fixture':'e'*64},'nativeManifestSha256':'f'*64}
+        row={'selection_sha256':value['selectedData']['sha256']}
+        receipt={'yoga_installed_producer_input':{'before':row,'after':row,'verified_after_cleanup':True}}
+        schema.selected_join(selection,record,receipt,value,controller_root=expected)
+        for foreign in (str(stage.ROOT.parent/(stage.ROOT.name+'-foreign')/'tools'),
+                        '/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008/tools'):
+            if foreign == expected: continue
+            bad=copy.deepcopy(selection);bad['controllerPackage']['root']=foreign
+            with self.assertRaises(ValueError):
+                schema.selected_join(bad,record,receipt,value,controller_root=expected)
+
+    def test_bootstrap_reads_only_declared_executing_source_members_and_pins(self):
+        self.assertEqual(stage.ROOT,Path(stage.__file__).resolve().parent.parent)
+        self.assertEqual(stage.ROOT,stage.installed.support.ROOT)
+        raw=b'# synthetic declared bootstrap member\n'; digest=hashlib.sha256(raw).hexdigest()
+        value={'bootstrapSha256':{name:digest for name in schema.BOOTSTRAP}}
+        seen=[];rechecked=[];closed=[]
+        class Held:
+            def __init__(self,path,deadline,maximum):
+                self.path=path;self.raw=raw;seen.append((path,deadline,maximum))
+            def recheck(self): rechecked.append(self.path)
+            def close(self): closed.append(self.path)
+        deadline=time.monotonic_ns()+60*10**9
+        with mock.patch.object(stage.owned,'PublicFile',Held),mock.patch.dict(stage.os.environ,
+                {'OMUX_YOGA_SEALED_TRANSFER_INPUT_SHA256':'a'*64}):
+            source=stage.bootstrap_source(value,deadline)
+            expected=[stage.ROOT/'tools'/(name+'.py') for name in schema.BOOTSTRAP]
+            self.assertEqual(seen,[(path,deadline,256*1024) for path in expected])
+            self.assertEqual(rechecked,expected);self.assertEqual(closed,expected)
+            self.assertIn(repr(list(schema.BOOTSTRAP)),source)
+            seen.clear();rechecked.clear();closed.clear()
+            bad=copy.deepcopy(value);bad['bootstrapSha256'][schema.BOOTSTRAP[0]]='0'*64
+            with self.assertRaises(ValueError): stage.bootstrap_source(bad,deadline)
+            self.assertEqual([row[0] for row in seen],expected[:1])
+            self.assertEqual(rechecked,[]);self.assertEqual(closed,expected[:1])
 
     def test_real_transaction_rehash_no_replace_and_extra_member(self):
         value=fixture(); raw=schema.canonical(value); digest=hashlib.sha256(raw).hexdigest()

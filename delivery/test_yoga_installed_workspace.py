@@ -87,6 +87,55 @@ class InstalledWorkspaceTests(unittest.TestCase):
             'cache_key': '39f2eb3574f1f88de5326867c7d8ef4bc518faba8cb6b2048f84613edac8947d',
             'cleanup': {'ownership': 'unproved', 'readback_attempts': 0, 'state': 'empty', 'stop': 'not-requested'}}
 
+    def controller_selection(self):
+        # Schema shape only: pinned public historical fields, synthetic file hashes.
+        launcher = installed.OUTPUT_BASE + '/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh'
+        files = {'execution_guard.py', 'guard_yoga_profile.py', 'guard_yoga_installed_workspace.py',
+            'yoga_session_qualification.py', 'yoga_operator_coordinator.py', 'yoga_operator_launch.py',
+            'yoga_proof_inputs.py', 'yoga_display_binding.py', 'guard_cache.py', 'system_mask_policy.py',
+            'yoga_installed_controller_support.py'}
+        value = {'schemaVersion': 2, 'scope': installed.support.SELECTION_SCOPE,
+            'buildReceipt': {'path': installed.BUILD_RECEIPT, 'sha256': installed.BUILD_SHA},
+            'launcher': {'path': launcher, 'sha256': installed.LAUNCHER_SHA},
+            'runfilesManifest': {'path': launcher+'.runfiles_manifest', 'sha256': installed.MANIFEST_SHA},
+            'inputPaths': {name: installed.OUTPUT_BASE+'/execroot/_main/bazel-out/fixture/'+name
+                           for name in installed.payload.INPUTS},
+            'inputSha256': {name: installed.ARTIFACTS[name][0] if name in installed.ARTIFACTS else 'a'*64
+                            for name in installed.payload.INPUTS},
+            'nativeManifest': installed.OUTPUT_BASE+'/external/+omux_nix_repository+omux_nix/native.json',
+            'nativeManifestSha256': 'b'*64, 'fileSha256': {'fixture': 'c'*64},
+            'controllerPackage': {'root': str(installed.support.TOOLS),
+                'files': {name: {'sha256': 'd'*64, 'bytes': 17} for name in files}},
+            'controllerDelivery': {'root': str(installed.support.DELIVERY), 'files': {
+                'codex_device_acquisition_component.py': {'sha256': 'e'*64, 'bytes': 19}}}}
+        for name, digest in installed.INVENTORY_SHA.items():
+            filename = 'browser-inventory.json' if name == 'browserInventory' else 'controller-inventory.json'
+            value[name] = {'path': installed.PUBLIC_STAGING+'/'+filename, 'sha256': digest}
+        return value
+
+    def test_current_physical_controller_selection_and_legacy_source_family(self):
+        value = self.controller_selection()
+        self.assertEqual(installed.support.ROOT, Path(installed.support.__file__).resolve().parent.parent)
+        self.assertIs(installed.selected(value), value)
+        old = copy.deepcopy(value); old.update(schemaVersion=1, scope='yoga-installed-toolbar-selection-v1')
+        old.pop('controllerDelivery'); old['controllerPackage']['root']='/srv/fast-local/jess/git/oauth-mux-fixture/tools'
+        self.assertIs(installed.selected(old), old)
+        old['controllerPackage']['root']=str(installed.support.TOOLS)
+        if str(installed.support.TOOLS).startswith('/home/'):
+            with self.assertRaises(ValueError): installed.selected(old)
+
+    def test_mixed_checkout_controller_and_support_refuse_before_capture(self):
+        value = self.controller_selection(); root = installed.support.ROOT
+        for field, foreign in (('controllerPackage', str(root.parent/(root.name+'-foreign')/'tools')),
+                ('controllerDelivery', str(root.parent/(root.name+'-foreign')/'delivery')),
+                ('controllerPackage', '/srv/fast-local/jess/git/oauth-mux-fixture/tools')):
+            bad = copy.deepcopy(value); bad[field]['root'] = foreign
+            with self.subTest(field=field), patch.object(installed.os, 'open') as opened:
+                with self.assertRaises(ValueError): installed.selected(bad)
+                opened.assert_not_called()
+        bad = copy.deepcopy(value); bad['controllerPackage']['files'].pop('yoga_installed_controller_support.py')
+        with self.assertRaises(ValueError): installed.selected(bad)
+
     def test_actual_build_projection_keeps_unstamped_artifact_truth_separate(self):
         result = installed.origin(self.projection())
         self.assertEqual(result['source_dirty'], 'false')

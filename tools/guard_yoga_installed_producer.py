@@ -102,7 +102,12 @@ class Admission:
             budget(deadline,RESERVE)
             require(type(digest) is str and SHA.fullmatch(digest))
             source_root=Path(source_root)
-            require(re.fullmatch(r'/srv/fast-local/jess/git/oauth-mux(?:-[A-Za-z0-9_-]{1,100})?',str(source_root)))
+            if type(required_schema) is int and required_schema == support.SCHEMA:
+                # Reserved v2 binds the executing declared controller, not a root prefix.
+                require(source_root == support.ROOT)
+            else:
+                # Preserve historical standard source admission unchanged.
+                require(re.fullmatch(r'/srv/fast-local/jess/git/oauth-mux(?:-[A-Za-z0-9_-]{1,100})?',str(source_root)))
             self.root_fd=parent(STAGING)
             info=os.fstat(self.root_fd)
             require(info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o700)

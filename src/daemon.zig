@@ -473,9 +473,20 @@ fn worker(pool: *Pool) std.Io.Cancelable!void {
 }
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations) !void {
+    return runConfigured(io, allocator, locations, null);
+}
+
+pub fn runWithDeployment(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, deployment: Engine.NativeDeploymentSelection) !void {
+    return runConfigured(io, allocator, locations, deployment);
+}
+
+fn runConfigured(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, deployment: ?Engine.NativeDeploymentSelection) !void {
     var custody = try paths.Custody.acquire(allocator, locations);
     defer custody.deinit();
-    const engine = try Engine.openForInstance(io, allocator, locations.state, locations.instance);
+    const engine = if (deployment) |configured|
+        try Engine.openForInstanceWithDeployment(io, allocator, locations.state, locations.instance, configured)
+    else
+        try Engine.openForInstance(io, allocator, locations.state, locations.instance);
     defer engine.deinit();
     try serve(io, allocator, locations, custody, engine);
 }

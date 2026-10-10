@@ -40,19 +40,19 @@ pub const Budget = struct {
         if (self.until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.NativeTimeout;
     }
 
-    fn scan(self: *Budget, io: std.Io) !void {
+    pub fn scan(self: *Budget, io: std.Io) !void {
         try self.check(io);
         if (self.scanned_entries >= maximum_scanned_entries) return error.NativeInventoryCapacity;
         self.scanned_entries += 1;
     }
 
-    fn admit(self: *Budget, io: std.Io) !void {
+    pub fn admit(self: *Budget, io: std.Io) !void {
         try self.check(io);
         if (self.candidate_count >= maximum_candidates) return error.NativeInventoryCapacity;
         self.candidate_count += 1;
     }
 
-    fn retain(self: *Budget, io: std.Io) !void {
+    pub fn retain(self: *Budget, io: std.Io) !void {
         try self.check(io);
         if (self.retained_hints >= maximum_retained_hints) return error.NativeInventoryCapacity;
         self.retained_hints += 1;
@@ -225,7 +225,8 @@ fn openContext(allocator: std.mem.Allocator, path: []const u8) !c.fd_t {
         const component = try allocator.dupeSentinel(u8, part, 0);
         defer allocator.free(component);
         const next = c.openat(descriptor, component.ptr, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
-        if (next < 0) return error.PathOpenFailed;
+        // Preserve the original open errno: only ENOENT permits implicit-home fallback.
+        if (next < 0) return if (c.errno(next) == .NOENT) error.NativeContextMissing else error.PathOpenFailed;
         _ = c.close(descriptor);
         descriptor = next;
     }

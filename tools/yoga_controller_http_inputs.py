@@ -11,7 +11,7 @@ CACHE=Path('/srv/fast-local/jess/state/codex/omux-bazel9-owner-coordinator-20261
 NAME='yoga-controller-http-inputs'
 MAX_FILE=256*1024**2
 MAX_TOTAL=512*1024**2
-MODULE_SHA256='c07169743b111b93ed8efd4bc75dceaf2e8eff2c231aa57b52353760fc9a6d40'
+MODULE_SHA256='efef226341674d725c68a4eea426ba29cd91d06a60be20a4003ed7f09141a2ae'
 LOCK_SHA256='5c25144a540f0d43c0b12eaf5720707cbaefc6cc6514e0fa740778bb1cc69ea1'
 # Digests derive only from current MODULE, its locked BCR source metadata and
 # locked HTTP extension attributes. No caller URL or mutable cache index is read.

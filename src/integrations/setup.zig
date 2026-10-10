@@ -11,6 +11,8 @@ const native_probe = @import("native_probe.zig");
 const inventory = @import("native_inventory.zig");
 const metadata = @import("../platform/file_metadata.zig");
 const mutation_authority = @import("../mutation_authority.zig");
+const nix_runtime = @import("nix_runtime_closure.zig");
+const runtime_deployment = @import("runtime_deployment.zig");
 extern "c" fn flock(fd: c.fd_t, operation: c_int) c_int;
 
 pub const maximum_config = 1024 * 1024;
@@ -131,10 +133,8 @@ const Phase = RegistryPhase;
 pub const RegistryWitness = struct { phase: RegistryPhase, transaction: [32]u8, capability_digest: [32]u8 };
 
 /// Internal retained-evidence format, not a control request or native claim.
-/// A future trusted installation producer must first validate the exact package
-/// and its independent source/producer receipts, collect installed ownership,
-/// then seal these facts and commit their plaintext digest with actor authority.
-/// No producer, record writer, wire method or registry migration exists yet.
+/// The trusted installation producer validates package and selected provenance;
+/// the opaque writer seals facts before the actor commits their digest.
 pub const RuntimeSelectionRecord = struct {
     schema_version: u8,
     channel: RuntimeChannel,
@@ -151,10 +151,16 @@ pub const RuntimeSelectionRecord = struct {
     launcher: RuntimeRole,
     backend: RuntimeRole,
     loader: RuntimeRole,
+    nix_closure: ?nix_runtime.Record = null,
+    installed_manifest_status: ?metadata.Metadata = null,
+    acquisition_contract: RuntimeAcquisitionContract = .unsupported,
+    deployment: ?RuntimeDeploymentWitness = null,
 };
+pub const RuntimeDeploymentWitness = struct { root: nix_runtime.Root, declaration: nix_runtime.File };
 pub const RuntimeChannel = enum { release, development };
 pub const RuntimeTarget = enum { x86_64_linux };
-pub const RuntimeLaunchProfile = enum { linux_explicit_bundled_loader_v1 };
+pub const RuntimeLaunchProfile = enum { linux_explicit_bundled_loader_v1, linux_nix_direct_main_v1 };
+pub const RuntimeAcquisitionContract = enum { unsupported, omux_native_source_acquire_v1 };
 pub const RuntimeRole = struct { sha256: [32]u8, bytes: u64 };
 pub const RuntimeInstallation = struct {
     transaction: [32]u8,
@@ -185,6 +191,7 @@ const RuntimeSelectionVerified = struct {
     record: RuntimeSelectionRecord,
     digest: [32]u8,
     context_digest: [32]u8,
+    parsed: ?std.json.Parsed(RuntimeSelectionRecord) = null,
 };
 
 /// Only authenticated retained evidence can construct this carrier. Selection
@@ -192,8 +199,39 @@ const RuntimeSelectionVerified = struct {
 /// attribution, attachment permission or continuity capability. In particular,
 /// the bundled loader is distinct from the backend and /proc/PID/exe is unused.
 pub const VerifiedRuntimeSelection = opaque {
+    pub fn acquisitionContract(self: *const VerifiedRuntimeSelection) RuntimeAcquisitionContract {
+        const retained: *const RuntimeSelectionVerified = @ptrCast(@alignCast(self));
+        return retained.record.acquisition_contract;
+    }
+    pub fn launchProfile(self: *const VerifiedRuntimeSelection) RuntimeLaunchProfile {
+        const retained: *const RuntimeSelectionVerified = @ptrCast(@alignCast(self));
+        return retained.record.launch_profile;
+    }
+    pub fn recheckAndOpenRoles(self: *const VerifiedRuntimeSelection, io: std.Io, allocator: std.mem.Allocator, options: Options, expected: RuntimeSelectionExpectation) !OwnedRuntimeRoles {
+        try self.recheck(io, allocator, options, expected);
+        const retained: *const RuntimeSelectionVerified = @ptrCast(@alignCast(self));
+        const budget = Budget.from(io, options);
+        const backend = try openRuntimeRole(budget, expected.directory, retained.record.installation, runtime_role_paths[1]);
+        errdefer close(backend);
+        const loader = try openRuntimeRole(budget, expected.directory, retained.record.installation, runtime_role_paths[2]);
+        errdefer close(loader);
+        // Reopening by name may race the preceding hash. Bind the returned FDs
+        // to the same currently named identities across the final full recheck.
+        const backend_status = try statFile(backend);
+        const loader_status = try statFile(loader);
+        try self.recheck(io, allocator, options, expected);
+        const backend_named = try openRuntimeRole(budget, expected.directory, retained.record.installation, runtime_role_paths[1]);
+        defer close(backend_named);
+        const loader_named = try openRuntimeRole(budget, expected.directory, retained.record.installation, runtime_role_paths[2]);
+        defer close(loader_named);
+        if (!std.meta.eql(backend_status, try statFile(backend_named)) or !std.meta.eql(loader_status, try statFile(loader_named)) or
+            !std.meta.eql(backend_status, try statFile(backend)) or !std.meta.eql(loader_status, try statFile(loader))) return error.RuntimeSelectionDrift;
+        try budget.check();
+        return .{ .backend = backend, .loader = loader };
+    }
     pub fn deinit(self: *VerifiedRuntimeSelection, allocator: std.mem.Allocator) void {
         const retained: *RuntimeSelectionVerified = @ptrCast(@alignCast(self));
+        if (retained.parsed) |parsed| parsed.deinit();
         allocator.destroy(retained);
     }
 
@@ -206,6 +244,34 @@ pub const VerifiedRuntimeSelection = opaque {
         try validateRuntimeInstallation(io, allocator, options, expected, retained.record);
     }
 };
+
+/// Internal owned descriptors; never deserialize or expose through control.
+pub const OwnedRuntimeRoles = struct {
+    backend: c.fd_t,
+    loader: c.fd_t,
+    pub fn deinit(self: *OwnedRuntimeRoles) void {
+        close(self.backend);
+        close(self.loader);
+        self.* = undefined;
+    }
+};
+
+/// Encoding is not selection admission. Only the private qualified producer
+/// writer may prepare this evidence; the actor independently commits its digest
+/// before verifyRetainedRuntimeSelection can admit it.
+pub fn encodeRuntimeSelection(io: std.Io, allocator: std.mem.Allocator, options: Options, expected: RuntimeSelectionExpectation, record: RuntimeSelectionRecord) ![]u8 {
+    try validateRuntimeInstallation(io, allocator, options, expected, record);
+    const plaintext = try std.json.Stringify.valueAlloc(allocator, record, .{});
+    defer allocator.free(plaintext);
+    if (plaintext.len == 0 or plaintext.len > runtime_selection_maximum) return error.InvalidRuntimeSelection;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(plaintext, &digest, .{});
+    if (!std.crypto.timing_safe.eql([32]u8, digest, expected.record_sha256)) return error.RuntimeSelectionDrift;
+    const evidence = try envelope.seal(io, allocator, options.key, try runtimeSelectionContext(options, expected), plaintext);
+    errdefer allocator.free(evidence);
+    try validateRuntimeInstallation(io, allocator, options, expected, record);
+    return evidence;
+}
 
 fn runtimeSelectionContext(options: Options, expected: RuntimeSelectionExpectation) !envelope.Context {
     if (options.adapter != .codex) return error.UnsupportedAdapter;
@@ -250,12 +316,12 @@ pub fn verifyRetainedRuntimeSelection(io: std.Io, allocator: std.mem.Allocator, 
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(plaintext.bytes, &digest, .{});
     if (!std.crypto.timing_safe.eql([32]u8, digest, expected.record_sha256)) return error.RuntimeSelectionDrift;
-    const parsed = try std.json.parseFromSlice(RuntimeSelectionRecord, allocator, plaintext.bytes, .{ .duplicate_field_behavior = .@"error", .ignore_unknown_fields = false });
-    defer parsed.deinit();
+    const parsed = try std.json.parseFromSlice(RuntimeSelectionRecord, allocator, plaintext.bytes, .{ .duplicate_field_behavior = .@"error", .ignore_unknown_fields = false, .allocate = .alloc_always });
+    errdefer parsed.deinit();
     try validateRuntimeInstallation(io, allocator, options, expected, parsed.value);
     const retained = try allocator.create(RuntimeSelectionVerified);
     errdefer allocator.destroy(retained);
-    retained.* = .{ .record = parsed.value, .digest = digest, .context_digest = try runtimeSelectionContextDigest(allocator, options, expected) };
+    retained.* = .{ .record = parsed.value, .digest = digest, .context_digest = try runtimeSelectionContextDigest(allocator, options, expected), .parsed = parsed };
     return @ptrCast(retained);
 }
 
@@ -273,7 +339,7 @@ fn openRuntimeRole(budget: Budget, directory: c.fd_t, installation: RuntimeInsta
         try budget.check();
         try runtimeDirectory(try statFile(parent), installation.uid, installation.gid);
         var name: [64:0]u8 = @splat(0);
-        if (part.len == 0 or part.len >= name.len) return error.InvalidRuntimeSelection;
+        if (part.len == 0 or part.len >= name.len or std.mem.eql(u8,part,".") or std.mem.eql(u8,part,"..")) return error.InvalidRuntimeSelection;
         @memcpy(name[0..part.len], part);
         if (parts.peek() != null) {
             const next = c.openat(parent, &name, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
@@ -327,11 +393,19 @@ fn validateRuntimeInstallation(io: std.Io, allocator: std.mem.Allocator, options
     try budget.check();
     try requireNativeCustody(options, null);
     if (options.adapter != .codex) return error.UnsupportedAdapter;
-    if (record.schema_version != 1) return error.InvalidRuntimeSelection;
     if (record.channel != expected.channel or record.target != expected.target) return error.RuntimeSelectionDrift;
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.UnsupportedRuntimeSelection;
     switch (record.launch_profile) {
-        .linux_explicit_bundled_loader_v1 => {},
+        .linux_explicit_bundled_loader_v1 => if (record.schema_version != 1 or record.nix_closure != null or record.acquisition_contract != .unsupported or record.deployment != null) return error.InvalidRuntimeSelection,
+        .linux_nix_direct_main_v1 => {
+            if (record.schema_version != 2) return error.InvalidRuntimeSelection;
+            try nix_runtime.recheck(io, allocator, options.deadline, record.nix_closure orelse return error.InvalidRuntimeSelection);
+            // Evaluation-only selections retain their real material witness
+            // while keeping acquisition unsupported. Receipt presence never
+            // upgrades that contract; the genuine constructor owns the join.
+            const deployment = record.deployment orelse return error.InvalidRuntimeSelection;
+            try runtime_deployment.recheckWitness(io,allocator,options.deadline orelse return error.InvalidDeadline,deployment.root,deployment.declaration);
+        },
     }
     if (std.mem.allEqual(u8, &record.upstream_commit, '0')) return error.InvalidRuntimeSelection;
     for (record.upstream_commit) |byte| if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f')) return error.InvalidRuntimeSelection;
@@ -354,10 +428,85 @@ fn validateRuntimeInstallation(io: std.Io, allocator: std.mem.Allocator, options
     const before = try statFile(expected.directory);
     try runtimeDirectory(before, installation.uid, installation.gid);
     if (before.dev != installation.directory_device or before.ino != installation.directory_inode) return error.RuntimeSelectionDrift;
+    if (record.installed_manifest_status) |manifest_status| {
+        try recheckInstalledManifest(budget, allocator, expected.directory, record, manifest_status);
+    } else if (record.launch_profile == .linux_nix_direct_main_v1) return error.InvalidRuntimeSelection;
     for (runtime_role_paths, [_]RuntimeRole{ record.launcher, record.backend, record.loader }, runtime_role_limits) |path, role, limit| try validateRuntimeRole(budget, expected.directory, installation, path, role, limit);
     if (!std.meta.eql(before, try statFile(expected.directory))) return error.RuntimeSelectionDrift;
     const after_witness = (try registryWitness(io, allocator, options)) orelse return error.NativeCustodyPending;
     if (!std.meta.eql(witness, after_witness)) return error.RuntimeSelectionDrift;
+    try budget.check();
+}
+
+fn recheckInstalledManifest(budget: Budget, allocator: std.mem.Allocator, directory: c.fd_t, record: RuntimeSelectionRecord, expected_status: metadata.Metadata) !void {
+    const fd = try openRuntimeRole(budget, directory, record.installation, "runtime-manifest.json");
+    defer close(fd);
+    const before = try statFile(fd);
+    const maximum_manifest: usize = if (record.launch_profile == .linux_nix_direct_main_v1) 64 * 1024 else 16 * 1024 * 1024;
+    if (!std.meta.eql(before, expected_status) or before.size <= 0 or before.size > @as(i64,@intCast(maximum_manifest)) or
+        before.mode & c.S.IFMT != c.S.IFREG or before.mode & 0o7777 != 0o644 or before.nlink != 1) return error.RuntimeSelectionDrift;
+    const bytes = try allocator.alloc(u8, @intCast(before.size));
+    defer allocator.free(bytes);
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        try budget.check();
+        const count = c.pread(fd, bytes[offset..].ptr, @min(bytes.len - offset, 64 * 1024), @intCast(offset));
+        if (count < 0 and c.errno(count) == .INTR) continue;
+        if (count <= 0) return error.RuntimeSelectionDrift;
+        offset += @intCast(count);
+    }
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    if (!std.meta.eql(digest, record.manifest_sha256) or !std.meta.eql(before, try statFile(fd))) return error.RuntimeSelectionDrift;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .duplicate_field_behavior = .@"error", .ignore_unknown_fields = false,
+        .max_value_len = if (record.launch_profile == .linux_nix_direct_main_v1) 4096 else 16 * 1024 * 1024 });
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidRuntimeSelection;
+    const files = parsed.value.object.get("files") orelse return error.InvalidRuntimeSelection;
+    if (files != .object or files.object.count() < 4 or files.object.count() > 4096) return error.InvalidRuntimeSelection;
+    var rows = files.object.iterator();
+    var total: u64 = 0;
+    while (rows.next()) |entry| {
+        try budget.check();
+        const path = entry.key_ptr.*;
+        if ((!std.mem.eql(u8, path, "bin/codex") and !std.mem.startsWith(u8, path, "lib/codex/")) or path.len > 4096) return error.InvalidRuntimeSelection;
+        const row = entry.value_ptr.*;
+        if (row != .object or row.object.count() != 3) return error.InvalidRuntimeSelection;
+        const sha = row.object.get("sha256") orelse return error.InvalidRuntimeSelection;
+        const size = row.object.get("bytes") orelse return error.InvalidRuntimeSelection;
+        const mode = row.object.get("mode") orelse return error.InvalidRuntimeSelection;
+        if (sha != .string or sha.string.len != 64 or size != .integer or size.integer <= 0 or mode != .integer or (mode.integer != 0o644 and mode.integer != 0o755)) return error.InvalidRuntimeSelection;
+        var hash: [32]u8 = undefined;
+        _ = std.fmt.hexToBytes(&hash, sha.string) catch return error.InvalidRuntimeSelection;
+        const count: u64 = @intCast(size.integer);
+        total = try std.math.add(u64, total, count);
+        if (total > 512 * 1024 * 1024) return error.InvalidRuntimeSelection;
+        const name = try allocator.dupeSentinel(u8, path, 0);
+        defer allocator.free(name);
+        const member = try openRuntimeRole(budget, directory, record.installation, name);
+        defer close(member);
+        const status = try statFile(member);
+        if (status.uid != record.installation.uid or status.gid != record.installation.gid or status.mode & c.S.IFMT != c.S.IFREG or status.mode & 0o7777 != @as(u32, @intCast(mode.integer)) or status.nlink != 1 or status.size < 0 or @as(u64, @intCast(status.size)) != count) return error.RuntimeSelectionDrift;
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        var buffer: [64 * 1024]u8 = undefined;
+        var cursor: u64 = 0;
+        while (cursor < count) {
+            try budget.check();
+            const read = c.pread(member, &buffer, @min(buffer.len, count - cursor), @intCast(cursor));
+            if (read < 0 and c.errno(read) == .INTR) continue;
+            if (read <= 0) return error.RuntimeSelectionDrift;
+            hasher.update(buffer[0..@intCast(read)]);
+            cursor += @intCast(read);
+        }
+        var actual: [32]u8 = undefined;
+        hasher.final(&actual);
+        const named = try openRuntimeRole(budget, directory, record.installation, name);
+        defer close(named);
+        if (!std.meta.eql(actual, hash) or !std.meta.eql(status, try statFile(member)) or !std.meta.eql(status, try statFile(named))) return error.RuntimeSelectionDrift;
+    }
+    const named_manifest = try openRuntimeRole(budget, directory, record.installation, "runtime-manifest.json");
+    defer close(named_manifest);
+    if (!std.meta.eql(before, try statFile(fd)) or !std.meta.eql(before, try statFile(named_manifest))) return error.RuntimeSelectionDrift;
     try budget.check();
 }
 
@@ -2014,4 +2163,63 @@ test "oversized retained remove completion preserves configuration capability an
     const after_capability = try readAt(allocator, custody.directory, "git.capability", true, 64);
     defer after_capability.deinit(allocator);
     try std.testing.expectEqualSlices(u8, before_capability.bytes, after_capability.bytes);
+}
+
+test "qualified runtime encoding authenticates actual retained roles and refuses actor digest drift" {
+    var fixture = try RuntimeSelectionFixture.init();
+    defer fixture.deinit();
+    const evidence = try encodeRuntimeSelection(std.testing.io, std.testing.allocator, fixture.fixture.options, fixture.expected, fixture.record);
+    defer std.testing.allocator.free(evidence);
+    const verified = try verifyRetainedRuntimeSelection(std.testing.io, std.testing.allocator, fixture.fixture.options, fixture.expected, evidence);
+    defer verified.deinit(std.testing.allocator);
+    var roles = try verified.recheckAndOpenRoles(std.testing.io, std.testing.allocator, fixture.fixture.options, fixture.expected);
+    defer roles.deinit();
+    try std.testing.expect((try statFile(roles.backend)).ino != (try statFile(roles.loader)).ino);
+    fixture.expected.record_sha256[0] ^= 1;
+    try std.testing.expectError(error.RuntimeSelectionDrift, encodeRuntimeSelection(std.testing.io, std.testing.allocator, fixture.fixture.options, fixture.expected, fixture.record));
+    try std.testing.expectError(error.RuntimeSelectionDrift, verified.recheckAndOpenRoles(std.testing.io, std.testing.allocator, fixture.fixture.options, fixture.expected));
+}
+
+test "qualified runtime encoding refuses expired original deadline before evidence" {
+    var fixture = try RuntimeSelectionFixture.init();
+    defer fixture.deinit();
+    fixture.fixture.options.deadline = .fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    try std.testing.expectError(error.Timeout, encodeRuntimeSelection(std.testing.io, std.testing.allocator, fixture.fixture.options, fixture.expected, fixture.record));
+}
+
+test "authenticated installed manifest rechecks non-role library after retained evidence decode" {
+    var fixture = try RuntimeSelectionFixture.init();
+    defer fixture.deinit();
+    const allocator = std.testing.allocator;
+    const library = "lib/codex/lib/extra.so";
+    const contents = "first library";
+    const path = try std.fmt.allocPrint(allocator,"{s}/runtime/{s}",.{fixture.fixture.base,library});
+    defer allocator.free(path);
+    try fixture.fixture.write(path,contents,0o755);
+    var library_digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(contents,&library_digest,.{});
+    const manifest = try std.fmt.allocPrint(allocator,
+        "{{\"files\":{{\"bin/codex\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"lib/codex/libexec/codex.bin\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"lib/codex/lib/ld-linux-x86-64.so.2\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"{s}\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}}}}}}",
+        .{std.fmt.bytesToHex(fixture.record.launcher.sha256,.lower),fixture.record.launcher.bytes,
+          std.fmt.bytesToHex(fixture.record.backend.sha256,.lower),fixture.record.backend.bytes,
+          std.fmt.bytesToHex(fixture.record.loader.sha256,.lower),fixture.record.loader.bytes,
+          library,std.fmt.bytesToHex(library_digest,.lower),contents.len});
+    defer allocator.free(manifest);
+    const manifest_path = try std.fmt.allocPrint(allocator,"{s}/runtime/runtime-manifest.json",.{fixture.fixture.base});
+    defer allocator.free(manifest_path);
+    try fixture.fixture.write(manifest_path,manifest,0o644);
+    const fd = c.openat(fixture.directory,"runtime-manifest.json",.{ .NOFOLLOW=true,.CLOEXEC=true });
+    if (fd < 0) return error.FixtureSetupFailed;
+    defer close(fd);
+    fixture.record.installed_manifest_status = try statFile(fd);
+    std.crypto.hash.sha2.Sha256.hash(manifest,&fixture.record.manifest_sha256,.{});
+    const replacement_evidence = try fixture.sealRecord();
+    allocator.free(fixture.evidence);
+    fixture.evidence = replacement_evidence;
+    const verified = try fixture.verify();
+    defer verified.deinit(allocator);
+    var roles = try verified.recheckAndOpenRoles(std.testing.io,allocator,fixture.fixture.options,fixture.expected);
+    defer roles.deinit();
+    try fixture.fixture.write(path,"altered library",0o755);
+    try std.testing.expectError(error.RuntimeSelectionDrift,verified.recheckAndOpenRoles(std.testing.io,allocator,fixture.fixture.options,fixture.expected));
 }

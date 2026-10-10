@@ -192,6 +192,237 @@ class PrerequisiteModels(unittest.TestCase):
                 with self.subTest(property=key,value=value),self.assertRaises(ValueError):
                     guard.verify({**actual,key:value},root,'system',isolation,route.PROFILE,runtime_seconds=17)
 
+    def readonly_args(self,profile,epoch='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'):
+        args=self.args();args.profile=profile;args.yoga_delivery_epoch=epoch
+        return args
+
+    def test_readonly_roles_require_exact_target_epoch_and_no_caller_authority(self):
+        for profile in route.READONLY_PROFILES:
+            arguments=['run',route.ROLES[profile]]
+            self.assertTrue(route.request(self.readonly_args(profile),arguments))
+            route.finite(arguments,'system','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',())
+            with patch.object(guard,'private'),patch.object(guard,'check_free_space'):
+                self.assertEqual(guard.prepare_state(route.STATE,route.STATE_PROFILE,route.COORDINATION,
+                    arguments=arguments),route.COORDINATION)
+            for other in route.PROFILES:
+                if other!=profile:
+                    with self.assertRaises(ValueError):route.selected(profile,['run',route.ROLES[other]])
+            for vector in (['build',arguments[1]],['run','//tools:yoga_sealed_transfer_stage'],
+                    arguments+['--','unselected'],['run','//tools:yoga_controller_delivery']):
+                with self.assertRaises(ValueError):route.selected(profile,vector)
+            for epoch in (None,True,'unknown','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/../other'):
+                with self.assertRaises(ValueError):route.request(self.readonly_args(profile,epoch),arguments)
+            for key,value in (('manager','user'),('source_dirty','true'),('source_commit','unknown'),
+                    ('yoga_qualification','/other'),('yoga_qualification_sha256','c'*64),
+                    ('yoga_deadline_monotonic_ns',1200),('repository_cache','/other'),
+                    ('nixpkgs_source','/other'),('reuse_owned_cache',True)):
+                args=self.readonly_args(profile);setattr(args,key,value)
+                with self.assertRaises(ValueError):route.request(args,arguments)
+            with self.assertRaises(ValueError):route.finite(arguments,'system',None,())
+            with self.assertRaises(ValueError):route.finite(arguments,'system',
+                'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',('unrelated',))
+        args=self.args();args.yoga_delivery_epoch='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        with self.assertRaises(ValueError):route.request(args,route.ARGUMENTS)
+
+    def qualification(self):
+        return {'schemaVersion':1,'scope':'yoga-authenticated-OS-executable-qualification-v1',
+            'bootstrapManifestSha256':readonly.executable.BOOTSTRAP_SHA,'inventorySha256':readonly.INVENTORY,
+            'sourceReceiptSha256':readonly.SOURCE_RECEIPT,'sshPath':readonly.executable.SSH,'sshSha256':'a'*64,
+            'remote':dict(schemaVersion=1,hostAlias='yoga',system='x86_64-linux',bootstrapTrust=readonly.executable.TRUST,
+                machineIdSha256='a'*64,bootIdSha256='b'*64,uid=1000,labSourceRevision='f'*40,
+                labGenerationMarkerSha256='a'*64,labDeploymentIdSha256='b'*64,
+                homeManagerGeneration='/nix/store/'+'c'*32+'-home-manager-generation',
+                remoteNixPath='/nix/store/'+'d'*32+'-nix/bin/nix',remoteNixSha256='e'*64,remoteNixBytes=42)}
+
+    @contextmanager
+    def raw_prior_fixture(self):
+        receipt,epoch,lock=self.receipt();entry,deadline=100*10**9,1300*10**9
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as temporary:
+            state=Path(temporary);run=state/epoch;run.mkdir(mode=0o700)
+            raw=readonly.canonical(self.qualification())
+            receipt['yoga_delivery']['qualification']['sha256']=hashlib.sha256(raw).hexdigest()
+            def write(record=receipt,content=raw):
+                for name,value in (('receipt.json',readonly.canonical(record)),('qualification.json',content)):
+                    target=run/name;target.write_bytes(value);target.chmod(0o600)
+            write()
+            # Only the fixed fixture root and clock are substituted. Production
+            # trusted_directory/read_owned hold and recheck real complete ancestry.
+            with patch.object(readonly.profile,'STATE',state),patch.object(route,'STATE',state), \
+                    patch.object(route.kernel.time,'monotonic_ns',return_value=entry):
+                yield receipt,epoch,lock,entry,deadline,run,write
+
+    def test_real_raw_prior_to_both_offline_commands_and_no_launch(self):
+        with self.raw_prior_fixture() as (receipt,epoch,lock,entry,deadline,run,write), \
+                patch.object(guard,'controller_run',side_effect=AssertionError('controller-launch')):
+            prior=route.select_prior(epoch,'b'*64,guard.PROPERTIES,deadline,lock,source_commit='a'*40)
+            route.recheck(prior,'b'*64,guard.PROPERTIES,deadline,lock,source_commit='a'*40)
+            self.assertEqual(prior['producer_receipt_sha256'],hashlib.sha256((run/'receipt.json').read_bytes()).hexdigest())
+            self.assertEqual(prior['sha256'],hashlib.sha256((run/'qualification.json').read_bytes()).hexdigest())
+            for profile in route.READONLY_PROFILES:
+                arguments=['run',route.ROLES[profile]]
+                command=route.command(None,'/fixed/bazel',Path('/fixed/new-run'),arguments,profile,
+                    entry,deadline,prior=prior,source_commit='a'*40,source_dirty='false')
+                self.assertEqual(command[-1],arguments[1])
+                for option in ('--repository_disable_download','--repo_contents_cache=',
+                        '--repository_cache=/fixed/new-run/yoga-controller-http-inputs',
+                        '--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION='+prior['path'],
+                        '--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256='+prior['sha256'],
+                        '--run_env=OMUX_YOGA_DELIVERY_DEADLINE_NS='+str(deadline),
+                        '--run_env=OMUX_YOGA_DELIVERY_MODE='+readonly.profile.MODES[arguments[1]],
+                        '--output_base=/fixed/new-run/output-base','--remote_executor=','--remote_cache=',
+                        '--lockfile_mode=error'):
+                    self.assertEqual(command.count(option),1)
+                with self.assertRaises(ValueError):guard.bazel_command('/fixed/bazel',Path('/fixed/new-run'),arguments)
+                for bad in (None,{},dict(prior,path='/other/qualification.json'),dict(prior,sha256='unknown'),
+                        dict(prior,producer_epoch='unknown'),dict(prior,producer_receipt_sha256='unknown'),
+                        dict(prior,undeclared=True)):
+                    with self.assertRaises(ValueError):route.command(None,'/fixed/bazel',Path('/fixed/new-run'),
+                        arguments,profile,entry,deadline,prior=bad)
+                for kw in ({'repository_cache':'/mutable'},{'nixpkgs_source':'/unselected'}):
+                    with self.assertRaises(ValueError):route.command(None,'/fixed/bazel',Path('/fixed/new-run'),
+                        arguments,profile,entry,deadline,prior=prior,**kw)
+            with self.assertRaises(ValueError):route.command(None,'/fixed/bazel',Path('/fixed/new-run'),
+                route.ARGUMENTS,route.PROFILE,entry,deadline,prior=prior)
+            with patch.object(route.kernel.time,'monotonic_ns',return_value=deadline-30*10**9):
+                for profile in route.READONLY_PROFILES:
+                    with self.assertRaises(ValueError):route.command(None,'/fixed/bazel',Path('/fixed/new-run'),
+                        ['run',route.ROLES[profile]],profile,entry,deadline,prior=prior)
+
+    def test_raw_reserved_prior_refuses_source_graph_caps_lock_bytes_and_role_drift(self):
+        for mutation in ('source','graph','caps','lock','mode','profile','http-module','raw-bytes','failed-cleanup'):
+            with self.subTest(mutation=mutation),self.raw_prior_fixture() as fixture:
+                receipt,epoch,lock,entry,deadline,run,write=fixture
+                prior=route.select_prior(epoch,'b'*64,guard.PROPERTIES,deadline,lock,source_commit='a'*40)
+                bad=copy.deepcopy(receipt)
+                if mutation=='source':bad['source_commit']='d'*40
+                elif mutation=='graph':bad['graph_sha256']='d'*64
+                elif mutation=='caps':bad['limits']=guard.PROPERTIES
+                elif mutation=='lock':bad['yoga_delivery']['coordination_lock_witness']={'other':True}
+                elif mutation=='mode':bad['yoga_delivery']['mode']='inspect'
+                elif mutation=='profile':bad['profile']=route.INSPECT_PROFILE
+                elif mutation=='http-module':bad['yoga_controller_http_inputs']['module_sha256']='0'*64
+                elif mutation=='failed-cleanup':bad['cleanup']['state']='unproved'
+                if mutation=='raw-bytes':write(content=b'{}')
+                else:write(record=bad)
+                with self.assertRaises(ValueError):route.select_prior(epoch,'b'*64,guard.PROPERTIES,
+                    deadline,lock,source_commit='a'*40)
+                with self.assertRaises(ValueError):route.recheck(prior,'b'*64,guard.PROPERTIES,
+                    deadline,lock,source_commit='a'*40)
+
+    def test_raw_reserved_prior_refuses_inode_rebind_and_private_file_custody_drift(self):
+        for mutation in ('rebound','permissions','symlink','hardlink'):
+            with self.subTest(mutation=mutation),self.raw_prior_fixture() as fixture:
+                receipt,epoch,lock,entry,deadline,run,write=fixture
+                prior=route.select_prior(epoch,'b'*64,guard.PROPERTIES,deadline,lock,source_commit='a'*40)
+                target=run/'qualification.json'
+                if mutation=='rebound':
+                    target.rename(run/'retained-old');write()
+                elif mutation=='permissions':target.chmod(0o644)
+                elif mutation=='symlink':
+                    target.rename(run/'retained-old');target.symlink_to('retained-old')
+                else:os.link(target,run/'unselected-hardlink')
+                with self.assertRaises((ValueError,OSError)):route.recheck(prior,'b'*64,guard.PROPERTIES,
+                    deadline,lock,source_commit='a'*40)
+
+    def test_actual_guard_readonly_caps_runtime_and_distinct_terminal_projection(self):
+        caps=route.properties(guard.PROPERTIES)
+        caps.update(MemoryMax=str(route.MEMORY),TasksMax=str(route.TASKS),
+            CPUQuotaPerSecUSec=str(route.CPU*10000)+'us')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for name,value in guard.CGROUP.items():
+                (root/name).write_text({'memory.max':str(route.MEMORY),'pids.max':str(route.TASKS)}.get(name,value))
+            (root/'cpu.max').write_text(str(route.CPU*1000)+' 100000')
+            for profile in route.READONLY_PROFILES:
+                isolation={**guard.SANDBOX,**route.selected(profile,['run',route.ROLES[profile]])}
+                actual={**caps,**isolation,'RuntimeMaxUSec':'17s',
+                    'TemporaryFileSystem':guard.system_masks(profile='standard'),
+                    'UnsetEnvironment':' '.join(guard.DELEGATION_ENV)}
+                guard.verify(actual,root,'system',isolation,profile,runtime_seconds=17)
+                self.assertEqual(guard.workload_pids_observation(None,profile).expected_limit,480)
+                for key,value in (('MemoryMax','4294967296'),('TasksMax','512'),('CPUQuotaPerSecUSec','2s'),
+                        ('RuntimeMaxUSec','16s'),('RuntimeMaxUSec','18s'),('PrivateNetwork','yes')):
+                    with self.assertRaises(ValueError):guard.verify({**actual,key:value},root,'system',
+                        isolation,profile,runtime_seconds=17)
+                terminal=route.readonly_projection(profile,1,1+1200*10**9,True,{'observations':1})
+                self.assertEqual(terminal['mode'],readonly.profile.MODES[route.ROLES[profile]])
+                self.assertEqual(terminal['scope'],'fixed-yoga-controller-readonly-reservation-v1')
+                for key in ('copy_performed','installation_qualified','seat_qualified','toolbar_consent_proved','credential_acquisition'):
+                    self.assertIs(terminal[key],False)
+                record=route.finish(root,['run',route.ROLES[profile]],0,True,True,1300*10**9,{'fixture':True})
+                self.assertIsNone(record['qualification'])
+        with self.assertRaises(ValueError):route.readonly_projection(route.PROFILE,1,1+1200*10**9,True,{})
+
+    @contextmanager
+    def readonly_go_fixture(self):
+        import fcntl
+        with self.raw_prior_fixture() as (receipt,epoch,_,entry,deadline,producer,write):
+            state=producer.parent;coordination=state/'coordination';coordination.mkdir(mode=0o700)
+            source=state/'source';source.mkdir(mode=0o700);(source/'tools').mkdir(mode=0o700)
+            (source/'BUILD.bazel').write_text('# fixture declared graph')
+            (source/'tools'/'fixture.py').write_text('# fixture controller source')
+            run=state/'fresh-run';run.mkdir(mode=0o700)
+            graph=guard.graph_digest(source)[0]
+            descriptor=os.open(coordination/'execution.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+            try:
+                fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                with patch.object(readonly.profile,'COORDINATION',coordination), \
+                        patch.object(route,'COORDINATION',coordination):
+                    lock=route.lock_witness(descriptor,deadline)
+                    receipt.update(coordination_directory=str(coordination),
+                        coordination_lock=str(coordination/'execution.lock'),graph_sha256=graph)
+                    receipt['yoga_delivery']['coordination_lock_witness']=lock;write()
+                    prior=route.select_prior(epoch,graph,guard.PROPERTIES,deadline,lock,source_commit='a'*40)
+                    yield source,run,descriptor,prior,graph,lock,entry,deadline,receipt,write
+            finally:os.close(descriptor)
+
+    def test_actual_final_readonly_go_reopens_prior_graph_and_original_lock_before_publish(self):
+        for profile in route.READONLY_PROFILES:
+            with self.subTest(profile=profile),self.readonly_go_fixture() as fixture:
+                source,run,descriptor,prior,graph,lock,entry,deadline,receipt,write=fixture
+                events=[];actual_graph=guard.graph_digest;actual_lock=route.lock_witness;actual_prior=route.recheck
+                def observe(name,operation,*args,**kwargs):
+                    self.assertFalse((run/'go').exists());events.append(name)
+                    return operation(*args,**kwargs)
+                with patch.object(guard,'graph_digest',side_effect=lambda *a,**k:observe('graph',actual_graph,*a,**k)), \
+                        patch.object(route,'lock_witness',side_effect=lambda *a,**k:observe('lock',actual_lock,*a,**k)), \
+                        patch.object(route,'recheck',side_effect=lambda *a,**k:observe('prior',actual_prior,*a,**k)), \
+                        patch.object(guard,'controller_run',side_effect=AssertionError('controller-launch')):
+                    guard.yoga_controller_readonly_go(route,profile,run,source,'a'*40,prior,
+                        graph,lock,descriptor,entry,deadline)
+                self.assertEqual(events,['graph','lock','prior'])
+                self.assertEqual((run/'go').stat().st_mode&0o777,0o600)
+                with self.assertRaises(FileExistsError):guard.yoga_controller_readonly_go(route,profile,
+                    run,source,'a'*40,prior,graph,lock,descriptor,entry,deadline)
+
+    def test_actual_final_readonly_go_refuses_post_readiness_drift_without_publishing(self):
+        mutations=('graph','lock-rebound','lock-mode','receipt-source','receipt-rebound',
+            'qualification-bytes','source-argument','deadline-reset','expired-work','wrong-role')
+        for profile in route.READONLY_PROFILES:
+            for mutation in mutations:
+                with self.subTest(profile=profile,mutation=mutation),self.readonly_go_fixture() as fixture:
+                    source,run,descriptor,prior,graph,lock,entry,deadline,receipt,write=fixture
+                    selected_source='a'*40;selected_deadline=deadline;selected_profile=profile
+                    if mutation=='graph':(source/'tools'/'fixture.py').write_text('# changed after readiness')
+                    elif mutation=='lock-rebound':
+                        path=Path(readonly.profile.COORDINATION)/'execution.lock';path.rename(path.with_name('old-lock'))
+                        path.write_bytes(b'');path.chmod(0o600)
+                    elif mutation=='lock-mode':(Path(readonly.profile.COORDINATION)/'execution.lock').chmod(0o644)
+                    elif mutation=='receipt-source':receipt['source_commit']='d'*40;write()
+                    elif mutation=='receipt-rebound':
+                        producer=Path(prior['path']).parent
+                        (producer/'receipt.json').rename(producer/'old-receipt');write()
+                    elif mutation=='qualification-bytes':write(content=b'{}')
+                    elif mutation=='source-argument':selected_source='d'*40
+                    elif mutation=='deadline-reset':selected_deadline+=1
+                    elif mutation=='wrong-role':selected_profile=route.PROFILE
+                    observed=deadline-30*10**9 if mutation=='expired-work' else entry
+                    with patch.object(route.kernel.time,'monotonic_ns',return_value=observed), \
+                            self.assertRaises(ValueError):
+                        guard.yoga_controller_readonly_go(route,selected_profile,run,source,selected_source,prior,
+                            graph,lock,descriptor,entry,selected_deadline)
+                    self.assertFalse((run/'go').exists())
+
     @contextmanager
     def http_fixture(self):
         http=route.http_inputs
@@ -243,6 +474,22 @@ class PrerequisiteModels(unittest.TestCase):
                 snapshot.recheck(content=True,cleanup=True)
                 self.assertTrue(snapshot.facts()['verified_after_cleanup'])
                 self.assertFalse(snapshot.facts()['downloads_allowed'])
+            finally:snapshot.close()
+            self.assertTrue(snapshot.facts()['custody_released'])
+
+    def test_held_http_snapshot_is_the_actual_readonly_command_cache(self):
+        with self.http_fixture() as (http,root,run,source,payloads,rows,entry,deadline), \
+                self.raw_prior_fixture() as (receipt,epoch,lock,_,_,prior_run,write):
+            snapshot=http.Snapshot(run,entry,deadline)
+            try:
+                prior=route.select_prior(epoch,'b'*64,guard.PROPERTIES,deadline,lock,source_commit='a'*40)
+                for profile in route.READONLY_PROFILES:
+                    command=route.command(None,'/fixed/bazel',run,['run',route.ROLES[profile]],profile,
+                        entry,deadline,prior=prior,source_commit='a'*40,source_dirty='false')
+                    self.assertEqual(command.count('--repository_cache='+str(snapshot.path)),1)
+                    self.assertIn('--repository_disable_download',command)
+                    snapshot.verify_binding({'BindReadOnlyPaths':snapshot.binding(),'BindPaths':''})
+                snapshot.recheck(content=True,cleanup=True)
             finally:snapshot.close()
             self.assertTrue(snapshot.facts()['custody_released'])
 

@@ -15,6 +15,58 @@ import guard_resident_observation as resident
 
 
 class SourceReservationModels(unittest.TestCase):
+    def test_production_acquisition_units_are_exact_and_refuse_before_external_access(self):
+        profile = source.ACQUISITION_UNIT_PROFILE
+        expected = ["test", "//tools:guard_resident_custody_runtime_reserved_test",
+            "//:native_source_acquisition_test", "//:native_source_consent_test",
+            "//:qualified_runtime_delivery_test", "//:native_deployment_arguments_test",
+            "//:runtime_selection_producer_test", "//:engine_test",
+            "//delivery:nix_codex_runtime_test", "//delivery:nix_codex_deployment_test", "//:docs_check"]
+        self.assertEqual(source.COHORTS[profile], expected)
+        args = self.args()
+        args.profile = profile
+        self.assertTrue(source.request(args, expected))
+        with patch.object(guard, "immutable", side_effect=AssertionError("tool read")) as tool, \
+                patch.object(source, "Witness", side_effect=AssertionError("resident read")) as witness:
+            for bad in (expected[:-1], expected + ["//:format_test"],
+                    ["test", *reversed(expected[1:])], ["run", *expected[1:]],
+                    expected + ["--test_arg=private"], source.ARGUMENTS):
+                with self.assertRaises(ValueError):
+                    guard.main(["--profile", profile, "--manager", "system", "--source-commit",
+                        "a" * 40, "--source-dirty", "false", "--", *bad])
+            for option in (["--resident-manifest", "/model/private"], ["--reuse-owned-cache"],
+                    ["--codex-fresh-runtime-selection", "/model/private"]):
+                with self.assertRaises(ValueError):
+                    guard.main(["--profile", profile, "--manager", "system", "--source-commit",
+                        "a" * 40, "--source-dirty", "false", *option, "--", *expected])
+            tool.assert_not_called()
+            witness.assert_not_called()
+
+    def test_production_acquisition_units_keep_original_clock_and_false_authority(self):
+        profile = source.ACQUISITION_UNIT_PROFILE
+        with patch.object(kernel.time, "monotonic_ns", return_value=200 * 10**9):
+            command = source.command(guard.bazel_command, "bazel", Path("/model/epoch"),
+                source.COHORTS[profile], profile, 100 * 10**9, 1300 * 10**9)
+        self.assertEqual(command[-10:], source.COHORTS[profile][1:])
+        for flag in ("--repository_disable_download", "--nocache_test_results",
+                "--sandbox_default_allow_network=false", "--remote_executor=", "--remote_cache="):
+            self.assertIn(flag, command)
+        self.assertEqual(guard.workload_pids_observation(None, profile).expected_limit, 480)
+        for verified in (None, False, True):
+            row = source.projection(100 * 10**9, 1300 * 10**9, verified, {}, profile)
+            self.assertEqual(row["mode"], "isolated-production-acquisition-units")
+            self.assertIs(row["verified_after_cleanup"], verified)
+            for field in ("source_mutation_requested", "normal_vault_observed", "daemon_transition_performed",
+                    "native_runtime_qualified", "sdk_qualified", "compiler_qualified", "schema_qualified",
+                    "final_source_qualified", "custody_qualified", "health_qualified", "continuity_qualified"):
+                self.assertIs(row[field], False)
+        with patch.object(kernel.time, "monotonic_ns", return_value=1270 * 10**9):
+            with self.assertRaises(ValueError):
+                source.command(Mock(), "bazel", Path("/model/epoch"), source.COHORTS[profile],
+                    profile, 100 * 10**9, 1300 * 10**9)
+        with self.assertRaises(ValueError):
+            source.projection(100 * 10**9, 1301 * 10**9, True, {}, profile)
+
     def args(self):
         return SimpleNamespace(profile=source.PROFILE, manager="system", reuse_owned_cache=False,
             source_commit="a" * 40, source_dirty="false", repository_cache=None, nixpkgs_source=None)

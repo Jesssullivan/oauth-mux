@@ -2,7 +2,8 @@
 from pathlib import Path
 import re
 
-ROOT = Path('/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008')
+# Physical declared controller module binds this checkout; historical c106 stays separate.
+ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / 'tools'
 DELIVERY = ROOT / 'delivery'
 FILES = frozenset({'codex_device_acquisition_component.py'})

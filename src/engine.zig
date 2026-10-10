@@ -29,12 +29,19 @@ const git = @import("integrations/git.zig");
 const codex = @import("integrations/codex.zig");
 const paths = @import("paths.zig");
 const setup = @import("integrations/setup.zig");
+const runtime_deployment = @import("integrations/runtime_deployment.zig");
+const runtime_package_installation = @import("integrations/runtime_installation.zig");
+const runtime_selection_writer = @import("integrations/runtime_selection_writer.zig");
+const runtime_selection_producer = @import("integrations/runtime_selection_producer.zig");
 const measured_runtime = @import("integrations/measured_runtime_selection.zig");
 const product = @import("product.zig");
 const discovery = @import("discovery.zig");
 const observer = @import("observer.zig");
 const native_probe = @import("integrations/native_probe.zig");
 const native_inventory = @import("integrations/native_inventory.zig");
+const native_source_context = @import("integrations/native_source_context.zig");
+const native_source_consent = @import("native_source_consent.zig");
+const native_source_acquisition = @import("native_source_acquisition.zig");
 const request_authority = @import("request_authority.zig");
 const mutation_authority = @import("mutation_authority.zig");
 const snapshot_admission = @import("snapshot_admission.zig");
@@ -66,7 +73,30 @@ fn publicAccountView(account: domain.Account) PublicAccountView {
     };
 }
 
-const SourceDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8 = "", path: []const u8 = "" };
+const NativeSourceAuthority = struct {
+    // This record is daemon-owned persisted metadata. A discovery hint
+    // or a client-selected context cannot construct this consent record.
+    consent: native_source_consent.Consent,
+    origin: native_source_consent.Handle,
+};
+const QualifiedNativeRuntime = struct {
+    record_sha256: [32]u8,
+    evidence: []const u8,
+    channel: setup.RuntimeChannel,
+    target: setup.RuntimeTarget,
+    adapter_epoch: u64 = 0,
+    registry: ?setup.RegistryWitness = null,
+};
+const SourceDescription = struct {
+    source_id: []const u8,
+    provider: []const u8,
+    label: []const u8 = "",
+    path: []const u8 = "",
+    native_authority: ?NativeSourceAuthority = null,
+    // A private locator copied from an authenticated native publication. It
+    // is never accepted as a control source/profile path or projected to UI.
+    native_endpoint: []const u8 = "",
+};
 const OutcomeIntent = struct {
     key: snapshot_admission.Key,
     owner_id: []const u8,
@@ -219,6 +249,7 @@ const Persisted = struct {
     native_registry: ?setup.RegistryWitness = null,
     // Optional historical metadata. Absence never selects or activates bytes.
     measured_codex_runtime: ?measured_runtime.Committed = null,
+    qualified_native_runtime: ?QualifiedNativeRuntime = null,
 };
 const Invocation = struct {
     allocator: std.mem.Allocator,
@@ -230,6 +261,88 @@ const Invocation = struct {
     finished: bool = false,
     condition: std.Io.Condition = .init,
     peer_context: ?peer.Context = null,
+    // Private in-process installation call; ordinary control parsing has no
+    // constructor or wire representation for this opaque producer authority.
+    qualified_candidate: ?*const runtime_selection_producer.ValidatedSelection = null,
+};
+const NativeRuntimeCommitTask = struct {
+    engine: *Engine,
+    invocation: *Invocation,
+    candidate: ?*const runtime_selection_producer.ValidatedSelection,
+    owned_candidate: ?*runtime_selection_producer.ValidatedSelection = null,
+    deployment: ?runtime_deployment.RegisteredDeployment = null,
+    inputs: ?*runtime_deployment.OwnedInputs = null,
+    installation: ?runtime_package_installation.OwnedInstallation = null,
+    parent: std.c.fd_t = -1,
+    basename: ?[:0]const u8 = null,
+    install_response: ?[]u8 = null,
+    context: runtime_selection_producer.ActorContext,
+    arena: *std.heap.ArenaAllocator,
+    registry: ?setup.RegistryWitness,
+    epoch: u64,
+    job: native_work.Job,
+    prepared: ?*runtime_selection_writer.Prepared = null,
+    failure: ?anyerror = null,
+    handoff_ready: bool = false,
+    fn run(raw: *anyopaque, canceled: bool) void {
+        const self: *NativeRuntimeCommitTask = @ptrCast(@alignCast(raw));
+        if (canceled) { self.failure = error.ServiceStopping; return; }
+        self.prepare() catch |err| { self.failure = err; return; };
+        self.handoff_ready = true;
+    }
+    fn prepare(self: *NativeRuntimeCommitTask) !void {
+        const io = self.engine.io;
+        const a = self.engine.allocator;
+        if (self.deployment) |selected| {
+            self.inputs = try runtime_deployment.load(io, a, selected, self.context.deadline);
+            self.installation = try runtime_package_installation.installQualifiedPackage(io, a, self.context, self.inputs.?, self.parent, self.basename.?);
+            try self.installation.?.recheck(io, self.context.deadline, self.parent, self.basename.?);
+            self.owned_candidate = try runtime_selection_producer.acquire(io, a, self.context, self.inputs.?.inputsForInstallation(self.installation.?.directory));
+            self.candidate = self.owned_candidate;
+        }
+        const candidate = self.candidate orelse return error.InvalidRuntimeSelection;
+        self.prepared = try runtime_selection_writer.prepare(io, a, self.context, candidate);
+        try self.prepared.?.recheck(io, self.context);
+        if (self.inputs) |inputs| try inputs.recheck(io);
+        if (self.installation) |*installed| try installed.recheck(io, self.context.deadline, self.parent, self.basename.?);
+    }
+    fn deinit(self: *NativeRuntimeCommitTask) void {
+        const a = self.engine.allocator;
+        if (self.prepared) |prepared| prepared.deinit(a);
+        if (self.owned_candidate) |selected| selected.deinit();
+        if (self.installation) |*installed| installed.deinit();
+        if (self.inputs) |inputs| inputs.deinit();
+        if (self.deployment) |selected| _ = std.c.close(selected.descriptor);
+        if (self.parent >= 0) _ = std.c.close(self.parent);
+        if (self.install_response) |response| self.invocation.allocator.free(response);
+        std.crypto.secureZero(u8, &self.context.options.key);
+        std.crypto.secureZero(u8, &self.context.options.capability);
+        self.arena.deinit();
+        a.destroy(self.arena);
+        a.destroy(self);
+    }
+};
+const OwnedSourceImage = struct {
+    selected: *setup.VerifiedRuntimeSelection,
+    expected: setup.RuntimeSelectionExpectation,
+    fn open(io: std.Io, a: std.mem.Allocator, root: []const u8, retained: QualifiedNativeRuntime, options: setup.Options) !OwnedSourceImage {
+        const directory = try paths.openPrivateRoot(a, root, false);
+        errdefer _ = std.c.close(directory);
+        const expected: setup.RuntimeSelectionExpectation = .{ .record_sha256 = retained.record_sha256,
+            .channel = retained.channel, .target = retained.target, .directory = directory };
+        const selected = try setup.verifyRetainedRuntimeSelection(io, a, options, expected, retained.evidence);
+        errdefer selected.deinit(a);
+        if (selected.launchProfile() != .linux_nix_direct_main_v1) return error.NativeImageUnavailable;
+        return .{ .selected = selected, .expected = expected };
+    }
+    fn view(self: *const OwnedSourceImage, options: setup.Options) native_probe.SourceImage {
+        return .{ .selection = self.selected, .options = options, .expected = self.expected };
+    }
+    fn deinit(self: *OwnedSourceImage, a: std.mem.Allocator) void {
+        self.selected.deinit(a);
+        _ = std.c.close(self.expected.directory);
+        self.* = undefined;
+    }
 };
 // An invocation cannot return while its continuation owns this stack waiter.
 // Protocol arguments, socket context and replies are heap-owned independently
@@ -239,7 +352,7 @@ const NativeTask = struct {
     invocation: *Invocation,
     request: control.Request,
     job: native_work.Job,
-    stage: enum { identify, registration, announcement_identify, announcement, detachment, discovery },
+    stage: enum { identify, registration, announcement_identify, announcement, detachment, discovery, source_prepare, source_acquire },
     operation: native_owner.OperationId,
     native_operation: ?native_owner.OperationId = null,
     removal_operation: ?native_owner.OperationId = null,
@@ -257,6 +370,18 @@ const NativeTask = struct {
     identity: ?native_probe.OwnerIdentity = null,
     acknowledgement: ?native_probe.OwnerAck = null,
     discovered: std.ArrayList(native_probe.OwnerLoadedThreads) = .empty,
+    source_contexts: std.ArrayList(native_probe.SourceContextDeclaration) = .empty,
+    source_context_runtime: ?[]const u8 = null,
+    source_selection: ?native_source_acquisition.ControlSelection = null,
+    source_runtime_root: ?[]const u8 = null,
+    source_runtime_record: ?QualifiedNativeRuntime = null,
+    source_image: ?OwnedSourceImage = null,
+    source_origin: ?native_source_consent.Handle = null,
+    source_authority: ?NativeSourceAuthority = null,
+    source_admission: ?native_source_consent.Admission = null,
+    source_started_at: ?std.Io.Timestamp = null,
+    source_copy_now: i64 = 0,
+    source_copy: ?native_probe.OwnerConnection.AccessCopy = null,
     discovery_context: ?*std.heap.ArenaAllocator = null,
     discovery_options: ?setup.Options = null,
     discovery_until: ?std.Io.Clock.Timestamp = null,
@@ -283,10 +408,117 @@ const NativeTask = struct {
             self.failure = err;
         };
     }
+    fn retainDiscovered(self: *NativeTask, loaded: native_probe.OwnerLoadedThreads) !void {
+        var retained = false;
+        defer if (!retained) loaded.deinit(self.engine.allocator);
+        for (self.discovered.items) |prior| if (std.mem.eql(u8, &prior.owner_id, &loaded.owner_id)) {
+            if (!std.mem.eql(u8, &prior.native_nonce, &loaded.native_nonce) or prior.endpoint_generation != loaded.endpoint_generation or
+                !peer.sameOriginal(prior.witness, loaded.witness) or !eql(prior.socket_path, loaded.socket_path)) return error.NativeOwnerAmbiguous;
+            return;
+        };
+        try self.discovered.append(self.engine.allocator, loaded);
+        retained = true;
+    }
+    fn requireDiscoveryFits(self: *const NativeTask) !void {
+        var arena: std.heap.ArenaAllocator = .init(self.engine.allocator);
+        defer arena.deinit();
+        try requireNativeDiscoveryFits(self.request.id, try nativeDiscoveryResult(arena.allocator(), self, null, false));
+    }
+    fn discoverSourceContexts(self: *NativeTask, budget: *native_inventory.Budget) !void {
+        if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return;
+        const runtime = self.source_context_runtime orelse return;
+        const io = self.engine.io;
+        const allocator = self.engine.allocator;
+        var hints = (try native_source_context.collect(io, allocator, runtime, budget)) orelse return;
+        defer hints.deinit();
+        for (hints.hints) |*hint| {
+            try budget.check(io);
+            try hints.verify(io, budget);
+            // The endpoint-derived home is used only for held socket metadata.
+            // No credential locator, source permission or auth-file read exists.
+            var endpoints = try native_inventory.collect(io, allocator, hint.endpointHome(), budget);
+            defer endpoints.deinit();
+            var selected: ?*const native_inventory.Candidate = null;
+            for (endpoints.candidates) |*candidate| if (eql(candidate.endpoint_path, hint.endpoint_path)) {
+                if (selected != null) return error.NativeOwnerAmbiguous;
+                selected = candidate;
+            };
+            const candidate = selected orelse return error.NativeSourceContextChanged;
+            const loaded = try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until);
+            var transferred = false;
+            defer if (!transferred) loaded.deinit(allocator);
+            if (!std.mem.eql(u8, &loaded.owner_id, &hint.owner_id) or !std.mem.eql(u8, &loaded.native_nonce, &hint.native_nonce) or loaded.endpoint_generation != hint.endpoint_generation) return error.NativeOwnerIdentityMismatch;
+            const declaration = try native_probe.inspectAutomaticSourceContextWithDeadline(io, allocator, candidate, loaded.witness, .{
+                .owner_id = hint.owner_id, .native_nonce = hint.native_nonce, .endpoint_generation = hint.endpoint_generation,
+                // Maintained v8's immutable hint locates this owner endpoint.
+                // Only its freshly authenticated reply names current context.
+                .context = null,
+            }, budget.until);
+            try endpoints.verify(allocator);
+            try hints.verify(io, budget);
+            try budget.check(io);
+            try self.source_contexts.append(allocator, declaration);
+            transferred = true; // retainDiscovered consumes on both success/refusal.
+            try self.retainDiscovered(loaded);
+            try self.requireDiscoveryFits();
+        }
+        try hints.verify(io, budget);
+        try budget.check(io);
+    }
+    fn prepareSource(self: *NativeTask) !void {
+        const selection = self.source_selection orelse return error.InvalidParams;
+        const io = self.engine.io;
+        const a = self.engine.allocator;
+        var declaration: ?native_probe.SourceContextDeclaration = null;
+        for (self.source_contexts.items) |current| {
+            if (!std.meta.eql(current.owner_id, selection.owner_id) or !std.meta.eql(current.native_nonce, selection.nonce) or
+                current.endpoint_generation != selection.endpoint_generation) continue;
+            if (declaration != null) return error.NativeSourceAmbiguous;
+            if (current.status != .available or current.store_present != true) return error.NativeSourceUnavailable;
+            const context = current.context orelse return error.NativeSourceUnavailable;
+            if (!std.meta.eql(context.id, selection.context.id) or context.generation != selection.context.generation) return error.NativeSourceContextChanged;
+            declaration = current;
+        }
+        const current = declaration orelse return error.NativeSourceUnavailable;
+        var endpoint: ?[]const u8 = null;
+        for (self.discovered.items) |loaded| {
+            if (!std.meta.eql(loaded.owner_id, current.owner_id)) continue;
+            if (endpoint != null or !std.meta.eql(loaded.native_nonce, current.native_nonce) or
+                loaded.endpoint_generation != current.endpoint_generation or !peer.sameOriginal(loaded.witness, current.witness)) return error.NativeSourceAmbiguous;
+            endpoint = loaded.socket_path;
+        }
+        const owned_endpoint = try a.dupe(u8, endpoint orelse return error.NativeSourceUnavailable);
+        a.free(self.endpoint);
+        self.endpoint = owned_endpoint;
+        self.expected = current.witness;
+        self.source_image = try OwnedSourceImage.open(io, a, self.source_runtime_root orelse return error.NativeImageUnavailable,
+            self.source_runtime_record orelse return error.NativeImageUnavailable, self.discovery_options.?);
+        var connection = try native_probe.OwnerConnection.open(io, a, self.endpoint, self.expected, self.invocation.until);
+        defer connection.deinit();
+        var key = try native_source_acquisition.capabilityKey(self.discovery_options.?.capability);
+        defer std.crypto.secureZero(u8, &key);
+        self.source_origin = try connection.sourceOrigin(self.operation, .{ .owner_id = selection.owner_id,
+            .native_nonce = selection.nonce, .endpoint_generation = selection.endpoint_generation,
+            .context = .{ .id = selection.context.id, .generation = selection.context.generation } }, key,
+            self.source_image.?.view(self.discovery_options.?));
+        try native_source_acquisition.deadline(io, self.invocation.until);
+    }
     fn perform(self: *NativeTask) !void {
         const io = self.engine.io;
         const allocator = self.engine.allocator;
-        if (self.stage == .discovery) {
+        if (self.stage == .source_acquire) {
+            const admission = self.source_admission orelse return error.NativeSourceConsentRequired;
+            const scope = self.source_authority orelse return error.NativeSourceConsentRequired;
+            const selection = self.source_selection orelse return error.InvalidParams;
+            var key = try native_source_acquisition.capabilityKey(self.discovery_options.?.capability);
+            defer std.crypto.secureZero(u8, &key);
+            self.connection = try native_probe.OwnerConnection.open(io, allocator, self.endpoint, self.expected, self.invocation.until);
+            self.source_copy = try self.connection.?.acquireSource(.{ .admission = admission,
+                .origin = scope.origin, .operation = self.operation, .custody_seconds = selection.custody_seconds,
+                .consent_expires_at = scope.consent.expires_at }, key, self.source_copy_now, self.source_image.?.view(self.discovery_options.?));
+            return;
+        }
+        if (self.stage == .discovery or self.stage == .source_prepare) {
             var budget = try native_inventory.Budget.init(io, self.invocation.until);
             self.discovery_until = budget.until;
             if (self.endpoint.len != 0) {
@@ -305,27 +537,30 @@ const NativeTask = struct {
                 options.deadline = budget.until;
                 const selected_home = try setup.selectedCodexHome(io, allocator, options);
                 defer allocator.free(selected_home);
-                var inventory = try native_inventory.collect(io, allocator, selected_home, &budget);
-                defer inventory.deinit();
-                self.scanned_entries = inventory.scanned_entries;
-                self.ignored_stale_entries = inventory.ignored_stale_entries;
-                for (inventory.candidates) |*candidate| {
-                    try budget.check(io);
-                    const loaded = try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until);
-                    self.discovered.append(allocator, loaded) catch |err| {
-                        loaded.deinit(allocator);
-                        return err;
-                    };
-                    // Refuse the entire query before further probes once the
-                    // exact public aggregate exceeds its response boundary.
-                    var arena: std.heap.ArenaAllocator = .init(allocator);
-                    defer arena.deinit();
-                    try requireNativeDiscoveryFits(self.request.id, try nativeDiscoveryResult(arena.allocator(), self, null, false));
+                var selected_inventory: ?native_inventory.Inventory = native_inventory.collect(io, allocator, selected_home, &budget) catch |err| switch (err) {
+                    error.NativeContextMissing => if (!options.codex_home_explicit and options.config_path == null) null else return err,
+                    else => return err,
+                };
+                defer if (selected_inventory) |*value| value.deinit();
+                if (selected_inventory) |*value| {
+                    self.ignored_stale_entries = value.ignored_stale_entries;
+                    for (value.candidates) |*candidate| {
+                        try budget.check(io);
+                        try self.retainDiscovered(try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until));
+                        try self.requireDiscoveryFits();
+                    }
+                    try value.verify(allocator);
                 }
+                try self.discoverSourceContexts(&budget);
+                // An unpublished default home alone remains an error; a fresh
+                // authenticated per-user hint can discover a different home.
+                if (selected_inventory == null and self.discovered.items.len == 0) return error.NativeContextMissing;
+                self.scanned_entries = budget.scanned_entries;
+                if (selected_inventory) |*value| try value.verify(allocator);
                 try budget.check(io);
-                try inventory.verify(allocator);
             }
             try budget.check(io);
+            if (self.stage == .source_prepare) try self.prepareSource();
             return;
         }
         if (self.stage == .announcement_identify and self.selected_owner) {
@@ -365,7 +600,7 @@ const NativeTask = struct {
             .registration => self.acknowledgement = try self.connection.?.register(.{ .reference = self.reference.?, .thread_id = self.thread_id, .native_nonce = self.nonce, .operation_id = self.operation, .broker_socket = self.broker_socket, .capability_path = self.capability_path }, self.expected.?),
             .announcement => self.acknowledgement = try self.connection.?.announce(self.thread_id, self.operation, .{ .broker_socket = self.broker_socket, .capability_path = self.capability_path }),
             .detachment => self.acknowledgement = try self.connection.?.detach(.{ .reference = self.reference.?, .thread_id = self.thread_id, .native_nonce = self.nonce, .operation_id = self.native_operation orelse self.operation }, self.expected.?),
-            .discovery => unreachable,
+            .discovery, .source_prepare, .source_acquire => unreachable,
         }
     }
     fn deinit(self: *NativeTask) void {
@@ -375,6 +610,10 @@ const NativeTask = struct {
         if (self.connection) |*value| value.deinit();
         for (self.discovered.items) |value| value.deinit(allocator);
         self.discovered.deinit(allocator);
+        self.source_contexts.deinit(allocator);
+        if (self.source_copy) |*copy| copy.deinit();
+        if (self.source_image) |*image| image.deinit(allocator);
+        if (self.source_runtime_record) |record| allocator.free(record.evidence);
         if (self.discovery_options) |*options| {
             std.crypto.secureZero(u8, &options.key);
             std.crypto.secureZero(u8, &options.capability);
@@ -391,6 +630,25 @@ const NativeTask = struct {
         allocator.destroy(self);
     }
 };
+const NativeImportContext = struct {
+    arena: *std.heap.ArenaAllocator,
+    endpoint: []const u8,
+    options: setup.Options,
+    image: OwnedSourceImage,
+    origin: native_source_consent.Handle,
+    until: std.Io.Clock.Timestamp,
+    registry: ?setup.RegistryWitness,
+    epoch: u64,
+    fn deinit(self: *NativeImportContext, a: std.mem.Allocator) void {
+        self.image.deinit(a);
+        std.crypto.secureZero(u8, &self.options.key);
+        std.crypto.secureZero(u8, &self.options.capability);
+        self.arena.deinit();
+        a.destroy(self.arena);
+        a.destroy(self);
+    }
+};
+
 const PendingImport = struct {
     network_id: u64,
     source_id: []u8,
@@ -409,7 +667,13 @@ const PendingImport = struct {
     token: []u8,
     label: []u8,
     expires_at: ?i64,
+    native_admission: ?native_source_consent.Admission = null,
+    native_started_at: ?std.Io.Timestamp = null,
+    native_selection_digest: ?[32]u8 = null,
+    native_context: ?*NativeImportContext = null,
+    native_operation: ?native_owner.OperationId = null,
     fn deinit(self: *PendingImport, allocator: std.mem.Allocator) void {
+        if (self.native_context) |context| context.deinit(allocator);
         std.crypto.secureZero(u8, self.token);
         allocator.free(self.token);
         allocator.free(self.source_id);
@@ -422,10 +686,72 @@ const PendingImport = struct {
         allocator.free(self.label);
     }
 };
+const NativeImportOwnership = struct {
+    admission: native_source_consent.Admission,
+    started_at: std.Io.Timestamp,
+    selection_digest: [32]u8,
+    operation: native_owner.OperationId,
+    context: *NativeImportContext,
+    fresh: NativeImportFresh,
+};
 // Network completions are process-local. Source and job generations are durable
 // fences; restart retains their unresolved outcome credits without adopting or
 // resubmitting the missing completion.
 const ImportSourceAuthority = struct { source_id: []u8, generation: u64 = 1 };
+// Produced only by the supervised native final-check worker after the real
+// peer, selected context, origin proof and qualified executable image checks.
+// The actor never accepts this value from control parameters or persistence.
+const NativeImportFresh = struct {
+    declaration: native_probe.SourceContextDeclaration,
+    origin: native_source_consent.Handle,
+    selection_digest: [32]u8,
+};
+const NativeAdoptionFence = struct { pending: PendingImport, fresh: NativeImportFresh };
+const native_source_description_budget: usize = 8192;
+
+const NativeImportTask = struct {
+    engine: *Engine,
+    pending: PendingImport,
+    completion: transport.Completion,
+    job: native_work.Job,
+    fresh: ?NativeImportFresh = null,
+    failure: ?anyerror = null,
+    fn run(opaque_context: *anyopaque, canceled: bool) void {
+        const self: *NativeImportTask = @ptrCast(@alignCast(opaque_context));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.perform() catch |err| self.failure = err;
+    }
+    fn perform(self: *NativeImportTask) !void {
+        const retained = self.pending.native_context orelse return error.NativeSourceFreshCheckRequired;
+        const admission = self.pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const io = self.engine.io;
+        try native_source_acquisition.deadline(io, retained.until);
+        var connection = try native_probe.OwnerConnection.open(io, self.engine.allocator, retained.endpoint,
+            admission.owner.witness, retained.until);
+        defer connection.deinit();
+        const selector: native_probe.SourceContextSelector = .{ .owner_id = admission.owner.id,
+            .native_nonce = admission.owner.nonce, .endpoint_generation = admission.owner.endpoint_generation,
+            .context = .{ .id = admission.context.id, .generation = admission.context.generation } };
+        var key = try native_source_acquisition.capabilityKey(retained.options.capability);
+        defer std.crypto.secureZero(u8, &key);
+        const origin = try connection.sourceOrigin(self.pending.native_operation.?, selector, key,
+            retained.image.view(retained.options));
+        if (!std.crypto.timing_safe.eql([32]u8, origin, retained.origin)) return error.NativeSourceOriginChanged;
+        const current = try connection.sourceContext(self.pending.native_operation.?, selector);
+        try retained.image.view(retained.options).verify(&connection);
+        try native_source_acquisition.deadline(io, retained.until);
+        self.fresh = .{ .declaration = current, .origin = origin,
+            .selection_digest = self.pending.native_selection_digest orelse return error.NativeImageUnavailable };
+    }
+    fn deinit(self: *NativeImportTask) void {
+        self.completion.deinit(self.engine.allocator);
+        self.pending.deinit(self.engine.allocator);
+        self.engine.allocator.destroy(self);
+    }
+};
 const ObservationCredit = struct { network_id: u64, key: snapshot_admission.Key };
 const NativeLease = struct {
     handle: [64]u8,
@@ -501,12 +827,19 @@ pub const Engine = struct {
     active_peer: ?*const peer.Context = null,
     native_registry: ?setup.RegistryWitness = null,
     measured_codex_runtime: ?measured_runtime.Committed = null,
+    qualified_native_runtime: ?QualifiedNativeRuntime = null,
+    runtime_installation: ?*NativeRuntimeCommitTask = null,
     codex_runtime_root: ?[]u8 = null,
+    // Supplied once by the daemon's declared deployment configuration. These
+    // locators select inputs; only the protected reader and genuine constructor
+    // can turn their contents into runtime selection authority.
+    native_deployment_selection: ?NativeDeploymentSelection = null,
     runtime_measurement: ?*RuntimeMeasureTask = null,
     runtime_measurement_requested: bool = false,
     runtime_measurement_failure: ?anyerror = null,
     native_workers: ?*native_work.Supervisor = null,
     native_tasks: std.ArrayList(*NativeTask) = .empty,
+    native_import_tasks: std.ArrayList(*NativeImportTask) = .empty,
     active_credit: ?snapshot_admission.Key = null,
     committed_nonledger_bytes: usize = 0,
     committed_counts: snapshot_admission.Counts = .{},
@@ -545,6 +878,15 @@ pub const Engine = struct {
         return create(io, allocator, state_dir, null, selection);
     }
 
+    pub const NativeDeploymentSelection = struct {
+        registered_package_root: []const u8,
+        installation_root: []const u8,
+    };
+
+    pub fn openForInstanceWithDeployment(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, selection: instance.Selection, deployment: NativeDeploymentSelection) !*Engine {
+        return createConfiguredDeployment(io, allocator, state_dir, null, selection, null, false, null, deployment);
+    }
+
     /// Synthetic tests supply keys; production cannot bypass vault custody.
     pub fn openWithKey(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
@@ -561,6 +903,10 @@ pub const Engine = struct {
     }
 
     fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool, test_backend: ?vault.Backend) !*Engine {
+        return createConfiguredDeployment(io, allocator, state_dir, key, selection, test_root, locked_fixture, test_backend, null);
+    }
+
+    fn createConfiguredDeployment(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool, test_backend: ?vault.Backend, deployment: ?NativeDeploymentSelection) !*Engine {
         if (locked_fixture and !builtin.is_test) return error.TestOnly;
         if (test_backend != null and !builtin.is_test) return error.TestOnly;
         try paths.validateAbsolute(state_dir);
@@ -578,6 +924,15 @@ pub const Engine = struct {
             else => .other,
         }, .evidence = if (builtin.is_test) .synthetic else .diagnostic }), .test_key = key };
         errdefer self.release();
+        if (deployment) |configured| {
+            if (configured.registered_package_root.len > setup_collector.max_path_bytes or configured.installation_root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
+            try paths.validateAbsolute(configured.registered_package_root);
+            try paths.validateAbsolute(configured.installation_root);
+            const package = try allocator.dupe(u8, configured.registered_package_root);
+            errdefer allocator.free(package);
+            const installation = try allocator.dupe(u8, configured.installation_root);
+            self.native_deployment_selection = .{ .registered_package_root = package, .installation_root = installation };
+        }
         if (test_root) |root| {
             if (!builtin.is_test) return error.TestOnly;
             if (root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
@@ -645,7 +1000,12 @@ pub const Engine = struct {
 
     fn release(self: *Engine) void {
         self.state.deinit();
+        if (self.qualified_native_runtime) |retained| self.allocator.free(retained.evidence);
         if (self.codex_runtime_root) |root| self.allocator.free(root);
+        if (self.native_deployment_selection) |deployment| {
+            self.allocator.free(deployment.registered_package_root);
+            self.allocator.free(deployment.installation_root);
+        }
         if (self.installation_selection) |selected| {
             self.allocator.free(selected.prefix);
             self.allocator.free(selected.receipt_path);
@@ -663,6 +1023,7 @@ pub const Engine = struct {
             self.allocator.free(item.provider);
             self.allocator.free(item.label);
             self.allocator.free(item.path);
+            self.allocator.free(item.native_endpoint);
         }
         self.descriptions.deinit(self.allocator);
         for (self.pending_imports.items) |*item| item.deinit(self.allocator);
@@ -676,6 +1037,7 @@ pub const Engine = struct {
         self.admission.deinit();
         self.native_owners.deinit();
         self.native_tasks.deinit(self.allocator);
+        self.native_import_tasks.deinit(self.allocator);
         self.observation_credits.deinit(self.allocator);
         for (self.outcome_intents.items) |intent| freeIntent(self.allocator, intent);
         self.outcome_intents.deinit(self.allocator);
@@ -699,6 +1061,25 @@ pub const Engine = struct {
 
     pub fn dispatchUntilWithPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: *const peer.Context) ![]u8 {
         return self.dispatchOwnedPeer(allocator, payload, channel, until, context);
+    }
+
+    // Called by the trusted installation transaction after genuine producer
+    // qualification. No public RPC can supply this opaque argument. The caller
+    // retains the selection until the supervised preparation actually ends.
+    pub fn commitQualifiedNativeRuntime(self: *Engine, selected: *const runtime_selection_producer.ValidatedSelection, until: std.Io.Clock.Timestamp) !void {
+        if (until.clock != .awake or until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        var invocation: Invocation = .{ .allocator = self.allocator, .payload = "", .channel = .control,
+            .until = until, .qualified_candidate = selected };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        self.allocator.free(invocation.response.?);
     }
 
     fn dispatchOwnedPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: ?*const peer.Context) ![]u8 {
@@ -806,7 +1187,7 @@ pub const Engine = struct {
                 };
             }
             self.mutex.lockUncancelable(self.io);
-            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.runtime_measurement != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
+            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.runtime_measurement != null or self.runtime_installation != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
                 self.condition.waitTimeout(self.io, &self.mutex, .{ .deadline = maintenance_due }) catch |err| switch (err) {
                     error.Timeout => {},
                     // Finish every queued stack reference before exiting. A
@@ -822,7 +1203,7 @@ pub const Engine = struct {
                 self.completeNativeWork();
                 continue;
             }
-            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.runtime_measurement == null) {
+            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.runtime_measurement == null and self.runtime_installation == null) {
                 self.mutex.unlock(self.io);
                 return;
             }
@@ -860,6 +1241,12 @@ pub const Engine = struct {
             // periodic work belongs to the actor's independent clock schedule.
             self.active_until = item.until;
             self.active_peer = if (item.peer_context) |*verified| verified else null;
+            if (item.qualified_candidate != null) {
+                self.startNativeRuntimeCommit(item) catch |err| self.finishInvocation(item, err);
+                self.active_until = null;
+                self.active_peer = null;
+                continue;
+            }
             const deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startNativeInvocation(item) catch |err| blk: {
                 self.restoreCommitted() catch {
                     self.poisoned = true;
@@ -880,6 +1267,14 @@ pub const Engine = struct {
             const response = if (self.stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.execute(item.allocator, item.payload, item.channel);
             self.active_peer = null;
             self.active_until = null;
+            if (response) |success| {
+                const queued = self.startConfiguredRuntimeInstall(item, success) catch |err| {
+                    item.allocator.free(success);
+                    self.finishInvocation(item, err);
+                    continue;
+                };
+                if (queued) continue;
+            } else |_| {}
             self.finishInvocation(item, response);
         }
     }
@@ -909,7 +1304,7 @@ pub const Engine = struct {
             // No maintenance, source reads, provider work, native workers,
             // mutation ledger admission or database access exists here.
             self.active_until = item.until;
-            const response = if (stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.lockedRequest(item.allocator, item.payload, item.channel);
+            const response = if (stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else if (item.qualified_candidate != null) error.Locked else self.lockedRequest(item.allocator, item.payload, item.channel);
             self.active_until = null;
             self.finishInvocation(item, response);
             if (!self.vault_locked) return true;
@@ -966,8 +1361,11 @@ pub const Engine = struct {
         const announcement = eql(request.method, "integrations.attach");
         const detachment = eql(request.method, "integrations.detach");
         const discovering = eql(request.method, "integrations.discover");
+        const connecting_native_source = eql(request.method, "source.connect") and control.get(request.params, "selected_native_context") != null;
+        const source_selection: ?native_source_acquisition.ControlSelection = if (connecting_native_source)
+            try native_source_acquisition.controlSelection(request.params) else null;
         const removal = eql(request.method, "integrations.remove") and eql((try control.optionalString(request.params, "adapter")) orelse "codex", "codex");
-        if (!registration and !announcement and !detachment and !removal and !discovering) return false;
+        if (!registration and !announcement and !detachment and !removal and !discovering and !connecting_native_source) return false;
         if (registration) {
             if (invocation.channel != .adapter or !eql(try self.authenticate(request.params), "codex")) return error.WrongPurpose;
             const context = self.active_peer orelse return error.NativePeerRequired;
@@ -1002,14 +1400,15 @@ pub const Engine = struct {
         if (!cached_registration and (self.native_tasks.items.len >= native_work.capacity or self.native_tasks.items.len + callback_slots + extra > native_work.capacity)) return error.NativeWorkCapacity;
         for (self.native_tasks.items) |task| if (std.mem.eql(u8, &task.operation, &operation) and !(registration and task.stage == .announcement and task.reference != null)) return error.OperationIndeterminate;
         if (removal) return self.startNativeRemoval(invocation, &request, &transferred, operation);
-        const endpoint: []const u8 = if (registration) try control.string(request.params, "owner_endpoint") else if (try control.optionalString(request.params, "owner_endpoint")) |value| value else (try control.optionalString(request.params, "native_socket")) orelse if (discovering) "" else return error.NativeEndpointRequired;
+        const endpoint: []const u8 = if (connecting_native_source) "" else if (registration) try control.string(request.params, "owner_endpoint") else if (try control.optionalString(request.params, "owner_endpoint")) |value| value else (try control.optionalString(request.params, "native_socket")) orelse if (discovering) "" else return error.NativeEndpointRequired;
         if (endpoint.len != 0) try paths.validateAbsolute(endpoint);
         if (endpoint.len > 107) return error.SocketPathTooLong;
-        const thread_id = if (discovering) "discovery" else try control.string(request.params, "thread_id");
+        const thread_id = if (connecting_native_source) "source" else if (discovering) "discovery" else try control.string(request.params, "thread_id");
         if (thread_id.len > native_owner.maximum_thread_bytes) return error.InvalidNativeOwnerThread;
-        const task = try self.newNativeTask(invocation, request, operation, endpoint, thread_id, if (discovering) .discovery else if (registration) .identify else if (announcement) .announcement_identify else .detachment);
+        const task = try self.newNativeTask(invocation, request, operation, endpoint, thread_id, if (connecting_native_source) .source_prepare else if (discovering) .discovery else if (registration) .identify else if (announcement) .announcement_identify else .detachment);
         transferred = true;
         errdefer task.deinit();
+        task.source_selection = source_selection;
         if (announcement or detachment) {
             const selected = control.get(request.params, "owner_id") != null or control.get(request.params, "process_nonce") != null or control.get(request.params, "endpoint_generation") != null or control.get(request.params, "thread_instance_generation") != null;
             if (selected) {
@@ -1028,7 +1427,7 @@ pub const Engine = struct {
             task.thread_generation = try parseGeneration(control.get(request.params, "thread_instance_generation") orelse return error.InvalidParams);
             if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
             if (try self.registrationReplay(task)) return true;
-        } else if (!discovering) {
+        } else if (!discovering and !connecting_native_source) {
             if (announcement) {
                 if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
                 if (!task.selected_owner and try self.admitNativeControl(task)) return true;
@@ -1069,7 +1468,7 @@ pub const Engine = struct {
         const capability_path = try std.fmt.allocPrint(self.allocator, "{s}/integrations/codex.capability", .{self.state_dir});
         errdefer self.allocator.free(capability_path);
         task.* = .{ .engine = self, .invocation = invocation, .request = request, .operation = operation, .endpoint = owned_endpoint, .thread_id = owned_thread, .broker_socket = broker_socket, .capability_path = capability_path, .stage = stage, .job = .{ .lane = if (stage == .announcement) .announcement else .continuation, .context = task, .run = NativeTask.run } };
-        if (stage == .discovery or stage == .announcement_identify) {
+        if (stage == .discovery or stage == .announcement_identify or stage == .source_prepare) {
             const context = try self.allocator.create(std.heap.ArenaAllocator);
             errdefer self.allocator.destroy(context);
             context.* = .init(self.allocator);
@@ -1081,9 +1480,24 @@ pub const Engine = struct {
             captured.config_path = if (options.config_path) |value| try owned.dupe(u8, value) else null;
             captured.xdg_config_home = if (options.xdg_config_home) |value| try owned.dupe(u8, value) else null;
             captured.broker_socket = broker_socket;
+            if ((stage == .discovery or stage == .source_prepare) and builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
+                if (std.c.getenv("XDG_RUNTIME_DIR")) |value| {
+                    const runtime = std.mem.span(value);
+                    if (runtime.len > native_source_context.maximum_runtime_bytes) return error.InvalidNativeSourceContext;
+                    task.source_context_runtime = try owned.dupe(u8, runtime);
+                }
+            }
             task.discovery_context = context;
             task.discovery_options = captured;
             task.selected_registry = self.native_registry;
+            if (stage == .source_prepare) {
+                const retained = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+                if (retained.adapter_epoch != self.adapter_epochs[0] or retained.registry == null or
+                    !std.meta.eql(retained.registry, self.native_registry)) return error.NativeCustodyGenerationMismatch;
+                const deployment = self.native_deployment_selection orelse return error.NativeImageUnavailable;
+                task.source_runtime_root = try owned.dupe(u8, deployment.installation_root);
+                task.source_runtime_record = try copyQualifiedNativeRuntime(self.allocator, retained);
+            }
         }
         return task;
     }
@@ -1223,6 +1637,18 @@ pub const Engine = struct {
 
     fn completeNativeWork(self: *Engine) void {
         const job = self.native_workers.?.takeCompleted() orelse return;
+        for (self.native_import_tasks.items, 0..) |task, index| if (job == &task.job) {
+            _ = self.native_import_tasks.orderedRemove(index);
+            self.completeNativeImport(task) catch |err| {
+                self.poisoned = true;
+                std.log.err("native import terminal persistence failed: {s}", .{@errorName(err)});
+            };
+            return;
+        };
+        if (self.runtime_installation) |installation| if (job == &installation.job) {
+            self.completeNativeRuntimeCommit(installation);
+            return;
+        };
         if (self.runtime_measurement) |measurement| if (job == &measurement.job) {
             self.completeRuntimeMeasurement(measurement);
             return;
@@ -1235,7 +1661,20 @@ pub const Engine = struct {
             self.active_peer = null;
             self.active_credit = null;
         }
-        if (task.failure == null and (task.stage == .identify or task.stage == .announcement_identify) and !self.stopping and !self.poisoned) {
+        if (task.failure == null and task.stage == .source_prepare and !self.stopping and !self.poisoned) {
+            const replayed = self.prepareNativeSourceAcquisition(task) catch |err| blk: {
+                task.failure = err;
+                break :blk false;
+            };
+            if (replayed) {
+                for (self.native_tasks.items, 0..) |candidate, index| if (candidate == task) {
+                    _ = self.native_tasks.orderedRemove(index);
+                    break;
+                };
+                return;
+            }
+            if (task.failure == null) return;
+        } else if (task.failure == null and (task.stage == .identify or task.stage == .announcement_identify) and !self.stopping and !self.poisoned) {
             if (task.stage == .announcement_identify and task.selected_owner and !task.admitted) {
                 // The worker already verified the selected context and fresh
                 // exact identity. A removal fence may have appeared meanwhile.
@@ -1283,6 +1722,190 @@ pub const Engine = struct {
         task.deinit();
     }
 
+    fn prepareNativeSourceAcquisition(self: *Engine, task: *NativeTask) !bool {
+        const selection = task.source_selection orelse return error.NativeSourceConsentRequired;
+        const options = task.discovery_options orelse return error.NativeImageUnavailable;
+        const captured = task.source_runtime_record orelse return error.NativeImageUnavailable;
+        const installed = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+        const started = std.Io.Clock.awake.now(self.io);
+        const remaining = task.invocation.until.durationFromNow(self.io).raw.toNanoseconds();
+        if (remaining <= 0 or remaining > std.math.maxInt(u64)) return error.NativeTimeout;
+        if (!std.crypto.timing_safe.eql([32]u8, captured.record_sha256, installed.record_sha256) or
+            options.native_custody.?.adapter_epoch != self.adapter_epochs[0] or
+            !std.meta.eql(task.selected_registry, self.native_registry)) return error.RuntimeSelectionDrift;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        var declaration: ?native_probe.SourceContextDeclaration = null;
+        for (task.source_contexts.items) |current| {
+            if (!std.meta.eql(current.owner_id, selection.owner_id) or !std.meta.eql(current.native_nonce, selection.nonce) or
+                current.endpoint_generation != selection.endpoint_generation) continue;
+            if (declaration != null) return error.NativeSourceAmbiguous;
+            declaration = current;
+        }
+        const current = declaration orelse return error.NativeSourceUnavailable;
+        const context = current.context orelse return error.NativeSourceUnavailable;
+        if (current.status != .available or current.store_present != true or current.credential_acquisition_authorized or
+            !std.meta.eql(context.id, selection.context.id) or context.generation != selection.context.generation or
+            !peer.sameOriginal(current.witness, task.expected.?)) return error.NativeSourceContextChanged;
+        const source_id = try self.identifier();
+        const consent_id = try self.identifier();
+        var source_handle: [32]u8 = undefined;
+        var consent_handle: [32]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&source_handle, &source_id);
+        _ = try std.fmt.hexToBytes(&consent_handle, &consent_id);
+        const owner: native_source_consent.Owner = .{ .id = current.owner_id, .nonce = current.native_nonce,
+            .endpoint_generation = current.endpoint_generation, .witness = current.witness };
+        const now = self.now();
+        const authority: NativeSourceAuthority = .{ .origin = task.source_origin orelse return error.NativeSourceOriginChanged,
+            .consent = .{ .id = consent_handle, .generation = 1, .source_id = source_handle, .source_generation = 1,
+                .owner = owner, .expires_at = try std.math.add(i64, now, selection.consent_seconds),
+                .purpose = .native_access_copy_for_identity_and_request, .allow_reenrollment = selection.allow_reenrollment,
+                .forget_epoch = self.import_forget_epoch } };
+        const admission = try native_source_consent.admit(.{ .source_id = source_handle, .source_generation = 1,
+            .status = .connected, .consent = authority.consent, .owner = owner,
+            .context = .{ .id = context.id, .generation = context.generation }, .store_present = true,
+            .forget_epoch = self.import_forget_epoch }, now, 0, @intCast(remaining));
+        if (try self.admitNativeControl(task)) return true;
+        self.active_credit = task.credit;
+        _ = try self.connectImportSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex",
+            .label = (try control.optionalString(task.request.params, "label")) orelse "",
+            .authorized_at = now });
+        _ = try self.importSourceGeneration(&source_id);
+        const description: SourceDescription = .{ .source_id = &source_id, .provider = "codex",
+            .label = (try control.optionalString(task.request.params, "label")) orelse "",
+            .path = "", .native_endpoint = task.endpoint, .native_authority = authority };
+        var bounded_description = description;
+        bounded_description.label = ""; // The input label is prepaid separately.
+        if (try snapshot_admission.countJson(bounded_description, storage.maximum_snapshot_bytes) > native_source_description_budget) return error.NativeSourceDescriptionTooLarge;
+        try self.addDescription(description);
+        try self.persist(&.{});
+        task.source_authority = authority;
+        task.source_admission = admission;
+        task.source_started_at = started;
+        task.source_copy_now = now;
+        task.stage = .source_acquire;
+        try self.native_workers.?.enqueue(&task.job);
+        return false;
+    }
+
+    fn startNativeRuntimeCommit(self: *Engine, invocation: *Invocation) !void {
+        const task = try self.captureNativeRuntimeCommit(invocation);
+        errdefer task.deinit();
+        task.candidate = invocation.qualified_candidate;
+        try self.native_workers.?.enqueue(&task.job);
+        self.runtime_installation = task;
+    }
+
+    fn captureNativeRuntimeCommit(self: *Engine, invocation: *Invocation) !*NativeRuntimeCommitTask {
+        if (self.stopping) return error.ServiceStopping;
+        if (self.vault_locked or self.poisoned or self.db == null) return error.Locked;
+        if (!self.integrationInstalled("codex")) return error.AdapterNotInstalled;
+        const registry = self.native_registry orelse return error.NativeCustodyPending;
+        if (registry.phase != .installed) return error.NativeCustodyPending;
+        if (self.runtime_installation != null) return error.OperationIndeterminate;
+        try native_source_acquisition.deadline(self.io, invocation.until);
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        errdefer self.allocator.destroy(arena);
+        arena.* = .init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var options = try self.setupOptions(a, .codex, .null);
+        options.home = try a.dupe(u8, options.home);
+        options.codex_home = if (options.codex_home) |value| try a.dupe(u8, value) else null;
+        options.config_path = if (options.config_path) |value| try a.dupe(u8, value) else null;
+        options.xdg_config_home = if (options.xdg_config_home) |value| try a.dupe(u8, value) else null;
+        options.broker_socket = try a.dupe(u8, options.broker_socket);
+        options.deadline = invocation.until;
+        const task = try self.allocator.create(NativeRuntimeCommitTask);
+        errdefer self.allocator.destroy(task);
+        task.* = .{ .engine = self, .invocation = invocation, .candidate = null,
+            .context = .{ .options = options, .selection = self.instance_selection, .deadline = invocation.until },
+            .arena = arena, .registry = self.native_registry, .epoch = self.adapter_epochs[0],
+            .job = .{ .lane = .continuation, .context = task, .run = NativeRuntimeCommitTask.run } };
+        return task;
+    }
+
+    fn startConfiguredRuntimeInstall(self: *Engine, invocation: *Invocation, response: []u8) !bool {
+        const selected = self.native_deployment_selection orelse return false;
+        if (invocation.channel != .control) return false;
+        var request = try control.parse(invocation.allocator, invocation.payload);
+        defer request.deinit();
+        if (!eql(request.method, "integrations.install") or !eql(try control.string(request.params, "adapter"), "codex")) return false;
+        var completed = try std.json.parseFromSlice(std.json.Value, invocation.allocator, response, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+        defer completed.deinit();
+        if (completed.value != .object or completed.value.object.get("result") == null or completed.value.object.get("error") != null) return false;
+        // setup.install has already persisted one-time integration ownership.
+        // Keep the original invocation alive through the supervised package
+        // transaction and actor commit; a deadline never abandons its worker.
+        const task = try self.captureNativeRuntimeCommit(invocation);
+        errdefer task.deinit();
+        const a = task.arena.allocator();
+        const root_path = try a.dupe(u8, selected.registered_package_root);
+        const root_fd = try runtime_deployment.openRegisteredRoot(self.io, a, root_path, invocation.until);
+        task.deployment = .{ .path = root_path, .descriptor = root_fd };
+        const parent_path = std.fs.path.dirname(selected.installation_root) orelse return error.InvalidInstallationDestination;
+        task.parent = try paths.openPrivateRoot(a, parent_path, false);
+        task.basename = try a.dupeZ(u8, std.fs.path.basename(selected.installation_root));
+        try self.native_workers.?.enqueue(&task.job);
+        task.install_response = response;
+        self.runtime_installation = task;
+        return true;
+    }
+
+    fn completeNativeRuntimeCommit(self: *Engine, task: *NativeRuntimeCommitTask) void {
+        defer { self.runtime_installation = null; task.deinit(); }
+        self.active_until = task.invocation.until;
+        defer self.active_until = null;
+        const result = self.commitNativeRuntimePrepared(task) catch |err| {
+            self.finishInvocation(task.invocation, err);
+            return;
+        };
+        self.finishInvocation(task.invocation, result);
+    }
+
+    fn commitNativeRuntimePrepared(self: *Engine, task: *NativeRuntimeCommitTask) ![]u8 {
+        if (task.failure) |err| return err;
+        if (!task.handoff_ready) return error.RuntimeSelectionNotReady;
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.ServiceStopping;
+        try native_source_acquisition.deadline(self.io, task.invocation.until);
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry) or
+            !std.crypto.timing_safe.eql(envelope.Key, task.context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        if (task.installation) |*installed| try installed.recheck(self.io, task.context.deadline,
+            task.parent, task.basename orelse return error.InvalidInstallationDestination);
+        const prepared = task.prepared orelse return error.InvalidRuntimeSelection;
+        const expected = prepared.expectation();
+        if (expected.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
+        const response = if (task.install_response) |installed_response| try task.invocation.allocator.dupe(u8, installed_response)
+            else try control.success(task.invocation.allocator, .null, .{ .record_committed = true });
+        errdefer task.invocation.allocator.free(response);
+        const candidate = try copyQualifiedNativeRuntime(self.allocator, .{ .record_sha256 = prepared.recordDigest(),
+            .evidence = prepared.evidence(), .channel = expected.channel, .target = expected.target,
+            .adapter_epoch = task.epoch, .registry = task.registry });
+        native_source_acquisition.deadline(self.io, task.invocation.until) catch |err| {
+            self.allocator.free(candidate.evidence);
+            return err;
+        };
+        // Worker terminal proves full-byte qualification completed. It cannot
+        // freeze mutable installation names across the handoff. Recheck their
+        // bounded identity witnesses after allocations, immediately at commit;
+        // full stream/hash work stays on the supervised worker.
+        finalRuntimeIdentityFence(self.io, task.context, task.prepared, task.inputs,
+            if (task.installation) |*installed| installed else null, task.parent, task.basename) catch |err| {
+            self.allocator.free(candidate.evidence);
+            return err;
+        };
+        const previous = self.qualified_native_runtime;
+        self.qualified_native_runtime = candidate;
+        self.persistWithRuntimeFence(&.{}, task) catch |err| {
+            self.qualified_native_runtime = previous;
+            self.allocator.free(candidate.evidence);
+            try self.restoreCommitted();
+            return err;
+        };
+        if (previous) |old| self.allocator.free(old.evidence);
+        return response;
+    }
+
     fn failNativeTask(self: *Engine, task: *NativeTask, failure: anyerror) ![]u8 {
         if (task.stage == .discovery) return control.failure(task.invocation.allocator, task.request.id, -32000, @errorName(failure));
         errdefer self.poisoned = true;
@@ -1304,6 +1927,7 @@ pub const Engine = struct {
     }
 
     fn finishNativeTask(self: *Engine, task: *NativeTask) ![]u8 {
+        if (task.stage == .source_acquire) return self.finishNativeSourceCopy(task);
         if (task.stage == .discovery) {
             var arena: std.heap.ArenaAllocator = .init(self.allocator);
             defer arena.deinit();
@@ -1351,6 +1975,64 @@ pub const Engine = struct {
         }
         try self.persist(&.{});
         const decoded = try std.json.parseFromSlice(std.json.Value, arena.allocator(), cached, .{});
+        defer decoded.deinit();
+        return control.success(task.invocation.allocator, task.request.id, decoded.value);
+    }
+
+    fn finishNativeSourceCopy(self: *Engine, task: *NativeTask) ![]u8 {
+        if (self.stopping or self.poisoned or self.vault_locked) return error.ServiceStopping;
+        const copied = task.source_copy orelse return error.NativeSourceFreshCheckRequired;
+        const admission = task.source_admission orelse return error.NativeSourceConsentRequired;
+        const captured = task.source_runtime_record orelse return error.NativeImageUnavailable;
+        const source_id = std.fmt.bytesToHex(admission.source_id, .lower);
+        const fresh: NativeImportFresh = .{ .origin = copied.origin, .selection_digest = captured.record_sha256,
+            .declaration = .{ .owner_id = copied.binding.owner.id, .native_nonce = copied.binding.owner.nonce,
+                .endpoint_generation = copied.binding.owner.endpoint_generation, .witness = copied.binding.owner.witness,
+                .status = .available, .context = .{ .id = copied.binding.context.id, .generation = copied.binding.context.generation },
+                .store_present = true, .credential_acquisition_authorized = false } };
+        const probe: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"),
+            .credential_kind = .oauth_access, .source_generation = admission.source_generation,
+            .credit_key = undefined, .forget_epoch = admission.forget_epoch, .job_id = @constCast(""),
+            .token = @constCast(""), .label = @constCast(""), .expires_at = null,
+            .native_admission = admission, .native_started_at = task.source_started_at,
+            .native_selection_digest = captured.record_sha256 };
+        try self.nativeImportCheck(probe, fresh);
+        const elapsed = task.source_started_at.?.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+        if (elapsed < 0 or elapsed > std.math.maxInt(u64)) return error.NativeSourceDeadline;
+        try native_source_consent.checkMaterialized(admission, try self.nativeImportCurrent(probe, fresh),
+            copied.binding, self.now(), @intCast(elapsed));
+        if (copied.candidate.provider != .codex or copied.candidate.credential_kind != .oauth_access or
+            copied.candidate.provider_account_id != null) return error.InvalidNativeSourcePayload;
+        const arena = task.discovery_context orelse return error.NativeSourceFreshCheckRequired;
+        const a = arena.allocator();
+        var options = task.discovery_options.?;
+        options.broker_socket = try a.dupe(u8, options.broker_socket);
+        const endpoint = try a.dupe(u8, task.endpoint);
+        const retained = try self.allocator.create(NativeImportContext);
+        var transferred = false;
+        defer if (!transferred) self.allocator.destroy(retained);
+        retained.* = .{ .arena = arena, .endpoint = endpoint, .options = options,
+            .image = task.source_image.?, .origin = copied.origin, .until = task.invocation.until,
+            .registry = task.selected_registry, .epoch = options.native_custody.?.adapter_epoch };
+        self.active_credit = task.credit;
+        const operation = try self.queueImportMode(&source_id, "codex", copied.candidate.access_token,
+            (try control.optionalString(task.request.params, "label")) orelse "", copied.candidate.expires_at_limit,
+            copied.candidate.custody_expires_at, null, .oauth_access, admission.allow_reenrollment, false, true,
+            .{ .admission = admission, .started_at = task.source_started_at.?, .selection_digest = captured.record_sha256,
+                .operation = task.operation, .context = retained, .fresh = fresh });
+        transferred = true;
+        task.discovery_context = null;
+        task.source_image = null;
+        var result_arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer result_arena.deinit();
+        const cached = try std.json.Stringify.valueAlloc(result_arena.allocator(), .{ .source_id = source_id[0..],
+            .operation_id = operation, .status = "verifying_identity", .identity_admission = "verification_required",
+            .renewal_owner = "external", .provider_identity_requested = true }, .{});
+        try self.mutations.complete(task.mutation_slot.?, cached);
+        if (task.credit) |key| try self.releaseOutcome(key);
+        task.credit = null;
+        try self.persist(&.{});
+        const decoded = try std.json.parseFromSlice(std.json.Value, result_arena.allocator(), cached, .{});
         defer decoded.deinit();
         return control.success(task.invocation.allocator, task.request.id, decoded.value);
     }
@@ -1678,7 +2360,7 @@ pub const Engine = struct {
         errdefer workers.deinit();
         try self.custodyDeadline();
         if (builtin.is_test and self.fixture_custody_stage_failure == .supervisor_ready) return error.CustodyStageFailure;
-        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts" }) |name| {
+        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "qualified_native_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts" }) |name| {
             std.mem.swap(@TypeOf(@field(self.*, name)), &@field(self.*, name), &@field(staged, name));
         }
         self.native_workers = workers;
@@ -1754,6 +2436,7 @@ pub const Engine = struct {
         self.native_owners.recoverAfterRestart();
         self.native_registry = parsed.value.native_registry;
         self.measured_codex_runtime = parsed.value.measured_codex_runtime;
+        if (parsed.value.qualified_native_runtime) |retained| self.qualified_native_runtime = try copyQualifiedNativeRuntime(self.allocator, retained);
         if (self.measured_codex_runtime) |selected| {
             if (selected.record.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
         }
@@ -2045,7 +2728,34 @@ pub const Engine = struct {
     }
 
     fn persist(self: *Engine, changes: []const storage.GrantChange) !void {
+        return self.persistWithNativeFence(changes, null);
+    }
+
+    fn persistWithNativeFence(self: *Engine, changes: []const storage.GrantChange, native: ?NativeAdoptionFence) !void {
+        return self.persistWithFences(changes, native, null);
+    }
+
+    fn persistWithRuntimeFence(self: *Engine, changes: []const storage.GrantChange, runtime: *NativeRuntimeCommitTask) !void {
+        return self.persistWithFences(changes, null, runtime);
+    }
+
+    fn checkRuntimeWriterFence(self: *Engine, task: *NativeRuntimeCommitTask) !void {
+        if (self.runtime_installation != task or task.engine != self or !task.handoff_ready)
+            return error.RuntimeSelectionNotReady;
+        if (task.failure) |err| return err;
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.ServiceStopping;
+        if (!std.meta.eql(task.context.deadline, task.invocation.until)) return error.InvalidDeadline;
+        try native_source_acquisition.deadline(self.io, task.invocation.until);
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry) or
+            !std.crypto.timing_safe.eql(envelope.Key, task.context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        try finalRuntimeIdentityFence(self.io, task.context, task.prepared, task.inputs,
+            if (task.installation) |*installed| installed else null, task.parent, task.basename);
+    }
+
+    fn persistWithFences(self: *Engine, changes: []const storage.GrantChange, native: ?NativeAdoptionFence, runtime: ?*NativeRuntimeCommitTask) !void {
         if (self.staging_mutation) {
+            if (runtime != null) return error.RuntimeSelectionNotReady;
             try self.staged_changes.appendSlice(self.allocator, changes);
             return;
         }
@@ -2068,6 +2778,11 @@ pub const Engine = struct {
         const committed_growth_bytes = try self.nonledgerBytes();
         const serialized = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
         defer self.allocator.free(serialized);
+        // Serialization and capacity work may consume the remaining lifetime.
+        // Fence native credential adoption at the actual writer call as well
+        // as before the domain mutation. Expiry does not cancel started IO.
+        if (native) |fence| try self.nativeImportCheck(fence.pending, fence.fresh);
+        if (runtime) |task| try self.checkRuntimeWriterFence(task);
         self.revision = self.db.?.commit(self.revision, serialized, changes) catch |err| {
             // Ambiguous storage failure fences all further credential service.
             self.poisoned = true;
@@ -2097,6 +2812,7 @@ pub const Engine = struct {
             .native_owner_authority = self.native_owners.snapshot(),
             .native_registry = self.native_registry,
             .measured_codex_runtime = self.measured_codex_runtime,
+            .qualified_native_runtime = self.qualified_native_runtime,
         };
     }
 
@@ -2164,6 +2880,11 @@ pub const Engine = struct {
             break :blk try measurements.clone(self.allocator);
         } else null;
         var ownership_transferred = false;
+        const restored_runtime: ?QualifiedNativeRuntime = if (parsed.value.qualified_native_runtime) |retained|
+            try copyQualifiedNativeRuntime(self.allocator, retained) else null;
+        errdefer if (!ownership_transferred) {
+            if (restored_runtime) |retained| self.allocator.free(retained.evidence);
+        };
         errdefer if (!ownership_transferred) {
             if (restored_measurements) |measurements| self.allocator.destroy(measurements);
         };
@@ -2233,6 +2954,8 @@ pub const Engine = struct {
         self.native_owners = native;
         self.native_registry = parsed.value.native_registry;
         self.measured_codex_runtime = parsed.value.measured_codex_runtime;
+        if (self.qualified_native_runtime) |retained| self.allocator.free(retained.evidence);
+        self.qualified_native_runtime = restored_runtime;
         for (self.installed.items) |item| self.allocator.free(item);
         self.installed.deinit(self.allocator);
         self.installed = installed;
@@ -2615,15 +3338,22 @@ pub const Engine = struct {
         // retained label/provider fields and fixed generated handles are prepaid.
         const input_bytes = try snapshot_admission.countJson(params, storage.maximum_snapshot_bytes);
         if (eql(method, "source.connect")) {
+            const selected_native = control.get(params, "selected_native_context") != null;
+            if (selected_native) _ = try native_source_acquisition.controlSelection(params);
             var path_bytes: usize = 0;
             const source_path: []const u8 = (try control.optionalString(params, "source_path")) orelse "";
-            if (source_path.len == 0 and eql(try control.string(params, "kind"), "native_store") and eql(try control.string(params, "provider"), "codex")) {
+            if (!selected_native and source_path.len == 0 and eql(try control.string(params, "kind"), "native_store") and eql(try control.string(params, "provider"), "codex")) {
                 const home = if (std.c.getenv("CODEX_HOME")) |value| std.mem.span(value) else std.mem.span(std.c.getenv("HOME") orelse return error.MissingHome);
                 path_bytes = try snapshot_admission.countJson(home, storage.maximum_snapshot_bytes);
             }
             const handle: [64]u8 = @splat('a');
+            const native_job_id: [74]u8 = @splat('a');
+            const native_job_bytes = if (selected_native) (try snapshot_admission.countJson(domain.Job{
+                .id = &native_job_id, .kind = .enrollment, .status = .completed,
+                .operation_generation = std.math.maxInt(u64),
+            }, storage.maximum_snapshot_bytes)) + 1 else 0;
             const fixed = try snapshot_admission.countJson(domain.Source{ .id = &handle, .kind = .native_store, .provider = "github", .authorized_at = std.math.maxInt(i64), .authorized_until = std.math.minInt(i64) }, storage.maximum_snapshot_bytes);
-            return .{ .bytes = try std.math.add(usize, try std.math.mul(usize, input_bytes, 2), path_bytes + fixed + (try snapshot_admission.countJson(SourceDescription{ .source_id = &handle, .provider = "github", .path = "/.codex/auth.json" }, storage.maximum_snapshot_bytes)) + (try snapshot_admission.countJson(ImportSourceAuthority{ .source_id = @constCast(&handle), .generation = std.math.maxInt(u64) }, storage.maximum_snapshot_bytes))), .slots = .{ .sources = 1, .source_descriptions = 1 } };
+            return .{ .bytes = try std.math.add(usize, try std.math.mul(usize, input_bytes, 2), path_bytes + fixed + native_job_bytes + (if (selected_native) native_source_description_budget else 0) + (try snapshot_admission.countJson(SourceDescription{ .source_id = &handle, .provider = "github", .path = "/.codex/auth.json" }, storage.maximum_snapshot_bytes)) + (try snapshot_admission.countJson(ImportSourceAuthority{ .source_id = @constCast(&handle), .generation = std.math.maxInt(u64) }, storage.maximum_snapshot_bytes))), .slots = .{ .sources = 1, .source_descriptions = 1, .jobs = if (selected_native) 1 else 0 } };
         }
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start") or eql(method, "repair.start")) {
             var bytes: usize = 1;
@@ -3294,6 +4024,9 @@ pub const Engine = struct {
             return control.success(allocator, request.id, self.policy);
         }
         if (eql(method, "source.connect")) {
+            // Selected native contexts require the supervised authenticated
+            // descriptor path. Never reinterpret them as daemon-default auth.
+            if (control.get(params, "selected_native_context") != null) return error.NativeSourceSupervisionRequired;
             const kind_name = try control.string(params, "kind");
             const kind = std.meta.stringToEnum(domain.SourceKind, kind_name) orelse return error.InvalidParams;
             const provider = try control.string(params, "provider");
@@ -3459,6 +4192,13 @@ pub const Engine = struct {
         const accounts = try allocator.alloc(PublicAccountView, self.state.accounts.items.len);
         defer allocator.free(accounts);
         for (self.state.accounts.items, accounts) |account, *view| view.* = publicAccountView(account);
+        const PublicDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8, path: []const u8 };
+        const descriptions = try allocator.alloc(PublicDescription, self.descriptions.items.len);
+        defer allocator.free(descriptions);
+        for (self.descriptions.items, descriptions) |description, *view| view.* = .{
+            .source_id = description.source_id, .provider = description.provider,
+            .label = description.label, .path = description.path,
+        };
         const Capacity = struct { provider: []const u8, issuer: []const u8, complete: bool, resource: domain.Resource, window_start: i64, window_end: i64, remaining: f64, limit: ?f64, buckets: usize, unknown_buckets: usize };
         var capacities: std.ArrayList(Capacity) = .empty;
         defer capacities.deinit(allocator);
@@ -3480,7 +4220,7 @@ pub const Engine = struct {
             .custody_available = !self.poisoned,
             .accounts = accounts,
             .sources = self.state.sources.items,
-            .source_descriptions = self.descriptions.items,
+            .source_descriptions = descriptions,
             .grants = self.state.grants.items,
             .leases = self.state.leases.items,
             .bindings = self.state.bindings.items,
@@ -3780,10 +4520,10 @@ pub const Engine = struct {
     }
 
     fn queueImport(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool) ![]const u8 {
-        return self.queueImportMode(source_id, provider, token, label, expires_at, custody_expires_at, provider_account_id, credential_kind, allow_reenrollment, false, false);
+        return self.queueImportMode(source_id, provider, token, label, expires_at, custody_expires_at, provider_account_id, credential_kind, allow_reenrollment, false, false, null);
     }
 
-    fn queueImportMode(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool, fixture_hold: bool, explicit_authorization: bool) ![]const u8 {
+    fn queueImportMode(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool, fixture_hold: bool, explicit_authorization: bool, native: ?NativeImportOwnership) ![]const u8 {
         if (fixture_hold and !builtin.is_test) return error.TestOnly;
         if (!eql(provider, "github") and !eql(provider, "codex")) return error.NeedsProviderAdapterProof;
         if (credential_kind != .oauth_access and credential_kind != .api_key) return error.UnsupportedCredentialKind;
@@ -3798,10 +4538,23 @@ pub const Engine = struct {
         };
         if (!authorized) return error.SourceUnauthorized;
         const source_generation = try self.importSourceGeneration(source_id);
-        for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and pending.source_generation == source_generation and self.importJobRunning(pending) and (!allow_reenrollment or pending.allow_reenrollment) and (!pending.allow_reenrollment or pending.forget_epoch == self.import_forget_epoch)) return pending.job_id;
+        for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and pending.source_generation == source_generation and self.importJobRunning(pending) and (!allow_reenrollment or pending.allow_reenrollment) and (!pending.allow_reenrollment or pending.forget_epoch == self.import_forget_epoch)) {
+            if (native != null or pending.native_admission != null) return error.NativeSourceOperationPending;
+            return pending.job_id;
+        };
         const random_id = try self.identifier();
         var pending: PendingImport = .{ .network_id = 0, .source_id = try self.allocator.dupe(u8, source_id), .provider = undefined, .credential_kind = credential_kind, .allow_reenrollment = allow_reenrollment, .source_generation = source_generation, .forget_epoch = self.import_forget_epoch, .job_id = undefined, .credit_key = undefined, .token = undefined, .label = undefined, .expires_at = expires_at, .custody_expires_at = custody_expires_at };
         errdefer self.allocator.free(pending.source_id);
+        if (native) |scope| {
+            if (scope.admission.source_generation != source_generation or scope.admission.forget_epoch != self.import_forget_epoch) return error.NativeSourceSuperseded;
+            const expected_id = std.fmt.bytesToHex(scope.admission.source_id, .lower);
+            if (!eql(source_id, &expected_id)) return error.NativeSourceSuperseded;
+            pending.native_admission = scope.admission;
+            pending.native_started_at = scope.started_at;
+            pending.native_selection_digest = scope.selection_digest;
+            pending.native_operation = scope.operation;
+            pending.native_context = scope.context;
+        }
         pending.provider = try self.allocator.dupe(u8, provider);
         errdefer self.allocator.free(pending.provider);
         pending.job_id = try std.fmt.allocPrint(self.allocator, "reconcile-{s}", .{source_id});
@@ -3850,6 +4603,11 @@ pub const Engine = struct {
         pending.measurement_started_at = std.Io.Clock.awake.now(self.io);
         // Persist admission intent before issuing an authenticated read.
         try self.persist(&.{});
+        if (native) |scope| self.nativeImportCheck(pending, scope.fresh) catch |err| {
+            try self.failImportJobCause(pending, diagnosticCause(err));
+            try self.persist(&.{});
+            return err;
+        };
         pending.network_id = if (fixture_hold) 0 else self.submitIdentity(provider, source_id, &random_id, token, provider_account_id) catch |err| {
             try self.failImportJobCause(pending, diagnosticCause(err));
             try self.persist(&.{});
@@ -3888,7 +4646,7 @@ pub const Engine = struct {
             .integer => value.integer,
             else => return error.InvalidParams,
         } else null;
-        const operation = try self.queueImportMode(try control.string(params, "source_id"), provider, try control.string(params, "access_token"), (try control.optionalString(params, "label")) orelse "", expiry, self.now() + seconds, try control.optionalString(params, "provider_account_id"), kind, try control.boolean(params, "allow_reenrollment", false), fixture_hold, true);
+        const operation = try self.queueImportMode(try control.string(params, "source_id"), provider, try control.string(params, "access_token"), (try control.optionalString(params, "label")) orelse "", expiry, self.now() + seconds, try control.optionalString(params, "provider_account_id"), kind, try control.boolean(params, "allow_reenrollment", false), fixture_hold, true, null);
         if (include_generation) {
             // queueImportMode persisted this exact generation before returning.
             // Do not make the client infer generation from a later snapshot.
@@ -3935,6 +4693,7 @@ pub const Engine = struct {
             break;
         };
         const description = description_value orelse return error.SourcePathRequired;
+        if (description.native_authority != null) return error.NativeSourceSupervisionRequired;
         if (description.path.len == 0) return error.SourcePathRequired;
         const provider = std.meta.stringToEnum(discovery.Provider, description.provider) orelse return error.NeedsProviderAdapterProof;
         var result = try discovery.reconcile(self.io, self.allocator, .{ .source = source, .provider = provider, .path = description.path }, self.now());
@@ -3972,7 +4731,7 @@ pub const Engine = struct {
                     const same_custody_ceiling = if (grant.custody_expires_at) |retained| retained <= candidate.custody_expires_at else false;
                     if (eql(previous, candidate.access_token) and same_hint and grant.credential_kind == candidate.credential_kind and same_provider_expiry and same_custody_ceiling and (grant.custody_expires_at == null or grant.custody_expires_at.? > self.now() + 300)) return null;
                 };
-                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, explicit_authorization);
+                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, explicit_authorization, null);
             },
         }
     }
@@ -4098,7 +4857,16 @@ pub const Engine = struct {
                 continue;
             };
             var pending = self.pending_imports.orderedRemove(i);
-            defer pending.deinit(self.allocator);
+            var pending_owned = true;
+            defer if (pending_owned) pending.deinit(self.allocator);
+            if (pending.native_context != null) {
+                self.queueNativeImport(pending, completion) catch |err| {
+                    try self.failImport(pending, diagnosticCause(err));
+                    continue;
+                };
+                pending_owned = false;
+                continue;
+            }
             self.finishImport(pending, completion) catch |err| {
                 try self.failImport(pending, diagnosticCause(err));
             };
@@ -4114,7 +4882,107 @@ pub const Engine = struct {
         try self.persist(&.{});
     }
 
+    fn queueNativeImport(self: *Engine, pending: PendingImport, completion: transport.Completion) !void {
+        if (self.stopping or self.poisoned) return error.ServiceStopping;
+        if (self.native_import_tasks.items.len >= 16) return error.ServiceBusy;
+        try self.native_import_tasks.ensureUnusedCapacity(self.allocator, 1);
+        const task = try self.allocator.create(NativeImportTask);
+        errdefer self.allocator.destroy(task);
+        var copied = completion;
+        copied.owner = null;
+        switch (completion.result) {
+            .response => |response| copied.result = .{ .response = .{ .status = response.status,
+                .streaming = response.streaming, .body = try self.allocator.dupe(u8, response.body) } },
+            .failure => {},
+        }
+        errdefer copied.deinit(self.allocator);
+        task.* = .{ .engine = self, .pending = pending, .completion = copied, .job = undefined };
+        task.job = .{ .lane = .continuation, .context = task, .run = NativeImportTask.run };
+        try self.native_workers.?.enqueue(&task.job);
+        self.native_import_tasks.appendAssumeCapacity(task);
+    }
+
+    fn completeNativeImport(self: *Engine, task: *NativeImportTask) !void {
+        defer task.deinit();
+        if (task.failure) |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+            return;
+        }
+        if (self.stopping or self.poisoned) {
+            try self.failImport(task.pending, .other);
+            return;
+        }
+        self.finishImportChecked(task.pending, task.completion, task.fresh) catch |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+        };
+    }
+
     fn finishImport(self: *Engine, pending: PendingImport, completion: transport.Completion) !void {
+        if (pending.native_admission != null) return error.NativeSourceFreshCheckRequired;
+        return self.finishImportChecked(pending, completion, null);
+    }
+
+    fn nativeImportCurrent(self: *Engine, pending: PendingImport, fresh: NativeImportFresh) !native_source_consent.Current {
+        const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const source_id = std.fmt.bytesToHex(admission.source_id, .lower);
+        if (!eql(pending.source_id, &source_id) or pending.source_generation != admission.source_generation or
+            pending.forget_epoch != admission.forget_epoch) return error.NativeSourceSuperseded;
+        var description: ?SourceDescription = null;
+        for (self.descriptions.items) |item| if (eql(item.source_id, pending.source_id)) {
+            if (description != null) return error.NativeSourceAmbiguous;
+            description = item;
+        };
+        const scope = (description orelse return error.NativeSourceConsentRequired).native_authority orelse return error.NativeSourceConsentRequired;
+        if (!std.crypto.timing_safe.eql([32]u8, scope.origin, fresh.origin)) return error.NativeSourceOriginChanged;
+        if (fresh.declaration.status != .available or fresh.declaration.store_present != true or
+            fresh.declaration.credential_acquisition_authorized) return error.NativeSourceUnavailable;
+        const context = fresh.declaration.context orelse return error.NativeSourceUnavailable;
+        var generation: ?u64 = null;
+        for (self.import_sources.items) |authority| if (eql(authority.source_id, pending.source_id)) {
+            if (generation != null) return error.NativeSourceAmbiguous;
+            generation = authority.generation;
+        };
+        var source_status: ?domain.SourceStatus = null;
+        for (self.state.sources.items) |source| if (eql(source.id, pending.source_id)) {
+            if (source.kind != .native_store or !eql(source.provider, "codex")) return error.NativeSourceUnauthorized;
+            if (source.authorized_at > self.now() or (source.authorized_until != null and source.authorized_until.? <= self.now())) return error.NativeSourceUnauthorized;
+            source_status = source.status;
+        };
+        return .{ .source_id = admission.source_id,
+            .source_generation = generation orelse return error.NativeSourceSuperseded,
+            .status = switch (source_status orelse return error.NativeSourceUnauthorized) {
+                .connected => .connected, .detached => .detached, .disconnected => .disconnected,
+            },
+            .consent = scope.consent,
+            .owner = .{ .id = fresh.declaration.owner_id, .nonce = fresh.declaration.native_nonce,
+                .endpoint_generation = fresh.declaration.endpoint_generation, .witness = fresh.declaration.witness },
+            .context = .{ .id = context.id, .generation = context.generation },
+            .store_present = true, .forget_epoch = self.import_forget_epoch };
+    }
+
+    fn nativeImportCheck(self: *Engine, pending: PendingImport, fresh: NativeImportFresh) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.NativeCustodyUnavailable;
+        const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+        if (pending.native_context) |context| {
+            if (!std.crypto.timing_safe.eql(envelope.Key, context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+            if (context.epoch != self.adapter_epochs[0] or !std.meta.eql(context.registry, self.native_registry) or
+                !self.integrationInstalled("codex") or self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null)
+                return error.NativeCustodyGenerationMismatch;
+            try native_source_acquisition.deadline(self.io, context.until);
+        }
+        const selected = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+        const admitted_digest = pending.native_selection_digest orelse return error.NativeImageUnavailable;
+        if (!std.crypto.timing_safe.eql([32]u8, admitted_digest, selected.record_sha256) or
+            !std.crypto.timing_safe.eql([32]u8, admitted_digest, fresh.selection_digest)) return error.RuntimeSelectionDrift;
+        const started = pending.native_started_at orelse return error.NativeSourceDeadline;
+        const elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+        if (elapsed < 0 or elapsed > std.math.maxInt(u64)) return error.NativeSourceDeadline;
+        try native_source_consent.check(admission, try self.nativeImportCurrent(pending, fresh), self.now(), @intCast(elapsed));
+    }
+
+    fn finishImportChecked(self: *Engine, pending: PendingImport, completion: transport.Completion, native_fresh: ?NativeImportFresh) !void {
+        if (pending.native_admission != null) try self.nativeImportCheck(pending, native_fresh orelse return error.NativeSourceFreshCheckRequired)
+        else if (native_fresh != null) return error.NativeSourceConsentRequired;
         if (completion.id != pending.network_id or !self.importJobRunning(pending)) return error.ImportSuperseded;
         var authorized = false;
         const timestamp = self.now();
@@ -4146,6 +5014,10 @@ pub const Engine = struct {
             break :blk .{ .subject = parsed.value.user_id, .tenant = parsed.value.account_id, .issuer = "https://chatgpt.com", .kind = parsed.value.plan_type, .provider_account_id = parsed.value.account_id };
         };
         const identity: domain.Identity = .{ .provider = pending.provider, .issuer = proof.issuer, .subject = proof.subject, .tenant = proof.tenant, .verified = true };
+        // No native read or provider response substitutes for the actor's
+        // current consent/source/forget authority. Fence again immediately
+        // before the first enrollment/tombstone mutation.
+        if (pending.native_admission != null) try self.nativeImportCheck(pending, native_fresh.?);
         if (pending.allow_reenrollment) try self.state.permitReenrollment(identity, pending.source_id, self.now());
         const opaque_id = try self.identifier();
         const enrollment = try self.state.enroll(.{ .account_id = &opaque_id, .source_id = pending.source_id, .identity = identity, .label = if (pending.label.len != 0) pending.label else if (eql(pending.provider, "github")) "GitHub account" else "Codex account", .account_type = proof.kind }, self.now());
@@ -4174,7 +5046,7 @@ pub const Engine = struct {
             try self.recordImportTerminal(pending, previous, job.*, .none);
         };
         try self.releaseOutcome(pending.credit_key);
-        try self.persist(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }});
+        try self.persistWithNativeFence(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }}, if (native_fresh) |fresh| .{ .pending = pending, .fresh = fresh } else null);
     }
 
     fn acquire(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
@@ -5194,6 +6066,13 @@ const NativeDiscoveryThread = struct {
     attachment_generation: []const u8,
     native_ref: ?NativeRefWire = null,
 };
+const NativeDiscoverySourceContext = struct {
+    status: @FieldType(native_probe.SourceContextDeclaration, "status"),
+    source_context_id: ?[]const u8 = null,
+    source_context_generation: ?[]const u8 = null,
+    store_present: ?bool = null,
+    credential_acquisition_authorized: bool = false,
+};
 const NativeDiscoveryOwner = struct {
     owner_id: []const u8,
     process_nonce: []const u8,
@@ -5202,6 +6081,7 @@ const NativeDiscoveryOwner = struct {
     native_version: []const u8,
     support: codex.Support,
     threads: []NativeDiscoveryThread,
+    source_context: ?NativeDiscoverySourceContext = null,
 };
 const NativeDiscoveryResult = struct {
     adapter: []const u8 = "codex",
@@ -5233,6 +6113,17 @@ fn nativeDiscoveryResult(allocator: std.mem.Allocator, task: *const NativeTask, 
             .native_version = loaded.native_version,
             .support = loaded.support,
             .threads = threads,
+        };
+        for (task.source_contexts.items) |declaration| if (std.mem.eql(u8, &declaration.owner_id, &loaded.owner_id)) {
+            if (!std.mem.eql(u8, &declaration.native_nonce, &loaded.native_nonce) or declaration.endpoint_generation != loaded.endpoint_generation or
+                !peer.sameOriginal(declaration.witness, loaded.witness) or declaration.credential_acquisition_authorized) return error.NativeSourceContextMismatch;
+            if (output.source_context != null) return error.NativeOwnerAmbiguous;
+            var metadata: NativeDiscoverySourceContext = .{ .status = declaration.status, .store_present = declaration.store_present };
+            if (declaration.context) |context| {
+                metadata.source_context_id = try allocator.dupe(u8, &std.fmt.bytesToHex(context.id, .lower));
+                metadata.source_context_generation = try std.fmt.allocPrint(allocator, "{d}", .{context.generation});
+            }
+            output.source_context = metadata;
         };
         if (loaded.support == .compatible_hook) result.hook_compatible = true;
         for (loaded.threads, threads) |input, *thread| {
@@ -5270,6 +6161,7 @@ test "native discovery bounds the combined escaped owner response rather than ea
 test "compatible native discovery mechanism does not promote live support" {
     var task: NativeTask = undefined;
     task.discovered = .empty;
+    task.source_contexts = .empty;
     defer task.discovered.deinit(std.testing.allocator);
     task.scanned_entries = 1;
     task.ignored_stale_entries = 0;
@@ -5754,6 +6646,26 @@ fn validateNativeAttribution(allocator: std.mem.Allocator, saved: Persisted, led
     }
 }
 
+fn finalRuntimeIdentityFence(io: std.Io, context: runtime_selection_producer.ActorContext,
+    prepared: ?*const runtime_selection_writer.Prepared, inputs: ?*const runtime_deployment.OwnedInputs,
+    installation: ?*const runtime_package_installation.OwnedInstallation, parent: std.c.fd_t,
+    basename: ?[:0]const u8) !void
+{
+    try native_source_acquisition.deadline(io, context.deadline);
+    if (installation) |installed| try installed.recheck(io, context.deadline, parent,
+        basename orelse return error.InvalidInstallationDestination);
+    if (inputs) |selected| try selected.recheckIdentity(io);
+    const selected = prepared orelse return error.InvalidRuntimeSelection;
+    try selected.recheckIdentity(io, context);
+    try native_source_acquisition.deadline(io, context.deadline);
+}
+
+fn copyQualifiedNativeRuntime(a: std.mem.Allocator, input: QualifiedNativeRuntime) !QualifiedNativeRuntime {
+    if (std.mem.allEqual(u8, &input.record_sha256, 0) or input.evidence.len == 0 or input.evidence.len > 32 * 1024) return error.InvalidRuntimeSelection;
+    return .{ .record_sha256 = input.record_sha256, .evidence = try a.dupe(u8, input.evidence),
+        .channel = input.channel, .target = input.target, .adapter_epoch = input.adapter_epoch, .registry = input.registry };
+}
+
 fn copyDescription(allocator: std.mem.Allocator, input: SourceDescription) !SourceDescription {
     const source_id = try allocator.dupe(u8, input.source_id);
     errdefer allocator.free(source_id);
@@ -5762,7 +6674,10 @@ fn copyDescription(allocator: std.mem.Allocator, input: SourceDescription) !Sour
     const label = try allocator.dupe(u8, input.label);
     errdefer allocator.free(label);
     const path = try allocator.dupe(u8, input.path);
-    return .{ .source_id = source_id, .provider = provider, .label = label, .path = path };
+    errdefer allocator.free(path);
+    const native_endpoint = try allocator.dupe(u8, input.native_endpoint);
+    return .{ .source_id = source_id, .provider = provider, .label = label, .path = path,
+        .native_authority = input.native_authority, .native_endpoint = native_endpoint };
 }
 
 fn freeDescription(allocator: std.mem.Allocator, input: SourceDescription) void {
@@ -5770,6 +6685,7 @@ fn freeDescription(allocator: std.mem.Allocator, input: SourceDescription) void 
     allocator.free(input.provider);
     allocator.free(input.label);
     allocator.free(input.path);
+    allocator.free(input.native_endpoint);
 }
 
 fn adapterIndex(application: []const u8) !usize {
@@ -5808,6 +6724,117 @@ fn bindingIdentityForOwner(application: []const u8, session: []const u8, externa
     var digest: [32]u8 = undefined;
     hash.final(&digest);
     return std.fmt.bytesToHex(digest, .lower);
+}
+
+test "public snapshots exclude retained native source authority and private locators" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var current: Engine = .{
+        .allocator = allocator, .io = io,
+        .state_dir = try allocator.dupe(u8, "/fixture/no-service"),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1),
+        .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 },
+        .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
+    try current.addDescription(.{ .source_id = "opaque-native-source", .provider = "codex",
+        .native_endpoint = "/fixture/private-owner.sock",
+        .native_authority = .{ .origin = @splat(0xAB), .consent = .{
+            .id = @splat(1), .generation = 1, .source_id = @splat(2), .source_generation = 1,
+            .owner = .{ .id = @splat(3), .nonce = @splat(4), .endpoint_generation = 1, .witness = witness },
+            .expires_at = 1, .purpose = .native_access_copy_for_identity_and_request, .forget_epoch = 0,
+        } } });
+    try current.addDescription(.{ .source_id = "explicit-source", .provider = "codex", .path = "/fixture/declared-legacy" });
+    const bytes = try current.publicSnapshot(allocator, .null);
+    defer allocator.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "private-owner.sock") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "native_authority") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "native_endpoint") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    const descriptions = control.get(control.get(parsed.value, "result").?, "source_descriptions").?;
+    try std.testing.expectEqual(@as(usize, 2), descriptions.array.items.len);
+    for (descriptions.array.items) |description| try std.testing.expectEqual(@as(usize, 4), description.object.count());
+    try std.testing.expectEqualStrings("", try control.string(descriptions.array.items[0], "path"));
+    try std.testing.expectEqualStrings("/fixture/declared-legacy", try control.string(descriptions.array.items[1], "path"));
+}
+
+test "native import joins actual source lifecycle with retained consent and fresh context" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    // Threadless metadata model: no qualified image, descriptor, credential,
+    // provider request, encrypted grant adoption or normal vault is simulated.
+    var current: Engine = .{
+        .allocator = allocator, .io = io, .state_dir = try allocator.dupe(u8, "/fixture/no-service"),
+        .state = domain.State.init(allocator), .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator), .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    const source_handle: [32]u8 = @splat(2);
+    const source_id = std.fmt.bytesToHex(source_handle, .lower);
+    const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1),
+        .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 },
+        .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
+    const owner: native_source_consent.Owner = .{ .id = @splat(3), .nonce = @splat(4),
+        .endpoint_generation = 1, .witness = witness };
+    const context: native_source_consent.Context = .{ .id = @splat(5), .generation = 1 };
+    const permission: native_source_consent.Consent = .{ .id = @splat(1), .generation = 1,
+        .source_id = source_handle, .source_generation = 1, .owner = owner,
+        .expires_at = current.now() + 3600, .purpose = .native_access_copy_for_identity_and_request, .forget_epoch = 0 };
+    const admission: native_source_consent.Admission = .{ .source_id = source_handle, .source_generation = 1,
+        .consent_id = permission.id, .consent_generation = 1, .owner = owner, .context = context,
+        .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 100 };
+    _ = try current.state.connectSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+    _ = try current.importSourceGeneration(&source_id);
+    try current.addDescription(.{ .source_id = &source_id, .provider = "codex",
+        .native_authority = .{ .origin = @splat(6), .consent = permission } });
+    var pending: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"),
+        .credential_kind = .oauth_access, .source_generation = 1, .credit_key = undefined, .forget_epoch = 0,
+        .job_id = @constCast(""), .token = @constCast(""), .label = @constCast(""), .expires_at = null,
+        .native_admission = admission };
+    var fresh: NativeImportFresh = .{ .origin = @splat(6), .selection_digest = @splat(0),
+        .declaration = .{ .owner_id = owner.id, .native_nonce = owner.nonce, .endpoint_generation = 1,
+            .witness = witness, .status = .available, .context = .{ .id = context.id, .generation = 1 },
+            .store_present = true, .credential_acquisition_authorized = false } };
+    try native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0);
+    fresh.origin = @splat(7);
+    try std.testing.expectError(error.NativeSourceOriginChanged, current.nativeImportCurrent(pending, fresh));
+    fresh.origin = @splat(6);
+    fresh.declaration.context.?.generation = 2;
+    try std.testing.expectError(error.NativeSourceContextChanged,
+        native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    fresh.declaration.context.?.generation = 1;
+    pending.source_id = @constCast("different-opaque-source");
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(pending, fresh));
+    pending.source_id = @constCast(&source_id);
+    current.import_sources.items[0].generation = 2;
+    try std.testing.expectError(error.NativeSourceUnauthorized,
+        native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    current.import_sources.items[0].generation = 1;
+    current.import_forget_epoch = 1;
+    try std.testing.expectError(error.NativeSourceUnauthorized,
+        native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    current.import_forget_epoch = 0;
+    try current.state.detachSource(&source_id);
+    try std.testing.expectError(error.NativeSourceUnauthorized,
+        native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    try current.state.disconnectSource(&source_id);
+    try std.testing.expectError(error.NativeSourceUnauthorized,
+        native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
 }
 
 fn sameOptionalNativeRef(a: ?native_owner.NativeRef, b: ?native_owner.NativeRef) bool {
@@ -7016,4 +8043,289 @@ test "source enrollment generation reply stays bound to the admitted job and pre
     try std.testing.expectError(error.InvalidParams, engine.preflightMutationResult(allocator, "enrollment.start", malformed.value));
     try std.testing.expectEqual(before, engine.revision);
     try std.testing.expectError(error.NotFound, engine.sourceReconcileReply(allocator, .{ .integer = 3 }, "missing-job", true));
+}
+
+test "native context engine joins actual hint and peer metadata without source or credential admission" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |unavailable| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, allocator, .{ .source_context_mode = if (unavailable) .unavailable else .available });
+        defer fixture.destroy();
+        const runtime = try std.fmt.allocPrintSentinel(allocator, "{s}/runtime", .{fixture.root}, 0);
+        defer allocator.free(runtime);
+        if (std.c.mkdir(runtime.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        defer std.Io.Dir.cwd().deleteTree(io, runtime) catch @panic("owned context runtime cleanup failed");
+        const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
+        defer allocator.free(registry);
+        if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aa" ** 32 });
+        defer allocator.free(hint_path);
+        const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
+        const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aa" ** 32,
+            .contextGeneration = "1", .ownerId = owner_hex[0..],
+            .processNonce = nonce_hex[0..], .endpointGeneration = "1",
+            .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
+        defer allocator.free(raw);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hint_path, .data = raw, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        var engine: Engine = undefined;
+        engine.io = io;
+        engine.allocator = allocator;
+        engine.revision = 77;
+        engine.state = domain.State.init(allocator);
+        defer engine.state.deinit();
+        engine.db = null;
+        engine.network = null;
+        var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.discover\",\"params\":{}}");
+        defer request.deinit();
+        var task: NativeTask = undefined;
+        task.engine = &engine;
+        task.request = request;
+        task.discovered = .empty;
+        defer { for (task.discovered.items) |loaded| loaded.deinit(allocator); task.discovered.deinit(allocator); }
+        task.source_contexts = .empty;
+        defer task.source_contexts.deinit(allocator);
+        task.source_context_runtime = runtime;
+        task.scanned_entries = 0;
+        task.ignored_stale_entries = 0;
+        var budget = try native_inventory.Budget.init(io, null);
+        try task.discoverSourceContexts(&budget);
+        try std.testing.expectEqual(@as(usize, 1), task.discovered.items.len);
+        try std.testing.expectEqual(@as(usize, 1), task.source_contexts.items.len);
+        try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.state.accounts.items.len);
+        try std.testing.expectEqual(@as(u64, 77), engine.revision);
+        try std.testing.expect(engine.db == null and engine.network == null);
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        const result = try nativeDiscoveryResult(arena.allocator(), &task, null, false);
+        try std.testing.expect(!result.native_support);
+        const context = result.owners[0].source_context.?;
+        try std.testing.expect(!context.credential_acquisition_authorized);
+        if (unavailable) {
+            try std.testing.expectEqual(.unavailable, context.status);
+            try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
+        } else {
+            try std.testing.expectEqual(.available, context.status);
+            try std.testing.expectEqualStrings("aa" ** 32, context.source_context_id.?);
+            try std.testing.expectEqualStrings("1", context.source_context_generation.?);
+            try std.testing.expectEqual(false, context.store_present.?);
+        }
+        const encoded = try std.json.Stringify.valueAlloc(allocator, context, .{});
+        defer allocator.free(encoded);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "auth.json") == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, fixture.home) == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "access_token") == null);
+    }
+}
+
+test "native discovery perform refuses unsafe homes and permits only absent implicit home fallback" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]u8{ 0, 1, 2, 3 }) |mode| {
+        const unavailable = false;
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, allocator, .{ .source_context_mode = if (mode == 3) .rotated_context else .available });
+        defer fixture.destroy();
+        const runtime = try std.fmt.allocPrintSentinel(allocator, "{s}/runtime", .{fixture.root}, 0);
+        defer allocator.free(runtime);
+        if (std.c.mkdir(runtime.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        defer std.Io.Dir.cwd().deleteTree(io, runtime) catch @panic("owned context runtime cleanup failed");
+        const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
+        defer allocator.free(registry);
+        if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aa" ** 32 });
+        defer allocator.free(hint_path);
+        const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
+        const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aa" ** 32,
+            .contextGeneration = "1", .ownerId = owner_hex[0..],
+            .processNonce = nonce_hex[0..], .endpointGeneration = "1",
+            .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
+        defer allocator.free(raw);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hint_path, .data = raw, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        var engine: Engine = undefined;
+        engine.io = io;
+        engine.allocator = allocator;
+        engine.revision = 77;
+        engine.state = domain.State.init(allocator);
+        defer engine.state.deinit();
+        engine.db = null;
+        engine.network = null;
+        var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.discover\",\"params\":{}}");
+        defer request.deinit();
+        var task: NativeTask = undefined;
+        task.engine = &engine;
+        task.request = request;
+        task.discovered = .empty;
+        defer { for (task.discovered.items) |loaded| loaded.deinit(allocator); task.discovered.deinit(allocator); }
+        task.source_contexts = .empty;
+        defer task.source_contexts.deinit(allocator);
+        task.source_context_runtime = runtime;
+        task.scanned_entries = 0;
+        task.ignored_stale_entries = 0;
+        const selected = try std.fmt.allocPrintSentinel(allocator, "{s}/selected-home", .{fixture.root}, 0);
+        defer allocator.free(selected);
+        if (mode == 1) {
+            if (std.c.symlink(fixture.home.ptr, selected.ptr) != 0) return error.FixtureDirectoryFailed;
+        }
+        defer if (mode == 1) { _ = std.c.unlink(selected.ptr); };
+        var invocation: Invocation = undefined;
+        invocation.until = std.Io.Clock.Timestamp.fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) });
+        task.invocation = &invocation;
+        task.stage = .discovery;
+        task.endpoint = @constCast("");
+        task.discovery_options = .{ .state_dir = runtime, .home = fixture.root,
+            .codex_home = selected, .codex_home_explicit = mode == 2,
+            .adapter = .codex, .capability = @splat('a'), .broker_socket = "unused",
+            .omux_version = product.version, .key = @splat(0) };
+        if (mode == 1 or mode == 2) {
+            if (mode == 1) try std.testing.expectError(error.PathOpenFailed, task.perform())
+            else try std.testing.expectError(error.NativeContextMissing, task.perform());
+            try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+            try std.testing.expectEqual(@as(usize, 0), task.discovered.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+            try std.testing.expectEqual(@as(u64, 77), engine.revision);
+            continue;
+        }
+        try task.perform();
+        try std.testing.expectEqual(@as(usize, 1), task.discovered.items.len);
+        try std.testing.expectEqual(@as(usize, 1), task.source_contexts.items.len);
+        try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.state.accounts.items.len);
+        try std.testing.expectEqual(@as(u64, 77), engine.revision);
+        try std.testing.expect(engine.db == null and engine.network == null);
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        const result = try nativeDiscoveryResult(arena.allocator(), &task, null, false);
+        try std.testing.expect(!result.native_support);
+        const context = result.owners[0].source_context.?;
+        try std.testing.expect(!context.credential_acquisition_authorized);
+        if (unavailable) {
+            try std.testing.expectEqual(.unavailable, context.status);
+            try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
+        } else {
+            try std.testing.expectEqual(.available, context.status);
+            try std.testing.expectEqualStrings(if (mode == 3) "cc" ** 32 else "aa" ** 32, context.source_context_id.?);
+            try std.testing.expectEqualStrings(if (mode == 3) "2" else "1", context.source_context_generation.?);
+            try std.testing.expectEqual(false, context.store_present.?);
+        }
+        const encoded = try std.json.Stringify.valueAlloc(allocator, context, .{});
+        defer allocator.free(encoded);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "auth.json") == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, fixture.home) == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "access_token") == null);
+    }
+}
+
+test "configured native installation completion rejects failures and locked custody before package IO" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var engine: Engine = undefined;
+    engine.io = io;
+    engine.allocator = allocator;
+    engine.native_deployment_selection = .{ .registered_package_root = "/model-unavailable/package", .installation_root = "/model-unavailable/native" };
+    engine.stopping = false;
+    engine.vault_locked = true;
+    engine.runtime_installation = null;
+    var invocation: Invocation = .{ .allocator = allocator, .channel = .control,
+        .payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.install\",\"params\":{\"adapter\":\"codex\"}}",
+        .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) }) };
+    const failed = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"FixtureRefusal\"}}");
+    defer allocator.free(failed);
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, failed));
+    const completed = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+    defer allocator.free(completed);
+    invocation.channel = .browser;
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, completed));
+    invocation.channel = .control;
+    try std.testing.expectError(error.Locked, engine.startConfiguredRuntimeInstall(&invocation, completed));
+    try std.testing.expect(engine.runtime_installation == null);
+    engine.native_deployment_selection = null;
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, completed));
+}
+
+test "actual runtime commit refuses installation namespace replacement after worker handoff" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const prefix = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(prefix);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/handoff.sqlite", .{prefix}, 0);
+    defer allocator.free(database);
+    var current: Engine = .{ .allocator = allocator, .io = io,
+        .state_dir = try allocator.dupe(u8, prefix), .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .root_key = @splat(73), .test_key = @splat(73),
+        .db = try storage.Store.open(io, allocator, database, @splat(73)),
+    };
+    defer current.release();
+    current.native_registry = .{ .phase = .installed, .transaction = @splat(1), .capability_digest = @splat(2) };
+    current.adapter_epochs[0] = 1;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(directory.dir.handle, "selected", 0o700));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(directory.dir.handle, "replacement", 0o700));
+    const selected = std.c.openat(directory.dir.handle, "selected", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+    try std.testing.expect(selected >= 0);
+    defer _ = std.c.close(selected);
+    var invocation: Invocation = .{ .allocator = allocator, .payload = "", .channel = .control,
+        .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) }) };
+    // This refusal-only model supplies real captured installation metadata, not
+    // a fabricated Prepared or producer authority. An intact name still cannot
+    // commit without genuine preparation. Replacement must fail even earlier.
+    var task: NativeRuntimeCommitTask = .{ .engine = &current, .invocation = &invocation,
+        .candidate = null, .arena = undefined, .registry = current.native_registry,
+        .epoch = 1, .job = undefined, .handoff_ready = true,
+        .context = .{ .selection = current.instance_selection, .deadline = invocation.until,
+            .options = .{ .state_dir = prefix, .home = prefix, .adapter = .codex,
+                .capability = @splat('a'), .broker_socket = "fixture-unused",
+                .omux_version = product.version, .key = @splat(73), .deadline = invocation.until } },
+        .parent = directory.dir.handle, .basename = "selected",
+        .installation = .{ .directory = selected, .witness = try @import("platform/file_metadata.zig").statFd(selected), .created = true },
+    };
+    // Commit a real baseline first. The following runtime-fenced attempts run
+    // actual snapshot sizing/serialization but must never enter the DB writer.
+    try current.persist(&.{});
+    const before_revision = current.revision;
+    const before_rows = current.state.grants.items.len;
+    task.handoff_ready = false;
+    try std.testing.expectError(error.RuntimeSelectionNotReady, current.commitNativeRuntimePrepared(&task));
+    task.handoff_ready = true;
+    try std.testing.expectError(error.InvalidRuntimeSelection, current.commitNativeRuntimePrepared(&task));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "selected", directory.dir.handle, "retained"));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "replacement", directory.dir.handle, "selected"));
+    try std.testing.expectError(error.RuntimeSelectionDrift, current.commitNativeRuntimePrepared(&task));
+    current.runtime_installation = &task;
+    defer current.runtime_installation = null;
+    // This calls the actual persistence path; its fence is after admission,
+    // nonledger sizing and full JSON allocation immediately before db.commit.
+    // No fabricated Prepared is needed for a replaced-name refusal.
+    try std.testing.expectError(error.RuntimeSelectionDrift, current.persistWithRuntimeFence(&.{}, &task));
+    const expired: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    task.invocation.until = expired;
+    task.context.deadline = expired;
+    try std.testing.expectError(error.Timeout, current.persistWithRuntimeFence(&.{}, &task));
+    try std.testing.expect(current.qualified_native_runtime == null);
+    try std.testing.expectEqual(before_revision, current.revision);
+    try std.testing.expectEqual(before_rows, current.state.grants.items.len);
+    const fresh = std.c.openat(directory.dir.handle, "selected", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+    try std.testing.expect(fresh >= 0);
+    defer _ = std.c.close(fresh);
+    try std.testing.expect((try @import("platform/file_metadata.zig").statFd(fresh)).ino != task.installation.?.witness.ino);
 }

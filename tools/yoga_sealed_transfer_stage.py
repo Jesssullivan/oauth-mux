@@ -22,7 +22,7 @@ import nar_descriptor as nar
 from verify_cached_nars import parse_inventory, expected_hash
 from ssh_policy import operator_config
 
-ROOT = Path('/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008')
+ROOT = Path(__file__).resolve().parent.parent
 LABEL = '//tools:yoga_sealed_transfer_stage'
 MODE = 'stage-sealed-workspace'
 
@@ -100,7 +100,8 @@ class Source:
             selection_raw=self.read(selector_root/'selection.json',schema.MAX_METADATA,deadline,
                                     expected=self.value['selectedData']['sha256'])
             schema.require(len(selection_raw)==self.value['selectedData']['bytes'])
-            schema.selected_join(schema.decode(selection_raw),self.capture.record,receipts['workspace'],self.value)
+            schema.selected_join(schema.decode(selection_raw),self.capture.record,receipts['workspace'],self.value,
+                                 controller_root=str(installed.support.TOOLS))
             merged={}
             for name in ('browser-inventory.json','controller-inventory.json'):
                 raw_inventory=self.capture.bytes(name,schema.MAX_METADATA)

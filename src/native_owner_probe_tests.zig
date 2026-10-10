@@ -18,6 +18,84 @@ fn requestFor(identity: probe.OwnerIdentity, operation: native_owner.OperationId
     };
 }
 
+fn sourceSelector(fixture: *fixture_mod.Fixture) probe.SourceContextSelector {
+    return .{ .owner_id = fixture.owner_id, .native_nonce = fixture.native_nonce,
+        .endpoint_generation = fixture.options.endpoint_generation,
+        .context = .{ .id = @splat(0xaa), .generation = 1 } };
+}
+
+test "actual source context packets preserve captured peer and never grant acquisition" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    inline for (.{ fixture_mod.Options{}, fixture_mod.Options{ .source_context_mode = .unavailable } }) |options| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(std.testing.io, std.testing.allocator, options);
+        defer fixture.destroy();
+        var connection = try probe.OwnerConnection.open(std.testing.io, std.testing.allocator, fixture.endpoint, null, null);
+        defer connection.deinit();
+        const original = try connection.verifiedWitness();
+        const result = try connection.sourceContext(@splat('a'), sourceSelector(fixture));
+        try std.testing.expect(peer.sameOriginal(original, result.witness));
+        try std.testing.expect(!result.credential_acquisition_authorized);
+        if (options.source_context_mode == .unavailable) {
+            try std.testing.expectEqual(.unavailable, result.status);
+            try std.testing.expect(result.context == null and result.store_present == null);
+        } else {
+            try std.testing.expectEqual(.available, result.status);
+            try std.testing.expectEqual(@as(u64, 1), result.context.?.generation);
+            try std.testing.expectEqual(@as(?bool, false), result.store_present);
+        }
+        const inspected = try probe.inspectSourceContextWithDeadline(std.testing.io, std.testing.allocator, fixture.endpoint, original, sourceSelector(fixture), connection.until);
+        try std.testing.expect(peer.sameOriginal(original, inspected.witness));
+        try std.testing.expectEqual(@as(usize, 2), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.unregister));
+    }
+}
+
+test "actual source context refuses inconsistent metadata authority drift and unexpected schema" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const cases = .{
+        .{ fixture_mod.Options{ .source_context_mode = .acquisition_true }, error.InvalidNativeSourceContext },
+        .{ fixture_mod.Options{ .source_context_mode = .acquisition_nonboolean }, error.InvalidNativeSourceContext },
+        .{ fixture_mod.Options{ .source_context_mode = .unavailable_nonnull }, error.InvalidNativeSourceContext },
+        .{ fixture_mod.Options{ .source_context_mode = .extra }, error.InvalidNativeOwnerAck },
+        .{ fixture_mod.Options{ .source_context_mode = .missing }, error.InvalidNativeOwnerAck },
+        .{ fixture_mod.Options{ .source_context_mode = .partial_null }, error.InvalidNativeOwnerAck },
+        .{ fixture_mod.Options{ .source_context_mode = .unknown_status }, error.InvalidNativeSourceContext },
+        .{ fixture_mod.Options{ .source_context_mode = .wrong_owner }, error.NativeOwnerIdentityMismatch },
+        .{ fixture_mod.Options{ .source_context_mode = .wrong_nonce }, error.NativeOwnerIdentityMismatch },
+        .{ fixture_mod.Options{ .source_context_mode = .wrong_endpoint }, error.NativeOwnerIdentityMismatch },
+        .{ fixture_mod.Options{ .source_context_mode = .wrong_context }, error.NativeSourceContextMismatch },
+        .{ fixture_mod.Options{ .source_context_mode = .wrong_context_generation }, error.NativeSourceContextMismatch },
+        .{ fixture_mod.Options{ .source_context_mode = .numeric_context_generation }, error.InvalidNativeOwnerGeneration },
+        .{ fixture_mod.Options{ .source_context_mode = .duplicate_context }, error.DuplicateField },
+    };
+    inline for (cases) |case| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(std.testing.io, std.testing.allocator, case[0]);
+        defer fixture.destroy();
+        var connection = try probe.OwnerConnection.open(std.testing.io, std.testing.allocator, fixture.endpoint, null, null);
+        defer connection.deinit();
+        try std.testing.expectError(case[1], connection.sourceContext(@splat('a'), sourceSelector(fixture)));
+        try std.testing.expectError(error.NativeOwnerConnectionFailed, connection.verifiedWitness());
+        try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+    }
+}
+
+test "source context expired original deadline refuses before sending any packet" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const fixture = try fixture_mod.Fixture.create(std.testing.io, std.testing.allocator);
+    defer fixture.destroy();
+    var connection = try probe.OwnerConnection.open(std.testing.io, std.testing.allocator, fixture.endpoint, null, null);
+    defer connection.deinit();
+    const original = try connection.verifiedWitness();
+    const expired = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    try std.testing.expectError(error.NativeTimeout, probe.inspectSourceContextWithDeadline(std.testing.io, std.testing.allocator, fixture.endpoint, original, sourceSelector(fixture), expired));
+    connection.until = expired;
+    try std.testing.expectError(error.NativeTimeout, connection.sourceContext(@splat('a'), sourceSelector(fixture)));
+    try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+}
+
 test "native owner generations are exact nonzero canonical u64 strings" {
     try std.testing.expectEqual(@as(u64, 9007199254740993), try probe.parseOwnerGeneration(.{ .string = "9007199254740993" }));
     try std.testing.expectEqual(std.math.maxInt(u64), try probe.parseOwnerGeneration(.{ .string = "18446744073709551615" }));
@@ -297,4 +375,31 @@ test "owner read-only thread discovery refuses invalid or oversized rows before 
         try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.unregister));
         try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
     }
+}
+
+
+test "maintained current context metadata rotates both fields while explicit selectors stay exact" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = try fixture_mod.Fixture.createWithOptions(std.testing.io, std.testing.allocator, .{ .source_context_mode = .rotated_context });
+    defer fixture.destroy();
+    var discovery = try probe.OwnerConnection.open(std.testing.io, std.testing.allocator, fixture.endpoint, null, null);
+    defer discovery.deinit();
+    const original = try discovery.verifiedWitness();
+    var selector = sourceSelector(fixture);
+    selector.context = null;
+    const current = try discovery.sourceContext(@splat('a'), selector);
+    try std.testing.expect(peer.sameOriginal(original, current.witness));
+    const expected_id: [32]u8 = @splat(0xcc);
+    try std.testing.expectEqualSlices(u8, &expected_id, &current.context.?.id);
+    try std.testing.expectEqual(@as(u64, 2), current.context.?.generation);
+    try std.testing.expect(!current.credential_acquisition_authorized);
+    selector.context = current.context;
+    _ = try probe.inspectSourceContextWithDeadline(std.testing.io, std.testing.allocator, fixture.endpoint, original, selector, discovery.until);
+    selector.context = .{ .id = @splat(0xaa), .generation = 2 };
+    try std.testing.expectError(error.NativeSourceContextMismatch, probe.inspectSourceContextWithDeadline(std.testing.io, std.testing.allocator, fixture.endpoint, original, selector, discovery.until));
+    selector.context = .{ .id = @splat(0xcc), .generation = 1 };
+    try std.testing.expectError(error.NativeSourceContextMismatch, probe.inspectSourceContextWithDeadline(std.testing.io, std.testing.allocator, fixture.endpoint, original, selector, discovery.until));
+    try std.testing.expectEqual(@as(usize, 4), fixture.methodCount(.source_context));
+    try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+    try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
 }

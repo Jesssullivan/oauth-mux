@@ -37,13 +37,13 @@ class ProducerBridgeTest(unittest.TestCase):
             with self.subTest(args=args),self.assertRaises(ValueError):producer.selected(*args)
 
     @contextmanager
-    def fixture(self):
+    def fixture(self, *, reserved=False):
         with tempfile.TemporaryDirectory() as directory,ExitStack() as stack:
             root=Path(directory); os.chmod(root,0o700)
             values={'browser-inventory.json':b'{"synthetic":"browser"}\n',
                 'controller-inventory.json':b'{"synthetic":"controller"}\n'}
             pins={name:hashlib.sha256(value).hexdigest() for name,value in values.items()}
-            checkout=Path('/srv/fast-local/jess/git/oauth-mux-fixture')
+            checkout=producer.support.ROOT if reserved else Path('/srv/fast-local/jess/git/oauth-mux-fixture')
             value={key:{} for key in ('buildReceipt','launcher','runfilesManifest','inputPaths',
                 'inputSha256','nativeManifest','nativeManifestSha256','fileSha256')}
             value.update(schemaVersion=1,scope='yoga-installed-toolbar-selection-v1',
@@ -51,6 +51,10 @@ class ProducerBridgeTest(unittest.TestCase):
                     'execution_guard.py':{'sha256':'b'*64,'bytes':17}}},
                 browserInventory={'path':str(root/'browser-inventory.json'),'sha256':pins['browser-inventory.json']},
                 controllerInventory={'path':str(root/'controller-inventory.json'),'sha256':pins['controller-inventory.json']})
+            if reserved:
+                value.update(schemaVersion=producer.support.SCHEMA,scope=producer.support.SELECTION_SCOPE,
+                    controllerDelivery={'root':str(producer.support.DELIVERY),'files':{
+                        'codex_device_acquisition_component.py':{'sha256':'c'*64,'bytes':19}}})
             values['selection.json']=encoded(value)
             for name,data in values.items():
                 (root/name).write_bytes(data); os.chmod(root/name,0o600)
@@ -83,6 +87,40 @@ class ProducerBridgeTest(unittest.TestCase):
             finally:admission.close()
             self.assertFalse((root/'outputs').exists())
             self.assertEqual(set(os.listdir(root)),{'selection.json','browser-inventory.json','controller-inventory.json'})
+
+    def test_reserved_physical_controller_input_custody_and_exact_command(self):
+        with self.fixture(reserved=True) as (root,checkout,sha,deadline):
+            self.assertEqual(checkout,Path(producer.support.__file__).resolve().parent.parent)
+            admission=producer.Admission(sha,checkout,deadline,required_schema=2)
+            try:
+                self.assertEqual(admission.selection_schema,2)
+                command=admission.argv()
+                self.assertEqual(command,['--selection',str(root/'selection.json'),
+                    '--selection-sha256',sha,'--output',str(root/'outputs/workspace'),
+                    '--deadline-monotonic-ns',str(deadline)])
+                original=(root/'selection.json').read_bytes()
+                (root/'selection.json').unlink();(root/'selection.json').write_bytes(original)
+                os.chmod(root/'selection.json',0o600)
+                with self.assertRaises(ValueError): admission.recheck()
+            finally: admission.close()
+            self.assertFalse((root/'outputs').exists())
+
+    def test_reserved_foreign_roots_refuse_before_staging_or_output_reads(self):
+        with self.fixture(reserved=True) as (root,checkout,sha,deadline):
+            roots=(checkout.parent/(checkout.name+'-foreign'),Path('/home/jess/foreign'),
+                   Path('/srv/fast-local/jess/git/oauth-mux-fixture'))
+            for foreign in roots:
+                with self.subTest(root=foreign),patch.object(producer,'parent') as walk:
+                    with self.assertRaises(ValueError): producer.Admission(sha,foreign,deadline,required_schema=2)
+                    walk.assert_not_called()
+                self.assertFalse((root/'outputs').exists())
+            # Current root and v2 metadata must join, not merely pass the root gate.
+            value=json.loads((root/'selection.json').read_bytes())
+            value['controllerPackage']['root']=str(checkout.parent/(checkout.name+'-foreign')/'tools')
+            raw=encoded(value);(root/'selection.json').write_bytes(raw)
+            with self.assertRaises(ValueError):
+                producer.Admission(hashlib.sha256(raw).hexdigest(),checkout,deadline,required_schema=2)
+            self.assertFalse((root/'outputs').exists())
 
     def test_wrong_digest_existing_output_and_extra_input_refuse(self):
         with self.fixture() as (root,checkout,sha,deadline):

@@ -30,6 +30,9 @@ from codex_retained_sdk_export import SCHEMA as EXPORT_SCHEMA
 KIND = 'omux-fresh-native-runtime-v1'
 STATUS = 'experimental-qualified-native-runtime'
 SELECTION_KIND = 'omux-fresh-native-package-selection-v1'
+DIRECT_SELECTION_KIND = 'omux-native-source-acquisition-native-package-selection-v1'
+DIRECT_KIND = 'omux-native-source-acquisition-fresh-native-package-v1'
+DIRECT_TARGET = '//tools:codex_native_acquisition_runtime_package'
 ROLES = frozenset(('source', 'export', 'compile', 'qualification_run',
     'qualification', 'qualification_xml', 'schema_run', 'config_schema', 'codex'))
 JSON_ROLES = ROLES - {'codex', 'qualification_xml'}
@@ -199,6 +202,9 @@ def validate_export_producer(selection, exported):
 
 def validate_selection_paths(selection):
     """Refuse reads outside the exact public producer/guard output namespaces."""
+    if selection.get('kind') == DIRECT_SELECTION_KIND:
+        from codex_native_acquisition_material import validate_paths
+        return validate_paths(selection)
     if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import validate_paths
         return validate_paths(selection)
@@ -242,6 +248,11 @@ def validate_selection_paths(selection):
 
 def validate_protocol_inventory(selection):
     """Enumerate only the complete two declared public JSON schema subtrees."""
+    if selection.get('kind') == DIRECT_SELECTION_KIND:
+        # Modern complete compiler/schema readback is performed by validate_chain
+        # before and after packaging, under the unchanged caller deadline.
+        from codex_native_acquisition_material import validate_paths
+        return validate_paths(selection)
     if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import validate_protocol_inventory as verify
         return verify(selection)
@@ -527,6 +538,9 @@ def validate_combined_cli(group, selection, values, receipt, source, exported):
         'combined actual CLI bytes differ from post-cleanup artifact evidence')
 
 def package_roles(selection):
+    if selection.get('kind') == DIRECT_SELECTION_KIND:
+        from codex_native_acquisition_material import ROLES as roles
+        return roles
     if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import ROLES as protocol_roles
         return protocol_roles
@@ -539,6 +553,10 @@ def package_roles(selection):
 
 def validate_chain(selection, values, protocol_values, staged_values=None):
     """Consume independently selected source/build/test/schema evidence bytes."""
+    if selection.get('kind') == DIRECT_SELECTION_KIND:
+        from codex_native_acquisition_material import validate_chain as verify
+        require(isinstance(staged_values,dict), 'native acquisition actual evidence required')
+        return verify(selection,values,protocol_values,staged_values,deadline=DEADLINE)
     if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import validate_chain as verify
         require(isinstance(staged_values,dict), 'protocol-history declared actual evidence required')
@@ -683,9 +701,10 @@ def validate_chain(selection, values, protocol_values, staged_values=None):
     return chain
 
 
-def verify_runtime_files(payload, receipt):
+def verify_runtime_files(payload, receipt, registration_receipt=None):
     """Check this fresh manifest plus every portable ELF dependency edge."""
-    require(receipt['kind'] == KIND and receipt['status'] == STATUS and
+    direct = receipt.get('kind') == DIRECT_KIND
+    require(receipt['kind'] == (DIRECT_KIND if direct else KIND) and receipt['status'] == STATUS and
         receipt['native_support'] is False and receipt['provider_evaluation'] is False
         and receipt['experimental_text_policy_compiled'] is True and
         len(payload) == receipt['archive_bytes'] and digest(payload) == receipt['archive_sha256']
@@ -711,15 +730,15 @@ def verify_runtime_files(payload, receipt):
     require(digest(files[runtime.MANIFEST]) == receipt['manifest_sha256']
         and modes[runtime.MANIFEST] == 0o644, 'fresh runtime manifest pin differs')
     manifest = parse(files[runtime.MANIFEST])
-    require(manifest['kind'] == KIND and manifest['status'] == STATUS and
+    require(manifest['kind'] == (DIRECT_KIND if direct else KIND) and manifest['status'] == STATUS and
         manifest['native_support'] is False and manifest['provider_evaluation'] is False
         and manifest['experimental_text_policy_compiled'] is True
         and manifest['chain'] == receipt['chain'] and manifest['executable'] == receipt['executable']
         and manifest['selection_sha256'] == receipt['selection_sha256']
         and manifest['producer_source_sha256'] == receipt['producer_source_sha256']
-        and manifest['producer_target'] == receipt['producer_target'] == (
+        and manifest['producer_target'] == receipt['producer_target'] == (DIRECT_TARGET if direct else (
             '//tools:codex_persistence_native_runtime_package' if receipt['chain'].get('material_family') ==
-            'omux-owner-status-persistence-native-package-selection-v1' else '//tools:codex_fresh_native_runtime_package'),
+            'omux-owner-status-persistence-native-package-selection-v1' else '//tools:codex_fresh_native_runtime_package')),
         'fresh runtime manifest identity differs')
     require(set(files) == set(manifest['files']) | {runtime.MANIFEST}
         and sum(len(v) for n,v in files.items() if n != runtime.MANIFEST) <= runtime.MAX_RUNTIME_BYTES,
@@ -731,6 +750,28 @@ def verify_runtime_files(payload, receipt):
         'mode':0o444 if n==runtime.CA else 0o555} for n,row in manifest['files'].items()},
         'fresh runtime sealed inventory differs')
     info = manifest['runtime']
+    if direct:
+        import nix_codex_runtime as nix_runtime
+        require(receipt.get('launchProfile') == nix_runtime.PROFILE and info.get('launchProfile') == nix_runtime.PROFILE,
+                'native acquisition direct profile differs')
+        require(type(registration_receipt) is bytes and digest(registration_receipt) == info.get('registration_receipt_sha256'),
+                'native acquisition registered closure missing')
+        proof = parse(registration_receipt)
+        require(proof.get('loader_lookup_qualified') is False and info.get('loader_lookup_qualified') is False,
+                'evaluation package cannot qualify actual loader lookup')
+        require(proof.get('status') == 'registered-linux-nix-runtime-closure-proof-candidate' and proof.get('native_support') is False
+                and proof.get('target') == 'x86_64-linux' and proof.get('original_interpreter') == info.get('original_interpreter')
+                and 0 <= proof['interpreter_file_index'] < len(proof['files']), 'native acquisition registered proof differs')
+        loader = proof['files'][proof['interpreter_file_index']]
+        require(set(files) == {runtime.MANIFEST,'bin/codex',runtime.BACKEND,runtime.CA,nix_runtime.LOADER}
+                and files['bin/codex'] == nix_runtime.launcher() and digest(files[nix_runtime.LOADER]) == loader['sha256']
+                and len(files[nix_runtime.LOADER]) == loader['bytes'] and nix_runtime.elf_info(files[runtime.BACKEND])['interpreter'] == info['original_interpreter']
+                and info['dependencies'] == [nix_runtime.LOADER] and info['loader'] == nix_runtime.LOADER,
+                'native acquisition direct bytes differ')
+        portable._verify_ca_bundle(files[runtime.CA])
+        require(digest(files[runtime.BACKEND]) == receipt['executable']['packaged_sha256'] and len(files[runtime.BACKEND]) == receipt['executable']['packaged_bytes'],
+                'native acquisition direct executable differs')
+        return manifest, {n:v for n,v in files.items() if n != runtime.MANIFEST}
     dependencies = info['dependencies']
     require(dependencies == sorted(set(dependencies)) and 0 < len(dependencies) < MAX_RUNTIME_FILES
         and info['loader'] in dependencies and info['caBundle'] == runtime.CA
@@ -764,6 +805,16 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
     validate_protocol_inventory(selection)
     chain = validate_chain(selection, values, protocol_values,staged_values)
     original = values['codex']
+    direct = selection.get('kind') == DIRECT_SELECTION_KIND
+    if direct:
+        # Preserve the complete selected document. The chain summary is not a
+        # substitute for the independently selected inputs used by the action.
+        selection_raw = args.selection.read_bytes()
+        require(digest(selection_raw) == args.selected_sha256 and parse(selection_raw) == selection,
+                'native acquisition original package selection drift')
+    require((getattr(args,'launch_profile','linux_explicit_bundled_loader_v1') == 'linux_nix_direct_main_v1') == direct,
+            'native acquisition profile requires distinct material family')
+    registration_receipt = None
     require(0 < len(original) <= runtime.MAX_ORIGINAL_BYTES,
         'fresh runtime original backend bound')
     private = output/'.transform'
@@ -774,9 +825,17 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
         runtime.run_tool([str(args.strip), '--strip-all', str(copied)], args.tool_path)
         stripped = portable._read(copied, max_bytes=runtime.MAX_BACKEND_BYTES)
         metadata = portable.elf_metadata(stripped, max_bytes=runtime.MAX_BACKEND_BYTES)
-        loader, witness = runtime.select_loader(metadata, runtime_files)
-        runtime.run_tool([str(args.patchelf), '--set-interpreter', str(loader), str(copied)], args.tool_path)
-        files, runtime_info = runtime.assemble_runtime(copied, runtime_files, args.patchelf, args.ca_bundle)
+        if direct:
+            import nix_codex_runtime as nix_runtime
+            files,runtime_info,registration_receipt = nix_runtime.assemble(stripped,runtime_files,args.ca_bundle,DEADLINE,
+                registration=args.nix_registration,store_paths=args.nix_roots)
+            require(nix_runtime.elf_info(original)['interpreter'] == runtime_info['original_interpreter'],
+                    'native acquisition original interpreter changed')
+            witness = {'original_interpreter':runtime_info['original_interpreter'], 'transformation':'strip-only-original-ELF-lookup'}
+        else:
+            loader, witness = runtime.select_loader(metadata, runtime_files)
+            runtime.run_tool([str(args.patchelf), '--set-interpreter', str(loader), str(copied)], args.tool_path)
+            files, runtime_info = runtime.assemble_runtime(copied, runtime_files, args.patchelf, args.ca_bundle)
     finally:
         if (private/'codex').exists():
             (private/'codex').unlink()
@@ -788,18 +847,19 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
     inventory = {name:{'sha256':digest(v),'bytes':len(v),'mode':0o644 if name==runtime.CA else 0o755}
         for name,v in sorted(files.items())}
     require(0 < len(inventory) <= MAX_RUNTIME_FILES, 'fresh runtime finite file count')
-    manifest = {'schema_version':1,'kind':KIND,'status':STATUS,'target':'x86_64-linux',
+    manifest = {'schema_version':1,'kind':DIRECT_KIND if direct else KIND,'status':STATUS,'target':'x86_64-linux',
         'native_support':False,'provider_evaluation':False,'experimental_text_policy_compiled':True,
         'chain':chain,'executable':executable,'runtime':runtime_info,'files':inventory,
         'selection_sha256':args.selected_sha256,
         'producer_source_sha256':digest(Path(__file__).read_bytes()),
-        'producer_target':('//tools:codex_persistence_native_runtime_package' if selection.get('kind') ==
-            'omux-owner-status-persistence-native-package-selection-v1' else '//tools:codex_fresh_native_runtime_package'),
+        'producer_target':(DIRECT_TARGET if direct else ('//tools:codex_persistence_native_runtime_package' if selection.get('kind') ==
+            'omux-owner-status-persistence-native-package-selection-v1' else '//tools:codex_fresh_native_runtime_package')),
         'loader_relocation':witness,
-        'declared_tools':{'strip_sha256':digest(portable._read(args.strip.resolve())),
-            'patchelf_sha256':digest(portable._read(args.patchelf.resolve()))}}
+        'declared_tools':({'strip_sha256':digest(portable._read(args.strip.resolve()))} if direct else
+            {'strip_sha256':digest(portable._read(args.strip.resolve())),
+             'patchelf_sha256':digest(portable._read(args.patchelf.resolve()))})}
     payload = runtime.archive_bytes(files, manifest)
-    receipt = {'schema_version':1,'kind':KIND,'status':STATUS,
+    receipt = {'schema_version':1,'kind':DIRECT_KIND if direct else KIND,'status':STATUS,
         'native_support':False,'provider_evaluation':False,'experimental_text_policy_compiled':True,
         'chain':chain,'executable':executable,'runtime':runtime_info,
         'selection_sha256':args.selected_sha256,
@@ -812,7 +872,11 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
         'scope':'Fresh experimental maintained native carrier; no provider or seamless handoff proof.'}
     # archive_bytes uses the existing deterministic json_bytes representation.
     require(runtime.json_bytes(manifest) == encoded(manifest), 'fresh manifest canonical encoding differs')
-    verify_runtime_files(payload, receipt)
+    if direct:
+        receipt['launchProfile'] = 'linux_nix_direct_main_v1'
+        receipt['purpose'] = 'evaluation-only'
+        receipt['acquisitionContract'] = 'unsupported'
+    verify_runtime_files(payload, receipt, registration_receipt)
     root = output/executable['packaged_sha256']
     root.mkdir(mode=0o700)
     output_file(root, 'codex', files[runtime.BACKEND], 0o555)
@@ -851,22 +915,48 @@ def package(selection, values, protocol_values, runtime_files, args, output, sta
             lambda role,pin,maximum:read_selected(canonical_path(pin['path']),pin,maximum))
         require(validate_chain(selection,after_values,after_protocol,after_extra) == chain,
             'protocol-history full completed chain changed after packaging')
+    if direct:
+        from codex_native_acquisition_material import load_inputs
+        after_values,after_protocol,after_extra = load_inputs(selection,
+            lambda role,pin,maximum:read_selected(canonical_path(pin['path']),pin,maximum))
+        require(validate_chain(selection,after_values,after_protocol,after_extra) == chain,
+            'native acquisition full modern chain changed after packaging')
     validate_protocol_inventory(selection)
     output_file(output, 'fresh-native-runtime.tar.gz', payload, 0o444)
     output_file(output, 'runtime-manifest.json', encoded(manifest), 0o444)
     output_file(output, 'runtime-receipt.json', encoded(receipt), 0o444)
+    if direct:
+        output_file(output, 'registration-receipt.json', registration_receipt, 0o444)
+        require(args.selection.read_bytes() == selection_raw,
+                'native acquisition package selection changed before sealing')
+        output_file(output, 'package-selection.json', selection_raw, 0o444)
+        import nix_codex_runtime as nix_runtime
+        inventory = nix_runtime.package_output_inventory(output, DEADLINE)
+        raw_inventory = encoded(inventory)
+        output_file(output, 'package-outputs.json', raw_inventory, 0o444)
+        # This exact marker is retained in the genuine guarded action log.
+        # The action does not create its own outer guardian receipt.
+        print('omux-native-package-output-sha256='+digest(raw_inventory))
     return receipt
 
 
 def main():
     global DEADLINE
-    DEADLINE = time.monotonic()+900
+    portable_entry = time.monotonic()
     parser = argparse.ArgumentParser(allow_abbrev=False)
     for name in ('selection','selection-sha-file','input-aliases','strip','patchelf',
             'ca-bundle','runtime-files-manifest'):
         parser.add_argument('--'+name,type=Path,required=True)
     parser.add_argument('--tool-path',required=True)
+    parser.add_argument('--launch-profile',choices=('linux_explicit_bundled_loader_v1','linux_nix_direct_main_v1'),default='linux_explicit_bundled_loader_v1')
+    parser.add_argument('--nix-registration',type=Path)
+    parser.add_argument('--nix-roots',type=Path)
     args = parser.parse_args()
+    if args.launch_profile == 'linux_nix_direct_main_v1':
+        import nix_codex_runtime as nix_runtime
+        DEADLINE = nix_runtime.original_package_deadline(os.environ)
+    else:
+        DEADLINE = portable_entry+900
     root = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True)
     parent = trusted(root)
     try:
@@ -885,6 +975,14 @@ def main():
     entries = {**selection['files'],
         **{'protocol/'+n:p for n,p in selection['protocol_schema_files'].items()}}
     staged_values = None
+    if selection.get('kind') == DIRECT_SELECTION_KIND:
+        entries = {**selection['files'],
+            **{'schema/'+n:p for n,p in selection['protocol_schema_files'].items()},
+            **{'evidence/'+n:p for n,p in selection['native_acquisition_artifact_files'].items()}}
+        for action,group in selection['authority_receipts'].items():
+            entries['authority/'+action+'/outer'] = group['outer']
+            entries['authority/'+action+'/evidence'] = group['evidence']
+            entries.update({'authority/'+action+'/'+name:pin for name,pin in group['members'].items()})
     if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         entries.update({'protocol-history/'+name:pin for name,pin in selection['protocol_history_artifact_files'].items()})
     if selection.get('kind') == 'omux-staged-native-package-selection-v1':
@@ -898,6 +996,10 @@ def main():
         path = alias.resolve(strict=True)
         require(str(path) == pin['path'], 'fresh runtime declared alias resolution differs')
         return path
+    if selection.get('kind') == DIRECT_SELECTION_KIND:
+        from codex_native_acquisition_material import load_inputs
+        values,protocol_values,staged_values = load_inputs(selection,
+            lambda role,pin,maximum:read_selected(selected_alias(role,pin),pin,maximum),selected_alias)
     if selection.get('kind') in ('omux-protocol-history-native-package-selection-v1', 'omux-owner-status-persistence-native-package-selection-v1'):
         from codex_protocol_history_package_consumer import load_inputs
         values,protocol_values,staged_values = load_inputs(selection,

@@ -23,6 +23,26 @@ class Models(unittest.TestCase):
                             ({'root': str(support.TOOLS)}, '/private/foreign')):
             with self.assertRaises(ValueError): support.controller(value, root)
 
+    def test_physical_controller_root_and_foreign_checkout_bindings(self):
+        actual = Path(support.__file__).resolve().parent.parent
+        package = {'root': str(actual / 'tools')}
+        support.controller(package, actual)
+        data = self.value()
+        support.support(data)
+        self.assertEqual(data['root'], str(actual / 'delivery'))
+        component = actual / 'delivery/codex_device_acquisition_component.py'
+        self.assertEqual(support.declared(str(component), lambda _: self.fail('not an alias')),
+                         (component, component))
+        foreign = (actual.parent / (actual.name + '-foreign'),
+                   Path('/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008'))
+        for root in foreign:
+            if root == actual: continue
+            with self.subTest(root=root):
+                with self.assertRaises(ValueError): support.controller(package, root)
+                with self.assertRaises(ValueError): support.controller({'root': str(root/'tools')}, actual)
+                with self.assertRaises(ValueError): support.support({**data, 'root': str(root/'delivery')})
+                with self.assertRaises(ValueError): support.declared(str(root/'delivery'/component.name), lambda _: None)
+
     def test_canonical_data_role_only(self):
         actual = support.DELIVERY / 'codex_device_acquisition_component.py'
         self.assertEqual(support.declared(str(actual), lambda _: self.fail('output role')), (actual, actual))
