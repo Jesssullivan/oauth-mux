@@ -241,3 +241,9 @@ def verify_selected(selection, deadline):
         require(again==witness,'current-hm-authority-late-change')
     return {**receipt,'fullQt':True,'metadataCommitment':sha(artifact.encoded(facts)),
             'executionAuthority':False,'activationPerformed':False,'selectedAuthoritySha256':sha(artifact.encoded(selection))}
+
+
+def verify_retained_selected(selection,deadline):
+    # This distinct API authenticates the retained transport, not a physical NAR.
+    import home_manager_current_retained_artifact as retained
+    return retained.selected_transport(selection,deadline)[0]

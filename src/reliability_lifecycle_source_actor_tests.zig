@@ -123,6 +123,11 @@ test "actual committed source removal measurement advances metadata revision whi
     const summary = try exported(actor.engine.?);
     try std.testing.expectEqual(@as(u64, 1), summary.completed);
     try std.testing.expectEqual(@as(u64, 1), summary.elapsed_measured);
+    try std.testing.expectEqual(@as(u64, 1), summary.local_work_measured);
+    try std.testing.expectEqual(@as(u64, 1), summary.daemon_request_elapsed_measured);
+    try std.testing.expect(summary.daemon_request_elapsed_total_ns != null);
+    try std.testing.expect(!summary.user_end_to_end_measured and !summary.application_provenance_measured);
+    try std.testing.expectEqual(@TypeOf(summary.user_provider_wait).unknown, summary.user_provider_wait);
     try std.testing.expectEqual(@as(u64, 0), summary.elapsed_missing);
     try std.testing.expect(summary.elapsed_total_ns != null and summary.elapsed_min_ns != null and summary.elapsed_max_ns != null);
     try std.testing.expect(!summary.achieved_slo and !summary.complete_user_demand_denominator and !summary.user_end_to_end_measured);

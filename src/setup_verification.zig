@@ -47,15 +47,23 @@ pub fn makeRefusal(id: []const u8, generation: u64, observed_at: i64, refusal: R
     try validate(result);
     return result;
 }
+/// A real daemon admission-to-terminal observation, never a user/browser start.
+pub fn makeTimedRefusal(id: []const u8, generation: u64, observed_at: i64, refusal: Refusal, elapsed_ns: ?u64) !Result {
+    var result = try makeRefusal(id, generation, observed_at, refusal);
+    result.schema_version = 2;
+    result.elapsed_ns = elapsed_ns;
+    try validate(result);
+    return result;
+}
 pub fn validate(result: Result) !void {
-    if (result.schema_version != 1 or !validId(result.operation_id) or result.observed_at < 0) return error.InvalidSetupVerificationResult;
+    if ((result.schema_version != 1 and result.schema_version != 2) or !validId(result.operation_id) or result.observed_at < 0) return error.InvalidSetupVerificationResult;
     switch (result.outcome) {
         .verification_completed => {
             if (result.refusal != null or result.generation == 0) return error.InvalidSetupVerificationResult;
             for (result.phases) |phase| if (phase.outcome != classify(phase.reason)) return error.InvalidSetupVerificationResult;
         },
         .safe_refusal => {
-            if (result.refusal == null or result.elapsed_ns != null) return error.InvalidSetupVerificationResult;
+            if (result.refusal == null or (result.schema_version == 1 and result.elapsed_ns != null)) return error.InvalidSetupVerificationResult;
             for (result.phases) |phase| if (phase.outcome != .unknown or phase.reason != .observation_unknown) return error.InvalidSetupVerificationResult;
         },
     }
@@ -201,7 +209,7 @@ pub fn summarize(allocator: std.mem.Allocator, saved: mutation.Snapshot, now_s: 
                     .installation_selection_required => result.installation_selection_required_refusals += 1,
                     .collection_timed_out => result.collection_timed_out_refusals += 1,
                 }
-                result.refusal_timing.missing_latency += 1;
+                if (fact.elapsed_ns) |elapsed| result.refusal_timing.latency[reliability.latencyBin(elapsed)] += 1 else result.refusal_timing.missing_latency += 1;
             },
         }
     }
@@ -332,4 +340,22 @@ test "collector timeout is immutable safe refusal without phase or completion la
     forged = refusal;
     forged.phases[0] = .{ .outcome = .verified_ready, .reason = .ready };
     try std.testing.expectError(error.InvalidSetupVerificationResult, validate(forged));
+}
+
+
+test "daemon timed refusal retains its distinct population and original result bound" {
+    var ledger = try mutation.Ledger.init(std.testing.allocator, 2);
+    defer ledger.deinit();
+    const slot = (try ledger.begin("owned-refusal", method, @splat(8), 0, 0, .external)).execute;
+    const fact = try makeTimedRefusal("owned-refusal", 0, 0, .installation_selection_required, std.math.maxInt(u64));
+    const bytes = try serialize(std.testing.allocator, fact);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expect(bytes.len <= maximum_result_bytes);
+    try ledger.complete(slot, bytes);
+    const summary = try summarize(std.testing.allocator, ledger.snapshot(), 0);
+    try std.testing.expectEqual(@as(u64, 1), summary.safe_refusals);
+    try std.testing.expectEqual(@as(u64, 0), summary.verification_completed);
+    try std.testing.expectEqual(@as(u64, 1), summary.refusal_timing.latency[reliability.latencyBin(std.math.maxInt(u64))]);
+    try std.testing.expectEqual(@as(u64, 0), summary.refusal_timing.missing_latency);
+    try std.testing.expect(!summary.end_to_end_latency_measured and !summary.achieved_slo);
 }

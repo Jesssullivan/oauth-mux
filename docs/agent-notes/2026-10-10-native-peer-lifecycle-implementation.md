@@ -171,3 +171,56 @@ Reviewed pair-only V2 (232fbabdaa5e35f9a10e3004bbdb453f39a9e3452f951b8f63dac2bfa
 Reviewed UI V2 d95e80eeacdee345bf2d977e0c74ef7094f9c1ea4e0c7583dc2b17cc04295df4 corrects clients/linux/tray.cpp and clients/linux/setup_ui_test.cpp. Typed custody reopen must prove available custody and loaded metadata without provider requests or handoff claims. Locked/missing/invalid-key guidance survives unavailable or malformed readiness responses; account mutations remain unavailable until verified recovery. It does not unlock the OS vault or replace a key.
 
 New source-pair models and Qt fixtures are UNRUN at adoption; previous IA3 six-target PASS does not qualify the extended seven-target vector. Original 1200-second clock, worker/resident limits, nine native helpers and compiler ledger 7/8 HOLD remain unchanged. Installed browser consent, account enrollment, ordinary Codex resume/handoff, Darwin and measured reliability baselines remain open. Authority: user-authorized integrated implementation and R-HOOK-CONVERGENCE-20261004/R-N11/R-N12/R-N13; carriers TIN-2063, TIN-5338 and TIN-2057.
+
+
+## Canonical delivery and daemon-owned timing continuation — 2026-10-10
+
+Authority: user-authorized integrated Omux implementation; R-HOOK-CONVERGENCE-20261004,
+R-N11/R-N12/R-N13. Related to TIN-2063 (installation/readiness), TIN-5338
+(exact Codex adapter) and TIN-2057 (complete continuity).
+
+The exact e7c5853/430 source passed UC1's Linux transport/setup UI targets
+(cc9cdce6-955f-47d7-bb21-d80c0b88cd49, original0/0, verified empty cleanup twice).
+IA4 remains failed125/work3: six targets passed, but the real wrong-family fixture
+supplied a shorter header and reached truncation before the intended magic check.
+The independently reviewed cf5bebb6 fixture supplies enough bytes to test the
+unchanged real family refusal. It does not weaken production parsing or
+retroactively qualify IA4.
+
+CA2 retains its original dc3978c/427 artifact-producer PASS
+(0980cf83-0822-48e5-8f10-c2e52e103b8c). Bazel retained its regular files0555 while
+canonical inventory marks nonexecutable leaves. Canonical V3 0950587f adds a distinct
+authenticated retained reader and a typed private canonical copy restoring444/555.
+The full original archive, bytes, receipt, inventory and canonical NAR remain
+bound; original retained files are untouched. One existing private owner/budget
+covers artifact, source pair and copied modules; all newly acquired descriptors
+are owned before metadata proof. Strict historical physical validators remain
+unchanged. Both independent reviews are source CLEAR; eleven new models are UNRUN.
+
+Daemon timing successor9f3e9e07 adds real authorized-handler/admission/post-original-
+commit intervals and schema2 setup safe-refusal timing with separate populations.
+Measurements cannot authorize another effect, repeat accepted work or count replay
+as another opportunity. Historical schema1 remains readable with absent request
+timing unknown. External waits, complete user latency/demand, deployed provenance
+and achieved SLO remain unmeasured. The predecessor d247 shadowing BLOCK is preserved;
+its two-identifier successor is independently source CLEAR. Runtime/installed tests
+are UNRUN, and timing is not installation/enrollment success.
+
+HP1 (a97f7afb-0331-4519-b1a6-8390250fddd5) remains failed125/work3 with original
+receipt344a6d3b81ebc8abfbb8779633c2b6dd82a28e29a1423075704be7e0e5c67a6b,
+evidence6f0f54370cd33fced6914d52317610c6c6e6fa5716fc70a04bc48bc8b36dcf35,
+two copied files1259B and verified empty cleanup twice. Its real action refused
+metadata/bundle-enclosing-deadline before materialization. The declared pair has
+57,115 input files; cold Bazel preparation consumed1136.885 seconds, leaving less
+than the required private cleanup reserve. This is no successful pair, artifact
+consumer, HM evaluation/activation, browser installation or native proof.
+Actual graph reduction must retain complete content digests and NAR/custody
+checks; neither widened clocks/caps nor opaque source-directory aliases are adopted.
+
+The disjoint reviewed20-path source union and current reliability documentation
+are adopted only after HP1's terminal cleanup. No selector or provider production
+reader is enabled. Source/graph change requires fresh exact model and runtime
+receipts. The original15-hour clock and compiler7/8 HOLD remain unchanged.
+Sting's normal OS vault remains Locked; Yoga's attended Wayland/browser proof,
+ordinary candidate resume/live handoff, delivered adapter support and Darwin
+remain separate unpassed gates.

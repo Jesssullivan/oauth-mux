@@ -382,10 +382,11 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
         refusal_revision = cli("system.health")["revision"]
         verification_before = cli("reliability.lifecycle")["setup_verification"]
         refusal = setup_command(["setup", "verify"], daemon_process.pid)
-        require(refusal.get("schema_version") == 1 and refusal.get("outcome") == "safe_refusal"
+        require(refusal.get("schema_version") == 2 and refusal.get("outcome") == "safe_refusal"
                 and refusal.get("refusal") == "installation_selection_required"
                 and isinstance(refusal.get("operation_id"), str) and len(refusal["operation_id"]) == 64
-                and refusal.get("elapsed_ns") is None
+                and type(refusal.get("elapsed_ns")) is int and refusal["elapsed_ns"] >= 0
+                and refusal.get("timing_scope") == "admission_to_terminal_before_commit_process_local"
                 and refusal.get("phases") == [{"outcome": "unknown", "reason": "observation_unknown"}] * 7,
                 "unselected installed verification manufactured successful phase evidence")
         refusal_params = {"operation_id": refusal["operation_id"], "expected_revision": refusal_revision}
@@ -398,6 +399,10 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                 and verification_after["installation_selection_required_refusals"]
                 == verification_before["installation_selection_required_refusals"] + 1
                 and verification_after["verification_completed"] == verification_before["verification_completed"]
+                and sum(verification_after["refusal_timing"]["latency"])
+                == sum(verification_before["refusal_timing"]["latency"]) + 1
+                and verification_after["refusal_timing"]["missing_latency"]
+                == verification_before["refusal_timing"]["missing_latency"]
                 and verification_after["achieved_slo"] is False,
                 "installed refusal counted as completed verification or achieved SLO")
         require(cli("setup.refresh", refusal_params) == refusal,

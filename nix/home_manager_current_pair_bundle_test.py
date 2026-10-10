@@ -92,11 +92,16 @@ class PairTests(unittest.TestCase):
 
     def test_cross_family_magic_refused_in_both_real_materializers(self):
         work=time.monotonic()+120
+        # Supply a complete magic-width read for either family. The shorter
+        # old magic alone would test truncation before the pair magic check.
+        header_bytes=max(len(old.MAGIC),len(pair.MAGIC))
+        old_header=old.MAGIC.ljust(header_bytes,b'\x00')
+        pair_header=pair.MAGIC.ljust(header_bytes,b'\x00')
         with old.private_tree(self.fixture.scratch,work+60,admission_deadline=work) as worker:
             with self.assertRaisesRegex(ValueError,'bundle-magic'):
-                pair.materialize_pair(io.BytesIO(old.MAGIC),lambda:None,worker,self.fixture.lock,{},work)
+                pair.materialize_pair(io.BytesIO(old_header),lambda:None,worker,self.fixture.lock,{},work)
             with self.assertRaisesRegex(ValueError,'bundle-magic'):
-                old.materialize(io.BytesIO(pair.MAGIC),lambda:None,worker,self.fixture.lock,{},work)
+                old.materialize(io.BytesIO(pair_header),lambda:None,worker,self.fixture.lock,{},work)
 
     def test_receipt_wrong_family_and_optimistic_flags_refused(self):
         result=self.produce();raw=(self.fixture.outputs/'receipt.json').read_bytes();receipt=json.loads(raw)

@@ -269,7 +269,8 @@ fn validateSetupVerificationReply(allocator: std.mem.Allocator, reply: []const u
     }
     if (result.object.count() != 9) return error.InvalidControlReply;
     inline for (.{ "schema_version", "operation_id", "generation", "observed_at", "outcome", "refusal", "phases", "elapsed_ns", "timing_scope" }) |field| if (!result.object.contains(field)) return error.InvalidControlReply;
-    if (try verificationUnsigned(result.object.get("schema_version").?) != 1 or
+    const terminal_version = try verificationUnsigned(result.object.get("schema_version").?);
+    if ((terminal_version != 1 and terminal_version != 2) or
         try verificationUnsigned(result.object.get("observed_at").?) > std.math.maxInt(i64)) return error.InvalidControlReply;
     _ = try verificationUnsigned(result.object.get("generation").?);
     const elapsed = result.object.get("elapsed_ns").?;

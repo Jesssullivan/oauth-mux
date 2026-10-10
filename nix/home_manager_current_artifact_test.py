@@ -160,4 +160,6 @@ class CurrentAuthorityTest(unittest.TestCase):
         row=copy.deepcopy(outer);row['cleanup']['ownership']='unproved'
         with self.assertRaises(ValueError): run(row)
 
+from home_manager_current_retained_artifact_test import RetainedCurrentArtifactTest
+
 if __name__=='__main__': unittest.main()

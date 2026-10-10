@@ -13,6 +13,7 @@ import sys
 import time
 import home_manager_bundle as old
 import home_manager_current_artifact as current
+import home_manager_current_retained_artifact as retained
 
 acquisition,acquired,evaluator = old.acquisition,old.acquired,old.evaluator
 require,tick,relative,sha,encoded = old.require,old.tick,old.relative,old.sha,old.encoded
@@ -431,6 +432,12 @@ def recheck_captures(captures,deadline):
         require(current.read(path,maximum,deadline,readonly=readonly)[1]==w,'current-pair-selected-authority-drift')
 
 
+def artifact_bound():
+    # Existing per-artifact byte limit plus bounded metadata/directory charge;
+    # physical blocks of both trees are also charged to the same account.
+    return current.artifact.MAX_BYTES+4*1024*1024
+
+
 def evaluate_selected(selection,lock_path,nix,modules,scratch,current_selection,clock,deadline):
     current.kernel.remaining(*clock);work,end=old.bounds(deadline)
     require(end<=current.kernel.envelope(*clock)/1e9,'current-pair-evaluation-original-cutoff')
@@ -446,16 +453,24 @@ def evaluate_selected(selection,lock_path,nix,modules,scratch,current_selection,
                 digest.update(data)
             require(digest.hexdigest()==selection['bundleSha256'],'current-pair-selected-byte-binding');check()
         hash_input();stream.seek(0)
+        transport=current.verify_retained_selected(current_selection,work)
+        # ONE allocation budget and ONE private cleanup owner cover both trees.
+        # BundleBytes bounds pair payload and metadata; artifact archiveBytes
+        # does not bound expanded bytes, so charge the declared full tree bound.
+        account=old.ReconstructionBudget(receipt['bundleBytes']+artifact_bound(),work)
         with old.private_tree(scratch,end,admission_deadline=work) as worker:
-            pair=materialize_pair(stream,check,worker,lock,receipt,work)
-            current_receipt,_=current.read(Path(current_selection['root'])/'receipt.json',65536,work,
-                current_selection['receiptSha256'])
-            result=evaluator.evaluate_acquired_pair(nix,modules,lock,str(pair),old.PAIR_SHA,
-                str(Path(current_selection['root'])/'artifact'),current_receipt,current_selection['receiptSha256'],
-                str(worker.path/'home'),deadline=work,current_selection=current_selection,original_clock=clock)
-            hash_input();recheck_captures(captures,work)
-            require(evaluator.read_declared(lock_path,acquired.MAX_LOCK_BYTES,work)==(lock,lock_facts),'bundle-lock-changed')
-            tick(work,worker)
+            with retained.CanonicalArtifact(current_selection,worker,work,account) as canonical:
+                pair=materialize_pair(stream,check,worker,lock,receipt,work,disk_account=account)
+                current_receipt,_=current.read(Path(current_selection['root'])/'receipt.json',65536,work,
+                    current_selection['receiptSha256'])
+                result=evaluator.evaluate_acquired_pair(nix,modules,lock,str(pair),old.PAIR_SHA,
+                    str(canonical.path),current_receipt,current_selection['receiptSha256'],
+                    str(worker.path/'home'),deadline=work,current_selection=current_selection,original_clock=clock,
+                    canonical_artifact=canonical)
+                canonical.verify(work);hash_input();recheck_captures(captures,work)
+                require(evaluator.read_declared(lock_path,acquired.MAX_LOCK_BYTES,work)==(lock,lock_facts),'bundle-lock-changed')
+                tick(work,worker)
+        require(current.verify_retained_selected(current_selection,work)==transport,'current-hm-retained-authority-after-cleanup')
         check();recheck_captures(captures,work)
         require(evaluator.read_declared(lock_path,acquired.MAX_LOCK_BYTES,work)==(lock,lock_facts),'bundle-lock-changed')
     tick(end)

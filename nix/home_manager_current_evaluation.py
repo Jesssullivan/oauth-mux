@@ -29,7 +29,7 @@ def evaluate(args, environment):
     raw,capture=bundle.evaluator.read_declared(args.selection,65536,work)
     selection=current.selected_document(raw)
     # The null gate precedes selected roots, tool qualification and materialization.
-    current.verify_selected(selection,work)
+    current.verify_retained_selected(selection,work)
     bundle_raw,bundle_capture=bundle.evaluator.read_declared(args.bundle_selection,65536,work)
     selected_pair=pair_bundle.selected_document(bundle_raw)
     current.require(str(Path(args.bundle).resolve(strict=True))==selected_pair['root']+'/bundle'
@@ -50,7 +50,7 @@ def evaluate(args, environment):
                     'current-hm-selected-document-changed')
     current.require(bundle.evaluator.read_declared(args.bundle_selection,65536,work)==(bundle_raw,bundle_capture),
                     'current-hm-paired-bundle-selection-changed')
-    current.verify_selected(selection,work)
+    current.verify_retained_selected(selection,work)
     result.update({'selectionSha256':current.sha(raw),'artifactFamily':'current-coordinator-artifact-v1',
                    'activation':'unproved','browserInstallation':'unproved','liveContinuity':'unproved'})
     return result

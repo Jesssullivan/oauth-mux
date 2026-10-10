@@ -38,7 +38,8 @@ bool verificationTerminal(const QJsonObject &result, const QString &operation) {
             && std::floor(value.toDouble()) == value.toDouble() && value.toInteger(-1) >= 0;
     };
     const auto outcome = result.value("outcome").toString();
-    if (!nonnegativeInteger(result.value("schema_version")) || result.value("schema_version").toInteger(-1) != 1
+    const auto version = result.value("schema_version").toInteger(-1);
+    if (!nonnegativeInteger(result.value("schema_version")) || (version != 1 && version != 2)
         || result.value("operation_id").toString() != operation
         || !nonnegativeInteger(result.value("generation")) || !nonnegativeInteger(result.value("observed_at"))
         || result.value("timing_scope").toString() != "admission_to_terminal_before_commit_process_local"
@@ -48,7 +49,7 @@ bool verificationTerminal(const QJsonObject &result, const QString &operation) {
     const bool refusal = outcome == "safe_refusal";
     if ((!completed && !refusal) || (completed && (!result.value("refusal").isNull() || result.value("generation").toInteger() == 0))
         || (refusal && (!QStringList{"busy", "installation_selection_required", "collection_timed_out"}.contains(result.value("refusal").toString())
-            || !result.value("elapsed_ns").isNull()))) return false;
+            || (version == 1 && !result.value("elapsed_ns").isNull())))) return false;
     const QStringList unknown {"observation_unknown", "observation_stale", "evidence_unobserved", "synthetic_only", "native_evidence_missing", "channel_unknown"};
     const QStringList action {"channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "authority_expired", "browser_required", "native_unsupported"};
     for (const auto &value : result.value("phases").toArray()) {

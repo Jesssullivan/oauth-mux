@@ -284,6 +284,10 @@ bool identifiedSetupVerification(bool indeterminate = false, bool recover = fals
                     // A timeout cannot establish measured completion or any
                     // verified phase. Each malformed reply must keep its fence.
                     if (statusQueries == 2) terminal["elapsed_ns"] = 1;
+                    if (statusQueries == 4) {
+                        terminal["schema_version"] = 2;
+                        terminal["elapsed_ns"] = 1;
+                    }
                     if (statusQueries == 3) {
                         phases[0] = QJsonObject{{"reason", "ready"}, {"outcome", "verified_ready"}};
                         terminal["phases"] = phases;
@@ -305,7 +309,8 @@ bool identifiedSetupVerification(bool indeterminate = false, bool recover = fals
             const auto terminal = event.value("operation_result").toObject();
             wireValid = wireValid && terminal.value("outcome").toString() == "safe_refusal"
                 && terminal.value("refusal").toString() == "collection_timed_out"
-                && terminal.value("elapsed_ns").isNull() && terminal.value("phases").toArray().size() == 7;
+                && terminal.value("schema_version").toInt() == 2
+                && terminal.value("elapsed_ns").toInteger(-1) == 1 && terminal.value("phases").toArray().size() == 7;
             for (const auto &phase : terminal.value("phases").toArray()) {
                 wireValid = wireValid && phase.toObject().value("outcome").toString() == "unknown"
                     && phase.toObject().value("reason").toString() == "observation_unknown";

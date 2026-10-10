@@ -166,9 +166,22 @@ storage recovery writes. The legacy no-revision decoder refuses witness-bearing
 rows. Older readers may reject the new optional record fields; downgrade must
 not discard those fields or restore earlier credential/replay authority.
 
-The projection reports all retained records without a time window. Local-work
-and user/provider-wait durations, deployment provenance, full demand coverage,
-end-to-end latency and achieved SLO remain explicitly unknown or unproved.
+The projection reports all retained records without a time window. The current
+schema2 source measures daemon-owned local work from optional timing admission
+through the original committed outcome, plus authorized control-handler entry
+through that commit. Handler timing begins after ingress parsing; it excludes
+socket framing and complete user latency. Historical schema1 intervals remain
+unknown. External user/provider wait, deployment provenance, full demand
+coverage, end-to-end latency and achieved SLO remain unknown or unproved.
+
+Setup-verification schema2 adds observed admission-to-terminal-before-commit
+duration to safe refusals and collection timeouts. Successful verification and
+safe refusal retain separate counters and latency populations; a timely refusal
+does not establish installation or enrollment success. Original immutable
+results preserve these measurements across replay and restart. Unknown clocks
+remain unknown. CLI and Qt readers accept the versioned result without treating
+unknown phases as readiness. These source changes require their own current
+runtime and installed receipts; the historical passes below do not qualify them.
 Epoch `8229cb7a-d9d1-4d53-b2e6-793cddfd7cb9` passed 27 helper/ledger predicates
 and all 247 actor/imported predicates, including the five real actor/SQLite
 timing cases. The overall batch failed separately on storage declaration,

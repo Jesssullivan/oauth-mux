@@ -2551,7 +2551,8 @@ pub const Engine = struct {
         try self.reserveOutcome(.{ .key = credit, .owner_id = id, .provider = request.method, .plan_bytes = 1 });
         try self.persist(&.{});
         if (self.installation_refresh != null or self.installation_selection == null) {
-            const result = try setup_verification.makeRefusal(id, self.installation_refresh_generation, self.now(), if (self.installation_refresh != null) .busy else .installation_selection_required);
+            const refusal_elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+            const result = try setup_verification.makeTimedRefusal(id, self.installation_refresh_generation, self.now(), if (self.installation_refresh != null) .busy else .installation_selection_required, if (refusal_elapsed >= 0 and refusal_elapsed <= std.math.maxInt(u64)) @intCast(refusal_elapsed) else null);
             const cached = try setup_verification.serialize(allocator, result);
             defer allocator.free(cached);
             try self.mutations.complete(slot, cached);
@@ -2650,7 +2651,7 @@ pub const Engine = struct {
         if (record.state != .started or record.kind != .external or !eql(record.method[0..record.method_len], "setup.refresh") or !std.crypto.timing_safe.eql([32]u8, record.fingerprint, reference.fingerprint) or !std.meta.eql(reference.credit, creditKey(.mutation, record.id[0..record.id_len], record.expected_revision))) return error.StaleSetupVerification;
         const elapsed = reference.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
         const result = if (task.collection_error) |err| switch (err) {
-            error.Timeout => try setup_verification.makeRefusal(record.id[0..record.id_len], task.generation, task.observed_at, .collection_timed_out),
+            error.Timeout => try setup_verification.makeTimedRefusal(record.id[0..record.id_len], task.generation, task.observed_at, .collection_timed_out, if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @intCast(elapsed) else null),
             else => return err,
         } else try setup_verification.makeCompleted(record.id[0..record.id_len], task.generation, task.observed_at, onboarding.assess(self.setupSnapshot(task.result.probe, false)), if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @intCast(elapsed) else null);
         const cached = try setup_verification.serialize(self.allocator, result);
@@ -3144,7 +3145,7 @@ pub const Engine = struct {
         if (eql(request.method, lifecycle_witness.method)) {
             // Optional timing capacity belongs to the original authority row.
             // No clock is restored or started for cached acknowledgments.
-            if (try self.mutations.tryReserveLifecycleWitness(slot)) measurement = try lifecycle_witness.Session.begin(self.io, self.mutations.snapshot().records[slot], .{
+            if (try self.mutations.tryReserveLifecycleWitness(slot)) measurement = try lifecycle_witness.Session.beginOwnedRequest(self.io, self.mutations.snapshot().records[slot], .{
                 .os = switch (builtin.os.tag) {
                     .linux => .linux,
                     .macos => .macos,
@@ -3156,7 +3157,7 @@ pub const Engine = struct {
                     else => .other,
                 },
                 .channel = if (self.instance_selection == .dev) .development else .release,
-            });
+            }, lifecycle_local_start.?);
         }
         if (kind == .external) {
             try self.preflightMutationResult(allocator, request.method, request.params);
@@ -7979,7 +7980,8 @@ test "identified setup refresh terminal authority replay busy uncertainty and di
     defer timeout_fact.deinit();
     try std.testing.expectEqual(setup_verification.Outcome.safe_refusal, timeout_fact.value.outcome);
     try std.testing.expectEqual(setup_verification.Refusal.collection_timed_out, timeout_fact.value.refusal.?);
-    try std.testing.expect(timeout_fact.value.elapsed_ns == null);
+    try std.testing.expectEqual(@as(u8, 2), timeout_fact.value.schema_version);
+    try std.testing.expect(timeout_fact.value.elapsed_ns != null);
     const after_timeout = try setup_verification.summarize(allocator, current.mutations.snapshot(), current.now());
     try std.testing.expectEqual(before_timeout.verification_completed, after_timeout.verification_completed);
     try std.testing.expectEqual(before_timeout.collection_timed_out_refusals + 1, after_timeout.collection_timed_out_refusals);
