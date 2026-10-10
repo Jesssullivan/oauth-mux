@@ -1283,6 +1283,186 @@ def worker(run, command):
         return process.wait()
 
 
+def home_manager_owned_request(args, arguments, entry, deadline):
+    """Internal retention only for the existing exact acquisition vector."""
+    from guard_dependency_profile import HOME_MANAGER_FETCH_LABEL, HOME_MANAGER_STATE, COORDINATION_DIRECTORY
+    if args.profile != 'dependency-prefetch' or HOME_MANAGER_FETCH_LABEL not in arguments:
+        return False
+    allowed = {'profile','manager','arguments','python','systemd_run','systemctl','bazel','closure',
+        'bootstrap_closure','zig_sdk','java_home','source_commit','source_dirty','state_dir',
+        'initialize_state_dir','coordination_dir','become_file','reuse_owned_cache','repository_cache'}
+    if (arguments != ['test', HOME_MANAGER_FETCH_LABEL] or args.manager != 'system'
+            or args.state_dir != HOME_MANAGER_STATE or args.coordination_dir != COORDINATION_DIRECTORY
+            or args.reuse_owned_cache is not False or args.source_dirty != 'false'
+            or type(args.source_commit) is not str or re.fullmatch('[0-9a-f]{40}',args.source_commit) is None
+            or any(value for name,value in vars(args).items() if name not in allowed)):
+        raise ValueError('home-manager-owned-acquisition-request-refused')
+    import guard_native_seed_plan_reserved as retained
+    retained.remaining(entry,deadline)
+    return True
+
+
+def home_manager_owned_complete(witness, summary, cleanup_deadline):
+    import guard_native_seed_plan_reserved as retained
+    if type(witness) is not retained.HomeManagerWorkloadWitness:
+        return False
+    qualified = (summary.get('state') == 'empty' and summary.get('ownership') == 'verified'
+        and type(summary.get('readback_attempts')) is int and 2 <= summary['readback_attempts'] <= 8
+        and summary.get('stop') == 'succeeded')
+    try:
+        retained.envelope(witness.entry,witness.deadline)
+        now = time.monotonic_ns()
+        retained.require(type(cleanup_deadline) in (int,float)
+            and witness.entry / 10**9 < cleanup_deadline <= witness.deadline / 10**9
+            and now >= witness.entry and now / 10**9 < cleanup_deadline)
+    except ValueError:
+        summary['state'] = 'deadline-exhausted'
+        return False
+    return qualified
+
+
+def home_manager_owned_release(witness, summary, cleanup_deadline):
+    import guard_native_seed_plan_reserved as retained
+    released = retained.release_worker(witness)
+    complete = home_manager_owned_complete(witness,summary,cleanup_deadline)
+    return released and complete
+
+
+def home_manager_owned_adopt(witness, summary, cleanup_deadline, receipt):
+    complete = home_manager_owned_complete(witness,summary,cleanup_deadline)
+    if not complete:
+        receipt['descendants_empty'] = False
+        receipt['exit'] = 125
+    return complete
+
+
+def home_manager_receipt_identity(info, *, directory):
+    if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600)
+            or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+            or not directory and info.st_nlink != 1):
+        raise ValueError('home-manager-owned-receipt-custody-refused')
+    return info.st_dev,info.st_ino
+
+
+def home_manager_receipt_remove(run, binding):
+    """Remove only this current attempt's original named publication."""
+    directory = os.open(run,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        if (home_manager_receipt_identity(os.fstat(directory),directory=True) != binding['root']
+                or home_manager_receipt_identity(os.stat(run,follow_symlinks=False),directory=True) != binding['root']
+                or home_manager_receipt_identity(os.stat('receipt.json',dir_fd=directory,follow_symlinks=False),directory=False) != binding['file']):
+            raise ValueError('home-manager-owned-receipt-replacement-refused')
+        os.unlink('receipt.json',dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def home_manager_receipt_write(run, raw):
+    """Exclusive current publication; all actual file/directory closes precede return."""
+    binding = {'root':None,'file':None,'failure_reported':False}
+    directory = os.open(run,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        try:
+            binding['root'] = home_manager_receipt_identity(os.fstat(directory),directory=True)
+            if home_manager_receipt_identity(os.stat(run,follow_symlinks=False),directory=True) != binding['root']:
+                raise ValueError('home-manager-owned-receipt-root-changed')
+            descriptor = os.open('receipt.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=directory)
+            try:
+                binding['file'] = home_manager_receipt_identity(os.fstat(descriptor),directory=False)
+                output = os.fdopen(descriptor,'w')
+                descriptor = None
+                with output:
+                    output.write(raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException as primary:
+        if binding['file'] is not None:
+            try:
+                home_manager_receipt_remove(run,binding)
+            except BaseException as removal:
+                raise primary from removal
+        raise
+    return binding
+
+
+def home_manager_owned_failure_report(run, receipt, binding):
+    """Failure reporting has no success authority and receives no renewed budget."""
+    receipt['exit'] = 125
+    receipt['descendants_empty'] = False
+    if not binding['failure_reported']:
+        home_manager_receipt_remove(run,binding)
+        replacement = home_manager_receipt_write(run,json.dumps(receipt,sort_keys=True)+'\n')
+        binding.update(replacement)
+        binding['failure_reported'] = True
+
+
+def home_manager_owned_publish(run, witness, summary, cleanup_deadline, receipt, raw):
+    binding = home_manager_receipt_write(run,raw)
+    binding['failure_reported'] = receipt['exit'] == 125 and receipt['descendants_empty'] is False
+    if not home_manager_owned_adopt(witness,summary,cleanup_deadline,receipt):
+        home_manager_owned_failure_report(run,receipt,binding)
+    return binding
+
+
+def home_manager_owned_terminal(run, witness, summary, cleanup_deadline, receipt, binding, emit):
+    previous = receipt['exit'],receipt['descendants_empty']
+    try:
+        emit(receipt)
+    except BaseException as primary:
+        if summary.get('state') == 'empty':
+            summary['state'] = 'terminal-unproved'
+        try:
+            home_manager_owned_failure_report(run,receipt,binding)
+        except BaseException as reporting:
+            raise primary from reporting
+        raise
+    complete = home_manager_owned_adopt(witness,summary,cleanup_deadline,receipt)
+    if not complete:
+        home_manager_owned_failure_report(run,receipt,binding)
+        if previous != (receipt['exit'],receipt['descendants_empty']):
+            emit(receipt)  # A distinct refusal, never a retry of positive output.
+    return receipt['exit'],complete and receipt['descendants_empty'] is True
+
+
+def home_manager_owned_finish(run, witness, summary, cleanup_deadline, receipt, binding, emit,
+                             resources, admission_resources, lock, *, primary=None):
+    """Release the actual caller scopes under the original lock, then decide."""
+    release_error = None
+    for owner in (resources,admission_resources,lock):
+        try:
+            owner.close()
+        except BaseException as error:
+            if release_error is None:
+                release_error = error
+    failure = primary if primary is not None else release_error
+    if failure is not None:
+        try:
+            home_manager_owned_complete(witness,summary,cleanup_deadline)
+            if summary.get('state') == 'empty':
+                summary['state'] = 'release-unproved' if release_error is not None else 'caller-unproved'
+            home_manager_owned_failure_report(run,receipt,binding)
+            emit(receipt)
+        except BaseException as reporting:
+            raise failure from reporting
+        if primary is not None and release_error is not None:
+            raise primary from release_error
+        raise failure
+    return home_manager_owned_terminal(run,witness,summary,cleanup_deadline,receipt,binding,emit)
+
+
+def home_manager_owned_go(witness):
+    import guard_native_seed_plan_reserved as retained
+    if type(witness) is not retained.HomeManagerWorkloadWitness or witness.alive() is not True:
+        raise ValueError('home-manager-owned-acquisition-go-refused')
+
+
 def record_resident_lifecycle(receipt,admission,*,clock=time.monotonic_ns):
     """Append only after the actual final outer verdict; no effect authority."""
     if admission is None or receipt.get('profile') != 'resident-continuity':
@@ -1480,6 +1660,8 @@ def _main(argv, admission_resources):
     resident_output = None
     if args.worker:
         return worker(args.worker, arguments)
+    home_manager_owned = home_manager_owned_request(args,arguments,
+        delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
     dev_stage_proof = dev_stage_request(args.profile,args.manager,arguments,args.reuse_owned_cache,
         delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
     dev_stage_verified_after = None
@@ -2051,6 +2233,8 @@ def _main(argv, admission_resources):
         original_ticks = None
         started = False
         proof_worker = None
+        home_manager_worker = None
+        cleanup_deadline = None
         result = 125
         cleanup = False
         controller_failure = None
@@ -2093,8 +2277,8 @@ def _main(argv, admission_resources):
                         raise ValueError('privileged controller operation rejected')
                     descriptor = become_descriptor(args.become_file)
                     parts = [sudo, '-S', '-p', '', '--'] + parts
-                if reservation_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
-                    bound = delivery_entry_deadline_ns - (30*10**9 if (getattr(resident_input,'acquisition_profile',False) or getattr(resident_input,'sources_profile',False) or args.profile in ('yoga-install-inputs','yoga-sealed-workspace-stage') or reservation_selected) and phase != 'cleanup' else 0)
+                if home_manager_owned or reservation_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
+                    bound = delivery_entry_deadline_ns - (30*10**9 if (home_manager_owned or getattr(resident_input,'acquisition_profile',False) or getattr(resident_input,'sources_profile',False) or args.profile in ('yoga-install-inputs','yoga-sealed-workspace-stage') or reservation_selected) and phase != 'cleanup' else 0)
                     deadline = min(deadline, bound / 10**9) if deadline is not None else bound / 10**9
                 if native_sdk and (phase != 'cleanup' or native_history is not None or native_cli is not None):
                     deadline = min(deadline, args.native_deadline) if deadline is not None else args.native_deadline
@@ -2286,6 +2470,8 @@ def _main(argv, admission_resources):
             settings.pop('RuntimeMaxUSec')
             settings.pop('TimeoutStopUSec')
             settings.update(CPUQuota='200%', RuntimeMaxSec='1200', TimeoutStopSec='10')
+            if home_manager_owned:
+                settings['RemainAfterExit'] = 'yes'
             if reservation_selected:
                 delivery_runtime_seconds = (yoga_support.reserved_runtime if yoga_toolbar_reserved else
                     int(reservation_helper.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)))
@@ -2332,7 +2518,7 @@ def _main(argv, admission_resources):
                                     'User', 'Group', 'PrivateUsers', 'CapabilityBoundingSet',
                                     'AmbientCapabilities', 'StandardInput', 'MainPID',
                                     'TemporaryFileSystem', 'InaccessiblePaths', 'BindReadOnlyPaths', 'BindPaths')}
-            if reservation_selected:
+            if reservation_selected or home_manager_owned:
                 observed_properties['RemainAfterExit'] = actual.get('RemainAfterExit')
             if yoga_installed_input is not None:
                 observed_properties.update(ProtectSystem=actual.get('ProtectSystem'),
@@ -2442,6 +2628,13 @@ def _main(argv, admission_resources):
                 proof_worker = reservation_helper.WorkloadWitness(args.profile,delivery_entry_monotonic_ns,
                     delivery_entry_deadline_ns,cgroup_pin,actual,original_pid,original_ticks)
                 resources.callback(proof_worker.close)
+            if home_manager_owned:
+                unit_epoch_identity(actual,unit=unit,manager=args.manager,run=run,
+                    python=python,worker=str(Path(__file__).resolve()))
+                home_manager_worker = seed_reserved.HomeManagerWorkloadWitness(args.profile,
+                    delivery_entry_monotonic_ns,delivery_entry_deadline_ns,cgroup_pin,actual,
+                    original_pid,original_ticks)
+                resources.callback(home_manager_worker.close)
             epoch_start_ns = time.time_ns()
             if not yoga:
                 pids_observation.sample(cgroup_pin, 'baseline')
@@ -2466,6 +2659,8 @@ def _main(argv, admission_resources):
                         delivery_prior,delivery_initial_graph,delivery_lock,lock.fileno(),
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
                 else:
+                    if home_manager_owned:
+                        home_manager_owned_go(home_manager_worker)
                     (run / 'go').touch(mode=0o600, exist_ok=False)
             deadline = ((args.yoga_deadline_monotonic_ns - yoga.CLEANUP_RESERVE_NS) / 10**9
                         if yoga else time.monotonic() + 1200)
@@ -2473,7 +2668,7 @@ def _main(argv, admission_resources):
                 deadline = delivery_monitor_deadline(delivery_entry_deadline_ns, delivery_settings)
             elif native_sdk:
                 deadline = args.native_deadline - 120
-            elif reservation_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
+            elif home_manager_owned or reservation_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
                 if wrapper_request is not None:
@@ -2492,7 +2687,12 @@ def _main(argv, admission_resources):
                     for progress in yoga_launch.read_progress(yoga_support):
                         print(json.dumps(progress, sort_keys=True), flush=True)
                     yoga.pump_event(yoga_admission, yoga_support, yoga_operator_writer)
-            if reservation_selected:
+            if home_manager_owned:
+                result = seed_reserved.monitor(args.profile,home_manager_worker,
+                    lambda: properties(call([control,manager_flag,'show',
+                        '--property=Id,InvocationID,ExecMainPID,MainPID,RemainAfterExit,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus',unit],
+                        operation='unit-readback',phase='monitor')),deadline,iteration)
+            elif reservation_selected:
                 result = reservation_helper.monitor(args.profile,proof_worker,
                     lambda: properties(call([control,manager_flag,'show',
                         '--property=Id,InvocationID,ExecMainPID,MainPID,RemainAfterExit,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus',unit],
@@ -2520,7 +2720,7 @@ def _main(argv, admission_resources):
                     cleanup_deadline = min(cleanup_deadline, native_cli.original_deadline_ns / 10**9)
                 if native_history is not None:
                     cleanup_deadline = min(cleanup_deadline, native_history.original_deadline_ns / 10**9)
-                if reservation_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
+                if home_manager_owned or reservation_selected or dev_stage_proof or resident_input is not None or delivery_settings or owner_input is not None or live_input is not None:
                     cleanup_deadline = min(cleanup_deadline, delivery_entry_deadline_ns / 10**9)
                 if yoga:
                     cleanup_deadline = min(cleanup_deadline, args.yoga_deadline_monotonic_ns / 10**9)
@@ -2541,7 +2741,11 @@ def _main(argv, admission_resources):
                         cgroup = cgroup_pin.path
                         resources.callback(cgroup_pin.close)
                         return False
-                    if reservation_selected and proof_worker is not None:
+                    if home_manager_owned and home_manager_worker is not None:
+                        unit_epoch_identity(owned,unit=unit,manager=args.manager,run=run,
+                            python=python,worker=selected_worker)
+                        home_manager_worker.authorize_cleanup(owned)
+                    elif reservation_selected and proof_worker is not None:
                         unit_epoch_identity(owned,unit=unit,manager=args.manager,run=run,
                             python=python,worker=selected_worker)
                         proof_worker.authorize_cleanup(owned)
@@ -2554,7 +2758,8 @@ def _main(argv, admission_resources):
                             plan_sha256=environment['OMUX_YOGA_WORKER_PLAN_SHA256'],
                             worker=str(Path(yoga_launch.__file__).resolve()), python=python, cgroup=cgroup,
                             worker_identity=yoga_worker_identity)
-                cleanup_method = reservation_helper.cleanup_retained if reservation_selected else cleanup_owned
+                cleanup_method = (seed_reserved.cleanup_retained if home_manager_owned and home_manager_worker is not None
+                    else reservation_helper.cleanup_retained if reservation_selected else cleanup_owned)
                 cleanup_summary = cleanup_method(deadline=cleanup_deadline,
                     readback=lambda timeout, absolute: properties(call([control, manager_flag, 'show', '--all', unit],
                         operation='unit-readback', phase='cleanup', timeout=timeout, deadline=absolute)),
@@ -2564,6 +2769,14 @@ def _main(argv, admission_resources):
                         timeout=timeout, deadline=absolute),
                     observe=lambda: cgroup_pin.observe() if cgroup_pin is not None else 'uncaptured')
                 cleanup = cleanup_summary['state'] == 'empty'
+                if home_manager_owned:
+                    owned_complete = home_manager_owned_complete(home_manager_worker,cleanup_summary,cleanup_deadline)
+                    cleanup = cleanup and owned_complete
+            if home_manager_owned:
+                owned_released = home_manager_owned_release(home_manager_worker,cleanup_summary,cleanup_deadline)
+                cleanup = cleanup and owned_released
+                if not owned_released:
+                    result = 125
             if reservation_selected and not reservation_helper.release_worker(proof_worker):
                 cleanup = False
                 result = 125
@@ -3042,25 +3255,47 @@ def _main(argv, admission_resources):
             if native_cli is not None:
                 receipt_raw = cli_profile.terminal_receipt(native_cli, receipt)
                 final_status = receipt['exit']
-            descriptor = os.open(run / 'receipt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(descriptor, 'w') as output:
-                output.write(receipt_raw)
-                output.flush()
-                os.fsync(output.fileno())
-            directory = os.open(run, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            if home_manager_owned:
+                # Fence the final adoption after all evidence and serialization,
+                # using exactly the cutoff already used by cleanup and release.
+                owned_complete = home_manager_owned_adopt(home_manager_worker,cleanup_summary,cleanup_deadline,receipt)
+                if not owned_complete:
+                    cleanup = False
+                    final_status = receipt['exit']
+                    receipt_raw = json.dumps(receipt, sort_keys=True) + '\n'
+            if home_manager_owned:
+                home_manager_publication = home_manager_owned_publish(run,home_manager_worker,
+                    cleanup_summary,cleanup_deadline,receipt,receipt_raw)
+                cleanup = cleanup and receipt['descendants_empty'] is True
+                final_status = receipt['exit']
+            else:
+                descriptor = os.open(run / 'receipt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(descriptor, 'w') as output:
+                    output.write(receipt_raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+                directory = os.open(run, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
             if lease is not None:
                 try:
                     if cleanup and (evidence_ok or native_cache is not None) and (native_cache is None or native_cache.may_complete(cleanup, native_verified_after)) and native_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and owner_input_verified_after is not False:
                         lease.complete(True, hashlib.sha256((run / 'receipt.json').read_bytes()).hexdigest())
                 finally:
                     lease.close()
-            print(json.dumps({'id': identifier, 'exit': final_status, 'workload_exit': result,
-                              'descendants_empty': cleanup, 'test_evidence': evidence['state'],
-                              'controller_failure': controller_failure, 'cleanup': cleanup_summary}))
+            if home_manager_owned:
+                final_status,cleanup = home_manager_owned_finish(run,home_manager_worker,
+                    cleanup_summary,cleanup_deadline,receipt,home_manager_publication,
+                    lambda current: print(json.dumps({'id':identifier,'exit':current['exit'],'workload_exit':result,
+                        'descendants_empty':current['descendants_empty'],'test_evidence':evidence['state'],
+                        'controller_failure':controller_failure,'cleanup':cleanup_summary}),flush=True),
+                    resources,admission_resources,lock,primary=sys.exc_info()[1])
+            else:
+                print(json.dumps({'id': identifier, 'exit': final_status, 'workload_exit': result,
+                                  'descendants_empty': cleanup, 'test_evidence': evidence['state'],
+                                  'controller_failure': controller_failure, 'cleanup': cleanup_summary}))
             if pids_cancellation is not None:
                 raise pids_cancellation
         return final_status

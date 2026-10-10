@@ -23,7 +23,7 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 import sys
 
@@ -77,7 +77,8 @@ ERROR_SUFFIXES = {
         "metadata-changed-before-publication source-changed-through-publication rollback-envelope-replaced "
         "rollback-destination-exists publication-envelope-mode output-exists publication-source-replaced "
         "publication-replaced retained-pair-bound output-filesystem cleanup-custody cleanup-inventory-bound "
-        "cleanup-replaced cleanup-fd-support contained-context-required action-filesystem requires-empty-outputs"
+        "cleanup-replaced cleanup-fd-support contained-context-required action-filesystem requires-empty-outputs "
+        "transport packed-role-custody packed-cleanup-refused"
     ).split()),
     "source": frozenset((
         "pack-header-bound pack-inventory pack-source-inventory pack-truncated pack-growth "
@@ -1365,8 +1366,53 @@ def publish_pair(root, outputs, staging, lock_bytes, receipt_bytes, receipt_dige
             raise
 
 
-def produce_held(nix, ca, lock_bytes, locked, root, outputs, staging):
+def publish_packed_only(root, outputs, private_outputs, report, deadline):
+    """Export only five held regular roles after the unchanged forest proof."""
+    names = ("inventory.json", "receipt.json", "acquisition.json", "source-pack.json", "source.pack")
+    private_outputs.check(); outputs.check(); root.check()
+    with HeldDirectory(private_outputs.path / "home-manager-pair", parent_anchor=private_outputs) as source:
+        before = {name: acquired.snapshot(os.stat(name, dir_fd=source.fd, follow_symlinks=False))
+                  for name in names}
+        require(all(stat.S_ISREG(info[2]) and stat.S_IMODE(info[2]) == 0o444
+                    and info[3] == os.getuid() and info[5] == 1 for info in before.values()),
+                "acquisition-packed-role-custody")
+        acquired.check_deadline(deadline)
+        os.mkdir("home-manager-pair", mode=0o700, dir_fd=outputs.fd)
+        try:
+            with HeldDirectory(outputs.path / "home-manager-pair", parent_anchor=outputs) as destination:
+                # Only this containing envelope becomes writable; source nodes
+                # retain their original readonly modes until owned deletion.
+                os.fchmod(source.fd, 0o700)
+                for name in names:
+                    acquired.check_deadline(deadline)
+                    root.check(); source.check(); destination.check(); outputs.check()
+                    require(acquired.snapshot(os.stat(name, dir_fd=source.fd, follow_symlinks=False))
+                            == before[name], "acquisition-packed-role-custody")
+                    os.rename(name, name, src_dir_fd=source.fd, dst_dir_fd=destination.fd)
+                    # rename legitimately updates ctime; all other inode facts
+                    # and the independently expected bytes remain mandatory.
+                    require(acquired.snapshot(os.stat(name, dir_fd=destination.fd, follow_symlinks=False))[:8]
+                            == before[name][:8], "acquisition-packed-role-custody")
+                with metadata_witnesses(destination, root.transport_metadata, deadline) as witnesses, \
+                        packed_witness(destination, encoded(report["packedSource"]), deadline) as packed:
+                    acquired.check_deadline(deadline)
+                    os.fchmod(destination.fd, 0o555)
+                    destination.check(); outputs.check(); root.check()
+                    require(sorted(os.listdir(destination.fd)) == sorted(names),
+                            "acquisition-packed-role-custody")
+                    check_metadata_witnesses(destination, witnesses)
+                    packed.recheck()
+                acquired.check_deadline(deadline)
+        except BaseException as primary:
+            try: remove_owned_tree(outputs.fd, "home-manager-pair", deadline)
+            except BaseException: primary.cleanup_category = "acquisition-packed-cleanup-refused"
+            raise
+
+
+def produce_held(nix, ca, lock_bytes, locked, root, outputs, staging, *, transport="physical-forest-v1"):
     deadline = time.monotonic() + MAX_SECONDS
+    require(transport in ("physical-forest-v1", "packed-only-v2"), "acquisition-transport")
+    if transport == "packed-only-v2": root.cleanup_deadline = deadline
     inventory = {"schemaVersion": 1, "sources": {}}
     receipt = {"schemaVersion": 1, "kind": "omux-home-manager-acquired-pair",
                "lockSha256": sha(lock_bytes), "sources": {}}
@@ -1410,7 +1456,8 @@ def produce_held(nix, ca, lock_bytes, locked, root, outputs, staging):
                 baseline["allocated"] + info.st_blocks * 512 + 65536) <= DISK_BUDGET,
                 "acquisition-private-disk-budget")
         pack = source_pack.write(staging.fd, receipt_bytes, inventory_bytes, deadline,
-            anchor=lambda: (root.check(), staging.check()), charge=charge_pack, sync=file_sync)
+            anchor=lambda: (root.check(), staging.check()), charge=charge_pack, sync=file_sync,
+            transport=transport)
         packed_metadata = write_metadata(staging, "source-pack.json", pack, acquired.MAX_RECEIPT_BYTES)
         disk_check(root, deadline, quiescent=True)
     destination = outputs.path / "home-manager-pair"
@@ -1428,6 +1475,12 @@ def produce_held(nix, ca, lock_bytes, locked, root, outputs, staging):
               "diskBudgetBytes": DISK_BUDGET, "freeFloorBytes": FREE_FLOOR,
               "diskEnforcement": "sampled allocation monitor with possible overshoot; not an aggregate quota",
               "childFileLimitBytes": file_limits()[0], "packedSource": pack}
+    if transport == "packed-only-v2":
+        report["transport"] = transport
+        # These roots are private proof inputs, not exported physical sources.
+        for name in acquired.NAMES:
+            proof["sources"][name].pop("sourceDirectory")
+        report["sourceRoles"] = list(acquired.NAMES)
     with phase("metadata", source="pair", deadline=deadline):
         report_bytes = write_metadata(staging, "acquisition.json", report, acquired.MAX_RECEIPT_BYTES)
         staging.check()
@@ -1435,10 +1488,13 @@ def produce_held(nix, ca, lock_bytes, locked, root, outputs, staging):
     with phase("publication", source="pair", deadline=deadline):
         publish_pair(root, outputs, staging, lock_bytes, receipt_bytes, receipt_digest,
                      inventory_bytes, report_bytes, deadline, packed_metadata=packed_metadata)
+    if transport == "packed-only-v2":
+        root.transport_metadata = {"inventory.json": inventory_bytes, "receipt.json": receipt_bytes,
+                                   "acquisition.json": report_bytes, "source-pack.json": packed_metadata}
     return report
 
 
-def produce(nix, ca, lock_bytes, locked, root, outputs):
+def produce(nix, ca, lock_bytes, locked, root, outputs, *, transport="physical-forest-v1"):
     with held(root) as root_anchor, held(outputs) as output_anchor:
         for name in ("home", "tmp", "config", "private-store", "pair"):
             root_anchor.check()
@@ -1446,7 +1502,59 @@ def produce(nix, ca, lock_bytes, locked, root, outputs):
             root_anchor.check()
         with HeldDirectory(root_anchor.path / "pair", parent_anchor=root_anchor) as staging:
             root_anchor.check()
-            return produce_held(nix, ca, lock_bytes, locked, root_anchor, output_anchor, staging)
+            if transport == "physical-forest-v1":
+                return produce_held(nix, ca, lock_bytes, locked, root_anchor, output_anchor, staging)
+            os.mkdir("publication", mode=0o700, dir_fd=root_anchor.fd)
+            with HeldDirectory(root_anchor.path / "publication", parent_anchor=root_anchor) as private_outputs:
+                report = produce_held(nix, ca, lock_bytes, locked, root_anchor, private_outputs, staging,
+                                      transport=transport)
+                publish_packed_only(root_anchor, output_anchor, private_outputs, report, root_anchor.cleanup_deadline)
+                return report
+
+
+def remove_owned_tree(parent, name, deadline):
+    """Bounded FD-relative deletion; every effect shares the original cutoff."""
+    require(shutil.rmtree.avoids_symlink_attacks, "acquisition-cleanup-fd-support")
+    count_nodes, metadata = 0, 0
+    device = os.fstat(parent).st_dev
+    def remove(directory, leaf, depth):
+        nonlocal count_nodes, metadata
+        acquired.check_deadline(deadline)
+        count_nodes += 1; metadata += len(os.fsencode(leaf)) + 128
+        require(count_nodes <= MAX_PRIVATE_NODES and metadata <= MAX_PRIVATE_METADATA
+                and depth <= acquired.MAX_DEPTH, "acquisition-cleanup-inventory-bound")
+        before = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+        require(before.st_uid == os.getuid() and before.st_dev == device,
+                "acquisition-cleanup-custody")
+        if stat.S_ISDIR(before.st_mode):
+            child = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            try:
+                require(directory_identity(os.fstat(child)) == directory_identity(before),
+                        "acquisition-cleanup-replaced")
+                acquired.check_deadline(deadline); os.fchmod(child, 0o700)
+                with os.scandir(child) as entries:
+                    names, pending_metadata = [], 0
+                    for entry in entries:
+                        acquired.check_deadline(deadline)
+                        pending_metadata += len(os.fsencode(entry.name)) + 128
+                        require(count_nodes + len(names) + 1 <= MAX_PRIVATE_NODES
+                                and metadata + pending_metadata <= MAX_PRIVATE_METADATA,
+                                "acquisition-cleanup-inventory-bound")
+                        names.append(entry.name)
+                for entry in names: remove(child, entry, depth + 1)
+                require(directory_identity(os.stat(leaf, dir_fd=directory, follow_symlinks=False))
+                        == directory_identity(before), "acquisition-cleanup-replaced")
+                acquired.check_deadline(deadline); os.rmdir(leaf, dir_fd=directory)
+            finally: os.close(child)
+        else:
+            require(acquired.snapshot(os.stat(leaf, dir_fd=directory, follow_symlinks=False))
+                    == acquired.snapshot(before), "acquisition-cleanup-replaced")
+            acquired.check_deadline(deadline); os.unlink(leaf, dir_fd=directory)
+    remove(parent, name, 0)
+    acquired.check_deadline(deadline)
+    try: os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError: return
+    raise ValueError("acquisition-cleanup-replaced")
 
 
 def restore_cleanup_directories(fd, deadline):
@@ -1516,14 +1624,25 @@ def private_worker(scratch):
             # a write. Its phase/failure is recorded silently, then main reports
             # both the original failure time and the post-cleanup elapsed time.
             with phase("owned-tree-cleanup", source="cleanup", emit=False):
-                scratch.check()
-                worker.check()
-                restore_cleanup_directories(worker.fd, time.monotonic() + 60)
-                worker.check()
-                # Python's FD-safe rmtree keeps deletion under this held parent.
-                require(shutil.rmtree.avoids_symlink_attacks, "acquisition-cleanup-fd-support")
-                shutil.rmtree(name, dir_fd=scratch.fd)
-                scratch.check()
+                if getattr(worker, "cleanup_deadline", None) is not None:
+                    primary = sys.exc_info()[1]
+                    try:
+                        scratch.check()
+                        worker.check()
+                        remove_owned_tree(scratch.fd, name, worker.cleanup_deadline)
+                        scratch.check()
+                    except BaseException:
+                        if primary is None: raise
+                        primary.cleanup_category = "acquisition-packed-cleanup-refused"
+                else:
+                    scratch.check()
+                    worker.check()
+                    restore_cleanup_directories(worker.fd, time.monotonic() + 60)
+                    worker.check()
+                    # Historical physical-forest cleanup remains unchanged.
+                    require(shutil.rmtree.avoids_symlink_attacks, "acquisition-cleanup-fd-support")
+                    shutil.rmtree(name, dir_fd=scratch.fd)
+                    scratch.check()
 
 
 def run(args):
@@ -1538,12 +1657,35 @@ def run(args):
         os.lseek(output_anchor.fd, 0, os.SEEK_SET)
         with os.scandir(output_anchor.fd) as entries:
             require(next(entries, None) is None, "acquisition-requires-empty-outputs")
-        with private_worker(scratch_anchor) as worker:
-            report = produce(nix, ca, lock_bytes, locked, worker, output_anchor)
-    print(encoded({"scope": report["scope"], "receiptSha256": report["receiptSha256"],
+        with ExitStack() as final_custody:
+            with private_worker(scratch_anchor) as worker:
+                report = produce(nix, ca, lock_bytes, locked, worker, output_anchor,
+                                 transport=args.transport)
+                if args.transport == "packed-only-v2":
+                    destination = final_custody.enter_context(HeldDirectory(
+                        output_anchor.path / "home-manager-pair", parent_anchor=output_anchor))
+                    witnesses = final_custody.enter_context(metadata_witnesses(
+                        destination, worker.transport_metadata, worker.cleanup_deadline))
+                    packed = final_custody.enter_context(packed_witness(
+                        destination, encoded(report["packedSource"]), worker.cleanup_deadline))
+            if args.transport == "packed-only-v2":
+                acquired.check_deadline(worker.cleanup_deadline)
+                destination.check(); output_anchor.check(); scratch_anchor.check()
+                check_metadata_witnesses(destination, witnesses)
+                packed.recheck()
+    # Final readback and descriptor releases can block. The original cutoff
+    # still governs success after those operations, rather than a new timer.
+    if args.transport == "packed-only-v2": acquired.check_deadline(worker.cleanup_deadline)
+    marker = {"scope": report["scope"], "receiptSha256": report["receiptSha256"],
                    "evaluationExecuted": False, "activation": "unproved",
                    "packedSourceSha256": report["packedSource"]["packSha256"],
-                   "packedSourceMetadataSha256": sha(encoded(report["packedSource"]))}).decode())
+                   "packedSourceMetadataSha256": sha(encoded(report["packedSource"]))}
+    if args.transport == "packed-only-v2": marker["transport"] = args.transport
+    if args.transport == "packed-only-v2":
+        print(encoded(marker).decode(), flush=True)
+        acquired.check_deadline(worker.cleanup_deadline)
+    else:
+        print(encoded(marker).decode())
     return 0
 
 
@@ -1567,6 +1709,8 @@ def main(arguments=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("nix", "ca-file", "lock"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--transport", choices=("physical-forest-v1", "packed-only-v2"),
+                        default="physical-forest-v1")
     args = parser.parse_args(arguments)
     progress = Progress()
     token = PROGRESS.set(progress)

@@ -301,6 +301,10 @@ class WorkloadWitness:
     """Only the admitted reserved proof worker; exit readiness is not exit success."""
     read = Witness.read
     close = Witness.close
+    memory, tasks, cpu = MEMORY, TASKS, CPU
+
+    def admitted_profile(self, profile):
+        return profile in WORKLOAD_PROFILES
 
     def __init__(self, profile, entry, deadline, pin, actual, original_pid, original_ticks):
         self.entry,self.deadline = entry,deadline
@@ -309,7 +313,7 @@ class WorkloadWitness:
         self.proc_exit_pending = False
         self.proc_exit_confirmation = "not-requested"
         try:
-            require(profile in WORKLOAD_PROFILES and actual.get("ActiveState")=="active" and actual.get("RemainAfterExit")=="yes"
+            require(self.admitted_profile(profile) and actual.get("ActiveState")=="active" and actual.get("RemainAfterExit")=="yes"
                 and actual.get("MainPID")==str(original_pid)
                 and actual.get("ExecMainPID")==str(original_pid)
                 and re.fullmatch(r"[0-9a-f]{32}",actual.get("InvocationID","")))
@@ -379,11 +383,11 @@ class WorkloadWitness:
                 return False
             self.check_process()
             rows=diagnostic_call("worker-membership", self.read, "cgroup.procs").splitlines()
-            require(len(rows)<=TASKS and all(re.fullmatch(r"[1-9][0-9]{0,9}",v) for v in rows)
+            require(len(rows)<=self.tasks and all(re.fullmatch(r"[1-9][0-9]{0,9}",v) for v in rows)
                 and len(set(rows))==len(rows) and str(self.pid) in rows)
             require(self.pin.observe()=="populated")
             current=self.read("pids.current")
-            require(re.fullmatch(r"[1-9][0-9]{0,2}",current) and int(current)<=TASKS)
+            require(re.fullmatch(r"[1-9][0-9]{0,2}",current) and int(current)<=self.tasks)
         self.check_directory(exited)
         remaining(self.entry,self.deadline)
         self.bounds=values
@@ -393,11 +397,11 @@ class WorkloadWitness:
     def check_bounds(self):
         values={name:self.read(name) for name in
             ("memory.max","memory.swap.max","pids.max","cpu.max","memory.oom.group")}
-        require(values["memory.max"]==str(MEMORY) and values["memory.swap.max"]=="0"
-            and values["pids.max"]==str(TASKS) and values["memory.oom.group"]=="1")
+        require(values["memory.max"]==str(self.memory) and values["memory.swap.max"]=="0"
+            and values["pids.max"]==str(self.tasks) and values["memory.oom.group"]=="1")
         fields=values["cpu.max"].split()
         require(len(fields)==2 and all(re.fullmatch(r"[1-9][0-9]{0,8}",v) for v in fields)
-            and int(fields[0])*10==19*int(fields[1]))
+            and int(fields[0])*100==self.cpu*int(fields[1]))
         require(self.bounds is None or values==self.bounds)
         return values
 
@@ -503,10 +507,19 @@ class WorkloadWitness:
         return result
 
 
+class HomeManagerWorkloadWitness(WorkloadWitness):
+    """Existing standard caps, selected internally for the exact HM producer."""
+    memory, tasks, cpu = 4294967296, 512, 200
+
+    def admitted_profile(self, profile):
+        return profile == "dependency-prefetch"
+
+
 def monitor(profile, witness, readback, deadline, on_iteration, *,
             clock=time.monotonic, pause=time.sleep):
     """No routine manager reads; one terminal read still owns the exit/result fact."""
-    require(profile in WORKLOAD_PROFILES and type(witness) is WorkloadWitness)
+    require(profile in WORKLOAD_PROFILES and type(witness) is WorkloadWitness
+        or profile == "dependency-prefetch" and type(witness) is HomeManagerWorkloadWitness)
     while clock()<deadline:
         diagnostic_call("monitor-iteration", on_iteration)
         if clock()>=deadline:
@@ -544,7 +557,7 @@ def release_worker(witness):
     """Detach new FDs before any receipt can promote success; fallback is idempotent."""
     if witness is None:
         return True
-    require(type(witness) is WorkloadWitness)
+    require(type(witness) in (WorkloadWitness, HomeManagerWorkloadWitness))
     try:
         witness.close()
     except (OSError,ValueError):

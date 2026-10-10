@@ -1,6 +1,7 @@
 """Finite declared acquired-source pack and genuine producer evidence; no leaf walk."""
 _STATE = "/home/jess/.local/state/omux-home-manager-prefetch-20261006"
 _KIND = "omux-acquired-home-manager-source-pack-selection-v1"
+_KIND_V2 = "omux-acquired-home-manager-source-pack-selection-v2"
 _NUL = json.decode('"\\u0000"')
 
 def _fields(value, names):
@@ -31,12 +32,15 @@ def _implementation(ctx):
         fail("packed selection byte bound")
     value = json.decode(raw)
     _fields(value,["schemaVersion","kind","selection"])
-    if type(value["schemaVersion"])!="int" or value["schemaVersion"]!=1 or value["kind"]!=_KIND:
+    v2 = value["kind"] == _KIND_V2
+    if type(value["schemaVersion"])!="int" or value["schemaVersion"]!=(2 if v2 else 1) or value["kind"]!=(_KIND_V2 if v2 else _KIND):
         fail("packed selection scope")
     files = ["layout.json"]
     row = value["selection"]
     if row != None:
-        _fields(row,["root","packSha256","packBytes","metadataSha256","producer"])
+        _fields(row,["root","packSha256","packBytes","metadataSha256","producer"] + (["transport"] if v2 else []))
+        if v2 and row["transport"] != "packed-only-v2":
+            fail("packed source transport")
         for key in ["packSha256","metadataSha256"]:
             _sha(row[key])
         if type(row["packBytes"])!="int" or not 0<row["packBytes"]<=512*1024*1024:

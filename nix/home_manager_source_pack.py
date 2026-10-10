@@ -12,6 +12,8 @@ import home_manager_acquired_inputs as acquired
 MAGIC = b"OMUX-ACQUIRED-HM-PAIR\x00v1\n"
 KIND = "omux-acquired-home-manager-source-pack-v1"
 SELECT = "omux-acquired-home-manager-source-pack-selection-v1"
+KIND_V2 = "omux-acquired-home-manager-source-pack-v2"
+SELECT_V2 = "omux-acquired-home-manager-source-pack-selection-v2"
 MAX_BYTES = acquired.MAX_FILE_BYTES  # existing private per-file bound, never widened
 STATE = "/home/jess/.local/state/omux-home-manager-prefetch-20261006"
 TARGET = "//tools:home_manager_acquisition_producer"
@@ -29,9 +31,11 @@ def encoded(value):
 
 def metadata(raw):
     value = acquired.decode(raw, 65536)
-    acquired.fields(value, FIELDS)
-    require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
-        and value["kind"] == KIND and type(value["packBytes"]) is int
+    v2 = value.get("kind") == KIND_V2
+    acquired.fields(value, FIELDS + (("transport",) if v2 else ()))
+    require(type(value["schemaVersion"]) is int and value["schemaVersion"] == (2 if v2 else 1)
+        and value["kind"] == (KIND_V2 if v2 else KIND)
+        and (not v2 or value["transport"] == "packed-only-v2") and type(value["packBytes"]) is int
         and 0 < value["packBytes"] <= MAX_BYTES
         and all(type(value[key]) is str and SHA.fullmatch(value[key]) for key in
             ("packSha256", "pairReceiptSha256", "pairInventorySha256")), "metadata")
@@ -41,11 +45,14 @@ def metadata(raw):
 def selection(raw):
     value = acquired.decode(raw, 65536)
     acquired.fields(value, ("schemaVersion", "kind", "selection"))
-    require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
-        and value["kind"] == SELECT, "selection")
+    v2 = value["kind"] == SELECT_V2
+    require(type(value["schemaVersion"]) is int and value["schemaVersion"] == (2 if v2 else 1)
+        and value["kind"] == (SELECT_V2 if v2 else SELECT), "selection")
     row = value["selection"]
     require(row is not None, "selection-pending")
-    acquired.fields(row, ("root", "packSha256", "packBytes", "metadataSha256", "producer"))
+    acquired.fields(row, ("root", "packSha256", "packBytes", "metadataSha256", "producer")
+                    + (("transport",) if v2 else ()))
+    require(not v2 or row["transport"] == "packed-only-v2", "selection-transport")
     require(type(row["packBytes"]) is int and 0 < row["packBytes"] <= MAX_BYTES
         and all(type(row[key]) is str and SHA.fullmatch(row[key]) for key in
             ("packSha256", "metadataSha256")), "selection-digest")
@@ -79,8 +86,10 @@ def register_source(sources, name, fd):
     sources.append((name, fd, None))
 
 
-def write(staging_fd, raw_pair, raw_inventory, deadline, *, anchor, charge, sync=os.fsync):
+def write(staging_fd, raw_pair, raw_inventory, deadline, *, anchor, charge, sync=os.fsync,
+          transport="physical-forest-v1"):
     """Read held real source files once; the owner retains its full NAR proofs."""
+    require(transport in ("physical-forest-v1", "packed-only-v2"), "transport")
     require(type(raw_pair) is bytes and 0 < len(raw_pair) <= acquired.MAX_RECEIPT_BYTES
         and type(raw_inventory) is bytes and 0 < len(raw_inventory) <= acquired.MAX_INVENTORY_BYTES, "header-bound")
     inventory = acquired.decode(raw_inventory, acquired.MAX_INVENTORY_BYTES)
@@ -153,9 +162,12 @@ def write(staging_fd, raw_pair, raw_inventory, deadline, *, anchor, charge, sync
         require(acquired.snapshot(os.fstat(output)) == acquired.snapshot(
             os.stat("source.pack", dir_fd=staging_fd, follow_symlinks=False)), "output-changed")
         fence()
-        return {"schemaVersion": 1, "kind": KIND, "packSha256": digest.hexdigest(), "packBytes": total,
+        result = {"schemaVersion": 1, "kind": KIND, "packSha256": digest.hexdigest(), "packBytes": total,
             "pairReceiptSha256": hashlib.sha256(raw_pair).hexdigest(),
             "pairInventorySha256": hashlib.sha256(raw_inventory).hexdigest()}
+        if transport == "packed-only-v2":
+            result.update(schemaVersion=2, kind=KIND_V2, transport=transport)
+        return result
     finally:
         # Attempt every close even when one descriptor refuses.
         primary, failure = sys.exc_info()[1], None

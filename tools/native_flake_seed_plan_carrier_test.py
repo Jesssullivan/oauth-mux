@@ -833,6 +833,21 @@ class CarrierModels(unittest.TestCase):
                 self.assertNotIn(fixture.selected["obligations"]["path"], calls)
                 self.assertEqual(fixture.model.calls, [])
 
+    def test_actual_plan_producer_accepts_ordered_systemd_duration_without_restamping(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            receipt=copy.deepcopy(fixture.receipt)
+            receipt["observed_properties"]["RuntimeMaxUSec"]="19min 29s"
+            raw=dict(fixture.raw);raw["receipt"]=inputs.encode(receipt)
+            selected=copy.deepcopy(fixture.selected)
+            selected["producer"]["receipt"]["sha256"]=seed.sha(raw["receipt"])
+            selected["producer"]["receipt"]["bytes"]=len(raw["receipt"])
+            self.assertEqual(inputs.producer_success(selected,raw),receipt)
+            for value in ("20min 1s","19min 60s","19min 29s 1s","29s 19min", "19min  29s",
+                          "19min\t29s","-1s","0s","1h","999999999999999999999s", "infinity"):
+                with self.subTest(value=value),self.assertRaises(ValueError):inputs.duration(value)
+            self.assertEqual(inputs.duration("20min"),1200)
+            self.assertEqual(inputs.duration("19min 29s"),1169)
+
     def test_actual_receipt_output_namespace_and_observed_caps_cannot_be_substituted(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
             for mutate in ("output", "caps", "graph", "xml"):

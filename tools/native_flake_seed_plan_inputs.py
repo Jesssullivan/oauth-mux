@@ -140,12 +140,21 @@ def selected_bytes(value, deadline):
 
 
 def duration(value):
-    require(type(value) is str)
-    match = re.fullmatch(r"([1-9][0-9]*)(us|ms|s|min)", value)
-    require(match is not None)
-    result = int(match[1])*{"us": 1e-6, "ms": .001, "s": 1, "min": 60}[match[2]]
-    require(0 < result <= 1200)
-    return result
+    require(type(value) is str and 0<len(value)<=64)
+    parts=value.split(" ")
+    require(1<=len(parts)<=4)
+    units={"min":(3,60000000),"s":(2,1000000),"ms":(1,1000),"us":(0,1)}
+    previous=4;total=0
+    for part in parts:
+        match=re.fullmatch(r"([1-9][0-9]{0,9})(min|ms|us|s)",part)
+        require(match is not None)
+        rank,scale=units[match[2]];amount=int(match[1])
+        require(rank<previous)
+        if len(parts)>1 and previous!=4:
+            require(amount<(60 if match[2]=="s" else 1000))
+        total+=amount*scale;previous=rank
+    require(0<total<=1200*1000000)
+    return total/1000000
 
 
 def producer_success(selected, raw):

@@ -21,6 +21,39 @@ from execution_guard import validate_become_metadata, system_identity, selected_
 from execution_guard import await_startup
 
 
+class HomeManagerOwnedRequestModels(unittest.TestCase):
+    def test_only_exact_existing_system_dependency_vector_has_owned_retention(self):
+        import execution_guard as guard
+        from guard_dependency_profile import HOME_MANAGER_FETCH_LABEL,HOME_MANAGER_STATE,COORDINATION_DIRECTORY
+        args=SimpleNamespace(profile='dependency-prefetch',manager='system',source_commit='a'*40,
+            source_dirty='false',state_dir=HOME_MANAGER_STATE,coordination_dir=COORDINATION_DIRECTORY,reuse_owned_cache=False)
+        entry=100*10**9;deadline=entry+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+10**9):
+            self.assertTrue(guard.home_manager_owned_request(args,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline))
+            for arguments in (['run',HOME_MANAGER_FETCH_LABEL],['test',HOME_MANAGER_FETCH_LABEL,HOME_MANAGER_FETCH_LABEL],
+                    ['test',HOME_MANAGER_FETCH_LABEL,'//:docs_check'],['test',HOME_MANAGER_FETCH_LABEL,'--test_arg=x']):
+                with self.assertRaises(ValueError):guard.home_manager_owned_request(args,arguments,entry,deadline)
+            for field,value in (('manager','user'),('source_dirty','true'),('reuse_owned_cache',True),
+                    ('state_dir',Path('/other')),('coordination_dir',None),('nixpkgs_source',Path('/other'))):
+                changed=SimpleNamespace(**{**vars(args),field:value})
+                with self.assertRaises(ValueError):guard.home_manager_owned_request(changed,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline)
+            self.assertFalse(guard.home_manager_owned_request(args,['test','//tools:fetch_codex_archives_bundle'],entry,deadline))
+            args.profile='standard'
+            self.assertFalse(guard.home_manager_owned_request(args,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline))
+
+    def test_exact_original_root_work_cutoff_refuses_without_a_new_clock_or_cleanup_credit(self):
+        import execution_guard as guard
+        from guard_dependency_profile import HOME_MANAGER_FETCH_LABEL,HOME_MANAGER_STATE,COORDINATION_DIRECTORY
+        args=SimpleNamespace(profile='dependency-prefetch',manager='system',source_commit='a'*40,
+            source_dirty='false',state_dir=HOME_MANAGER_STATE,coordination_dir=COORDINATION_DIRECTORY,reuse_owned_cache=False)
+        entry=100*10**9;deadline=entry+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError):guard.home_manager_owned_request(args,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline)
+        summary=guard.cleanup_owned(deadline=15,readback=Mock(),authorize=Mock(),stop=Mock(),observe=lambda:'empty',clock=lambda:0)
+        self.assertEqual(summary,{'state':'empty','stop':'not-requested','ownership':'unproved','readback_attempts':0})
+        self.assertFalse(guard.home_manager_owned_complete(None,summary,None))
+
+
 class CompleteStageDispatchModels(unittest.TestCase):
     def test_only_exact_standard_system_test_gets_original_entry_marker_without_run_widening(self):
         import execution_guard as guard

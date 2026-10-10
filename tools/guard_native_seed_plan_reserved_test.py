@@ -1,6 +1,7 @@
 """Synthetic kernel files + real own pidfd; no installed/runtime qualification."""
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -38,6 +39,386 @@ class Fixture:
         self.stack.callback(self.witness.close)
     def __enter__(self):return self
     def __exit__(self,*args):return self.stack.__exit__(*args)
+
+class HomeManagerOwnedModels(unittest.TestCase):
+    UNIT = "omux-execution-11111111-1111-1111-1111-111111111111.service"
+
+    @contextmanager
+    def owned(self):
+        # Same established synthetic kernel boundary: real owned files, chain
+        # and own pidfd/proc identity. No systemd or installed-runtime authority.
+        with Fixture() as fixture:
+            fixture.witness.close()
+            values = {"memory.max":"4294967296","pids.max":"512",
+                "cpu.max":"200000 100000","memory.oom.group":"1"}
+            for name,value in values.items(): (fixture.root/name).write_text(value+"\n")
+            pin = guard.CgroupPin(fixture.root);fixture.stack.callback(pin.close)
+            logical = Path("/sys/fs/cgroup/system.slice")/self.UNIT
+            proxy = SimpleNamespace(path=logical,identity=pin.identity,observe=pin.observe)
+            entry = time.monotonic_ns()
+            actual = {"Id":self.UNIT,"InvocationID":"a"*32,"ActiveState":"active","SubState":"running",
+                "MainPID":str(os.getpid()),"ExecMainPID":str(os.getpid()),
+                "ControlGroup":"/system.slice/"+self.UNIT,"RemainAfterExit":"yes",
+                "User":str(os.getuid()),"Group":str(os.getgid()),
+                "Environment":"OMUX_EXECUTION_GUARD=/owned/run",
+                "ExecStart":"{ path=/python ; argv[]=/python /guard --worker /owned/run -- fixed ; }"}
+            real_open = reserved.open_chain
+            with patch.object(reserved,"open_chain",lambda path:real_open(fixture.root)), \
+                    patch.object(reserved.WorkloadWitness,"check_process",return_value=None):
+                witness = reserved.HomeManagerWorkloadWitness("dependency-prefetch",entry,entry+1200*10**9,
+                    proxy,actual,os.getpid(),resident.start_ticks(os.getpid()))
+                fixture.stack.callback(witness.close)
+                yield fixture,pin,witness,actual
+
+    def terminal(self, actual, **changes):
+        return {**actual,"MainPID":"0","ActiveState":"active","SubState":"exited",
+            "Result":"success","ExecMainCode":"1","ExecMainStatus":"0",**changes}
+
+    def authorize(self, witness, actual):
+        guard.unit_epoch_identity(actual,unit=self.UNIT,manager="system",run=Path("/owned/run"),
+            python="/python",worker="/guard")
+        witness.authorize_cleanup(actual)
+
+    def test_real_owned_witness_terminal_then_two_authenticated_retained_cleanup_readbacks(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            owned=self.terminal(actual);post={**owned,"ActiveState":"inactive","SubState":"dead","LoadState":"loaded"}
+            cutoff=witness.entry/10**9+15
+            reads=[];stopped=[]
+            def read(timeout,deadline):reads.append((timeout,deadline));return owned if len(reads)==1 else post
+            def stop(timeout,deadline):
+                stopped.append((timeout,deadline));(fixture.root/"cgroup.events").write_text("populated 0\n")
+            with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])):
+                self.assertEqual(reserved.monitor("dependency-prefetch",witness,lambda:owned,1,lambda:None,
+                    clock=lambda:0),0)
+                summary=reserved.cleanup_retained(deadline=cutoff,readback=read,
+                    authorize=lambda row:self.authorize(witness,row),stop=stop,observe=pin.observe,clock=lambda:witness.entry/10**9)
+            self.assertTrue(guard.home_manager_owned_complete(witness,summary,cutoff))
+            self.assertEqual(summary["readback_attempts"],2);self.assertEqual(summary["ownership"],"verified")
+            self.assertEqual(len(stopped),1);self.assertEqual([row[1] for row in reads], [cutoff,cutoff])
+            self.assertEqual(witness.bounds["memory.max"],"4294967296")
+            self.assertTrue(reserved.release_worker(witness));self.assertEqual(witness.resources,[])
+
+    def test_unit_uid_invocation_or_worker_drift_never_authorizes_stop(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            for change in ({"Id":"foreign.service"},{"User":"0"},{"Group":"0"},
+                    {"InvocationID":"b"*32},{"ExecMainPID":str(os.getpid()+1)},
+                    {"Environment":"OMUX_EXECUTION_GUARD=/foreign"},{"ExecStart":"foreign"}):
+                stop=Mock();owned=self.terminal(actual,**change)
+                with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])):
+                    summary=reserved.cleanup_retained(deadline=15,readback=Mock(return_value=owned),
+                        authorize=lambda row:self.authorize(witness,row),stop=stop,observe=pin.observe,clock=lambda:0)
+                self.assertFalse(guard.home_manager_owned_complete(witness,summary,witness.deadline/10**9));stop.assert_not_called()
+
+    def test_standard_tuple_is_frozen_and_old_reserved_tuple_remains_distinct(self):
+        self.assertEqual((reserved.WorkloadWitness.memory,reserved.WorkloadWitness.tasks,reserved.WorkloadWitness.cpu),
+            (reserved.MEMORY,reserved.TASKS,reserved.CPU))
+        with self.owned() as (fixture,pin,witness,actual):
+            for name,value in (("memory.max",str(reserved.MEMORY)),("pids.max",str(reserved.TASKS)),
+                    ("cpu.max","190000 100000"),("memory.swap.max","1"),("memory.oom.group","0")):
+                before=(fixture.root/name).read_text();(fixture.root/name).write_text(value+"\n")
+                with self.assertRaises(ValueError):witness.check_bounds()
+                (fixture.root/name).write_text(before)
+            self.assertFalse(witness.admitted_profile(reserved.PROFILE))
+            with self.assertRaises(ValueError):reserved.monitor(reserved.PROFILE,witness,Mock(),1,lambda:None,clock=lambda:0)
+
+    def test_pre_go_lost_pidfd_readiness_and_missing_witness_refuse(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])):
+                with self.assertRaises(ValueError):guard.home_manager_owned_go(witness)
+            with self.assertRaises(ValueError):guard.home_manager_owned_go(None)
+            summary={"state":"empty","ownership":"verified","readback_attempts":2,"stop":"succeeded"}
+            self.assertFalse(guard.home_manager_owned_complete(None,summary,None))
+            self.assertFalse(guard.home_manager_owned_complete(witness,{**summary,"ownership":"unproved"},witness.deadline/10**9))
+            self.assertFalse(guard.home_manager_owned_complete(witness,{**summary,"readback_attempts":0},witness.deadline/10**9))
+            with patch.object(reserved.time,"monotonic_ns",return_value=witness.deadline-reserved.RESERVE_NS):
+                with self.assertRaises(ValueError):guard.home_manager_owned_go(witness)
+
+    def test_canceled_monitor_stays_failed_and_replaced_group_refuses_owned_cleanup(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            now=[0.0];reads=Mock()
+            self.assertEqual(reserved.monitor("dependency-prefetch",witness,reads,0.5,lambda:None,
+                clock=lambda:now[0],pause=lambda seconds:now.__setitem__(0,now[0]+seconds)),124)
+            reads.assert_not_called()
+            original=fixture.root.with_name("original");fixture.root.rename(original);fixture.root.mkdir(mode=0o700)
+            stop=Mock()
+            summary=reserved.cleanup_retained(deadline=15,readback=Mock(return_value=self.terminal(actual)),
+                authorize=lambda row:self.authorize(witness,row),stop=stop,observe=pin.observe,clock=lambda:0)
+            self.assertEqual(summary["state"],"original-changed");stop.assert_not_called()
+            self.assertFalse(guard.home_manager_owned_complete(witness,summary,witness.deadline/10**9))
+
+    def test_actual_final_empty_observation_consumes_original_cleanup_cutoff(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            cutoff=witness.entry/10**9+15;now=[witness.entry/10**9+1]
+            owned=self.terminal(actual);post={**owned,"ActiveState":"inactive","SubState":"dead","LoadState":"loaded"}
+            reads=[];observations=[]
+            def read(timeout,deadline):
+                reads.append(deadline);return owned if len(reads)==1 else post
+            def stop(timeout,deadline):
+                (fixture.root/"cgroup.events").write_text("populated 0\n")
+            def observe():
+                state=pin.observe();observations.append(state)
+                if len(observations)==3:now[0]=cutoff+0.001
+                return state
+            with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])), \
+                    patch.object(guard.time,"monotonic_ns",side_effect=lambda:int(now[0]*10**9)):
+                summary=reserved.cleanup_retained(deadline=cutoff,readback=read,
+                    authorize=lambda row:self.authorize(witness,row),stop=stop,observe=observe,clock=lambda:now[0])
+                # The shared legacy algorithm returned its last observation;
+                # the actual branch-local adoption refuses that late return.
+                self.assertEqual(summary["state"],"empty")
+                self.assertFalse(guard.home_manager_owned_complete(witness,summary,cutoff))
+                self.assertEqual(summary["state"],"deadline-exhausted")
+                self.assertFalse(guard.home_manager_owned_release(witness,summary,cutoff))
+                receipt={"exit":0,"descendants_empty":True,"cleanup":summary}
+                self.assertFalse(guard.home_manager_owned_adopt(witness,summary,cutoff,receipt))
+                self.assertEqual((receipt["exit"],receipt["descendants_empty"]),(125,False))
+            self.assertEqual(observations[-1],"empty");self.assertEqual(reads,[cutoff,cutoff])
+            self.assertEqual(witness.resources,[])
+
+    def test_actual_witness_fd_release_consumes_original_cleanup_cutoff(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            cutoff=witness.entry/10**9+15;now=[witness.entry/10**9+1]
+            owned=self.terminal(actual);post={**owned,"ActiveState":"inactive","SubState":"dead","LoadState":"loaded"}
+            reads=[]
+            def read(timeout,deadline):
+                reads.append(deadline);return owned if len(reads)==1 else post
+            def stop(timeout,deadline):
+                (fixture.root/"cgroup.events").write_text("populated 0\n")
+            with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])), \
+                    patch.object(guard.time,"monotonic_ns",side_effect=lambda:int(now[0]*10**9)):
+                summary=reserved.cleanup_retained(deadline=cutoff,readback=read,
+                    authorize=lambda row:self.authorize(witness,row),stop=stop,observe=pin.observe,clock=lambda:now[0])
+                self.assertTrue(guard.home_manager_owned_complete(witness,summary,cutoff))
+                original_close=witness.close;owned_fds=list(witness.resources)
+                def close():
+                    original_close();now[0]=cutoff+0.001
+                with patch.object(witness,"close",side_effect=close) as closes:
+                    self.assertFalse(guard.home_manager_owned_release(witness,summary,cutoff))
+                    self.assertEqual(closes.call_count,1)
+                self.assertEqual(summary["state"],"deadline-exhausted")
+                receipt={"exit":0,"descendants_empty":True,"cleanup":summary}
+                self.assertFalse(guard.home_manager_owned_adopt(witness,summary,cutoff,receipt))
+                self.assertEqual((receipt["exit"],receipt["descendants_empty"]),(125,False))
+            self.assertEqual(witness.resources,[])
+            for fd in owned_fds:
+                with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_final_success_adoption_never_renews_cleanup_cutoff_or_root_envelope(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            cutoff=witness.entry/10**9+15;now=[witness.entry/10**9+1]
+            summary={"state":"empty","ownership":"verified","readback_attempts":2,"stop":"succeeded"}
+            with patch.object(guard.time,"monotonic_ns",side_effect=lambda:int(now[0]*10**9)):
+                self.assertTrue(guard.home_manager_owned_release(witness,summary,cutoff))
+                now[0]=cutoff+0.001
+                receipt={"exit":0,"descendants_empty":True,"cleanup":summary}
+                self.assertFalse(guard.home_manager_owned_adopt(witness,summary,cutoff,receipt))
+                self.assertEqual((receipt["exit"],receipt["descendants_empty"]),(125,False))
+                self.assertEqual(summary["state"],"deadline-exhausted")
+                summary["state"]="empty"
+                self.assertFalse(guard.home_manager_owned_complete(witness,summary,witness.deadline/10**9+1))
+                self.assertEqual(summary["state"],"deadline-exhausted")
+                witness.deadline+=1
+                with patch.object(guard.time,"monotonic_ns",return_value=witness.entry):
+                    self.assertFalse(guard.home_manager_owned_complete(witness,summary,cutoff))
+
+    @contextmanager
+    def publication(self):
+        with self.owned() as (fixture,pin,witness,actual):
+            run=fixture.parent/"publication";run.mkdir(mode=0o700)
+            cutoff=witness.entry/10**9+15;now=[witness.entry/10**9+1]
+            owned=self.terminal(actual);post={**owned,"ActiveState":"inactive","SubState":"dead","LoadState":"loaded"}
+            def stop(timeout,deadline):(fixture.root/"cgroup.events").write_text("populated 0\n")
+            with patch.object(reserved.poll,"select",return_value=([witness.pidfd],[],[])), \
+                    patch.object(guard.time,"monotonic_ns",side_effect=lambda:int(now[0]*10**9)):
+                summary=reserved.cleanup_retained(deadline=cutoff,readback=Mock(side_effect=[owned,post]),
+                    authorize=lambda row:self.authorize(witness,row),stop=stop,observe=pin.observe,clock=lambda:now[0])
+                self.assertTrue(guard.home_manager_owned_release(witness,summary,cutoff))
+                receipt={"exit":0,"workload_exit":0,"descendants_empty":True,"cleanup":summary}
+                yield run,witness,cutoff,now,receipt
+
+    def test_actual_private_publication_write_fsync_and_closes_cannot_leave_late_positive_authority(self):
+        for boundary in ("write","file-fsync","file-close","directory-fsync","directory-close"):
+            with self.subTest(boundary=boundary),self.publication() as (run,witness,cutoff,now,receipt):
+                real_fdopen=guard.os.fdopen;real_fsync=guard.os.fsync;real_close=guard.os.close
+                effects=[]
+                def advance():effects.append(boundary);now[0]=cutoff+0.001
+                class Writer:
+                    def __init__(self,output):self.output=output
+                    def __enter__(self):self.output.__enter__();return self
+                    def __exit__(self,*args):
+                        result=self.output.__exit__(*args)
+                        if boundary=="file-close":advance()
+                        return result
+                    def write(self,raw):
+                        result=self.output.write(raw)
+                        if boundary=="write":advance()
+                        return result
+                    def flush(self):return self.output.flush()
+                    def fileno(self):return self.output.fileno()
+                def fsync(fd):
+                    directory=stat.S_ISDIR(os.fstat(fd).st_mode)
+                    real_fsync(fd)
+                    if boundary==("directory-fsync" if directory else "file-fsync"):advance()
+                def close(fd):
+                    directory=stat.S_ISDIR(os.fstat(fd).st_mode)
+                    real_close(fd)
+                    if directory and boundary=="directory-close":advance()
+                with patch.object(guard.os,"fdopen",side_effect=lambda fd,mode:Writer(real_fdopen(fd,mode))), \
+                        patch.object(guard.os,"fsync",side_effect=fsync),patch.object(guard.os,"close",side_effect=close):
+                    binding=guard.home_manager_owned_publish(run,witness,receipt["cleanup"],cutoff,receipt,
+                        json.dumps(receipt,sort_keys=True)+"\n")
+                    output=io.StringIO()
+                    status,empty=guard.home_manager_owned_terminal(run,witness,receipt["cleanup"],cutoff,receipt,binding,
+                        lambda current:print(json.dumps(current,sort_keys=True),file=output,flush=True))
+                published=json.loads((run/"receipt.json").read_text())
+                terminal=json.loads(output.getvalue().splitlines()[-1])
+                self.assertTrue(effects);self.assertTrue(binding["failure_reported"])
+                self.assertEqual((status,empty),(125,False))
+                self.assertEqual((published["exit"],published["descendants_empty"]),(125,False))
+                self.assertEqual(published,terminal)
+                self.assertEqual(published["cleanup"]["state"],"deadline-exhausted")
+
+    def test_actual_private_publication_terminal_cutoff_and_ontime_verdict_agree(self):
+        for late in (False,True):
+            with self.subTest(late=late),self.publication() as (run,witness,cutoff,now,receipt):
+                binding=guard.home_manager_owned_publish(run,witness,receipt["cleanup"],cutoff,receipt,
+                    json.dumps(receipt,sort_keys=True)+"\n")
+                output=io.StringIO()
+                def emit(current):
+                    print(json.dumps(current,sort_keys=True),file=output,flush=True)
+                    if late:now[0]=cutoff+0.001
+                status,empty=guard.home_manager_owned_terminal(run,witness,receipt["cleanup"],cutoff,receipt,binding,emit)
+                published=json.loads((run/"receipt.json").read_text())
+                terminal=json.loads(output.getvalue().splitlines()[-1])
+                self.assertEqual((status,empty),(125,False) if late else (0,True))
+                self.assertEqual(published,terminal)
+                self.assertEqual((published["exit"],published["descendants_empty"]),(status,empty))
+                self.assertEqual(binding["failure_reported"],late)
+                self.assertEqual(len(output.getvalue().splitlines()),2 if late else 1)
+
+    def test_publication_error_removes_owned_positive_and_terminal_error_reports_refusal(self):
+        for boundary in ("fsync","directory-close"):
+            with self.subTest(boundary=boundary),self.publication() as (run,witness,cutoff,now,receipt):
+                real_fsync=guard.os.fsync;real_close=guard.os.close;failed=[];closed=[]
+                def fsync(fd):
+                    real_fsync(fd)
+                    if boundary=="fsync" and not failed:
+                        failed.append(True);raise OSError("fixture-after-real-publication-effect")
+                def close(fd):
+                    directory=stat.S_ISDIR(os.fstat(fd).st_mode)
+                    real_close(fd);closed.append(fd)
+                    if boundary=="directory-close" and directory and not failed:
+                        failed.append(True);raise OSError("fixture-after-real-publication-effect")
+                with patch.object(guard.os,"fsync",side_effect=fsync),patch.object(guard.os,"close",side_effect=close):
+                    with self.assertRaisesRegex(OSError,"fixture-after-real-publication-effect"):
+                        guard.home_manager_owned_publish(run,witness,receipt["cleanup"],cutoff,receipt,
+                            json.dumps(receipt,sort_keys=True)+"\n")
+                self.assertTrue(failed);self.assertFalse((run/"receipt.json").exists())
+                for fd in closed:
+                    with self.assertRaises(OSError):os.fstat(fd)
+                binding=guard.home_manager_owned_publish(run,witness,receipt["cleanup"],cutoff,receipt,
+                    json.dumps(receipt,sort_keys=True)+"\n")
+                with self.assertRaisesRegex(OSError,"fixture-terminal-failed"):
+                    guard.home_manager_owned_terminal(run,witness,receipt["cleanup"],cutoff,receipt,binding,
+                        Mock(side_effect=OSError("fixture-terminal-failed")))
+                published=json.loads((run/"receipt.json").read_text())
+                self.assertEqual((published["exit"],published["descendants_empty"]),(125,False))
+                self.assertEqual(published["cleanup"]["state"],"terminal-unproved")
+
+    @contextmanager
+    def final_scopes(self,run,witness,cutoff,now,*,late=None,fail=False):
+        """Actual production scope shape, real own CgroupPin and flock file."""
+        events=[];lock_path=run.parent/"execution.lock"
+        lockfd=os.open(lock_path,os.O_CREAT|os.O_EXCL|os.O_RDWR|os.O_NOFOLLOW,0o600)
+        try:lock=os.fdopen(lockfd,"w")
+        except BaseException:os.close(lockfd);raise
+        with ExitStack() as admissions,lock,ExitStack() as resources:
+            guard.fcntl.flock(lock,guard.fcntl.LOCK_EX|guard.fcntl.LOCK_NB)
+            pin=guard.CgroupPin(run.parent/"middle"/"group")
+            pinfd=pin.descriptor
+            def lock_held():
+                probe=os.open(lock_path,os.O_RDWR|os.O_NOFOLLOW)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        guard.fcntl.flock(probe,guard.fcntl.LOCK_EX|guard.fcntl.LOCK_NB)
+                finally:os.close(probe)
+            def closed(name):
+                events.append(name)
+                if late==name:now[0]=cutoff+0.001
+                if fail:raise OSError("fixture-"+name+"-release")
+            def close_pin():
+                lock_held();pin.close();closed("pin")
+            resources.callback(witness.close)
+            resources.callback(close_pin)
+            admissionfd=os.open(run.parent/"admission",os.O_CREAT|os.O_EXCL|os.O_RDWR|os.O_NOFOLLOW,0o600)
+            def close_admission():
+                lock_held();os.close(admissionfd);closed("admission")
+            admissions.callback(close_admission)
+            original_close=lock.close
+            def close_lock():
+                if not lock.closed:
+                    original_close();closed("lock")
+            with patch.object(lock,"close",side_effect=close_lock):
+                yield resources,admissions,lock,pin,(pinfd,admissionfd,lockfd),events,lock_path
+
+    def test_actual_caller_pin_admission_and_lock_releases_precede_terminal_cutoff(self):
+        for late in (None,"pin","admission","lock"):
+            with self.subTest(late=late),self.publication() as (run,witness,cutoff,now,receipt):
+                binding=guard.home_manager_owned_publish(run,witness,receipt["cleanup"],cutoff,receipt,
+                    json.dumps(receipt,sort_keys=True)+"\n")
+                output=io.StringIO()
+                with self.final_scopes(run,witness,cutoff,now,late=late) as scopes:
+                    resources,admissions,lock,pin,fds,events,lock_path=scopes
+                    def emit(current):
+                        self.assertEqual(events,["pin","admission","lock"])
+                        self.assertIsNone(pin.descriptor);self.assertTrue(lock.closed)
+                        for fd in fds:
+                            with self.assertRaises(OSError):os.fstat(fd)
+                        probe=os.open(lock_path,os.O_RDWR|os.O_NOFOLLOW)
+                        try:guard.fcntl.flock(probe,guard.fcntl.LOCK_EX|guard.fcntl.LOCK_NB)
+                        finally:os.close(probe)
+                        print(json.dumps(current,sort_keys=True),file=output,flush=True)
+                    status,empty=guard.home_manager_owned_finish(run,witness,receipt["cleanup"],cutoff,
+                        receipt,binding,emit,resources,admissions,lock)
+                self.assertEqual(events,["pin","admission","lock"])
+                published=json.loads((run/"receipt.json").read_text())
+                terminal=json.loads(output.getvalue().splitlines()[-1])
+                self.assertEqual((status,empty),(0,True) if late is None else (125,False))
+                self.assertEqual((published["exit"],published["descendants_empty"]),(status,empty))
+                self.assertEqual(published,terminal)
+                if late is not None:self.assertEqual(published["cleanup"]["state"],"deadline-exhausted")
+
+    def test_caller_release_errors_attempt_every_owner_and_preserve_original_failure(self):
+        for prior in (False,True):
+            with self.subTest(prior=prior),self.publication() as (run,witness,cutoff,now,receipt):
+                binding=guard.home_manager_owned_publish(run,witness,receipt["cleanup"],cutoff,receipt,
+                    json.dumps(receipt,sort_keys=True)+"\n")
+                output=io.StringIO()
+                with self.final_scopes(run,witness,cutoff,now,fail=True) as scopes:
+                    resources,admissions,lock,pin,fds,events,lock_path=scopes
+                    def finish(primary=None):
+                        return guard.home_manager_owned_finish(run,witness,receipt["cleanup"],cutoff,
+                            receipt,binding,lambda current:print(json.dumps(current,sort_keys=True),file=output,flush=True),
+                            resources,admissions,lock,primary=primary)
+                    if prior:
+                        try:raise ValueError("fixture-original-caller")
+                        except ValueError as original:
+                            with self.assertRaisesRegex(ValueError,"fixture-original-caller") as refused:
+                                finish(guard.sys.exc_info()[1])
+                            self.assertIs(refused.exception,original)
+                            self.assertIsInstance(refused.exception.__cause__,OSError)
+                    else:
+                        with self.assertRaisesRegex(OSError,"fixture-pin-release"):finish()
+                    self.assertEqual(events,["pin","admission","lock"])
+                    self.assertIsNone(pin.descriptor);self.assertTrue(lock.closed)
+                    for fd in fds:
+                        with self.assertRaises(OSError):os.fstat(fd)
+                self.assertEqual(events,["pin","admission","lock"])
+                published=json.loads((run/"receipt.json").read_text())
+                self.assertEqual((published["exit"],published["descendants_empty"]),(125,False))
+                self.assertEqual(published,json.loads(output.getvalue().splitlines()[-1]))
+                self.assertEqual(published["cleanup"]["state"],"release-unproved")
+
 
 class ReservationModels(unittest.TestCase):
     def args(self,profile=reserved.PROFILE):

@@ -77,6 +77,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     bool duplicate = false;
+    bool contradictoryReady = false;
     bool decline = false;
     int connections = 0;
     int mutations = 0;
@@ -113,6 +114,7 @@ int main(int argc, char **argv) {
                 else if (method == "setup.readiness") {
                     ++readinessRequests;
                     result = report(duplicate);
+                    if (contradictoryReady) result.insert("ready", true);
                     if (!custodyReady && !duplicate) {
                         auto findings = result.value("findings").toArray();
                         // Match engine.setupSnapshot: retained Locked custody
@@ -169,6 +171,17 @@ int main(int argc, char **argv) {
         if (table->item(6, 1)->text() != "unknown" || !notice->text().contains("Home Manager")) return 3;
         // Ordinary connection/readiness must not trigger an automatic reopen.
         if (reopenRequests != 0) return 11;
+        // A top-level success cannot override the actual unknown native row.
+        contradictoryReady = true;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Check setup") button->click();
+        if (!until([&] { return notice->text().contains("unsupported readiness"); })
+            || table->rowCount() != 0 || mutations != 0 || reopenRequests != 0) return 29;
+        contradictoryReady = false;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Check setup") button->click();
+        if (!until([&] { return table->rowCount() == 7; })
+            || notice->text().contains("Setup requirements are ready")) return 30;
         for (auto *button : window.findChildren<QPushButton *>())
             if (button->text() == "Resume after vault unlock") button->click();
         if (!until([&] { return notice->text().contains("requires an update"); })

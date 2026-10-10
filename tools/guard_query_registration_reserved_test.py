@@ -127,6 +127,27 @@ class QueryReservationModels(unittest.TestCase):
             reserved.monitor(reserved.PROFILE,witness,
                 lambda:fixture.terminal(InvocationID="b"*32),10,lambda:None,clock=lambda:0)
 
+    def test_actual_reserved_success_accepts_systemd_compound_and_retains_bounds(self):
+        with tempfile.TemporaryDirectory() as temporary, kernel_models.Fixture() as kernel_fixture:
+            fixture=registration_models.Fixture(temporary)
+            top,raw,receipt,report=selected_reserved(fixture,kernel_fixture.witness)
+            receipt["observed_properties"]["RuntimeMaxUSec"]="19min 29s"
+            registration_models.rebind(top,raw,"receipt",receipt)
+            records=collector.validate_success(top["candidates"],raw,fixture.project,top["plan"])
+            self.assertEqual(sorted(records),fixture.paths)
+            self.assertTrue(reserved.validate_qualification(receipt))
+            for value in ("19min 31s","20min", "19min 29s 1s", "29s 19min", "19min 60s",
+                          "19min  29s", "19min\t29s", "1h", "infinity", "-1s", "0s",
+                          "999999999999999999999s", "1.5min 1s"):
+                invalid=copy.deepcopy(receipt);invalid["observed_properties"]["RuntimeMaxUSec"]=value
+                re_top=copy.deepcopy(top);re_raw=copy.deepcopy(raw)
+                registration_models.rebind(re_top,re_raw,"receipt",invalid)
+                with self.subTest(value=value),self.assertRaises(ValueError):
+                    collector.validate_success(re_top["candidates"],re_raw,fixture.project,re_top["plan"])
+            self.assertEqual(reserved.microseconds("19min 30s"),1170000000)
+            self.assertEqual(reserved.microseconds("20min"),1200000000)
+            self.assertEqual(reserved.microseconds("1.900000s"),1900000)
+
     def test_real_sqlite_report_and_supplied_reserved_evidence_join_without_legacy_change(self):
         with tempfile.TemporaryDirectory() as temporary, kernel_models.Fixture() as kernel_fixture:
             fixture=registration_models.Fixture(temporary)

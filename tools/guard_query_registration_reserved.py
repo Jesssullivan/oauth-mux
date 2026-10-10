@@ -95,9 +95,22 @@ def projection(entry, deadline, verified, resident):
 
 
 def microseconds(value):
-    matched = re.fullmatch(r"([0-9]{1,7}(?:[.][0-9]{1,6})?)(us|ms|s|min)", value) if type(value) is str else None
-    require(matched is not None)
-    return Decimal(matched[1]) * {"us": 1, "ms": 1000, "s": 1000000, "min": 60000000}[matched[2]]
+    require(type(value) is str and 0<len(value)<=64)
+    parts=value.split(" ");require(1<=len(parts)<=4)
+    units={"min":(3,60000000),"s":(2,1000000),"ms":(1,1000),"us":(0,1)}
+    previous=4;total=Decimal(0)
+    for index,part in enumerate(parts):
+        matched=re.fullmatch(r"((?:0|[1-9][0-9]{0,9})(?:[.][0-9]{1,6})?)(min|ms|us|s)",part)
+        require(matched is not None)
+        rank,scale=units[matched[2]];amount=Decimal(matched[1])
+        require(rank<previous and amount>0)
+        require(index==len(parts)-1 or amount==amount.to_integral_value())
+        if len(parts)>1 and previous!=4:
+            require(amount<(60 if matched[2]=="s" else 1000))
+        total+=amount*scale;previous=rank
+    # Parsing alone never admits more than the existing outer1200s ceiling.
+    require(0<total<=1200*1000000)
+    return total
 
 
 def validate_qualification(receipt):

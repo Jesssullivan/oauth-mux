@@ -5126,7 +5126,7 @@ pub const Engine = struct {
         const grant = self.state.grant(selected.grant_id).?;
         const custody = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse return error.GrantNotReady;
         if (custody.state != .ready or custody.generation != grant.generation) return error.GrantNotReady;
-        const route_generation = if (previous) |old| old.route_generation + @as(u64, @intFromBool(!eql(old.grant_id, grant.id) or old.grant_generation != grant.generation)) else 1;
+        const route_generation = if (previous) |old| std.math.add(u64, old.route_generation, @as(u64, @intFromBool(!eql(old.grant_id, grant.id) or old.grant_generation != grant.generation))) catch return error.GenerationConflict else 1;
         if (previous == null or !selected.sticky) _ = try self.state.bind(.{ .id = binding_id, .application = application, .session_id = session_id, .account_id = grant.account_id, .grant_id = grant.id, .grant_generation = grant.generation, .route_generation = route_generation, .native_ref = native_ref });
         const handle = try self.identifier();
         var expires = self.now() + 300;
@@ -8397,4 +8397,63 @@ test "actual runtime commit refuses installation namespace replacement after wor
     try std.testing.expect(fresh >= 0);
     defer _ = std.c.close(fresh);
     try std.testing.expect((try @import("platform/file_metadata.zig").statFd(fresh)).ino != task.installation.?.witness.ino);
+}
+
+test "actual acquisition refuses exhausted route generation before request or lease adoption" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |account_change| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const database = try std.fmt.allocPrintSentinel(allocator, "{s}/route.sqlite", .{path}, 0);
+        defer allocator.free(database);
+        var current: Engine = .{
+            .allocator = allocator, .io = io, .state_dir = @constCast(path),
+            .state = domain.State.init(allocator),
+            .observers = observer.Coordinator.init(allocator),
+            .requests = request_authority.Ledger.init(allocator, 4096),
+            .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+            .admission = snapshot_admission.Ledger.init(allocator),
+            .native_owners = native_owner.Ledger.init(allocator),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+            .db = try storage.Store.open(io, allocator, database, @splat(0x61)),
+        };
+        defer { current.db.?.close(); current.release(); }
+        _ = try current.state.connectSource(.{ .id = "source", .kind = .explicit, .provider = "github" });
+        _ = try current.state.enroll(.{ .account_id = "account-a", .source_id = "source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "route-fixture-a", .verified = true } }, 0);
+        _ = try current.state.addGrant(.{ .id = "grant-a", .account_id = "account-a", .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = 1 });
+        const binding_id = bindingIdentityForOwner("git", "session", "session", null);
+        _ = try current.state.bind(.{ .id = &binding_id, .application = "git", .session_id = "session", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1, .route_generation = std.math.maxInt(u64) });
+        const selected_account: []const u8 = if (account_change) "account-b" else "account-a";
+        const selected_grant: []const u8 = if (account_change) "grant-b" else "grant-a";
+        const generation: u64 = if (account_change) 1 else 2;
+        if (account_change) {
+            _ = try current.state.enroll(.{ .account_id = selected_account, .source_id = "source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "route-fixture-b", .verified = true } }, 0);
+            try current.state.pause("account-a", true);
+        }
+        _ = try current.state.addGrant(.{ .id = selected_grant, .account_id = selected_account, .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = generation });
+        const before = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(before);
+        _ = try current.db.?.commit(0, before, &.{.{ .put = .{ .context = .{ .account_id = selected_account, .grant_id = selected_grant, .generation = generation, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-route-payload", .renewal_owner = .external } }});
+        const demand: domain.Demand = .{ .allowed_account_ids = &.{ "account-a", "account-b" }, .provider = "github", .audience = "https://github.com", .resource = .{ .kind = "requests" }, .now = current.now() };
+        const selected = try current.state.select(demand, &binding_id);
+        try std.testing.expectEqualStrings(selected_grant, selected.grant_id);
+        try std.testing.expect(!selected.sticky);
+        const params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"application\":\"git\",\"session_id\":\"session\",\"request_id\":\"fresh-request\",\"demand\":{\"provider\":\"github\",\"audience\":\"https://github.com\",\"resource\":{\"kind\":\"requests\"}}}", .{});
+        defer params.deinit();
+        try std.testing.expectError(error.GenerationConflict, current.acquire(allocator, .null, params.value));
+        const after = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(after);
+        try std.testing.expectEqualStrings(before, after);
+        try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+        try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().count);
+        try std.testing.expectEqual(std.math.maxInt(u64), current.state.binding(&binding_id).?.route_generation);
+        var stored = try current.db.?.readSnapshot();
+        defer stored.deinit();
+        try std.testing.expectEqual(@as(u64, 1), stored.revision);
+        try std.testing.expectEqualStrings(before, stored.json);
+    }
 }

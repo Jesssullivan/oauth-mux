@@ -116,6 +116,8 @@ class PackedSources:
         try:
             raw = self.read('source-pack.json',65536,self.selection['metadataSha256'])
             self.metadata = source_pack.metadata(raw)
+            require(self.metadata.get('transport') == self.selection.get('transport'),
+                    'current-pair-source-pack-transport')
             require(self.metadata['packSha256']==self.selection['packSha256']
                 and self.metadata['packBytes']==self.selection['packBytes']
                 and self.metadata['pairReceiptSha256']==old.PAIR_SHA,'current-pair-source-pack-binding')
@@ -187,6 +189,8 @@ class PackedSources:
         marker={'scope':'finite-paired-source-acquisition','receiptSha256':self.metadata['pairReceiptSha256'],
             'evaluationExecuted':False,'activation':'unproved','packedSourceSha256':self.metadata['packSha256'],
             'packedSourceMetadataSha256':selected['metadataSha256']}
+        if selected.get('transport') is not None:
+            marker['transport'] = selected['transport']
         for member in ('test.xml','test.log'):
             rows=[row for row in files if row['source']==member]
             require(len(rows)==1 and rows[0]['state']=='copied' and type(rows[0]['file']) is str

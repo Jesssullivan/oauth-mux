@@ -247,9 +247,9 @@ def validate_success(candidate,raw,project,plan):
     cpu=observed.get("CPUQuotaPerSecUSec")
     match=re.fullmatch(r"([0-9]{1,7}(?:[.][0-9]{1,6})?)(us|ms|s)",cpu) if type(cpu) is str else None
     require(match is not None and Decimal(match[1])*{"us":1,"ms":1000,"s":1000000}[match[2]]==(1900000 if reserved else 2000000))
-    duration=observed.get("RuntimeMaxUSec")
-    match=re.fullmatch(r"([1-9][0-9]*)(us|ms|s|min)",duration) if type(duration) is str else None
-    require(match is not None and 0<int(match[1])*{"us":1,"ms":1000,"s":1000000,"min":60000000}[match[2]]<=1200*1000000)
+    import guard_query_registration_reserved as reservation
+    duration=reservation.microseconds(observed.get("RuntimeMaxUSec"))
+    require(0<duration<=1200*1000000)
     require(type(receipt["epoch_start_ns"]) is int and receipt["epoch_start_ns"]>0)
     evidence=decode(raw["candidate_evidence"])
     require(type(evidence["schema"]) is int and evidence["schema"]==1

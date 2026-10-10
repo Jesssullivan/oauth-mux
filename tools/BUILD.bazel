@@ -749,7 +749,7 @@ python_test(
     srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_source_pack.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py"],
     data = ["@omux_host//:executables/nix", "@omux_host//:ca-bundle.crt", "@omux_host//:all_tools",
             "@omux_lab_home_manager_inputs//:lab-lock.json"],
-    args = ["--nix", "$(location @omux_host//:executables/nix)",
+    args = ["--transport", "packed-only-v2", "--nix", "$(location @omux_host//:executables/nix)",
             "--ca-file", "$(location @omux_host//:ca-bundle.crt)",
             "--lock", "$(location @omux_lab_home_manager_inputs//:lab-lock.json)"],
     env_inherit = ["OMUX_EXECUTION_GUARD"],

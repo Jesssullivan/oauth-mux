@@ -178,7 +178,8 @@ class PairTests(unittest.TestCase):
         duplicated=copy.deepcopy(outer);duplicated['test_evidence']['sha256']=pair.sha(raw)
         with self.assertRaisesRegex(ValueError,'marker'):run(duplicated)
 
-    def packed_fixture(self, *, mutate_outer=None, log_suffix=b'', corrupt_pack=False):
+    def packed_fixture(self, *, mutate_outer=None, log_suffix=b'', corrupt_pack=False,
+                       transport='physical-forest-v1'):
         f=self.fixture;root=f.base/'packed';root.mkdir(mode=0o700)
         raw_pair=(f.retained/'pair/receipt.json').read_bytes()
         inventory=(f.retained/'pair/inventory.json').read_bytes()
@@ -186,7 +187,8 @@ class PairTests(unittest.TestCase):
             shutil.copytree(f.fixture.roots[name],root/name,symlinks=True)
         with pair.acquisition.HeldDirectory(root) as held:
             meta=pair.source_pack.write(held.fd,raw_pair,inventory,time.monotonic()+120,
-                anchor=held.check,charge=lambda info:self.assertLessEqual(info.st_size,pair.source_pack.MAX_BYTES))
+                anchor=held.check,charge=lambda info:self.assertLessEqual(info.st_size,pair.source_pack.MAX_BYTES),
+                transport=transport)
         # The bootstrap fixture has no source leaves after packing. Canonical
         # proof must therefore come from actual decoded regular bytes.
         for name in old.acquired.NAMES:
@@ -200,6 +202,7 @@ class PairTests(unittest.TestCase):
         marker={'scope':'finite-paired-source-acquisition','receiptSha256':old.PAIR_SHA,
             'evaluationExecuted':False,'activation':'unproved','packedSourceSha256':meta['packSha256'],
             'packedSourceMetadataSha256':pair.sha(metadata)}
+        if transport == 'packed-only-v2':marker['transport']=transport
         log=old.encoded(marker)+log_suffix
         xml=b'<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase name="source-pack"/></testsuite>'
         authority=root/'authority';authority.mkdir(mode=0o700);members=[]
@@ -228,6 +231,9 @@ class PairTests(unittest.TestCase):
             'packSha256':meta['packSha256'],'packBytes':meta['packBytes'],'metadataSha256':pair.sha(metadata),
             'producer':{'receipt':parent+'/receipt.json','sha256':pair.sha(raw),'source_commit':'c'*40,
                 'source_dirty':'false','graph_sha256':'d'*64}}}
+        if transport == 'packed-only-v2':
+            selection.update(schemaVersion=2,kind=pair.source_pack.SELECT_V2)
+            selection['selection']['transport']=transport
         layout=root/'layout.json';f.write(layout,old.encoded({'schemaVersion':1,
             'kind':'omux-current-home-manager-packed-layout-v1','sourceSelection':selection}))
         return root,layout,selection,meta
@@ -235,6 +241,40 @@ class PairTests(unittest.TestCase):
     def packed_produce(self,layout):
         f=self.fixture
         return pair.reconstruct(layout,f.lock_path,f.outputs,self.binding,deadline=time.monotonic()+180)
+
+    def test_v2_real_reconstruction_retains_two_canonical_proofs_and_private_cleanup(self):
+        root,layout,selection,meta=self.packed_fixture(transport='packed-only-v2')
+        calls=[];actual=pair.canonical_pair
+        def checking(*args,**kwargs):
+            value=actual(*args,**kwargs);calls.append(value);return value
+        with patch.object(pair,'canonical_pair',side_effect=checking):result=self.packed_produce(layout)
+        self.assertEqual(len(calls),2)
+        self.assertEqual(calls[0],calls[1])
+        self.assertEqual(result['sourceTransport']['producerReceiptSha256'],selection['selection']['producer']['sha256'])
+        self.assertEqual(result['sourceTransport']['packSha256'],meta['packSha256'])
+        self.assertFalse(result['retainedPhysicalNarVerified']);self.assertFalse(result['activationQualified'])
+        self.assertEqual(sorted(x.name for x in self.fixture.outputs.iterdir()),['bundle','receipt.json'])
+        pair.validate_compact((self.fixture.outputs/'receipt.json').read_bytes(),result['receiptSha256'])
+        self.assertFalse(any((root/name).exists() for name in old.acquired.NAMES))
+        self.assertFalse(any(p.name.startswith('omux-hm') for p in self.fixture.outputs.iterdir()))
+
+    def test_v2_selection_cannot_adopt_v1_metadata_or_reach_producer_authority(self):
+        root,layout,selection,meta=self.packed_fixture()
+        selection.update(schemaVersion=2,kind=pair.source_pack.SELECT_V2)
+        selection['selection']['transport']='packed-only-v2'
+        self.fixture.write(layout,old.encoded({'schemaVersion':1,
+            'kind':'omux-current-home-manager-packed-layout-v1','sourceSelection':selection}))
+        with patch.object(pair.PackedSources,'authenticate') as authenticate, \
+                self.assertRaisesRegex(ValueError,'current-pair-source-pack-transport'):
+            self.packed_produce(layout)
+        authenticate.assert_not_called()
+        self.assertEqual(list(self.fixture.outputs.iterdir()),[])
+
+    def test_v2_truncated_pack_refuses_without_publishing_bundle(self):
+        root,layout,selection,meta=self.packed_fixture(transport='packed-only-v2')
+        path=root/'source.pack';self.fixture.write(path,path.read_bytes()[:-1])
+        with self.assertRaises(ValueError):self.packed_produce(layout)
+        self.assertEqual(list(self.fixture.outputs.iterdir()),[])
 
     def test_real_packed_only_input_runs_decoder_full_nar_before_after_and_private_cleanup(self):
         root,layout,selection,meta=self.packed_fixture();calls=[];actual=pair.canonical_pair

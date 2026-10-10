@@ -535,6 +535,7 @@ void OmuxTray::refreshReadiness() {
         QJsonArray rows;
         QSet<QString> seen;
         bool valid = true;
+        bool allReady = true;
         const QHash<QString, QString> phases {{"artifact", "Installed artifacts"}, {"service", "Service activation"},
             {"vault", "Credential custody"}, {"source", "Source connection"}, {"identity", "Verified identity"},
             {"grant", "Usable authority"}, {"native", "Native application capability"}};
@@ -545,12 +546,15 @@ void OmuxTray::refreshReadiness() {
                 || !finding.value("reason").isString() || finding.value("reason").toString().isEmpty()
                 || !finding.value("action").isString() || finding.value("action").toString().isEmpty()) valid = false;
             seen.insert(phase);
+            allReady = allReady && finding.value("reason").toString() == "ready";
             rows.append(QJsonObject{{"requirement", phases.value(phase, phase)},
                 {"state", finding.value("reason")}, {"next_action", finding.value("action")}});
         }
         fillTable(readiness_, rows, {"requirement", "state", "next_action"});
         if (!valid || result.value("schema_version").toInt() != 1 || rows.size() != 7
-            || !result.value("ready").isBool() || result.value("seamless_handoff_proven").toBool(true)) {
+            || !result.value("ready").isBool() || result.value("ready").toBool() != allReady
+            || !result.value("seamless_handoff_proven").isBool()
+            || result.value("seamless_handoff_proven").toBool(true)) {
             setupNotice_->setText("The daemon returned an unsupported readiness report. Requirements remain unknown until a compatible report is available.");
             if (!custodyFeedback.isEmpty()) setupNotice_->setText(setupNotice_->text() + "\n" + custodyFeedback);
             readiness_->setRowCount(0);
