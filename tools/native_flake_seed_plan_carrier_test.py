@@ -359,6 +359,74 @@ class CarrierModels(unittest.TestCase):
             with self.assertRaises(ValueError):
                 opener(models.SCRIPT, "")
 
+    def test_restore_child_refusals_preserve_primary_identity_and_real_owned_cleanup(self):
+        cases = (("--load-db", "registration-load"),
+            ("--dump-db", "registration-readback"),
+            ("derivation", "derivation-graph"), ("--dry-run", "missing-query"))
+        for token, operation in cases:
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+                fixture.generate()
+                before = {name: path.read_bytes() for name, path in fixture.physical.items() if path.is_file()}
+                refused = ValueError("private untrusted diagnostic bait")
+                deadlines = []
+                def runner(*args, **kwargs):
+                    deadlines.append(args[3])
+                    if token in args[0]:
+                        raise refused
+                    return fixture.model.runner(*args, **kwargs)
+                with patch.object(models.missing.proof, "run", side_effect=runner):
+                    with self.assertRaises(ValueError) as caught:
+                        fixture.qualify(runner=runner)
+                self.assertIs(caught.exception, refused)
+                self.assertEqual(refused.args, ("private untrusted diagnostic bait",))
+                self.assertEqual(carrier.PHASE, "fresh-private-missing-plan")
+                self.assertEqual(carrier.plan.restore_failure(refused), operation)
+                self.assertEqual(len(set(deadlines)), 1)
+                self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+                self.assertEqual({name: fixture.physical[name].read_bytes() for name in before}, before)
+
+    def test_restore_original_byte_refusal_stays_before_private_creation_and_children(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            refused = OSError("private original-byte bait")
+            with patch.object(carrier.plan, "object_hash", side_effect=refused):
+                with self.assertRaises(OSError) as caught:
+                    fixture.qualify()
+            self.assertIs(caught.exception, refused)
+            self.assertEqual(carrier.plan.restore_failure(refused), "original-byte-proof")
+            self.assertEqual(fixture.model.calls, [])
+            self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+
+    def test_restore_cleanup_failure_has_its_own_operation_and_keeps_original_tail(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            original_close = carrier.plan.proof.OwnedRoot.close
+            refused = OSError("private cleanup bait")
+            deadlines = []
+            def close(root, deadline):
+                deadlines.append(deadline)
+                original_close(root, deadline)
+                raise refused
+            with patch.object(carrier.plan.proof.OwnedRoot, "close", close):
+                with self.assertRaises(OSError) as caught:
+                    fixture.qualify()
+            self.assertIs(caught.exception, refused)
+            self.assertEqual(carrier.plan.restore_failure(refused), "cleanup")
+            self.assertEqual(deadlines, [fixture.model.calls[0][1]+carrier.plan.proof.CLEANUP_SECONDS])
+            self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+
+    def test_restore_projection_accepts_only_exact_closed_operation_strings(self):
+        for value in (None, "private bait", "cleanup/private", 1, ["copy"]):
+            error = ValueError("private bait")
+            error.native_plan_operation = value
+            self.assertIsNone(carrier.plan.restore_failure(error))
+        class Poisoned(str):
+            pass
+        error = ValueError("private bait")
+        error.native_plan_operation = Poisoned("copy")
+        self.assertIsNone(carrier.plan.restore_failure(error))
+        self.assertIsNone(carrier.plan.restore_failure(ValueError("copy")))
+
     def test_joined_generator_declared_aliases_actual_restore_and_readback(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
             fixture.generate()

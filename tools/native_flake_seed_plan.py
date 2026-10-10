@@ -3,7 +3,7 @@
 The declared owner must supply pinned producer success and exact regular-label
 openers. This primitive never discovers host roots or queries a shared DB.
 """
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -21,6 +21,26 @@ KIND = "omux-native-flake-restored-plan-v1"
 MAX_ROOTS = schedule.MAX_GENERATED_OBJECTS
 MAX_CANDIDATE_ROOTS = 4096
 MAX_NAR_BYTES = seed.MAX_BYTES
+
+
+RESTORE_OPERATIONS = frozenset((
+    "join", "held-tools", "original-byte-proof", "private-allocation", "copy",
+    "registration-load", "registration-readback", "derivation-graph", "missing-query",
+    "preservation-readback", "cleanup", "cleanup-readback"))
+
+
+def restore_failure(error):
+    operation = getattr(error, "native_plan_operation", None)
+    return operation if type(operation) is str and operation in RESTORE_OPERATIONS else None
+
+
+@contextmanager
+def _restore_operation(operation):
+    try:
+        yield
+    except BaseException as error:
+        error.native_plan_operation = operation
+        raise
 
 
 def require(value):
@@ -214,108 +234,121 @@ def restore_plan(obligations, runtime, producer_records, selected_candidates,
     future action owner. No ambient default opener, target discovery or receipt
     admission exists in this primitive.
     """
-    proof.tick(deadline)
-    require(type(retained_roots) is frozenset
-        and retained_roots <= {logical for logical, item in obligations["generated"].items()
-            if "artifact_root" in item})
-    actual_producer = producer_objects(obligations, runtime)
-    schedule.same_records(actual_producer, producer_records)
-    _, actual_selected = candidates(obligations, selected_candidates)
-    require(set(actual_selected) == set(selected_candidates))
-    merged = dict(producer_records)
-    for logical, row in selected_candidates.items():
-        if logical in merged:
-            schedule.same_records({logical: merged[logical]}, {logical: row})
-        else:
-            merged[logical] = row
-    require(set(descriptors) == set(merged) and 0 < len(merged) <= MAX_ROOTS)
-    registration = "".join("\n".join(merged[root]["record"])+"\n" for root in sorted(merged))
-    require(type(registration) is str and len(registration.encode("ascii")) <= proof.MAX_OUTPUT)
-    parsed = seed.registrations(registration, sorted(merged), current_flake_paths=True)
-    schedule.same_records(parsed, merged)
-    split = lambda path: ("/".join(path.split("/")[:4]), "/".join(path.split("/")[4:]))
-    def witness(stream):
-        row = os.fstat(stream.fileno())
-        return (row.st_dev, row.st_ino, row.st_uid, row.st_gid, row.st_mode,
-                row.st_nlink, row.st_size, row.st_mtime_ns, row.st_ctime_ns)
+    with _restore_operation("join"):
+        proof.tick(deadline)
+        require(type(retained_roots) is frozenset
+            and retained_roots <= {logical for logical, item in obligations["generated"].items()
+                if "artifact_root" in item})
+        actual_producer = producer_objects(obligations, runtime)
+        schedule.same_records(actual_producer, producer_records)
+        _, actual_selected = candidates(obligations, selected_candidates)
+        require(set(actual_selected) == set(selected_candidates))
+        merged = dict(producer_records)
+        for logical, row in selected_candidates.items():
+            if logical in merged:
+                schedule.same_records({logical: merged[logical]}, {logical: row})
+            else:
+                merged[logical] = row
+        require(set(descriptors) == set(merged) and 0 < len(merged) <= MAX_ROOTS)
+        registration = "".join("\n".join(merged[root]["record"])+"\n" for root in sorted(merged))
+        require(type(registration) is str and len(registration.encode("ascii")) <= proof.MAX_OUTPUT)
+        parsed = seed.registrations(registration, sorted(merged), current_flake_paths=True)
+        schedule.same_records(parsed, merged)
+        split = lambda path: ("/".join(path.split("/")[:4]), "/".join(path.split("/")[4:]))
+        def witness(stream):
+            row = os.fstat(stream.fileno())
+            return (row.st_dev, row.st_ino, row.st_uid, row.st_gid, row.st_mode,
+                    row.st_nlink, row.st_size, row.st_mtime_ns, row.st_ctime_ns)
     with ExitStack() as held:
-        canonical = {name: seed.resolve_member(runtime, runtime["tools"][name]) for name in ("nix", "nix_store")}
-        tools = {name: held.enter_context(opener(*split(path))) for name, path in canonical.items()}
-        before = {name: witness(stream) for name, stream in tools.items()}
-        held_paths = {canonical[name]: stream for name, stream in tools.items()}
-        def pinned(root, relative):
-            path = root+("/"+relative if relative else "")
-            if path not in held_paths:
-                return opener(root, relative)
-            os.lseek(held_paths[path].fileno(), 0, os.SEEK_SET)
-            return os.fdopen(os.dup(held_paths[path].fileno()), "rb")
-        total = 0
-        for logical in sorted(merged):
-            proof.tick(deadline)
-            total += object_hash(descriptors[logical], merged[logical], pinned, deadline,
-                                 retained_transport=logical in retained_roots)
-            require(total <= MAX_NAR_BYTES)
-        root = proof.OwnedRoot(parent)
+        with _restore_operation("held-tools"):
+            canonical = {name: seed.resolve_member(runtime, runtime["tools"][name]) for name in ("nix", "nix_store")}
+            tools = {name: held.enter_context(opener(*split(path))) for name, path in canonical.items()}
+            before = {name: witness(stream) for name, stream in tools.items()}
+            held_paths = {canonical[name]: stream for name, stream in tools.items()}
+            def pinned(root, relative):
+                path = root+("/"+relative if relative else "")
+                if path not in held_paths:
+                    return opener(root, relative)
+                os.lseek(held_paths[path].fileno(), 0, os.SEEK_SET)
+                return os.fdopen(os.dup(held_paths[path].fileno()), "rb")
+        with _restore_operation("original-byte-proof"):
+            total = 0
+            for logical in sorted(merged):
+                proof.tick(deadline)
+                total += object_hash(descriptors[logical], merged[logical], pinned, deadline,
+                                     retained_transport=logical in retained_roots)
+                require(total <= MAX_NAR_BYTES)
+        with _restore_operation("private-allocation"):
+            root = proof.OwnedRoot(parent)
         result = None
         try:
-            root.recheck()
-            require(os.statvfs(root.path).f_bavail*os.statvfs(root.path).f_frsize >= 2*total+proof.FREE_FLOOR)
-            for name in ("private-store", "home", "config", "tmp"):
-                (root.path/name).mkdir(mode=0o700)
-            private = root.path/"private-store"
-            store = private/"nix/store"
-            store.mkdir(parents=True, mode=0o755)
-            for logical in sorted(merged):
-                copied = schedule.copy_tree(descriptors[logical], store/logical.rsplit("/",1)[1], pinned, deadline)
-                row = merged[logical]["record"]
-                require(copied["narHash"] == "sha256:"+seed.expected_hash(row[1])
-                    and copied["narSize"] == int(row[2]))
-            for name, path in canonical.items():
-                with opener(*split(path)) as current:
-                    require(witness(tools[name]) == before[name] == witness(current))
-            reg = root.path/"registration"
-            reg.write_bytes(registration.encode("ascii"))
-            os.chmod(reg, 0o400)
-            common = proof.common(runtime["tools"]["nix_store"], private)
-            with nar.open_regular(str(reg), "") as stream:
-                require(runner(common+["--load-db"], proof.environment(root.path), root.path,
-                    deadline, input_file=stream, tool_fd=tools["nix_store"].fileno()) == b"")
-            dumped = runner(common+["--dump-db"], proof.environment(root.path), root.path,
-                deadline, tool_fd=tools["nix_store"].fileno())
-            schedule.same_records(merged, proof.readback_records(dumped, sorted(merged),
-                                                               current_flake_paths=True))
-            raw_graph = runner(schedule.plan(runtime["tools"], private, "", obligations["target"]["drvPath"]),
-                proof.environment(root.path), root.path, deadline, tool_fd=tools["nix"].fileno(),
-                output_limit=schedule.MAX_GRAPH_BYTES)
-            graph = schedule.derivations(raw_graph, obligations["target"])
-            require(seed.sha(raw_graph) == obligations["derivation_json_sha256"]
-                    and seed.encoded(graph) == seed.encoded(obligations["derivations"]))
-            # query() itself has fixed capture/4MiB/held-FD/offline grammar.
-            plan = missing.query(runtime["tools"], private, root.path, obligations["target"]["drvPath"],
-                frozenset(graph), deadline, tool_fd=tools["nix_store"].fileno())
-            checks = readiness(obligations, plan, merged)
-            for logical in sorted(merged):
-                original = object_hash(descriptors[logical], merged[logical], pinned, deadline,
-                                       retained_transport=logical in retained_roots)
-                physical = store/logical.rsplit("/",1)[1]
-                actual = proof.describe_root(logical, physical)
-                require(seed.encoded(actual) == seed.encoded(descriptors[logical]))
-                copied = object_hash(actual, merged[logical],
-                    lambda root, relative: nar.open_regular(str(store/root.rsplit("/",1)[1]), relative), deadline)
-                require(original == copied)
-            for name, path in canonical.items():
-                with opener(*split(path)) as current:
-                    require(witness(tools[name]) == before[name] == witness(current))
-            root.recheck()
-            result = {"schema_version": 1, "kind": KIND, "plan": checks,
-                "restored_registration_sha256": seed.sha(registration.encode("ascii")),
-                "verified_roots": len(merged), "verified_nar_bytes": total,
-                "graph_rechecked": True, "original_and_copied_bytes_rechecked": True,
-                "realized": False, "complete_build_seed_verified": False, "native_runtime_qualified": False,
-                "sdk_qualified": False, "execution_authority": False}
+            with _restore_operation("private-allocation"):
+                root.recheck()
+                require(os.statvfs(root.path).f_bavail*os.statvfs(root.path).f_frsize >= 2*total+proof.FREE_FLOOR)
+                for name in ("private-store", "home", "config", "tmp"):
+                    (root.path/name).mkdir(mode=0o700)
+                private = root.path/"private-store"
+                store = private/"nix/store"
+                store.mkdir(parents=True, mode=0o755)
+            with _restore_operation("copy"):
+                for logical in sorted(merged):
+                    copied = schedule.copy_tree(descriptors[logical], store/logical.rsplit("/",1)[1], pinned, deadline)
+                    row = merged[logical]["record"]
+                    require(copied["narHash"] == "sha256:"+seed.expected_hash(row[1])
+                        and copied["narSize"] == int(row[2]))
+                for name, path in canonical.items():
+                    with opener(*split(path)) as current:
+                        require(witness(tools[name]) == before[name] == witness(current))
+                reg = root.path/"registration"
+                reg.write_bytes(registration.encode("ascii"))
+                os.chmod(reg, 0o400)
+                common = proof.common(runtime["tools"]["nix_store"], private)
+            with _restore_operation("registration-load"):
+                with nar.open_regular(str(reg), "") as stream:
+                    require(runner(common+["--load-db"], proof.environment(root.path), root.path,
+                        deadline, input_file=stream, tool_fd=tools["nix_store"].fileno()) == b"")
+            with _restore_operation("registration-readback"):
+                dumped = runner(common+["--dump-db"], proof.environment(root.path), root.path,
+                    deadline, tool_fd=tools["nix_store"].fileno())
+                schedule.same_records(merged, proof.readback_records(dumped, sorted(merged),
+                                                                   current_flake_paths=True))
+            with _restore_operation("derivation-graph"):
+                raw_graph = runner(schedule.plan(runtime["tools"], private, "", obligations["target"]["drvPath"]),
+                    proof.environment(root.path), root.path, deadline, tool_fd=tools["nix"].fileno(),
+                    output_limit=schedule.MAX_GRAPH_BYTES)
+                graph = schedule.derivations(raw_graph, obligations["target"])
+                require(seed.sha(raw_graph) == obligations["derivation_json_sha256"]
+                        and seed.encoded(graph) == seed.encoded(obligations["derivations"]))
+            with _restore_operation("missing-query"):
+                # query() itself has fixed capture/4MiB/held-FD/offline grammar.
+                plan = missing.query(runtime["tools"], private, root.path, obligations["target"]["drvPath"],
+                    frozenset(graph), deadline, tool_fd=tools["nix_store"].fileno())
+                checks = readiness(obligations, plan, merged)
+            with _restore_operation("preservation-readback"):
+                for logical in sorted(merged):
+                    original = object_hash(descriptors[logical], merged[logical], pinned, deadline,
+                                           retained_transport=logical in retained_roots)
+                    physical = store/logical.rsplit("/",1)[1]
+                    actual = proof.describe_root(logical, physical)
+                    require(seed.encoded(actual) == seed.encoded(descriptors[logical]))
+                    copied = object_hash(actual, merged[logical],
+                        lambda root, relative: nar.open_regular(str(store/root.rsplit("/",1)[1]), relative), deadline)
+                    require(original == copied)
+                for name, path in canonical.items():
+                    with opener(*split(path)) as current:
+                        require(witness(tools[name]) == before[name] == witness(current))
+                root.recheck()
+                result = {"schema_version": 1, "kind": KIND, "plan": checks,
+                    "restored_registration_sha256": seed.sha(registration.encode("ascii")),
+                    "verified_roots": len(merged), "verified_nar_bytes": total,
+                    "graph_rechecked": True, "original_and_copied_bytes_rechecked": True,
+                    "realized": False, "complete_build_seed_verified": False, "native_runtime_qualified": False,
+                    "sdk_qualified": False, "execution_authority": False}
         finally:
-            root.close(deadline+proof.CLEANUP_SECONDS)
-        require(not os.path.lexists(root.path))
-        proof.tick(deadline)
+            with _restore_operation("cleanup"):
+                root.close(deadline+proof.CLEANUP_SECONDS)
+        with _restore_operation("cleanup-readback"):
+            require(not os.path.lexists(root.path))
+            proof.tick(deadline)
         result["private_root_removed"] = True
         return result

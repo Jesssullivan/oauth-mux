@@ -216,5 +216,8 @@ if __name__ == "__main__":
         diagnostic = inputs.metadata_failure(error)
         if diagnostic is not None:
             print("declared metadata refused; role="+diagnostic["role"]+"; reason="+diagnostic["reason"], file=sys.stderr)
+        operation = plan.restore_failure(error)
+        if PHASE == "fresh-private-missing-plan" and operation is not None:
+            print("native flake restore refused; operation="+operation, file=sys.stderr)
         print("native flake seed plan refused at "+PHASE, file=sys.stderr)
         raise SystemExit(1) from None
