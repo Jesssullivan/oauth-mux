@@ -15,6 +15,29 @@ import yoga_installed_workspace as workspace
 
 
 class SelectionTests(unittest.TestCase):
+    def test_indexed_and_ordinary_root_inputs_keep_exact_trace_classification(self):
+        root = Path('/nix/store/' + 'a' * 32 + '-selected')
+        declared = root/'declared'
+        snapshot = workspace.resolver_roots(frozenset({str(root)}))
+        cases = ((declared, 'declared-leaf'), (root, 'declared-ancestor'),
+            (declared/'child', 'declared-descendant'), (root/'other', 'store'),
+            (Path(workspace.OUTPUT_BASE)/'public', 'historical-output'),
+            (Path(workspace.SOURCE_ROOT)/'public', 'historical-source'))
+        directory = type('Info', (), {'st_mode': 0o040555})()
+        for target, expected in cases:
+            traces = []
+            for roots in (frozenset({str(root)}), snapshot):
+                trace = []
+                with patch.object(workspace.os, 'lstat', return_value=directory):
+                    self.assertEqual(workspace.safe_resolve(str(target), roots,
+                        declared_paths=(declared,), _trace=lambda *row: trace.append(row)), target)
+                self.assertEqual(trace[-1], ('final-namespace-fence', expected, 'unobserved', 0))
+                traces.append(trace)
+            self.assertEqual(traces[0], traces[1])
+        with patch.object(workspace.os, 'lstat') as observed, self.assertRaises(ValueError):
+            workspace.safe_resolve('/home/private/never-read', snapshot, declared_paths=(declared,))
+        observed.assert_not_called()
+
     def test_real_execroot_inventory_route_old_fence_and_exact_leaf_success(self):
         for name, repository in assembly.INVENTORY_REPOS.items():
             for runner in ('linux-sandbox', 'processwrapper-sandbox'):

@@ -358,6 +358,7 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
         phase('inventory-roots')
         workspace.require(all(re.fullmatch(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+', root) for root in roots))
         roots = frozenset(roots)
+        resolve_roots = workspace.resolver_roots(roots)
         input_paths = {name: mapping[key] for name, key in INPUT_KEYS.items()}
         native = workspace.OUTPUT_BASE + '/external/+omux_nix_repository+omux_nix/native.json'
         phase('native-manifest')
@@ -368,7 +369,7 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
         phase('retained-runfiles')
         for key, target in sorted(mapping.items()):
             workspace.payload.budget(until)
-            physical = workspace.safe_resolve(target, roots)
+            physical = workspace.safe_resolve(target, resolve_roots)
             aliases[target] = (physical, ())
             if str(physical).startswith('/nix/store/'):
                 workspace.require(key not in BOOTSTRAP_SHA and key != '+omux_nix_repository+omux_nix/native.json'
@@ -388,7 +389,7 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
         # their public store bytes are read, never executed.
         phase('independent-inputs')
         for name, target in input_paths.items():
-            physical = workspace.safe_resolve(target, roots)
+            physical = workspace.safe_resolve(target, resolve_roots)
             held = capture(physical, INPUT_SHA[name], workspace.payload.MAX_FILE,
                            store_roots=roots if str(physical).startswith('/nix/store/') else None)
             if name in workspace.ARTIFACTS:
@@ -456,7 +457,7 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
             for held in captures: held.check()
             package_check()
             for target, (physical, declared) in aliases.items():
-                workspace.require(workspace.safe_resolve(target, roots, declared_paths=declared) == physical)
+                workspace.require(workspace.safe_resolve(target, resolve_roots, declared_paths=declared) == physical)
         phase('prepublication-recheck')
         recheck()
         phase('publication')

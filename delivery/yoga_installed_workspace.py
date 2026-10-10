@@ -457,6 +457,26 @@ def build_files(mapping, copied, store, *, reserved=False):
         'installed-store-files.json': canonical(store)}
 
 
+class _ResolverRoots(tuple):
+    """Immutable lexical membership only; never a resolved-path/file cache."""
+    __slots__ = ()
+
+    def __new__(cls, roots):
+        selected = frozenset(Path(root) for root in roots)
+        ancestors = frozenset(parent for root in selected for parent in root.parents)
+        return tuple.__new__(cls, (selected, ancestors))
+
+    def contains(self, candidate, parents):
+        return candidate in self[0] or any(parent in self[0] for parent in parents)
+
+    def related(self, candidate, parents):
+        return candidate in self[1] or self.contains(candidate, parents)
+
+
+def resolver_roots(roots):
+    return _ResolverRoots(roots)
+
+
 def safe_resolve(target, roots, *, declared_paths=(), _trace=None):
     """Bound every symbolic hop to the selected public BUILD/source/store roots."""
     candidate_class, link_form, hops = 'unobserved', 'unobserved', 0
@@ -467,16 +487,17 @@ def safe_resolve(target, roots, *, declared_paths=(), _trace=None):
     target = source_path(str(target))
     trace('declaration-type')
     require(type(declared_paths) is tuple)
-    store = {Path(root) for root in roots}
+    store = roots if type(roots) is _ResolverRoots else resolver_roots(roots)
     declared = {source_path(str(path)) for path in declared_paths}
-    permitted = {Path(OUTPUT_BASE), Path(SOURCE_ROOT)} | store | declared
-    def classify(candidate):
+    declared_index = resolver_roots(declared)
+    historical = resolver_roots((Path(OUTPUT_BASE), Path(SOURCE_ROOT)))
+    def classify(candidate, parents):
         if candidate in declared: return 'declared-leaf'
-        if any(candidate in root.parents for root in declared): return 'declared-ancestor'
-        if any(root in candidate.parents for root in declared): return 'declared-descendant'
+        if candidate in declared_index[1]: return 'declared-ancestor'
+        if declared_index.contains(candidate, parents): return 'declared-descendant'
         for root, name in ((Path(OUTPUT_BASE), 'historical-output'), (Path(SOURCE_ROOT), 'historical-source')):
             if candidate == root or root in candidate.parents or candidate in root.parents: return name
-        if any(candidate == root or root in candidate.parents or candidate in root.parents for root in store): return 'store'
+        if store.related(candidate, parents): return 'store'
         return 'outside'
     pending, current, hops = list(Path(target).parts[1:]), Path('/'), 0
     while pending:
@@ -486,9 +507,11 @@ def safe_resolve(target, roots, *, declared_paths=(), _trace=None):
         if part == '..':
             current = current.parent; continue
         candidate = current / part
-        if _trace is not None: candidate_class = classify(candidate)
+        parents = tuple(candidate.parents)
+        if _trace is not None: candidate_class = classify(candidate, parents)
         trace('namespace-fence')
-        require(any(candidate == root or root in candidate.parents or candidate in root.parents for root in permitted))
+        require(historical.related(candidate, parents) or store.related(candidate, parents)
+            or declared_index.related(candidate, parents))
         trace('lstat')
         info = os.lstat(candidate)
         if stat.S_ISLNK(info.st_mode):
@@ -507,9 +530,11 @@ def safe_resolve(target, roots, *, declared_paths=(), _trace=None):
             pending = absolute.split('/')[1:] + pending; current = Path('/')
         else:
             current = candidate
-    if _trace is not None: candidate_class = classify(current)
+    parents = tuple(current.parents)
+    if _trace is not None: candidate_class = classify(current, parents)
     trace('final-namespace-fence')
-    require(any(current == root or root in current.parents for root in permitted))
+    require(historical.contains(current, parents) or store.contains(current, parents)
+        or declared_index.contains(current, parents))
     return current
 
 
@@ -609,13 +634,14 @@ def produce(selection_path, selection_sha256, output, deadline_ns):
             total += len(content); require(total <= MAX_COPIED)
         roots = frozenset(inventories)
         require(all(re.fullmatch(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+', name) for name in roots))
+        resolve_roots = resolver_roots(roots)
         # Never consult a manifest-selected personal path; only exact BUILD/source
         # namespaces and the selected immutable reference closures are admissible.
         aliases, used_pins = {}, set()
         for index, (key, target) in enumerate(sorted(mapping.items())):
             payload.budget(until)
             alias = 'f%06d' % index
-            path = safe_resolve(target, roots)
+            path = safe_resolve(target, resolve_roots)
             aliases[target] = str(path)
             if str(path).startswith('/nix/store/'):
                 require(str(Path(*path.parts[:4])) in roots)
@@ -632,7 +658,7 @@ def produce(selection_path, selection_sha256, output, deadline_ns):
             if key.startswith('_main/') and key[len('_main/'):] in ORIGIN_SOURCE_SHA:
                 require(digest == ORIGIN_SOURCE_SHA[key[len('_main/'):]])
             for name in payload.INPUTS:
-                if safe_resolve(selection['inputPaths'][name], roots) == path:
+                if safe_resolve(selection['inputPaths'][name], resolve_roots) == path:
                     require(digest == selection['inputSha256'][name])
             if target == selection['nativeManifest']:
                 require(digest == selection['nativeManifestSha256'])
@@ -782,7 +808,7 @@ def produce(selection_path, selection_sha256, output, deadline_ns):
             held.check()
         package_check()
         for target, expected in aliases.items():
-            payload.budget(until); require(str(safe_resolve(target, roots)) == expected)
+            payload.budget(until); require(str(safe_resolve(target, resolve_roots)) == expected)
         named = os.stat(root.name, dir_fd=parent, follow_symlinks=False)
         require((identity.st_dev, identity.st_ino, identity.st_uid, identity.st_mode) ==
                 (named.st_dev, named.st_ino, named.st_uid, named.st_mode))

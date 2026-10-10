@@ -12,6 +12,70 @@ import yoga_installed_workspace as installed
 
 
 class InstalledWorkspaceTests(unittest.TestCase):
+    def test_root_index_matches_legacy_ancestor_and_descendant_fences(self):
+        roots = (Path('/nix/store/' + 'a' * 32 + '-one'),
+            Path('/nix/store/' + 'b' * 32 + '-two'), Path('/srv/selected/file'),
+            Path('/srv/selected/nested'), Path('/srv/selected'), Path('/relative/../literal'))
+        index = installed.resolver_roots(roots)
+        candidates = {Path('/'), Path('/nix/store/unselected'), Path('/srv/selected-sibling')}
+        for root in roots:
+            candidates.update((root, *root.parents, root/'child', root/'child/grandchild'))
+        for candidate in candidates:
+            parents = tuple(candidate.parents)
+            with self.subTest(candidate=candidate):
+                legacy = any(candidate == root or root in candidate.parents or candidate in root.parents for root in roots)
+                final = any(candidate == root or root in candidate.parents for root in roots)
+                self.assertEqual(index.related(candidate, parents), legacy)
+                self.assertEqual(index.contains(candidate, parents), final)
+
+    def test_reused_index_never_enumerates_closed_roots_during_leaf_resolution(self):
+        roots = frozenset('/nix/store/' + 'a' * 32 + '-selected-' + str(i) for i in range(1024))
+        snapshot = installed.resolver_roots(roots)
+        class NoScan(frozenset):
+            def __iter__(self):
+                raise AssertionError('per-leaf root/ancestor enumeration')
+        # Test-only immutable membership instrument; no production constructor bypass.
+        guarded = tuple.__new__(installed._ResolverRoots, (NoScan(snapshot[0]), NoScan(snapshot[1])))
+        directory = type('Info', (), {'st_mode': stat.S_IFDIR | 0o555})()
+        with patch.object(installed.os, 'lstat', return_value=directory):
+            for i in range(40):
+                target = '/nix/store/' + 'a' * 32 + '-selected-' + str(i) + '/bin/tool'
+                self.assertEqual(installed.safe_resolve(target, guarded), Path(target))
+        with self.assertRaises(TypeError): guarded[0] = frozenset()
+        with self.assertRaises(AttributeError): guarded.extra = 'mutable'
+
+    def test_root_snapshot_does_not_cache_alias_or_admit_later_foreign_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            allowed = Path(directory)/'selected'; allowed.mkdir()
+            chosen = allowed/'payload'; chosen.write_bytes(b'synthetic selected bytes')
+            alias = allowed/'alias'; alias.symlink_to(chosen)
+            supplied = {str(allowed)}
+            index = installed.resolver_roots(supplied)
+            self.assertEqual(installed.safe_resolve(str(alias), index), chosen)
+            foreign = Path(directory)/'unselected-never-created'
+            supplied.add(str(foreign)); supplied.remove(str(allowed))
+            alias.unlink(); alias.symlink_to(foreign/'payload')
+            original_lstat = os.lstat
+            def guarded(path):
+                self.assertFalse(Path(path) == foreign or foreign in Path(path).parents)
+                return original_lstat(path)
+            with patch.object(installed.os, 'lstat', side_effect=guarded), self.assertRaises(ValueError):
+                installed.safe_resolve(str(alias), index)
+            self.assertEqual(chosen.read_bytes(), b'synthetic selected bytes')
+
+    def test_indexed_symlink_loop_keeps_exact_64_hop_readlink_bound(self):
+        root = '/nix/store/' + 'a' * 32 + '-selected'
+        index = installed.resolver_roots((root,))
+        directory = type('Info', (), {'st_mode': stat.S_IFDIR | 0o555})()
+        link = type('Info', (), {'st_mode': stat.S_IFLNK | 0o777})()
+        def metadata(path):
+            self.assertTrue(str(path) == root+'/loop' or Path(path) in Path(root+'/loop').parents)
+            return link if str(path) == root+'/loop' else directory
+        with patch.object(installed.os, 'lstat', side_effect=metadata), \
+                patch.object(installed.os, 'readlink', return_value='loop') as readlink, self.assertRaises(ValueError):
+            installed.safe_resolve(root+'/loop', index)
+        self.assertEqual(readlink.call_count, 64)
+
     def projection(self):
         # Actual closed public projection of BUILD464e, not a qualifying fake RUN.
         return {'id': installed.BUILD_ID, 'artifact_epoch': installed.BUILD_ID,
