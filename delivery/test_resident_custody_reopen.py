@@ -159,6 +159,8 @@ class CompleteExecuteContract(unittest.TestCase):
             return "\n".join(key+"="+value for key,value in current.items()).encode()
         peer=((1,2,stat.S_IFSOCK|0o600,os.getuid(),os.getgid()),10,20)
         def socket_peer(path):
+            if drift == "ticks" and observations >= 3:
+                return (peer[0],10,21)
             if drift == "socket" and observations >= 3:
                 return ((1,3,stat.S_IFSOCK|0o600,os.getuid(),os.getgid()),10,20)
             return peer
@@ -182,6 +184,13 @@ class CompleteExecuteContract(unittest.TestCase):
         channel.rpc.return_value=({"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"Locked"}}
             if refusal else helpers.response(2))
         remaining=mock.Mock()
+        tick_calls=[]
+        def start_ticks(pid):
+            # The real start_control_peer must request exactly the fixture PID.
+            self.assertEqual(type(pid),int)
+            self.assertEqual(pid,10)
+            tick_calls.append(pid)
+            return 20
         with ExitStack() as stack:
             for target,name,options in (
                 (reopen.owned,"start_pins",{"return_value":selection}),
@@ -189,6 +198,9 @@ class CompleteExecuteContract(unittest.TestCase):
                 (reopen.resident,"process_identity",{"side_effect":lambda pid:(pid,20,30,40)}),
                 (reopen.resident,"cgroup_observation",{"side_effect":lambda group,pid:(caps,(1,3 if drift == "cgroup" and observations >= 3 else 2))}),
                 (reopen.guard,"socket_witness",{"side_effect":socket_peer}),
+                (reopen.guard,"start_ticks",{"side_effect":start_ticks}),
+                (reopen.guard.Path,"stat",{"side_effect":AssertionError("fixture must never fall back to host proc stat")}),
+                (reopen.guard.Path,"read_text",{"side_effect":AssertionError("fixture must never fall back to host proc stat text")}),
                 (reopen,"Channel",{"return_value":channel}),
             ):
                 stack.enter_context(mock.patch.object(target,name,**options))
@@ -196,6 +208,8 @@ class CompleteExecuteContract(unittest.TestCase):
                 result=reopen.execute(reopen.Path("/declared/systemctl"),manifest,
                     {"HOME":str(home),"XDG_RUNTIME_DIR":"/omux-resident-inputs"},bounded,remaining,1300*10**9)
             finally:
+                self.assertTrue(tick_calls)
+                self.assertEqual(set(tick_calls),{10})
                 witness.close.assert_called_once()
                 channel.close.assert_called_once()
                 if missing:
@@ -220,7 +234,7 @@ class CompleteExecuteContract(unittest.TestCase):
         self.assertEqual((result["outcome"],result["refusal"],result["metadata_loaded"],result["account_count"]),
             ("safe_refusal","Locked",False,None))
     def test_full_execute_identity_changes_refuse_after_request(self):
-        for drift in ("InvocationID","NRestarts","MainPID","cgroup","socket","writer"):
+        for drift in ("InvocationID","NRestarts","MainPID","cgroup","socket","writer","ticks"):
             with self.subTest(drift=drift), self.assertRaises(ValueError): self.invoke(drift=drift)
     def test_missing_typed_metadata_refuses_before_reopen(self):
         for missing in ("metadata_loaded","account_count"):
