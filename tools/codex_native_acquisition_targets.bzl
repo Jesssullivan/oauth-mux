@@ -1,0 +1,36 @@
+"""Separate ninth metadata/SDK targets; legacy source families remain unchanged."""
+load(":rules.bzl", "python_test")
+
+def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources, parent_data, sdk_data):
+    sources = depset(source_sources + sdk_sources + [
+        "codex_native_acquisition_binding.py", "codex_native_acquisition_metadata.py",
+        "codex_native_acquisition_sdk_export.py", "codex_native_acquisition_material.py",
+        "guard_native_acquisition_inputs_reserved.py", "guard_resident_native_source_acquisition_source_reserved.py",
+        "codex_native_acquisition_compilation.py", "codex_native_acquisition_preflight.py",
+        "codex_native_acquisition_runtime_qualification.py",
+    ]).to_list()
+    data = parent_data + sdk_data + [
+        "//integrations/codex-upstream:native_acquisition_input_configuration",
+        "//integrations/codex-upstream:native_acquisition_n9_binding",
+        "@omux_native_acquisition_metadata_inputs//:inputs",
+        "@omux_protocol_history_query_tools//:inputs",
+    ]
+    for name, main in [
+        ("codex_native_acquisition_binding_producer", "codex_native_acquisition_binding.py"),
+        ("codex_native_acquisition_metadata_producer", "codex_native_acquisition_metadata.py"),
+        ("codex_native_acquisition_sdk_export_producer", "codex_native_acquisition_sdk_export.py"),
+        ("codex_native_acquisition_metadata_sdk_test", "codex_native_acquisition_metadata_sdk_test.py"),
+        ("codex_native_acquisition_compilation_producer", "codex_native_acquisition_compilation.py"),
+        ("codex_native_acquisition_compilation_test", "codex_native_acquisition_compilation_test.py"),
+        ("codex_native_acquisition_preflight_test", "codex_native_acquisition_preflight_test.py"),
+        ("codex_native_acquisition_material_test", "codex_native_acquisition_material_test.py"),
+        ("codex_native_acquisition_plan_producer", "codex_native_acquisition_plan_producer.py"),
+        ("codex_native_acquisition_query_producer", "codex_native_acquisition_query_producer.py"),
+        ("codex_native_acquisition_runtime_qualification_test", "codex_native_acquisition_runtime_qualification_test.py"),
+        ("codex_native_acquisition_runtime_qualification_producer", "codex_native_acquisition_runtime_qualification.py"),
+    ]:
+        python_test(name = name, main = main, srcs = depset(sources + [main]).to_list(), data = data,
+            timeout = "long", tags = ["manual", "no-remote", "no-cache"])
+    python_test(name = "guard_native_acquisition_inputs_reserved_test",
+        main = "guard_native_acquisition_inputs_reserved_test.py",
+        srcs = depset(guard_sources + ["guard_native_acquisition_inputs_reserved.py"]).to_list())

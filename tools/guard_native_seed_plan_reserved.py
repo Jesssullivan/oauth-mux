@@ -673,3 +673,6 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
                 summary["post_stop"]["predicate"]="post-read-failed"
     summary["state"]="deadline-exhausted" if clock()>=deadline else "unproved"
     return summary
+
+# Finite ninth input-family admissions own their target grammar separately.
+WORKLOAD_PROFILES += ("native-acquisition-inputs-models-reserved", "native-acquisition-binding-reserved", "native-acquisition-metadata-reserved", "native-acquisition-sdk-reserved", "native-acquisition-plan-reserved", "native-acquisition-query-reserved", "native-acquisition-compilation-reserved", "native-acquisition-runtime-qualification-reserved")
