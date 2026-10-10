@@ -11,9 +11,12 @@ QUERY = "native-acquisition-query-reserved"
 COMPILE = "native-acquisition-compilation-reserved"
 RUNTIME = "native-acquisition-runtime-qualification-reserved"
 PACKAGE = "native-acquisition-package-reserved"
+PACKAGE_MODELS = "native-acquisition-package-models-reserved"
 BRIDGE = "native-acquisition-bridge-material-reserved"
 BRIDGE_MODELS = "native-acquisition-bridge-models-reserved"
 COHORTS = {
+    PACKAGE_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
+        "//tools:codex_fresh_native_receipt_scope_test", "//:docs_check"),
     BRIDGE: ("//tools:codex_native_acquisition_bridge_material_producer",),
     BRIDGE_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
         "//tools:codex_native_acquisition_bridge_material_test",

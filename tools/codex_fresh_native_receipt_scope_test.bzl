@@ -1,5 +1,6 @@
 """Actual Starlark receipt namespace predicates; no selected input IO."""
 load(":codex_fresh_native_package_inputs.bzl", "receipt_producer")
+load(":codex_native_acquisition_package_inputs.bzl", "package_configuration_valid")
 
 def _receipt_scope_test_impl(ctx):
     home = "/home/jess/.local/state/omux-execution-20261005/"
@@ -53,6 +54,24 @@ def _receipt_scope_test_impl(ctx):
                         (role, path.replace("receipt.json", "receipt.json.bak")),
                     ]
     failures = []
+    # Actual production Starlark selector predicate; no host paths are opened.
+    pending = {"schema_version":1, "kind":"omux-native-acquisition-package-input-configuration-v1", "status":"awaiting-qualified-material", "selection":None}
+    selected = dict(pending, status="selected-material", selection={"path":home + epoch + "/package-selection.json", "sha256":"a" * 64})
+    selector_cases = [(pending, True), (selected, True),
+        (dict(pending, selection=selected["selection"]), False),
+        (dict(selected, selection=None), False),
+        (dict(selected, schema_version=True), False),
+        (dict(selected, extra=True), False),
+        (dict(selected, selection={"path":"/foreign/package-selection.json", "sha256":"a" * 64}), False),
+        (dict(selected, selection={"path":home + epoch + "/../package-selection.json", "sha256":"a" * 64}), False),
+        (dict(selected, selection={"path":home + epoch + "/bad\000selection.json", "sha256":"a" * 64}), False),
+        (dict(selected, selection={"path":home + "a" * 4096, "sha256":"a" * 64}), False),
+        (dict(selected, selection={"path":selected["selection"]["path"], "sha256":"g" * 64}), False),
+        (dict(selected, selection={"path":selected["selection"]["path"], "sha256":"a" * 64, "producer":{}}), False)]
+    for index, case in enumerate(selector_cases):
+        value, expected = case
+        if package_configuration_valid(value) != expected:
+            failures.append("package-selector-" + str(index))
     for index, case in enumerate(cases + [(role, path, None) for role, path in refused]):
         role, path, expected = case
         if receipt_producer(role, path) != expected:

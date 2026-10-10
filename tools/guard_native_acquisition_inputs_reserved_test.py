@@ -9,6 +9,52 @@ import guard_native_acquisition_inputs_reserved as source
 
 
 class AdmissionModels(unittest.TestCase):
+    def test_package_model_vector_and_private_configuration_refuse_before_io(self):
+        profile=source.PACKAGE_MODELS
+        vector=['test','//tools:guard_native_acquisition_inputs_reserved_test',
+            '//tools:codex_fresh_native_receipt_scope_test','//:docs_check']
+        self.assertEqual(['test',*source.COHORTS[profile]],vector)
+        self.assertEqual(source.selected(profile,vector),{'PrivateNetwork':'yes'})
+        self.assertTrue(source.request(self.args(profile),vector))
+        with patch.object(guard,'immutable',side_effect=AssertionError('unexpected tool IO')) as tool, \
+                patch.object(source,'Witness',side_effect=AssertionError('unexpected resident IO')) as resident:
+            for arguments in (vector[:-1],vector+['//:omux'],list(reversed(vector)),
+                    ['run',*vector[1:]],['test',*source.COHORTS[source.PACKAGE]],
+                    vector+['--test_arg=/private/selection.json']):
+                with self.assertRaises(ValueError):
+                    guard.main(['--profile',profile,'--manager','system','--source-commit',
+                        'a'*40,'--source-dirty','false','--',*arguments])
+            for name,value in (('reuse_owned_cache',True),('source_dirty','true'),
+                    ('resident_manifest',Path('/private/selection.json')),('native_mode','schema')):
+                args=self.args(profile);setattr(args,name,value)
+                with self.assertRaises(ValueError):source.request(args,vector)
+            tool.assert_not_called();resident.assert_not_called()
+
+    def test_package_models_use_real_offline_builder_and_original_clock_without_package_dispatch(self):
+        profile=source.PACKAGE_MODELS;arguments=['test',*source.COHORTS[profile]]
+        entry=100*10**9;deadline=1300*10**9
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9):
+            result=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),arguments,
+                profile,entry,deadline,source_commit='a'*40,source_dirty='false')
+        self.assertEqual(result[-3:],arguments[1:])
+        for flag in ('--repository_disable_download','--repo_contents_cache=',
+                '--sandbox_default_allow_network=false','--remote_executor=','--remote_cache=',
+                '--nocache_test_results','--lockfile_mode=error'):
+            self.assertIn(flag,result)
+        self.assertFalse(any(value.startswith('--test_env=OMUX_NATIVE_') for value in result))
+        builder=Mock()
+        with patch.object(kernel.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError):
+                source.command(builder,'bazel',Path('/model/epoch'),arguments,profile,entry,deadline)
+        builder.assert_not_called()
+        self.assertIn(profile,kernel.WORKLOAD_PROFILES)
+        self.assertEqual(guard.workload_pids_observation(None,profile).expected_limit,480)
+        projected=source.projection(profile,entry,deadline,True,{})
+        self.assertEqual(projected['scope'],'fixed-'+profile+'-v1')
+        for name in ('compiler_qualified','native_runtime_qualified','credential_acquisition',
+                'provider_identity_proved','continuity_qualified','native_support'):
+            self.assertIs(projected[name],False)
+
     def test_bridge_has_exact_producer_and_shared_closure_model_vectors(self):
         self.assertEqual(source.COHORTS[source.BRIDGE],('//tools:codex_native_acquisition_bridge_material_producer',))
         self.assertEqual(source.COHORTS[source.BRIDGE_MODELS],(

@@ -8,19 +8,35 @@ def _path(value):
 def _sha(value):
     return type(value) == "string" and len(value) == 64 and all([c in "0123456789abcdef" for c in value.elems()])
 
+def package_configuration_valid(value):
+    """Declaration only: actual package action must prove every selected authority."""
+    if type(value) != "dict" or sorted(value.keys()) != ["kind", "schema_version", "selection", "status"] or type(value["schema_version"]) != "int" or value["schema_version"] != 1 or value["kind"] != "omux-native-acquisition-package-input-configuration-v1":
+        return False
+    if value["status"] == "awaiting-qualified-material":
+        return value["selection"] == None
+    row = value["selection"]
+    return value["status"] == "selected-material" and type(row) == "dict" and sorted(row.keys()) == ["path", "sha256"] and _path(row["path"]) and len(row["path"]) <= 4096 and "\000" not in row["path"] and _sha(row["sha256"]) and any([row["path"].startswith(root) for root in _ROOTS])
+
 def _impl(ctx):
+    manifest = ctx.path(ctx.attr.manifest)
+    configuration_raw = ctx.read(manifest)
+    if len(configuration_raw) > 16384:
+        fail("package configuration exceeds bound")
+    configuration = json.decode(configuration_raw)
+    if not package_configuration_valid(configuration):
+        fail("package configuration must be closed pending or explicitly selected material")
+    ctx.watch(manifest)
+    row = configuration["selection"]
     # Pending configuration remains an executable refusal, before selected host
     # paths are consulted. It never claims an actual source/compiler tuple.
-    if not ctx.attr.selection and not ctx.attr.sha256:
+    if row == None:
         ctx.file("package-selection.json", json.encode({"kind":"unconfigured-native-acquisition-package", "configured":False}) + "\n")
         ctx.file("package-selection.sha256", "unconfigured\n")
         ctx.file("input-aliases.json", "{}\n")
         ctx.file("BUILD.bazel", "exports_files(['package-selection.json','package-selection.sha256','input-aliases.json'])\nfilegroup(name='inputs',srcs=glob(['*.json','*.sha256']),visibility=['//visibility:public'])\n")
         return
-    if not _path(ctx.attr.selection) or not _sha(ctx.attr.sha256) or not any([ctx.attr.selection.startswith(root) for root in _ROOTS]):
-        fail("package selection must be an exact pinned owned public file")
-    selected = ctx.path(ctx.attr.selection)
-    if not selected.exists or selected.is_dir or str(selected.realpath) != ctx.attr.selection:
+    selected = ctx.path(row["path"])
+    if not selected.exists or selected.is_dir or str(selected.realpath) != row["path"]:
         fail("package selection must have physical ancestry")
     ctx.watch(selected)
     raw = ctx.read(selected)
@@ -73,14 +89,17 @@ def _impl(ctx):
     # Cryptographic and full action/readback validation occurs in the declared
     # producer, before any package transformation, against these pinned rows.
     ctx.file("package-selection.json", raw)
-    ctx.file("package-selection.sha256", ctx.attr.sha256 + "\n")
+    ctx.file("package-selection.sha256", row["sha256"] + "\n")
     ctx.file("input-aliases.json", json.encode(aliases) + "\n")
     names += ["package-selection.json", "package-selection.sha256", "input-aliases.json"]
     ctx.file("BUILD.bazel", "exports_files(" + repr(names) + ")\nfilegroup(name='inputs',srcs=" + repr(names) + ",visibility=['//visibility:public'])\n")
 
-codex_native_acquisition_package_inputs = repository_rule(implementation=_impl, attrs={"selection":attr.string(), "sha256":attr.string()}, local=True)
+codex_native_acquisition_package_inputs = repository_rule(implementation=_impl, attrs={"manifest":attr.label(mandatory=True, allow_single_file=True)}, local=True)
 
 def _extension(ctx):
-    codex_native_acquisition_package_inputs(name="omux_native_acquisition_package_data")
+    tags = [tag for module in ctx.modules for tag in module.tags.configuration]
+    if len(tags) != 1 or not any([module.is_root and len(module.tags.configuration) == 1 for module in ctx.modules]):
+        fail("package inputs require one explicit root configuration")
+    codex_native_acquisition_package_inputs(name="omux_native_acquisition_package_data", manifest=tags[0].manifest)
 
-native_acquisition_package_inputs = module_extension(implementation=_extension)
+native_acquisition_package_inputs = module_extension(implementation=_extension, tag_classes={"configuration":tag_class(attrs={"manifest":attr.label(mandatory=True)})})

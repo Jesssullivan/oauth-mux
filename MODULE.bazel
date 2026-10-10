@@ -264,4 +264,5 @@ codex_native_acquisition_inputs(
 )
 
 native_acquisition_package_inputs = use_extension("//tools:codex_native_acquisition_package_inputs.bzl", "native_acquisition_package_inputs")
+native_acquisition_package_inputs.configuration(manifest="//integrations/codex-upstream:native-acquisition-package-inputs.json")
 use_repo(native_acquisition_package_inputs, "omux_native_acquisition_package_data")

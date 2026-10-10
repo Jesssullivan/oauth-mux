@@ -84,6 +84,7 @@ filegroup(name="native_acquisition_input_configuration", srcs=["native-acquisiti
 filegroup(name="native_acquisition_n9_binding", srcs=["native-acquisition-n9-binding.json"], visibility=["//visibility:public"])
 
 # Explicit runtime selections stay closed until independently qualified outputs exist.
+exports_files(["native-acquisition-package-inputs.json"])
 exports_files(["native-acquisition-runtime-inputs.json"])
 filegroup(
     name = "native_acquisition_runtime_configuration",

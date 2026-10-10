@@ -675,4 +675,4 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
     return summary
 
 # Finite ninth input-family admissions own their target grammar separately.
-WORKLOAD_PROFILES += ("native-acquisition-inputs-models-reserved", "native-acquisition-binding-reserved", "native-acquisition-metadata-reserved", "native-acquisition-sdk-reserved", "native-acquisition-plan-reserved", "native-acquisition-query-reserved", "native-acquisition-compilation-reserved", "native-acquisition-runtime-qualification-reserved", "native-acquisition-package-reserved", "native-acquisition-bridge-material-reserved", "native-acquisition-bridge-models-reserved")
+WORKLOAD_PROFILES += ("native-acquisition-inputs-models-reserved", "native-acquisition-binding-reserved", "native-acquisition-metadata-reserved", "native-acquisition-sdk-reserved", "native-acquisition-plan-reserved", "native-acquisition-query-reserved", "native-acquisition-compilation-reserved", "native-acquisition-runtime-qualification-reserved", "native-acquisition-package-reserved", "native-acquisition-bridge-material-reserved", "native-acquisition-bridge-models-reserved", "native-acquisition-package-models-reserved")
