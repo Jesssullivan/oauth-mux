@@ -15,6 +15,113 @@ import yoga_installed_workspace as workspace
 
 
 class SelectionTests(unittest.TestCase):
+    def test_context_precheck_and_postcheck_are_distinct_from_resolver(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    diagnostic = assembly._AssemblyDiagnostic()
+                    with patch.object(context, 'recheck', side_effect=ValueError('private-canary')), \
+                            patch.object(workspace, 'safe_resolve') as resolver, self.assertRaises(ValueError):
+                        assembly.declared_inventory(alias, 'browserInventory', selected_base=base,
+                            _assembly_context=context, _diagnostic=diagnostic)
+                    resolver.assert_not_called()
+                    before = json.loads(diagnostic.refusal())
+                    self.assertEqual(before['phase'], 'browser-inventory-alias-context-precheck')
+                    self.assertEqual(before['operation'], 'stage')
+                    self.assertEqual(before['declaredNamespace']['candidateClass'], 'unobserved')
+                    self.assertEqual(before['declaredNamespace']['aliasLayout'], 'processwrapper-sandbox')
+                    diagnostic = assembly._AssemblyDiagnostic()
+                    with patch.object(context, 'recheck', side_effect=[None, ValueError('private-canary')]), \
+                            self.assertRaises(ValueError):
+                        assembly.declared_inventory(alias, 'browserInventory', selected_base=base,
+                            _assembly_context=context, _diagnostic=diagnostic)
+                    after = json.loads(diagnostic.refusal())
+                    self.assertEqual(after['phase'], 'browser-inventory-alias-context-postcheck')
+                    self.assertEqual(after['operation'], 'stage')
+                    self.assertEqual(after['declaredNamespace']['candidateClass'], 'declared-leaf')
+                    self.assertNotIn('canary', diagnostic.refusal().decode())
+                finally: context.close()
+
+    def test_resolver_fence_witness_does_not_read_or_disclose_private_hop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            canonical.unlink(); canonical.symlink_to('/home/private/secret-canary')
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                diagnostic = assembly._AssemblyDiagnostic()
+                try:
+                    with patch.object(workspace.os, 'lstat', wraps=os.lstat) as inspected, self.assertRaises(ValueError):
+                        assembly.declared_inventory(alias, 'browserInventory', selected_base=base,
+                            _assembly_context=context, _diagnostic=diagnostic)
+                    value = json.loads(diagnostic.refusal())
+                    self.assertEqual(value['phase'], 'browser-inventory-alias-resolution')
+                    self.assertEqual(value['operation'], 'namespace-fence')
+                    self.assertEqual(value['declaredNamespace'], {'aliasLayout': 'processwrapper-sandbox',
+                        'candidateClass': 'outside', 'linkForm': 'absolute', 'symbolicHops': 2})
+                    self.assertFalse(any(str(call.args[0]).startswith('/home/private') for call in inspected.call_args_list))
+                    self.assertNotIn('secret-canary', diagnostic.refusal().decode())
+                    self.assertNotIn(str(base), diagnostic.refusal().decode())
+                finally: context.close()
+
+    def test_relative_parent_hops_preserve_resolution_and_refuse_undeclared_detour(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            relative = os.path.relpath(expected, canonical.parent)
+            canonical.unlink(); canonical.symlink_to(relative)
+            paths = (alias, canonical, expected)
+            diagnostic = assembly._AssemblyDiagnostic()
+            with patch.object(workspace.os, 'lstat', wraps=os.lstat) as plain_inspected:
+                plain = workspace.safe_resolve(alias, frozenset(), declared_paths=paths)
+            plain_calls = plain_inspected.call_args_list
+            with patch.object(workspace.os, 'lstat', wraps=os.lstat) as inspected:
+                traced = workspace.safe_resolve(alias, frozenset(), declared_paths=paths, _trace=diagnostic.resolver)
+            self.assertEqual(plain, expected); self.assertEqual(traced, plain)
+            self.assertEqual(inspected.call_args_list, plain_calls)
+            self.assertEqual(diagnostic.namespace['linkForm'], 'relative-parent')
+            self.assertEqual(diagnostic.namespace['symbolicHops'], 2)
+            self.assertEqual(diagnostic.operation, 'final-namespace-fence')
+            self.assertEqual(diagnostic.namespace['candidateClass'], 'declared-leaf')
+            canonical.unlink(); canonical.symlink_to('undeclared-canary/../' + relative)
+            diagnostic = assembly._AssemblyDiagnostic()
+            with patch.object(workspace.os, 'lstat', wraps=os.lstat) as inspected, self.assertRaises(ValueError):
+                workspace.safe_resolve(alias, frozenset(), declared_paths=paths, _trace=diagnostic.resolver)
+            self.assertEqual(diagnostic.operation, 'namespace-fence')
+            self.assertEqual(diagnostic.namespace['candidateClass'], 'outside')
+            self.assertFalse(any('undeclared-canary' in str(call.args[0]) for call in inspected.call_args_list))
+            self.assertNotIn('undeclared-canary', diagnostic.refusal().decode())
+
+    def test_lstat_error_operation_is_redacted_and_adds_no_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            diagnostic = assembly._AssemblyDiagnostic()
+            original_lstat = os.lstat
+            def inspect_once(path):
+                if Path(path) == canonical: raise PermissionError('private-canary')
+                return original_lstat(path)
+            with patch.object(workspace.os, 'lstat', side_effect=inspect_once) as inspected, self.assertRaises(PermissionError):
+                workspace.safe_resolve(canonical, frozenset(), declared_paths=(canonical, expected), _trace=diagnostic.resolver)
+            self.assertEqual(diagnostic.operation, 'lstat')
+            self.assertEqual(diagnostic.namespace['candidateClass'], 'declared-leaf')
+            self.assertEqual(sum(Path(call.args[0]) == canonical for call in inspected.call_args_list), 1)
+            self.assertNotIn('canary', diagnostic.refusal().decode())
+
+    def test_resolution_witness_categories_and_hops_are_closed(self):
+        diagnostic = assembly._AssemblyDiagnostic()
+        for operation, category, form, hops in (('/private', 'outside', 'absolute', 1),
+                ('lstat', '/private', 'absolute', 1), ('lstat', 'outside', '/private', 1),
+                ('lstat', 'outside', 'absolute', True), ('lstat', 'outside', 'absolute', 66)):
+            with self.assertRaises(ValueError): diagnostic.resolver(operation, category, form, hops)
+            self.assertEqual(diagnostic.operation, 'stage')
+        with self.assertRaises(ValueError): diagnostic.alias('/private')
+        value = json.loads(diagnostic.refusal())
+        self.assertEqual(value['diagnosticMeaning'], 'last-entered-operation')
+        self.assertEqual(value['declaredNamespace']['aliasLayout'], 'unobserved')
+        self.assertFalse(value['executionAuthority']); self.assertFalse(value['toolbarConsentProved'])
+
     def hop_fixture(self, temporary, runner='processwrapper-sandbox', identifier='7'):
         root, base, parent = self.context_fixture(temporary)
         repository = assembly.INVENTORY_REPOS['browserInventory']
@@ -290,6 +397,9 @@ class SelectionTests(unittest.TestCase):
             diagnostic.enter(phase)
             self.assertEqual(json.loads(diagnostic.refusal()), {'schemaVersion': 1,
                 'scope': 'yoga-installed-selection-refusal-v1', 'phase': phase,
+                'operation': 'stage', 'diagnosticMeaning': 'last-entered-operation',
+                'declaredNamespace': {'aliasLayout': 'unobserved', 'candidateClass': 'unobserved',
+                    'linkForm': 'unobserved', 'symbolicHops': 0},
                 'executionAuthority': False, 'toolbarConsentProved': False,
                 'browserInvoked': False, 'providerInvoked': False})
         diagnostic.enter('request')

@@ -23,23 +23,58 @@ _PHASES = frozenset({'request', 'deadline', 'assembly-context', 'origin-receipt'
     'publication', 'postpublication-recheck'})
 _PHASES |= frozenset(prefix + '-' + stage
     for prefix in ('browser-inventory', 'controller-inventory')
-    for stage in ('alias-shape', 'alias-base', 'alias-role', 'alias-resolution',
-                  'alias-endpoint', 'capture', 'bytes', 'schema', 'roots'))
+    for stage in ('alias-shape', 'alias-base', 'alias-role', 'alias-context-precheck',
+                  'alias-resolution', 'alias-endpoint', 'alias-context-postcheck',
+                  'capture', 'bytes', 'schema', 'roots'))
+_OPERATIONS = frozenset({'stage', 'path-shape', 'declaration-type', 'namespace-fence',
+    'lstat', 'symlink-limit', 'readlink', 'symlink-text', 'final-namespace-fence'})
+_CANDIDATE_CLASSES = frozenset({'unobserved', 'declared-leaf', 'declared-ancestor',
+    'declared-descendant', 'historical-output', 'historical-source', 'store', 'outside'})
+_ALIAS_LAYOUTS = frozenset({'unobserved', 'historical', 'direct', 'canonical',
+    'linux-sandbox', 'processwrapper-sandbox'})
+_LINK_FORMS = frozenset({'unobserved', 'absolute', 'relative', 'relative-parent'})
 
 
 class _AssemblyDiagnostic:
     """Closed non-authoritative phase only; never disclose an input or exception."""
     def __init__(self):
         self.phase = 'request'
+        self.operation = 'stage'
+        self.namespace = {'aliasLayout': 'unobserved', 'candidateClass': 'unobserved',
+            'linkForm': 'unobserved', 'symbolicHops': 0}
 
     def enter(self, phase):
         workspace.require(type(phase) is str and phase in _PHASES)
         self.phase = phase
+        self.operation = 'stage'
+        if phase.endswith('-alias-shape'):
+            self.namespace = {'aliasLayout': 'unobserved', 'candidateClass': 'unobserved',
+                'linkForm': 'unobserved', 'symbolicHops': 0}
+
+    def alias(self, layout):
+        workspace.require(type(layout) is str and layout in _ALIAS_LAYOUTS)
+        self.namespace['aliasLayout'] = layout
+
+    def resolver(self, operation, candidate_class, link_form, hops):
+        # Only closed categories from existing operations; no path/argv/env or
+        # additional directory reads. This is the last entered operation.
+        workspace.require(type(operation) is str and operation in _OPERATIONS
+            and type(candidate_class) is str and candidate_class in _CANDIDATE_CLASSES
+            and type(link_form) is str and link_form in _LINK_FORMS
+            and type(hops) is int and 0 <= hops <= 65)
+        self.operation = operation
+        self.namespace.update(candidateClass=candidate_class, linkForm=link_form, symbolicHops=hops)
 
     def refusal(self):
-        workspace.require(self.phase in _PHASES)
+        workspace.require(self.phase in _PHASES and self.operation in _OPERATIONS
+            and self.namespace['aliasLayout'] in _ALIAS_LAYOUTS
+            and self.namespace['candidateClass'] in _CANDIDATE_CLASSES
+            and self.namespace['linkForm'] in _LINK_FORMS
+            and type(self.namespace['symbolicHops']) is int and 0 <= self.namespace['symbolicHops'] <= 65)
         return workspace.canonical({'schemaVersion': 1,
             'scope': 'yoga-installed-selection-refusal-v1', 'phase': self.phase,
+            'operation': self.operation, 'diagnosticMeaning': 'last-entered-operation',
+            'declaredNamespace': dict(self.namespace),
             'executionAuthority': False, 'toolbarConsentProved': False,
             'browserInvoked': False, 'providerInvoked': False})
 
@@ -162,13 +197,20 @@ def declared_inventory(alias, name, *, selected_base=None, _assembly_context=Non
     workspace.require(alias == expected or str(alias).endswith('.runfiles/' + repository + '/inventory.json'))
     paths = ((alias, expected) if selected_base is None else declared_alias_paths(alias, expected,
         repository + '/inventory.json', selected_base=selected_base, _assembly_context=_assembly_context))
-    phase('alias-resolution')
+    if _diagnostic is not None:
+        layout = ('historical' if selected_base is None else 'direct' if alias == expected else
+            alias.relative_to(base).parts[1] if alias.relative_to(base).parts[0] == 'sandbox' else 'canonical')
+        _diagnostic.alias(layout)
     if _assembly_context is not None:
+        phase('alias-context-precheck')
         _assembly_context.recheck()
-    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=paths)
+    phase('alias-resolution')
+    options = {} if _diagnostic is None else {'_trace': _diagnostic.resolver}
+    physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=paths, **options)
     phase('alias-endpoint')
     workspace.require(physical == expected)
     if _assembly_context is not None:
+        phase('alias-context-postcheck')
         _assembly_context.recheck()
     return physical
 

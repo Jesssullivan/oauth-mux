@@ -457,11 +457,27 @@ def build_files(mapping, copied, store, *, reserved=False):
         'installed-store-files.json': canonical(store)}
 
 
-def safe_resolve(target, roots, *, declared_paths=()):
+def safe_resolve(target, roots, *, declared_paths=(), _trace=None):
     """Bound every symbolic hop to the selected public BUILD/source/store roots."""
+    candidate_class, link_form, hops = 'unobserved', 'unobserved', 0
+    def trace(operation):
+        if _trace is not None:
+            _trace(operation, candidate_class, link_form, hops)
+    trace('path-shape')
     target = source_path(str(target))
+    trace('declaration-type')
     require(type(declared_paths) is tuple)
-    permitted = {Path(OUTPUT_BASE), Path(SOURCE_ROOT)} | {Path(root) for root in roots} | {source_path(str(path)) for path in declared_paths}
+    store = {Path(root) for root in roots}
+    declared = {source_path(str(path)) for path in declared_paths}
+    permitted = {Path(OUTPUT_BASE), Path(SOURCE_ROOT)} | store | declared
+    def classify(candidate):
+        if candidate in declared: return 'declared-leaf'
+        if any(candidate in root.parents for root in declared): return 'declared-ancestor'
+        if any(root in candidate.parents for root in declared): return 'declared-descendant'
+        for root, name in ((Path(OUTPUT_BASE), 'historical-output'), (Path(SOURCE_ROOT), 'historical-source')):
+            if candidate == root or root in candidate.parents or candidate in root.parents: return name
+        if any(candidate == root or root in candidate.parents or candidate in root.parents for root in store): return 'store'
+        return 'outside'
     pending, current, hops = list(Path(target).parts[1:]), Path('/'), 0
     while pending:
         part = pending.pop(0)
@@ -470,17 +486,29 @@ def safe_resolve(target, roots, *, declared_paths=()):
         if part == '..':
             current = current.parent; continue
         candidate = current / part
+        if _trace is not None: candidate_class = classify(candidate)
+        trace('namespace-fence')
         require(any(candidate == root or root in candidate.parents or candidate in root.parents for root in permitted))
+        trace('lstat')
         info = os.lstat(candidate)
         if stat.S_ISLNK(info.st_mode):
-            hops += 1; require(hops <= 64)
+            hops += 1
+            if _trace is not None: link_form = 'unobserved'
+            trace('symlink-limit')
+            require(hops <= 64)
+            trace('readlink')
             raw = os.readlink(candidate)
+            if _trace is not None:
+                link_form = 'absolute' if raw.startswith('/') else 'relative-parent' if '..' in raw.split('/') else 'relative'
+            trace('symlink-text')
             require(not any(ord(char) < 32 for char in raw))
             absolute = raw if raw.startswith('/') else str(candidate.parent / raw)
             # Keep .. until after preceding directory symlinks have resolved.
             pending = absolute.split('/')[1:] + pending; current = Path('/')
         else:
             current = candidate
+    if _trace is not None: candidate_class = classify(current)
+    trace('final-namespace-fence')
     require(any(current == root or root in current.parents for root in permitted))
     return current
 
