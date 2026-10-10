@@ -116,7 +116,10 @@ class BridgeMaterialModels(unittest.TestCase):
                 self.assertEqual(identity,source.named_identity(path))
                 old=Path(temporary)/'old';path.rename(old);path.write_bytes(image())
                 self.assertNotEqual(identity,source.named_identity(path))
-                self.assertEqual(identity,source.process.identity(fd))
+                # Rename may update ctime; the held descriptor still names the
+                # original inode and matches that inode's current full metadata.
+                self.assertEqual(identity[:2],source.process.identity(fd)[:2])
+                self.assertEqual(source.process.identity(fd),source.named_identity(old))
                 old.write_bytes(b'late-corruption')
                 self.assertNotEqual(source.digest(os.pread(fd,4096,0)),source.digest(image()))
             finally:os.close(fd)
