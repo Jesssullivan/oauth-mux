@@ -9,6 +9,28 @@ import guard_native_acquisition_inputs_reserved as source
 
 
 class AdmissionModels(unittest.TestCase):
+    def test_ordinary_is_one_real_tui_test_and_retains_original_clock(self):
+        self.assertEqual(source.COHORTS[source.ORDINARY],('//delivery:installed_direct_native_tui_test',))
+        entry=100*10**9;deadline=1300*10**9
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9),patch.object(guard,'graph_digest',return_value=('b'*64,{})):
+            for profile,targets in source.COHORTS.items():
+                command=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),['test',*targets],
+                    profile,entry,deadline,source_commit='a'*40,source_dirty='false')
+                values=[v for v in command if v.startswith('--test_env=OMUX_NATIVE_ORDINARY_')]
+                self.assertEqual(values,(['--test_env=OMUX_NATIVE_ORDINARY_MODE='+source.ORDINARY,
+                    '--test_env=OMUX_NATIVE_ORDINARY_ENTRY_NS='+str(entry),
+                    '--test_env=OMUX_NATIVE_ORDINARY_DEADLINE_NS='+str(deadline)] if profile==source.ORDINARY else []))
+        builder=Mock()
+        for args in (['run',*source.COHORTS[source.ORDINARY]],
+                     ['test',*source.COHORTS[source.ORDINARY],'//:docs_check']):
+            with self.assertRaises(ValueError):source.command(builder,'bazel',Path('/model'),args,
+                source.ORDINARY,entry,deadline)
+        with patch.object(kernel.time,'monotonic_ns',return_value=deadline):
+            with self.assertRaises(ValueError):source.command(builder,'bazel',Path('/model'),
+                ['test',*source.COHORTS[source.ORDINARY]],source.ORDINARY,entry,deadline)
+        builder.assert_not_called()
+
+
     def test_package_model_vector_and_private_configuration_refuse_before_io(self):
         profile=source.PACKAGE_MODELS
         vector=['test','//tools:guard_native_acquisition_inputs_reserved_test',

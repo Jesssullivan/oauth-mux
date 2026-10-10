@@ -101,3 +101,23 @@ The required next stage order explicitly includes genuine same-source native_fla
 Actual PM1 c1b8dc1d-c812-474e-9481-d30dd4ede4f0 on31800c3 ended original outer125/workload1 with verified empty cleanup/two readbacks and absent original cgroup. Raw receipt04283ded260d358caa8ad04e72cafc95df43240c23e404d85fef32ae636f2a87; preserved evidence manifestf6cf205241fa8ca4360ce788056ae21fd08002a41b961d5dd66ab68c7be7ceba records zero copied test files. No tests ran: loading the existing package reader through the new selector analysis revealed an older Python-style chained comparison, which Starlark rejects.
 
 The package member positive-size/upper-byte-bound expression is now written as two separate comparisons with the same conjunction and exact limits. Declaration, selected material authority, input paths, caps and clocks are unchanged. Corrected analysis remains UNRUN at this source adoption. PM1 is still failed and supplies no guard, selector or documentation pass.
+
+## Actual PM2 / NU6 verification and installed-delivery implementation
+
+Actual PM2 d27ed2f5-c515-4390-b97a-1864df6730cc on e2b5f7a passed the exact guard/package-selector-analysis/docs cohort. Original outer/workload zero, empty owned cleanup twice and absent cgroup. Receipt c1007b50da2907bea3d39c55e0adc2618772bb4d7283ae126c5b77a9375d6266; manifest c778e1eb5f17912a19f53da996a8edc93be53046f9ee149e3a6c217b76903272, six rehashed files / 2887 bytes. This validates the declaration fix; PM1 remains failed.
+
+Actual NU6 e7e9422b-349b-41b3-92c2-1eacee709fd4 on e2b5f7a passed all ten exact Engine/native-acquisition/delivery unit targets: 612 Zig cases across six targets, 26 Python methods across three targets and docs. Original outer/workload zero, controller failure absent, empty owned cleanup twice and absent cgroup. Receipt 3ce1efa6ae95e203845cb3d78279bd657687d8bf18612421d759eff3f0406db0; manifest bdd9be4ebfee738f0f09178e27a74909d38a57f5cdcd7d27d4e6bbc0e94a5ef1, twenty rehashed files / 143602 bytes. NU4/NU5 failures remain preserved and version-bound.
+
+Actual QP1 da53414f-6747-4d23-b620-53fa906e3446 on e2b5f7a failed at original-byte-readback with the combined nar-bound-or-deadline diagnostic. The diagnostic does not distinguish the bound from expiry. Original outer125/workload3, verified empty cleanup twice and absent cgroup; receipt08002ad42ebd862465c00d1aa7c0a26c9492a20cf498c6933667cb6fa75560ee, manifest8d08e99c8e6c29641feec77c8ffa22b5dbb41caed10e03e4a09b04351f201e0d, two rehashed files /1163 bytes. No matching successful plan/query selection exists yet.
+
+The independently reviewed 29-path source union3b772c8c195141e889cc4793a8b3e1af3777c2b130eff9287f5c6a606a2e9bb7 (reviewa0e2c7e5f0e19683c973ea3b47a45ddb37a365e9242b65137e8459fc12b5eeba) now joins:
+- tracked Home Manager bundle selection, bounded reconstruction/evaluation profiles and post-custody deadline fences;
+- exact digest-addressed compiler-ledger snapshot admission, confined to that role;
+- a distinct genuine-package ordinary-TUI proof lane, preserving native rollout bytes and observing /export, /rename, ordinary cold resume and installed-primary identity;
+- future invocation cleanup readback fixes, without retroactively qualifying NB3.
+
+Pending bundle and ordinary-package selections stay null. Home Manager still owns declarative files and registration. Current Omux artifact production-to-HM evaluation remains a separate implementation task; the retained legacy artifact is not current-source installed proof. The ordinary fixture crosses its isolated private bus with declared runfiles and original clocks only. It proves no native support, live handoff or accepted-history behavior before real package and installed proof.
+
+The disjoint two-path reserved-clock correction43ba887b6123f86fa4fda48cad1e86db5d9b8df70c2cc31a3fffdb03697d3344 (review362b0eb0aff326b4a2cf4e1d04e30439f73acb8335e4bbe3ae03b37f6508afe6) uses the existing reserved test ceiling and original root remainder, retaining both private and outer cleanup reserves. The nonreserved 600-second limit, original 1200-second root, resource caps and protected nine helpers are unchanged. No NAR or byte verification is bypassed.
+
+All newly integrated models and actual source-specific producers are UNRUN at this adoption. Next is exact declared model verification, a fresh same-source QP2/query pair, metadata/SDK/cold compiler fit, genuine package/runtime and actual ordinary launch/resume. Rust compiler ledger remains7/8 HOLD. Yoga guardian composition, human toolbar consent, OS-vault enrollment, same-process live handoff and Darwin remain independent unpassed gates. These sources implement the full goal direction and do not reduce its scope, reset its original checkpoints, or establish an achieved SLO/SLA.

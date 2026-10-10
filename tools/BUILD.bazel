@@ -7,7 +7,7 @@ load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
 load(":codex_native_source_context_refresh_targets.bzl", "native_context_refresh_targets")
 load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
 load(":yoga_selection_inputs.bzl", "yoga_selection_declaration_test")
-load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA256")
+load(":home_manager_bundle_selection_test.bzl", "home_manager_bundle_selection_test")
 load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
 load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_manifest")
 load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
@@ -710,14 +710,14 @@ python_test(
             "//delivery:portable.py"],
     data = ["@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
             "@omux_lab_home_manager_inputs//:lab-lock.json",
-            "@omux_hm_bundle//:bundle", "@omux_hm_bundle//:receipt.json",
+            "@omux_hm_bundle//:bundle", "@omux_hm_bundle//:receipt.json", "@omux_hm_bundle//:selection.json",
             "//:nix/home-manager-qualified-evaluation.nix", "//:nix/consume-bazel-artifact.nix",
             "//:nix/home-manager.nix", "//:nix/ownership-witness.nix", "//:nix/service-witness.nix"],
     args = ["evaluate", "--nix", "$(location @omux_eval_host//:executables/nix)",
             "--lock", "$(location @omux_lab_home_manager_inputs//:lab-lock.json)",
-            "--bundle", "$(location @omux_hm_bundle//:bundle)", "--bundle-sha256", BUNDLE_SHA256,
+            "--bundle", "$(location @omux_hm_bundle//:bundle)",
             "--bundle-receipt", "$(location @omux_hm_bundle//:receipt.json)",
-            "--bundle-receipt-sha256", BUNDLE_RECEIPT_SHA256,
+            "--selection", "$(location @omux_hm_bundle//:selection.json)",
             "--module", "home-manager-qualified-evaluation.nix=$(location //:nix/home-manager-qualified-evaluation.nix)",
             "--module", "consume-bazel-artifact.nix=$(location //:nix/consume-bazel-artifact.nix)",
             "--module", "home-manager.nix=$(location //:nix/home-manager.nix)",
@@ -1186,7 +1186,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_home_manager_bundle_reserved.py','guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -2591,3 +2591,13 @@ native_acquisition_runtime_targets(
     tool_path = NIX_COREUTILS_BIN,
 )
 exports_files(["codex_native_acquisition_package_inputs.bzl", "codex_native_acquisition_runtime_targets.bzl"])
+exports_files(["home_manager_bundle_inputs.json"])
+home_manager_bundle_selection_test(name = "home_manager_bundle_selection_test")
+python_test(name = "guard_home_manager_bundle_reserved_test", main = "guard_home_manager_bundle_reserved_test.py",
+    srcs = depset(["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py",
+        "guard_dependency_profile.py", "guard_site_profile.py", "site_coordinator_closure_qualification.py",
+        "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"]
+        + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
+        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list())
+
+exports_files(["direct_native_tui_inputs.bzl"])

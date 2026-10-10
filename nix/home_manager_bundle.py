@@ -39,6 +39,8 @@ SOURCE_WRAPPER = {"epoch": "e3b9e0bc-f473-49f5-be46-4f23e2776a1f",
                   "controllerExit": 3, "workloadExit": 3, "descendantsEmpty": True,
                   "producerSeconds": 617.128,
                   "controllerReceiptSha256": "3356a5660fd73954d33253ec929957c4c47212036280de6c2a4de2ce6eb566f0"}
+CONFIG_ROOTS = ("/home/jess/.local/state/omux-execution-20261005/",
+                "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/")
 require = acquired.require
 encoded = acquisition.encoded
 sha = acquisition.sha
@@ -72,12 +74,70 @@ def bounds(deadline=None):
             "bundle-enclosing-deadline")
     return end - CLEANUP_SECONDS, end
 
+def action_deadline(operation, environment, *, clock=time.monotonic_ns):
+    """Intersect the action's existing 900s cap with the ORIGINAL root end."""
+    expected = {"reconstruct": "home-manager-reconstruction-reserved",
+                "evaluate": "home-manager-evaluation-reserved"}
+    require(operation in expected and environment.get("OMUX_HM_RESERVED_PROFILE") == expected[operation],
+            "bundle-reserved-profile")
+    entry, end = (environment.get(name, "") for name in
+                  ("OMUX_HM_ROOT_ENTRY_NS", "OMUX_HM_ROOT_DEADLINE_NS"))
+    require(type(entry) is str and type(end) is str
+            and re.fullmatch(r"[0-9]{1,20}", entry) is not None
+            and re.fullmatch(r"[0-9]{1,20}", end) is not None, "bundle-original-deadline")
+    entry, end, now = int(entry), int(end), clock()
+    require(entry > 0 and end - entry == 1200 * 10**9
+            and entry <= now < end - (30 + CLEANUP_SECONDS) * 10**9, "bundle-original-deadline")
+    # The kernel retains its original 30s reserve. This action retains its own
+    # original 60s cleanup allowance inside the already intersected action end.
+    return min(end - 30 * 10**9, now + MAX_SECONDS * 10**9) / 10**9
+
+def selected_bundle(configuration):
+    """Literal declaration only; evaluate_bundle still proves every authority."""
+    acquired.fields(configuration, ("schema_version", "kind", "status", "selection"))
+    require(type(configuration["schema_version"]) is int and configuration["schema_version"] == 1
+            and configuration["kind"] == "omux-home-manager-compact-input-configuration-v1",
+            "bundle-configuration-schema")
+    if configuration["status"] == "awaiting-qualified-bundle":
+        require(configuration["selection"] is None, "bundle-configuration-schema")
+        raise ValueError("bundle-selection-pending")
+    require(configuration["status"] == "selected-bundle", "bundle-configuration-schema")
+    row = configuration["selection"]
+    acquired.fields(row, ("root", "bundle_sha256", "receipt_sha256"))
+    root = row["root"]
+    require(type(root) is str and len(root) <= 4096
+            and root.startswith(CONFIG_ROOTS)
+            and all(part not in ("", ".", "..") for part in root.split("/")[1:])
+            and not any(char in root for char in ("\\", "\n", "\r", "\t", " ", ":", "\x00")),
+            "bundle-selection-root")
+    require(all(type(row[key]) is str and re.fullmatch(r"[0-9a-f]{64}", row[key]) is not None
+                for key in ("bundle_sha256", "receipt_sha256")), "bundle-selected-digest")
+    return row
+
+def evaluate_selection(selection_path, bundle_path, receipt_path, lock_path, nix, modules, scratch, *, deadline):
+    work, _ = bounds(deadline)
+    raw, facts = evaluator.read_declared(selection_path, 16384, work)
+    row = selected_bundle(acquired.decode(raw, 16384))
+    # Exact declared aliases must resolve to this literal selected root, never
+    # ambient HOME, a neighboring producer, or whichever output is newest.
+    require(str(Path(bundle_path).resolve(strict=True)) == row["root"] + "/bundle"
+            and str(Path(receipt_path).resolve(strict=True)) == row["root"] + "/receipt.json",
+            "bundle-selection-alias")
+    result = evaluate_bundle(bundle_path, row["bundle_sha256"], receipt_path,
+        row["receipt_sha256"], lock_path, nix, modules, scratch, deadline=deadline)
+    require(evaluator.read_declared(selection_path, 16384, work) == (raw, facts),
+            "bundle-selection-changed")
+    return result
+
 def tick(deadline, directory=None):
     acquired.check_deadline(deadline)
     if directory is not None:
         directory.check()
         info = os.fstatvfs(directory.fd)
         require(info.f_bavail * info.f_frsize >= artifact.FREE_FLOOR, "bundle-free-space")
+    # Custody and filesystem reads can block. Recheck the original deadline
+    # after that work, before returning to the caller's next effect.
+    acquired.check_deadline(deadline)
 
 def relative(path, *, root=False):
     require(isinstance(path, str) and (root or bool(path)) and len(os.fsencode(path)) <= 4096,
@@ -411,11 +471,15 @@ def remove_owned(fd, deadline, count):
     tick(deadline)
 
 @contextmanager
-def private_tree(scratch, deadline):
-    tick(deadline)
+def private_tree(scratch, deadline, *, admission_deadline=None):
+    admission = deadline if admission_deadline is None else admission_deadline
+    require(type(admission) in (int, float) and math.isfinite(admission)
+            and admission <= deadline, "bundle-enclosing-deadline")
+    tick(admission)
     with acquisition.HeldDirectory(scratch) as parent:
         name = "omux-hm-bundle-" + uuid.uuid4().hex
         parent.check()
+        tick(admission)
         os.mkdir(name, 0o700, dir_fd=parent.fd)
         created, worker, primary, cleanup_error = None, None, None, None
         try:
@@ -495,6 +559,7 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
     def local_tick():
         tick(work, worker)
         check()
+        acquired.check_deadline(work)
     allocated = [0]
     def charge_blocks(info, previous):
         local_tick()
@@ -505,6 +570,7 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
     with acquisition.FileSyncOwner(local_tick, charge_blocks) as sync:
         for name in ("pair", "artifact", "home"):
             worker.check()
+            local_tick()
             os.mkdir(name, 0o700, dir_fd=worker.fd)
         pair = worker.path / "pair"
         roots = {name: pair / name for name in acquired.NAMES}
@@ -513,6 +579,7 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
             for name in acquired.NAMES:
                 local_tick()
                 pair_owner.check()
+                local_tick()
                 os.mkdir(name, 0o700, dir_fd=pair_owner.fd)
         for name, descriptor in descriptors.items():
             with acquisition.HeldDirectory(roots[name], parent_anchor=worker) as root:
@@ -522,6 +589,7 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
                     local_tick()
                     parent, leaf = parent_fd(root.fd, node["path"])
                     try:
+                        local_tick()
                         os.mkdir(leaf, 0o700, dir_fd=parent)
                     finally:
                         close_resources(parent)
@@ -530,12 +598,14 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
                 parent, leaf = parent_fd(root.fd, node["path"])
                 fd = None
                 try:
+                    local_tick()
                     fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=parent)
                     remaining = node["size"]
                     while remaining:
                         data = exact(stream, min(65536, remaining), check)
                         write_all(fd, data, work, worker)
                         remaining -= len(data)
+                    local_tick()
                     os.fchmod(fd, 0o555 if node["executable"] else 0o444)
                     sync.submit(fd, parent, leaf, 0)
                 finally:
@@ -551,6 +621,7 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
                     local_tick()
                     parent, leaf = parent_fd(root.fd, node["path"])
                     try:
+                        local_tick()
                         os.symlink(node["target"], leaf, dir_fd=parent)
                         charge_blocks(os.stat(leaf, dir_fd=parent, follow_symlinks=False), 0)
                     finally:
@@ -565,22 +636,35 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
                         else:
                             parent, leaf = parent_fd(root.fd, node["path"])
                             fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+                        local_tick()
                         os.fchmod(fd, 0o555)
+                        local_tick()
                         os.fsync(fd)
                         charge_blocks(os.fstat(fd), 0)
                     finally:
                         close_resources(fd, parent)
         with acquisition.HeldDirectory(pair, parent_anchor=worker) as held:
             for name, payload in (("receipt.json", raw_pair), ("inventory.json", raw_inventory)):
+                held.check()
+                local_tick()
                 fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=held.fd)
                 try:
                     write_all(fd, payload, work, worker)
+                    local_tick()
                     os.fchmod(fd, 0o444)
                     sync.submit(fd, held.fd, name, 0)
                 finally:
                     close_resources(fd)
             sync.drain()
-            held.mode(0o555)
+            # Preserve HeldDirectory.mode's custody/mode/postcheck predicates,
+            # inserting the deadline fence after its blocking custody check.
+            held.check()
+            local_tick()
+            os.fchmod(held.fd, 0o555)
+            require(stat.S_IMODE(os.fstat(held.fd).st_mode) == 0o555,
+                    "acquisition-held-directory-mode")
+            held.check()
+            local_tick()
             os.fsync(held.fd)
             charge_blocks(os.fstat(held.fd), 0)
         for name in ("home",):
@@ -623,7 +707,7 @@ def evaluate_bundle(bundle, frozen_bundle_sha, receipt_path, frozen_receipt_sha,
             check()
         hash_input()
         stream.seek(0)
-        with private_tree(scratch, end) as worker:
+        with private_tree(scratch, end, admission_deadline=work) as worker:
             pair, retained_artifact, artifact_bytes = materialize(stream, check, worker, lock, compact, work)
             tick(work, worker)
             result = evaluator.evaluate_acquired_pair(nix, modules, lock, str(pair), PAIR_SHA,
@@ -951,7 +1035,7 @@ def reconstruct_retained(layout_path, lock_path, outputs, *, deadline=None, prog
                 require(not any(listing), "reconstruction-output-scope")
             account.record(os.fstat(output.fd))
             try:
-                with private_tree(output.path, end) as worker:
+                with private_tree(output.path, end, admission_deadline=work) as worker:
                     progress["phase"] = "canonical-materialization"
                     stream = RepresentationStream(inputs, headers, descriptors)
                     try:
@@ -963,6 +1047,7 @@ def reconstruct_retained(layout_path, lock_path, outputs, *, deadline=None, prog
                     reconstruction_file(worker, "layout.json", raw_layout, work, account)
                     reconstruction_file(worker, "artifact-receipt.json", raw_artifact, work, account)
                     worker.check()
+                    tick(work, worker)
                     os.mkdir("publication", 0o700, dir_fd=worker.fd)
                     account.record(os.fstat(worker.fd))
                     with acquisition.HeldDirectory(worker.path / "publication", parent_anchor=worker) as publication:
@@ -1038,7 +1123,7 @@ def main(arguments=None):
     for flag in ("layout", "lock"):
         reconstruction.add_argument("--" + flag, required=True)
     consumer = commands.add_parser("evaluate")
-    for flag in ("nix", "lock", "bundle", "bundle-sha256", "bundle-receipt", "bundle-receipt-sha256"):
+    for flag in ("nix", "lock", "bundle", "bundle-receipt", "selection"):
         consumer.add_argument("--" + flag, required=True)
     consumer.add_argument("--module", action="append", default=[])
     args = parser.parse_args(arguments)
@@ -1054,7 +1139,7 @@ def main(arguments=None):
             result = pack(args.layout, args.lock, os.environ["TEST_UNDECLARED_OUTPUTS_DIR"])
         elif args.operation == "reconstruct":
             result = reconstruct_retained(args.layout, args.lock, os.environ["TEST_UNDECLARED_OUTPUTS_DIR"],
-                                          progress=reconstruction_progress)
+                deadline=action_deadline(args.operation, os.environ), progress=reconstruction_progress)
         else:
             modules = {}
             for item in args.module:
@@ -1062,9 +1147,9 @@ def main(arguments=None):
                 require(name not in modules, "bundle-duplicate-module")
                 modules[name] = path
             acquired.fields(modules, evaluator.MODULES)
-            result = evaluate_bundle(args.bundle, args.bundle_sha256, args.bundle_receipt,
-                args.bundle_receipt_sha256, args.lock, args.nix, modules,
-                str(Path(os.environ["TEST_TMPDIR"]).resolve(strict=True)))
+            result = evaluate_selection(args.selection, args.bundle, args.bundle_receipt,
+                args.lock, args.nix, modules, str(Path(os.environ["TEST_TMPDIR"]).resolve(strict=True)),
+                deadline=action_deadline(args.operation, os.environ))
     except BaseException as error:
         primary = error
     finally:
@@ -1083,6 +1168,8 @@ def main(arguments=None):
             output["diagnostic"] = reconstruction_failure(primary, reconstruction_progress)
         if isinstance(primary, EvaluationFailure):
             output["category"] = primary.category
+        if isinstance(primary, ValueError) and primary.args == ("bundle-selection-pending",):
+            output["category"] = "bundle-selection-pending"
         if getattr(primary, "cleanup_category", None) is not None:
             output["cleanup_category"] = primary.cleanup_category
         print(json.dumps(output, sort_keys=True))

@@ -14,7 +14,12 @@ PACKAGE = "native-acquisition-package-reserved"
 PACKAGE_MODELS = "native-acquisition-package-models-reserved"
 BRIDGE = "native-acquisition-bridge-material-reserved"
 BRIDGE_MODELS = "native-acquisition-bridge-models-reserved"
+ORDINARY = "native-acquisition-ordinary-tui-reserved"
+ORDINARY_MODELS = "native-acquisition-ordinary-models-reserved"
 COHORTS = {
+    ORDINARY: ("//delivery:installed_direct_native_tui_test",),
+    ORDINARY_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
+        "//delivery:direct_native_tui_contract_test", "//delivery:fresh_native_tui_contract_test", "//:docs_check"),
     PACKAGE_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
         "//tools:codex_fresh_native_receipt_scope_test", "//:docs_check"),
     BRIDGE: ("//tools:codex_native_acquisition_bridge_material_producer",),
@@ -93,6 +98,10 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
         result[index:index] = ["--test_env=OMUX_NATIVE_RUNTIME_MODE=" + RUNTIME,
             "--test_env=OMUX_NATIVE_RUNTIME_ENTRY_NS=" + str(entry),
             "--test_env=OMUX_NATIVE_RUNTIME_DEADLINE_NS=" + str(deadline)]
+    if profile == ORDINARY:
+        result[index:index] = ["--test_env=OMUX_NATIVE_ORDINARY_MODE=" + ORDINARY,
+            "--test_env=OMUX_NATIVE_ORDINARY_ENTRY_NS=" + str(entry),
+            "--test_env=OMUX_NATIVE_ORDINARY_DEADLINE_NS=" + str(deadline)]
     if profile == BRIDGE:
         from execution_guard import graph_digest
         from pathlib import Path

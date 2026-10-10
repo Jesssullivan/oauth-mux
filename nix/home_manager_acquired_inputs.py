@@ -261,7 +261,7 @@ def regular_stream(root_fd, relative, facts, deadline):
 
 
 def verify_acquired_pair(lock_bytes, receipt_bytes, receipt_sha256, inventory_bytes,
-                         declared_sources, *, deadline_seconds=120):
+                         declared_sources, *, deadline_seconds=120, deadline=None):
     """Rehash every byte against fixed pair pins; return no evaluation authority.
 
     Retained trees must be immutable exports owned by the current action user.
@@ -270,7 +270,12 @@ def verify_acquired_pair(lock_bytes, receipt_bytes, receipt_sha256, inventory_by
     """
     require(type(deadline_seconds) is int and 1 <= deadline_seconds <= MAX_SECONDS,
             "acquired-deadline-bound")
-    deadline = time.monotonic() + deadline_seconds
+    local_end = time.monotonic() + deadline_seconds
+    if deadline is not None:
+        require(type(deadline) in (int, float) and deadline == deadline
+                and deadline not in (float("inf"), float("-inf")), "acquired-deadline-bound")
+    deadline = local_end if deadline is None else min(local_end, deadline)
+    check_deadline(deadline)
     lock = decode(lock_bytes, MAX_LOCK_BYTES)
     try:
         locked = paired_lock(lock)

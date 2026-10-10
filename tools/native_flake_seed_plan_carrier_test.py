@@ -963,6 +963,61 @@ class ReservedEnvelopeModels(unittest.TestCase):
         self.assertEqual(carrier.work_envelope(1000.0,"1200",{}),
             (float(1000+min(carrier.schedule.MAX_SECONDS,1170)),None))
 
+    def test_reserved_readback_after_old_ceiling_obeys_actual_test_work_cutoff(self):
+        environment={"OMUX_NATIVE_SEED_RESERVED_PROFILE":"native-seed-plan-reserved",
+            "OMUX_NATIVE_SEED_ROOT_ENTRY_NS":str(100*10**9),
+            "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS":str(1300*10**9)}
+        work,record=carrier.work_envelope(100.0,"900",environment)
+        legacy,_=carrier.work_envelope(100.0,"900",{})
+        self.assertEqual(work,970.0)
+        self.assertEqual(legacy,700.0)
+        self.assertEqual(record["private_cleanup_deadline_monotonic_ns"],1000*10**9)
+        # Exercise the actual clock predicate used throughout the full
+        # original/copy/provenance readbacks; no NAR predicate is bypassed.
+        with patch.object(carrier.proof.time,"monotonic",return_value=701.0):
+            carrier.proof.tick(work)
+            with self.assertRaises(ValueError):carrier.proof.tick(legacy)
+        with patch.object(carrier.proof.time,"monotonic",return_value=work):
+            with self.assertRaises(ValueError):carrier.proof.tick(work)
+
+    def test_reserved_test_timeout_cannot_borrow_the_original_outer_cleanup(self):
+        environment={"OMUX_NATIVE_SEED_RESERVED_PROFILE":"native-seed-plan-reserved",
+            "OMUX_NATIVE_SEED_ROOT_ENTRY_NS":str(100*10**9),
+            "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS":str(1300*10**9)}
+        for timeout in ("31","90","900"):
+            with self.subTest(timeout=timeout):
+                work,record=carrier.work_envelope(100.0,timeout,environment)
+                self.assertEqual(work,100.0+int(timeout)-30)
+                self.assertLessEqual(record["private_cleanup_deadline_monotonic_ns"],
+                    (100+int(timeout))*10**9)
+                self.assertLessEqual(record["private_cleanup_deadline_monotonic_ns"],1270*10**9)
+
+    def test_delayed_reserved_start_cannot_reset_original_root_budget(self):
+        environment={"OMUX_NATIVE_SEED_RESERVED_PROFILE":"native-seed-plan-reserved",
+            "OMUX_NATIVE_SEED_ROOT_ENTRY_NS":str(100*10**9),
+            "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS":str(1300*10**9)}
+        work,record=carrier.work_envelope(1100.0,"900",environment)
+        self.assertLess(work,1240.0)
+        self.assertLess(work,1100+870)
+        self.assertEqual(record["original_entry_monotonic_ns"],100*10**9)
+        self.assertEqual(record["original_deadline_monotonic_ns"],1300*10**9)
+        self.assertLessEqual(record["private_cleanup_deadline_monotonic_ns"],1270*10**9)
+        with patch.object(carrier.proof.time,"monotonic",return_value=1240.0):
+            with self.assertRaises(ValueError):carrier.proof.tick(work)
+        for entry in (1240.0,1300.0,1301.0):
+            with self.subTest(entry=entry),self.assertRaises(ValueError):
+                carrier.work_envelope(entry,"900",environment)
+
+    def test_nonreserved_schedule_ceiling_and_short_test_timeout_are_unchanged(self):
+        for timeout in ("31","90","900","1200"):
+            with self.subTest(timeout=timeout):
+                work,record=carrier.work_envelope(100.0,timeout,{})
+                self.assertEqual((work,record),
+                    (float(100+min(carrier.schedule.MAX_SECONDS,int(timeout)-30)),None))
+        for timeout in ("0","30","-1","900x",""):
+            with self.subTest(timeout=timeout),self.assertRaises(ValueError):
+                carrier.work_envelope(100.0,timeout,{})
+
     def test_partial_wrong_profile_longer_clock_and_late_start_do_not_renew(self):
         good={"OMUX_NATIVE_SEED_RESERVED_PROFILE":"native-seed-plan-reserved",
             "OMUX_NATIVE_SEED_ROOT_ENTRY_NS":str(100*10**9),

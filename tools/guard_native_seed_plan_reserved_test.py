@@ -526,7 +526,8 @@ class ProofWorkerModels(unittest.TestCase):
             expected=reserved.post_stop_projection(final,(owned["Id"],owned["InvocationID"],owned["ExecMainPID"]))
             expected["original_cgroup_state"]="empty"
             self.assertEqual(summary,{"state":"empty","stop":"succeeded","ownership":"verified",
-                "readback_attempts":2,"post_stop":expected})
+                "readback_attempts":2,"pre_stop":reserved.pre_stop_projection(owned,
+                    (owned["Id"],owned["InvocationID"],owned["ExecMainPID"])),"post_stop":expected})
             stop.assert_called_once();authorize.assert_called_once_with(owned)
         for changes in ({"ActiveState":"active"},{"InvocationID":"b"*32},{"ExecMainPID":"5678"},
             {"MainPID":"1234"}):
@@ -695,6 +696,94 @@ class ProofWorkerModels(unittest.TestCase):
         for pid in (None,False,0,[],{}):
             value=reserved.post_stop_projection({**raw,"MainPID":pid},identity)
             self.assertIn(value["MainPID"],("missing","other"))
+
+    def test_captured_signal_timeout_cleanup_uses_actual_original_worker_authorization(self):
+        for code,status,result in (("2","15","timeout"),("2","9","signal"),("3","11","core-dump")):
+            for original in ("empty","absent"):
+                witness=self.worker();witness.pidfd=42
+                witness.entry=time.monotonic_ns();witness.deadline=witness.entry+1200*10**9
+                witness.check_directory=Mock(return_value=True);witness.check_bounds=Mock()
+                witness.pin=SimpleNamespace(path=Path("/sys/fs/cgroup/system.slice")/self.UNIT,
+                    observe=Mock(return_value=original))
+                owned=self.terminal(LoadState="loaded",ActiveState="failed",SubState="failed",
+                    ExecMainCode=code,ExecMainStatus=status,Result=result,ControlGroup="")
+                read=Mock(side_effect=[owned,owned]);stop=Mock();observe=Mock(return_value=original)
+                with patch.object(reserved.poll,"select",return_value=([42],[],[])):
+                    summary=reserved.cleanup_retained(deadline=15,readback=read,
+                        authorize=witness.authorize_cleanup,stop=stop,observe=observe,clock=lambda:0)
+                self.assertEqual(summary["state"],"empty")
+                self.assertEqual(summary["pre_stop"]["ExecMainCode"],code)
+                self.assertEqual(summary["pre_stop"]["ExecMainStatus"],int(status))
+                self.assertEqual(summary["pre_stop"]["Result"],result)
+                self.assertEqual(summary["post_stop"]["predicate"],"owned-timeout-terminal-predicate-passed"
+                    if result=="timeout" else "owned-signal-terminal-predicate-passed")
+                self.assertEqual(summary["post_stop"]["original_cgroup_state"],original)
+                stop.assert_called_once();self.assertEqual(read.call_count,2)
+                # Cleanup never upgrades the workload or reservation result.
+                self.assertNotEqual(witness.terminal(owned),0)
+                reservation=reserved.Witness.__new__(reserved.Witness);reservation.observe=Mock()
+                with self.assertRaises(ValueError):reservation.complete(124,True,True,True)
+                reservation.observe.assert_not_called()
+                with patch.object(reserved.poll,"select",return_value=([],[],[])):
+                    stop=Mock()
+                    refused=reserved.cleanup_retained(deadline=15,readback=Mock(return_value=owned),
+                        authorize=witness.authorize_cleanup,stop=stop,observe=observe,clock=lambda:0)
+                self.assertEqual(refused["ownership"],"refused");stop.assert_not_called()
+
+    def test_signal_timeout_cannot_adopt_post_stop_result_or_changed_tuple(self):
+        owned=self.terminal(LoadState="loaded",ActiveState="failed",SubState="failed",
+            ExecMainCode="2",ExecMainStatus="15",Result="timeout")
+        for changes in ({"ExecMainStatus":"9"},{"ExecMainCode":"3"},{"Result":"signal"},
+                {"InvocationID":"b"*32},{"ExecMainPID":"5678"},{"Id":"foreign"},
+                {"MainPID":"1234"},{"RemainAfterExit":"no"}):
+            observe=Mock(return_value="empty")
+            summary=reserved.cleanup_retained(deadline=15,readback=Mock(side_effect=[owned,{**owned,**changes}]),
+                authorize=Mock(),stop=Mock(),observe=observe,clock=lambda:0)
+            self.assertEqual(summary["state"],"unproved")
+            self.assertEqual(summary["post_stop"]["original_cgroup_state"],"not-observed")
+            self.assertEqual(observe.call_count,2)
+        running={**owned,"ActiveState":"active","SubState":"running","MainPID":"1234",
+            "ExecMainCode":"0","ExecMainStatus":"0","Result":"success"}
+        summary=reserved.cleanup_retained(deadline=15,readback=Mock(side_effect=[running,owned]),
+            authorize=Mock(),stop=Mock(),observe=lambda:"empty",clock=lambda:0)
+        self.assertEqual(summary["state"],"unproved")
+        self.assertEqual(summary["pre_stop"]["terminal_class"],"unqualified")
+        for code,status,result in (("1","124","timeout"),("2","0","timeout"),("2","65","signal"),
+                ("2","015","timeout"),("2",15,"timeout"),("2","15","watchdog"),("3","11","signal")):
+            self.assertIsNone(reserved.failed_terminal_signal({**owned,"ExecMainCode":code,
+                "ExecMainStatus":status,"Result":result}))
+
+    def test_timeout_cleanup_retains_stop_empty_and_original_deadline_gates(self):
+        owned=self.terminal(LoadState="loaded",ActiveState="failed",SubState="failed",
+            ExecMainCode="2",ExecMainStatus="15",Result="timeout")
+        for original in ("populated","changed","unproved"):
+            summary=reserved.cleanup_retained(deadline=15,readback=Mock(side_effect=[owned,owned]),
+                authorize=Mock(),stop=Mock(),observe=Mock(side_effect=["empty","empty",original]),clock=lambda:0)
+            self.assertEqual(summary["state"],"unproved")
+            self.assertEqual(summary["post_stop"]["predicate"],"original-group-not-empty")
+        summary=reserved.cleanup_retained(deadline=15,readback=Mock(side_effect=[owned,owned]),
+            authorize=Mock(),stop=Mock(side_effect=OSError("unprinted")),observe=lambda:"empty",clock=lambda:0)
+        self.assertEqual(summary["state"],"unproved")
+        now=[0];calls=[]
+        def read(timeout,deadline):
+            calls.append((timeout,deadline))
+            if len(calls)==2:now[0]=deadline
+            return owned
+        observe=Mock(return_value="empty")
+        summary=reserved.cleanup_retained(deadline=15,readback=read,authorize=Mock(),stop=Mock(),
+            observe=observe,clock=lambda:now[0])
+        self.assertEqual(summary["state"],"deadline-exhausted")
+        self.assertEqual(summary["post_stop"]["predicate"],"original-deadline-exhausted")
+        self.assertEqual(observe.call_count,2);self.assertEqual(len(calls),2)
+        self.assertTrue(all(cutoff==15 for _,cutoff in calls))
+
+    def test_pre_stop_facts_are_closed_and_never_reflect_raw_metadata(self):
+        identity=(self.UNIT,"a"*32,"1234")
+        raw=self.terminal(ExecMainCode="poison",ExecMainStatus="poison",Result="poison",RemainAfterExit="poison")
+        value=reserved.pre_stop_projection(raw,identity)
+        for name in ("ExecMainCode","ExecMainStatus","Result","RemainAfterExit"):
+            self.assertEqual(value[name],"other")
+        self.assertNotIn("poison",json.dumps(value));self.assertLess(len(json.dumps(value)),1536)
 
 class ReservedFailureDiagnosticModels(unittest.TestCase):
     def worker(self):

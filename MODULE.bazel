@@ -129,7 +129,7 @@ retained_hm = use_repo_rule("//tools:home_manager_retained_repository.bzl", "hom
 retained_hm(name = "omux_retained_hm")
 # Separate selected compact output; no dependency on the bundle producer.
 hm_bundle = use_repo_rule("//tools:home_manager_bundle_repository.bzl", "home_manager_bundle_repository")
-hm_bundle(name = "omux_hm_bundle")
+hm_bundle(name = "omux_hm_bundle", manifest = "//tools:home_manager_bundle_inputs.json")
 
 # Independently selected controller/vault-backend registry export. This
 # repository supplies inert byte-proof inputs, never execution authority.
@@ -266,3 +266,8 @@ codex_native_acquisition_inputs(
 native_acquisition_package_inputs = use_extension("//tools:codex_native_acquisition_package_inputs.bzl", "native_acquisition_package_inputs")
 native_acquisition_package_inputs.configuration(manifest="//integrations/codex-upstream:native-acquisition-package-inputs.json")
 use_repo(native_acquisition_package_inputs, "omux_native_acquisition_package_data")
+
+# Distinct ordinary direct-main package evaluation; null selection is refusal.
+ordinary_direct_native_inputs = use_repo_rule("//tools:direct_native_tui_inputs.bzl", "ordinary_direct_native_inputs")
+ordinary_direct_native_inputs(name="omux_codex_ordinary_direct_runtime",
+    manifest="//integrations/codex-upstream:native-acquisition-ordinary-inputs.json")

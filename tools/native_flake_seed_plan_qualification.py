@@ -126,9 +126,10 @@ def qualify(selected_raw, selection_sha256, bundle_raw, mapping_sha256, bundle_p
 
 
 def work_envelope(entry, timeout, environment):
-    """Old TEST clock stays unchanged; only the fixed reserved route clamps it."""
+    """Keep the old route; reserve both cleanup tails within the root clock."""
     inputs.require(re.fullmatch(r"[0-9]{1,5}",timeout) and int(timeout)>proof.CLEANUP_SECONDS)
-    deadline = float(entry+min(schedule.MAX_SECONDS,int(timeout)-proof.CLEANUP_SECONDS))
+    test_work_seconds = int(timeout)-proof.CLEANUP_SECONDS
+    deadline = float(entry+min(schedule.MAX_SECONDS,test_work_seconds))
     names = ("OMUX_NATIVE_SEED_RESERVED_PROFILE","OMUX_NATIVE_SEED_ROOT_ENTRY_NS",
         "OMUX_NATIVE_SEED_ROOT_DEADLINE_NS")
     values = tuple(environment.get(name) for name in names)
@@ -143,7 +144,11 @@ def work_envelope(entry, timeout, environment):
         and original_entry<=now<original_deadline-60*10**9)
     # restore_plan's existing finally has a30s private cleanup tail. Keep that
     # tail before the guardian's separate final30s, without renewing either.
-    deadline = min(deadline,math.nextafter((original_deadline-60*10**9)/10**9,-math.inf))
+    # The reserved owner already supplies the original1200s ceiling. Do not
+    # also impose the nonreserved schedule600s limit on actual full readbacks.
+    # TEST_TIMEOUT still bounds this test, including its private cleanup tail.
+    deadline = min(float(entry+test_work_seconds),
+        math.nextafter((original_deadline-60*10**9)/10**9,-math.inf))
     return deadline,{"profile":values[0],"original_entry_monotonic_ns":original_entry,
         "original_deadline_monotonic_ns":original_deadline,
         "outer_work_deadline_monotonic_ns":original_deadline-30*10**9,

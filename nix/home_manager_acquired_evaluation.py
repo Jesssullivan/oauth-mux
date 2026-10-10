@@ -196,9 +196,9 @@ def evaluate_acquired_pair(nix, modules, lock_bytes, pair_root, pair_receipt_sha
         roots = {name: str(pair.path / name) for name in acquired.NAMES}
         before_commitment = pair_commitment(pair, deadline)
         before_pair = acquired.verify_acquired_pair(lock_bytes, receipt[0], pair_receipt_sha256,
-            inventory[0], roots, deadline_seconds=remaining(deadline))
+            inventory[0], roots, deadline_seconds=remaining(deadline), deadline=deadline)
         before_artifact = artifact.verify_artifact(artifact_root, artifact_receipt_bytes,
-            artifact_receipt_sha256, deadline_seconds=remaining(deadline))
+            artifact_receipt_sha256, deadline_seconds=remaining(deadline), deadline=deadline)
         require(before_artifact["system"] == system, "hm-evaluation-artifact-platform")
         expression, module_captures, copied_captures, directory_capture = copy_modules(modules, home, deadline)
         copied = custody.enter_context(acquisition.HeldDirectory(home.path / "modules", parent_anchor=home))
@@ -232,11 +232,11 @@ def evaluate_acquired_pair(nix, modules, lock_bytes, pair_root, pair_receipt_sha
         check_envelope(pair, pair_envelope, deadline, "hm-evaluation-pair-envelope-changed")
         check_envelope(home, home_envelope, deadline, "hm-evaluation-private-home-changed")
         after_pair = acquired.verify_acquired_pair(lock_bytes, receipt[0], pair_receipt_sha256,
-            inventory[0], roots, deadline_seconds=remaining(deadline))
+            inventory[0], roots, deadline_seconds=remaining(deadline), deadline=deadline)
         require(before_pair == after_pair and pair_commitment(pair, deadline) == before_commitment,
                 "hm-evaluation-pair-changed-through-evaluator")
         after_artifact = artifact.verify_artifact(artifact_root, artifact_receipt_bytes,
-            artifact_receipt_sha256, deadline_seconds=remaining(deadline))
+            artifact_receipt_sha256, deadline_seconds=remaining(deadline), deadline=deadline)
         require(before_artifact == after_artifact, "hm-evaluation-artifact-changed-through-evaluator")
         for name in MODULES:
             require(read_declared(modules[name], MAX_MODULE_BYTES, deadline) == module_captures[name],

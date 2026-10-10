@@ -17,6 +17,7 @@ PROFILES = (PROFILE, MODEL_PROFILE)
 WORKLOAD_PROFILES = (*PROFILES, "yoga-controller-qualify-reserved", "yoga-controller-inspect-reserved", "yoga-controller-verify-reserved", "yoga-sealed-workspace-models-reserved", "default-archive-reserved", "query-registration-reserved", "resident-models-reserved", "resident-owner-status-source-reserved", "resident-owner-status-binding-reserved", "resident-owner-status-persistence-source-reserved", "resident-native-source-context-source-reserved", "resident-native-source-context-refresh-source-reserved", "resident-native-source-acquisition-source-reserved", "resident-native-source-context-metadata-reserved", "resident-owner-status-persistence-binding-reserved", "native-metadata-sdk-models-reserved", "native-query-descriptor-reserved", "native-persistence-metadata-reserved", "native-persistence-sdk-reserved", "native-persistence-package-models-reserved", 'resident-custody-runtime-models-reserved', 'resident-custody-runtime-reserved', 'resident-custody-runtime-linux-reserved', 'resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved', "yoga-installed-selection-reserved", "yoga-installed-workspace-reserved", "yoga-installed-models-reserved", "yoga-toolbar-reserved", "yoga-toolbar-reserved-models")
 # Peer admission remains in its own exact helper; this only reuses worker custody.
 WORKLOAD_PROFILES += ("native-peer-qualification-reserved",)
+WORKLOAD_PROFILES += ("home-manager-reconstruction-reserved", "home-manager-evaluation-reserved", "home-manager-bundle-models-reserved")
 LABEL = "//tools:native_flake_seed_plan_qualification"
 MODELS = ["test", "//tools:guard_native_seed_plan_reserved_test", "//tools:execution_guard_test",
     "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
@@ -591,12 +592,44 @@ def failed_terminal_exit(actual):
     return None
 
 
+def failed_terminal_signal(actual):
+    """Cleanup only: captured unchanged killed/dumped signal or timeout."""
+    code,status,result=actual.get("ExecMainCode"),actual.get("ExecMainStatus"),actual.get("Result")
+    if (actual.get("LoadState")=="loaded" and actual.get("ActiveState")=="failed"
+            and actual.get("SubState")=="failed" and actual.get("MainPID")=="0"
+            and actual.get("RemainAfterExit")=="yes" and type(code) is str and code in ("2","3")
+            and type(status) is str and re.fullmatch(r"[1-9][0-9]?",status) and int(status)<=64
+            and (result=="timeout" or code=="2" and result=="signal" or code=="3" and result=="core-dump")):
+        return (code,status,result)
+    return None
+
+
+def pre_stop_projection(actual, identity):
+    """Exact finite terminal facts, without raw unit/PID/path/diagnostic text."""
+    value=post_stop_projection(actual,identity)
+    value.pop("original_cgroup_state");value.pop("predicate")
+    value["scope"]="reserved-owned-pre-stop-diagnostic-v1"
+    for name,allowed in (("ExecMainCode",("0","1","2","3")),
+            ("Result",("success","exit-code","signal","core-dump","timeout","watchdog","oom-kill",
+                "start-limit-hit","resources","protocol")),("RemainAfterExit",("yes","no"))):
+        raw=actual.get(name)
+        value[name]="missing" if raw is None else raw if type(raw) is str and raw in allowed else "other"
+    status=actual.get("ExecMainStatus")
+    value["ExecMainStatus"]=(int(status) if type(status) is str
+        and re.fullmatch(r"0|[1-9][0-9]{0,2}",status) and int(status)<=255 else
+        "missing" if status is None else "other")
+    value["terminal_class"]=("normal-nonzero-exit" if failed_terminal_exit(actual) is not None else
+        "timeout" if failed_terminal_signal(actual) is not None and actual.get("Result")=="timeout" else
+        "signal" if failed_terminal_signal(actual) is not None else "unqualified")
+    return value
+
+
 def cleanup_retained(*, deadline, readback, authorize, stop, observe,
                      clock=time.monotonic, pause=time.sleep):
     """Same owned cleanup budget; an empty cgroup does not release an active retained unit."""
     from execution_guard import CLEANUP_READ_SECONDS, CONTROLLER_TIMEOUT
     summary={"state":"unproved","stop":"not-requested","ownership":"unproved","readback_attempts":0,
-        "post_stop":None}
+        "pre_stop":None,"post_stop":None}
     def state():
         try:
             return observe()
@@ -604,6 +637,7 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
             return "unproved"
     identity=None
     failed_terminal=None
+    failed_signal=None
     while clock()<deadline and summary["readback_attempts"]<8:
         current=state()
         if current in ("changed","unproved"):
@@ -623,7 +657,9 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
             if authorize(actual) is False:
                 continue
             identity=(actual["Id"],actual["InvocationID"],actual["ExecMainPID"])
+            summary["pre_stop"]=pre_stop_projection(actual,identity)
             failed_terminal=failed_terminal_exit(actual)
+            failed_signal=failed_terminal_signal(actual)
             summary["ownership"]="verified"
         except (OSError,ValueError,KeyError):
             summary["ownership"]="refused"
@@ -653,10 +689,15 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
                 and (missing or same_terminal_identity))
             owned_failed=(failed_terminal is not None and summary["stop"]=="succeeded"
                 and same_terminal_identity and failed_terminal_exit(actual)==failed_terminal)
+            owned_signal=(failed_signal is not None and summary["stop"]=="succeeded"
+                and same_terminal_identity and failed_terminal_signal(actual)==failed_signal)
             require(actual.get("Id")==identity[0] and actual.get("MainPID")=="0"
-                and (ordinary or owned_failed))
+                and (ordinary or owned_failed or owned_signal))
             if owned_failed:
                 summary["post_stop"]["predicate"]="owned-failed-terminal-predicate-passed"
+            elif owned_signal:
+                summary["post_stop"]["predicate"]=("owned-timeout-terminal-predicate-passed"
+                    if failed_signal[2]=="timeout" else "owned-signal-terminal-predicate-passed")
             if clock()<deadline:
                 original=state()
                 summary["post_stop"]["original_cgroup_state"]=(original
@@ -676,3 +717,5 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
 
 # Finite ninth input-family admissions own their target grammar separately.
 WORKLOAD_PROFILES += ("native-acquisition-inputs-models-reserved", "native-acquisition-binding-reserved", "native-acquisition-metadata-reserved", "native-acquisition-sdk-reserved", "native-acquisition-plan-reserved", "native-acquisition-query-reserved", "native-acquisition-compilation-reserved", "native-acquisition-runtime-qualification-reserved", "native-acquisition-package-reserved", "native-acquisition-bridge-material-reserved", "native-acquisition-bridge-models-reserved", "native-acquisition-package-models-reserved")
+
+WORKLOAD_PROFILES += ("native-acquisition-ordinary-tui-reserved", "native-acquisition-ordinary-models-reserved")

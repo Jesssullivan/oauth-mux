@@ -482,6 +482,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
                                "capabilities": {"experimentalApi": False, "requestAttestation": False}})
         bootstrap_native.send("initialized", {})
         endpoint = support.owned_endpoint(codex_home, bootstrap_native)
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(bootstrap_native,binary)
         PHASE = "integration-install"
         installed = cli("integrations.install", {"adapter": "codex", "config_path": str(config), "native_socket": str(endpoint),
                         "operation_id": os.urandom(32).hex(), "expected_revision": cli("system.health")["revision"]})
@@ -500,6 +502,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
                                    cli_overrides=live.cli_overrides if live is not None else ())
         first_pid = terminal.process.pid
         endpoint, thread, first = wait_loaded(codex_home, terminal)
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         first_endpoint, first_witness = endpoint, process_witness(first_pid)
         PHASE = "native-history-materialization"
         # Paginated zero-turn /rename only updates metadata; it cannot create
@@ -521,6 +525,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         else:
             before = live.history(codex_home, thread, accepted)
         PHASE = "selected-detach"
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         first_operation = detach(cli, endpoint, thread, first)
         PHASE = "native-preservation"
         terminal.alive()
@@ -544,6 +550,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
                                    cli_overrides=live.cli_overrides if live is not None else ())
         require(terminal.process.pid != first_pid, "cold native resume reused original process")
         endpoint, resumed_thread, second = wait_loaded(codex_home, terminal)
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         second_witness = process_witness(terminal.process.pid)
         require(resumed_thread == thread and second["nativeRef"] != first["nativeRef"]
                 and second["ownerId"] != first["ownerId"], "cold native resume lost original thread or reused authority")
@@ -580,6 +588,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
             return
         PHASE = "resumed-detach"
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         second_operation = detach(cli, endpoint, thread, second)
         terminal.alive()
         require(metadata(codex_home, thread) == resumed, "resumed selected detach changed retained history")
@@ -623,7 +633,25 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         require(not failed, "owned private terminal process cleanup failed")
 
 
-def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=()):
+def private_child_environment(root, child_environment=None):
+    environment = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/nonexistent", "HOME": str(root),
+                   "OMUX_ISOLATED_VAULT_PROOF": "private-bus-private-xdg"}
+    for name, child in (("XDG_RUNTIME_DIR", "r"), ("XDG_DATA_HOME", "d"), ("XDG_CONFIG_HOME", "c"),
+                        ("XDG_CACHE_HOME", "k"), ("XDG_STATE_HOME", "s")):
+        directory = root / child
+        directory.mkdir(mode=0o700)
+        environment[name] = str(directory)
+    if child_environment is not None:
+        require(type(child_environment) is dict and set(child_environment)=={
+            "OMUX_NATIVE_ORDINARY_MODE","OMUX_NATIVE_ORDINARY_ENTRY_NS","OMUX_NATIVE_ORDINARY_DEADLINE_NS","TEST_SRCDIR"},
+            "ordinary child clock transport differs")
+        require(type(child_environment["TEST_SRCDIR"]) is str
+                and Path(child_environment["TEST_SRCDIR"]).is_absolute()
+                and Path(child_environment["TEST_SRCDIR"]).is_dir(), "declared runfiles root missing")
+        environment.update(child_environment)
+    return environment
+
+def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=(), original_deadline=None, child_environment=None):
     if len(sys.argv) >= 5 and sys.argv[1] == "--pty-exec":
         binary, cwd = (Path(value).resolve(strict=True) for value in sys.argv[2:4])
         # The PTY needs a separate controlling-terminal session. Bind its
@@ -664,13 +692,7 @@ def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=()):
     bundle, candidate, receipt, session, bus, keyring = (Path(value).resolve(strict=True) for value in sys.argv[1:])
     with tempfile.TemporaryDirectory(prefix="omux-t-", dir="/tmp") as temporary:
         root = Path(temporary)
-        environment = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/nonexistent", "HOME": str(root),
-                       "OMUX_ISOLATED_VAULT_PROOF": "private-bus-private-xdg"}
-        for name, child in (("XDG_RUNTIME_DIR", "r"), ("XDG_DATA_HOME", "d"), ("XDG_CONFIG_HOME", "c"),
-                            ("XDG_CACHE_HOME", "k"), ("XDG_STATE_HOME", "s")):
-            directory = root / child
-            directory.mkdir(mode=0o700)
-            environment[name] = str(directory)
+        environment = private_child_environment(root, child_environment)
         configuration = root / "bus.conf"
         configuration.write_text('<busconfig><type>session</type><listen>unix:abstract=omux-native-' + root.name
                                  + '</listen><auth>EXTERNAL</auth><policy context="default">'
@@ -684,7 +706,10 @@ def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=()):
                                     "--inside", str(bundle), str(candidate), str(receipt), str(keyring), str(root)],
                                    env=environment, start_new_session=True, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, umask=0o077)
-        code, output, diagnostics = support.bounded_private_session(process)
+        if original_deadline is None:
+            code, output, diagnostics = support.bounded_private_session(process)
+        else:
+            code, output, diagnostics = support.bounded_private_session(process, absolute_deadline=original_deadline-30.0)
         if code == 0:
             require(output == MARKER, "ordinary native terminal proof marker missing")
             print(MARKER.decode("ascii"), end="")

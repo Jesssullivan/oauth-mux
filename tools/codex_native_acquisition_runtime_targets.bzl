@@ -35,3 +35,17 @@ def native_acquisition_runtime_targets(source_sources, sdk_sources, parent_data,
         tags=["manual", "no-remote", "no-cache"], timeout="long",
         target_compatible_with=["@platforms//os:linux", "@platforms//cpu:x86_64"],
     )
+
+    # Ordinary direct-package evaluation shares source proof code, never BRIDGE
+    # app-server qualification or a compiled-native acquisition authority flag.
+    native.filegroup(name="codex_direct_native_tui_support",srcs=depset([
+        "codex_fresh_native_runtime.py", "guard_cache.py", "codex_native_acquisition_process.py", "nar_descriptor.py",
+        "//delivery:nix_codex_runtime.py", "//delivery:nix_codex_deployment.py", "//delivery:portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py", "nix_interpreter_closure.py"
+    ] + modern + source_sources + sdk_sources).to_list(),visibility=["//visibility:public"])
+    native.filegroup(name="codex_direct_native_tui_support_data",srcs=depset(parent_data + sdk_data + [
+        "//integrations/codex-upstream:native_source_context_patch",
+        "//integrations/codex-upstream:native_acquisition_input_configuration",
+        "//integrations/codex-upstream:native_acquisition_n9_binding",
+        "@omux_native_acquisition_metadata_inputs//:inputs", "@omux_protocol_history_query_tools//:inputs"
+    ]).to_list(),visibility=["//visibility:public"])

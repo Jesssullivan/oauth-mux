@@ -1522,3 +1522,30 @@ python_test(name = "nix_codex_runtime_test", main = "test_nix_codex_runtime.py",
     srcs = ["nix_codex_runtime.py", "portable.py", "//tools:nix_interpreter_closure.py"])
 python_test(name = "nix_codex_deployment_test", main = "test_nix_codex_deployment.py",
     srcs = ["nix_codex_deployment.py"])
+
+# Direct generation-nine package is never admitted by the portable fresh reader.
+_DIRECT_ORDINARY_TUI_SOURCES = _FRESH_ORDINARY_TUI_SOURCES + [
+    "direct_native_tui_runtime.py", "//tools:codex_direct_native_tui_support",
+]
+python_test(
+    name="installed_direct_native_tui_test",main="test_installed_direct_native_tui.py",
+    srcs=_DIRECT_ORDINARY_TUI_SOURCES,
+    data=[":default_instance_archive", "@omux_codex_ordinary_direct_runtime//:inputs",
+        "@omux_codex_ordinary_direct_runtime//:input-pin.json", "@omux_codex_ordinary_direct_runtime//:input-pin.sha256",
+        "@omux_codex_ordinary_direct_runtime//:fresh-native-runtime.tar.gz", "@omux_codex_ordinary_direct_runtime//:runtime-receipt.json",
+        "//tools:codex_direct_native_tui_support_data",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args=["--direct-pin=$(location @omux_codex_ordinary_direct_runtime//:input-pin.json)",
+        "--direct-pin-sha-file=$(location @omux_codex_ordinary_direct_runtime//:input-pin.sha256)",
+        "$(location :default_instance_archive)",
+        "$(location @omux_codex_ordinary_direct_runtime//:fresh-native-runtime.tar.gz)",
+        "$(location @omux_codex_ordinary_direct_runtime//:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)","$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)"],
+    tags=["manual","no-remote","no-cache"],timeout="long",
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+python_test(name="direct_native_tui_contract_test",main="test_direct_native_tui_contract.py",
+    srcs=_DIRECT_ORDINARY_TUI_SOURCES+["test_installed_direct_native_tui.py"],
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"],
+)

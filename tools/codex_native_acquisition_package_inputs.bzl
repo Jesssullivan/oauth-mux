@@ -8,6 +8,15 @@ def _path(value):
 def _sha(value):
     return type(value) == "string" and len(value) == 64 and all([c in "0123456789abcdef" for c in value.elems()])
 
+def package_member_path_valid(role, path, sha256):
+    """The compiler's one fixed public ledger snapshot is not a generic root."""
+    if not _path(path) or not _sha(sha256):
+        return False
+    if role == "compiler_ledger_snapshot":
+        # Matches compilation.PUBLIC_ROOT / GOAL_SNAPSHOT_PREFIX exactly.
+        return path == "/srv/fast-local/jess/git/oauth-mux/docs/agent-notes/2026-10-10-native-acquisition-input-lift.UNAPPLIED/ledger-snapshots/" + sha256 + ".json"
+    return any([path.startswith(root) for root in _ROOTS])
+
 def package_configuration_valid(value):
     """Declaration only: actual package action must prove every selected authority."""
     if type(value) != "dict" or sorted(value.keys()) != ["kind", "schema_version", "selection", "status"] or type(value["schema_version"]) != "int" or value["schema_version"] != 1 or value["kind"] != "omux-native-acquisition-package-input-configuration-v1":
@@ -73,7 +82,7 @@ def _impl(ctx):
         pin = entries[role]
         if type(pin) != "dict" or sorted(pin.keys()) != ["bytes", "path", "sha256"] or not _path(pin["path"]) or not _sha(pin["sha256"]) or type(pin["bytes"]) != "int" or not (0 < pin["bytes"] and pin["bytes"] <= (512 * 1024 * 1024 if role == "codex" else 16 * 1024 * 1024)):
             fail("package bounded literal row differs")
-        if not any([pin["path"].startswith(root) for root in _ROOTS]):
+        if not package_member_path_valid(role, pin["path"], pin["sha256"]):
             fail("package input leaves finite owned public roots")
         total += pin["bytes"]
         if total > 512 * 1024 * 1024:

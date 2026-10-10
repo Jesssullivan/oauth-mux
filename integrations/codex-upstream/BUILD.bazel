@@ -91,3 +91,5 @@ filegroup(
     srcs = ["native-acquisition-runtime-inputs.json"],
     visibility = ["//visibility:public"],
 )
+
+exports_files(["native-acquisition-ordinary-inputs.json"])
