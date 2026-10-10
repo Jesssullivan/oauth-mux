@@ -69,17 +69,43 @@ def entries(descriptors):
 
 
 class PairStream(old.RepresentationStream):
+    """Own the current held-input check through yielded and buffered bytes."""
+    def __init__(self,inputs,headers,descriptors):
+        self.active_check,self.closed=None,False
+        super().__init__(inputs,headers,descriptors)
+
+    def check(self):
+        require(not self.closed,'current-pair-stream-closed')
+        tick(self.inputs.deadline)
+        if self.active_check is not None:self.active_check()
+        tick(self.inputs.deadline)
+
+    def read(self,amount):
+        try:return super().read(amount)
+        except BaseException:
+            close_resources(streams=(self,));raise
+
+    def close(self):
+        try:self.chunks.close()
+        finally:
+            self.pending=b''
+            self.closed=True
+
     def parts(self,headers,descriptors):
         for data in (MAGIC,*(part for payload in headers for part in (struct.pack('<Q',len(payload)),payload))):
             for start in range(0,len(data),65536):yield data[start:start+65536]
         for name,node in entries(descriptors):
             with self.inputs.open('pair/'+name+'/'+node['path']) as (stream,info,check):
                 require(info[6]==node['size'],'bundle-input-size')
-                remaining=node['size']
-                while remaining:
-                    check();data=stream.read(min(65536,remaining))
-                    require(data,'reconstruction-input-truncated');remaining-=len(data);yield data
-                require(not stream.read(1),'reconstruction-input-growth')
+                self.active_check=check
+                try:
+                    remaining=node['size']
+                    while remaining:
+                        self.check();data=stream.read(min(65536,remaining));self.check()
+                        require(data,'reconstruction-input-truncated');remaining-=len(data);yield data
+                    require(not stream.read(1),'reconstruction-input-growth');self.check()
+                finally:
+                    if self.active_check is check:self.active_check=None
 
 
 class PackedSources:

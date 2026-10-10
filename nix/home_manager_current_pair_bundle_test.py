@@ -292,6 +292,88 @@ class PairTests(unittest.TestCase):
         with patch.object(pair,'write_frame',side_effect=rebinding),self.assertRaises(ValueError):self.packed_produce(layout)
         self.assertEqual(list(self.fixture.outputs.iterdir()),[])
 
+    def test_buffered_canonical_and_retained_source_rebinding_refuses_and_closes_owner(self):
+        for retained in (False,True):
+            with self.subTest(retained=retained):
+                root=self.fixture.base/('stream-retained' if retained else 'stream-canonical')
+                source=root/'pair/home-manager/default.nix';source.parent.mkdir(parents=True)
+                self.fixture.write(source,b'x'*65536)
+                if retained:source.chmod(0o555)
+                inputs=(old.RepresentationInputs(root,time.monotonic()+120,'layout.json') if retained
+                    else old.Inputs(root,time.monotonic()+120))
+                descriptors={name:{'nodes':[]} for name in pair.acquired.NAMES}
+                descriptors['home-manager']['nodes']=[{'type':'regular','path':'default.nix','size':65536}]
+                actual=inputs.open;held=[]
+                @contextmanager
+                def tracking(*args,**kwargs):
+                    with actual(*args,**kwargs) as (reader,info,check):
+                        # Canonical Reader is the real fdopen object; retained
+                        # Reader wraps it, so retain the actual yielded check.
+                        held.append(check)
+                        yield reader,info,check
+                stream=pair.PairStream(inputs,(),descriptors)
+                self.addCleanup(stream.close)
+                with patch.object(inputs,'open',side_effect=tracking):
+                    self.assertEqual(stream.read(len(pair.MAGIC)+1),pair.MAGIC+b'x')
+                    self.assertEqual(len(stream.pending),65535)
+                    self.assertIs(stream.active_check,held[0])
+                    source.rename(source.with_name('retired.nix'))
+                    self.fixture.write(source,b'x'*65536)
+                    if retained:source.chmod(0o555)
+                    with self.assertRaisesRegex(ValueError,'bundle-input-changed'):stream.read(1)
+                self.assertTrue(stream.closed);self.assertEqual(stream.pending,b'')
+                self.assertIsNone(stream.active_check)
+                if retained:self.assertIsNone(inputs.active_check)
+
+    def test_buffered_canonical_close_releases_real_fd_and_refuses_reuse(self):
+        root=self.fixture.base/'stream-close';source=root/'pair/home-manager/default.nix'
+        source.parent.mkdir(parents=True);self.fixture.write(source,b'x'*65536)
+        inputs=old.Inputs(root,time.monotonic()+120)
+        descriptors={name:{'nodes':[]} for name in pair.acquired.NAMES}
+        descriptors['home-manager']['nodes']=[{'type':'regular','path':'default.nix','size':65536}]
+        actual=inputs.open;held=[]
+        @contextmanager
+        def tracking(*args,**kwargs):
+            with actual(*args,**kwargs) as row:
+                held.append(row[0].fileno());yield row
+        stream=pair.PairStream(inputs,(),descriptors);self.addCleanup(stream.close)
+        with patch.object(inputs,'open',side_effect=tracking):
+            self.assertEqual(stream.read(len(pair.MAGIC)+1),pair.MAGIC+b'x')
+            self.assertEqual(len(stream.pending),65535);os.fstat(held[0])
+            stream.close()
+        self.assertIsNone(stream.active_check);self.assertEqual(stream.pending,b'')
+        with self.assertRaises(OSError):os.fstat(held[0])
+        with self.assertRaisesRegex(ValueError,'current-pair-stream-closed'):stream.read(1)
+        with self.assertRaisesRegex(ValueError,'current-pair-stream-closed'):stream.check()
+        stream.close()
+
+    def test_buffered_canonical_expiry_inside_real_held_check_refuses_and_closes(self):
+        root=self.fixture.base/'stream-expiry';source=root/'pair/home-manager/default.nix'
+        source.parent.mkdir(parents=True);self.fixture.write(source,b'x'*65536)
+        clock=[time.monotonic()];deadline=clock[0]+120
+        inputs=old.Inputs(root,deadline)
+        descriptors={name:{'nodes':[]} for name in pair.acquired.NAMES}
+        descriptors['home-manager']['nodes']=[{'type':'regular','path':'default.nix','size':65536}]
+        actual=inputs.open;held=[];armed=[False]
+        @contextmanager
+        def tracking(*args,**kwargs):
+            with actual(*args,**kwargs) as (reader,info,check):
+                held.append(reader.fileno())
+                def checked_then_expired():
+                    check()  # Actual named/FD/full-stat/parent/original-clock check.
+                    if armed[0]:clock[0]=deadline+1
+                yield reader,info,checked_then_expired
+        stream=pair.PairStream(inputs,(),descriptors);self.addCleanup(stream.close)
+        with patch.object(inputs,'open',side_effect=tracking),patch.object(old.time,'monotonic',side_effect=lambda:clock[0]):
+            self.assertEqual(stream.read(len(pair.MAGIC)+1),pair.MAGIC+b'x')
+            self.assertEqual(len(stream.pending),65535);os.fstat(held[0])
+            armed[0]=True
+            with self.assertRaisesRegex(ValueError,'acquired-verification-deadline'):stream.read(1)
+        self.assertEqual(clock[0],deadline+1)
+        self.assertTrue(stream.closed);self.assertIsNone(stream.active_check)
+        self.assertEqual(stream.pending,b'')
+        with self.assertRaises(OSError):os.fstat(held[0])
+
     def test_correct_digest_corrupt_packed_payload_still_requires_actual_canonical_nar(self):
         # All actual transport/producer predicate functions run. This modeled
         # producer's honestly rehashed corrupt payload still fails original NAR.

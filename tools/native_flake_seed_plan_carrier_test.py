@@ -641,6 +641,33 @@ class CarrierModels(unittest.TestCase):
                 self.assertEqual(carrier.plan.object_hash(value, record,
                     lambda *_: self.fail("inert metadata root opened"), float(time.monotonic()+30)), hashed["narSize"])
 
+    def test_reserved_work_cutoff_is_narrowed_for_actual_source_verifier(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            original = float(time.monotonic()+1140)
+            # The actual unchanged source helper refuses the wider reserved cutoff.
+            with self.assertRaisesRegex(ValueError, "^native-source-deadline$"):
+                carrier.sources.verify(fixture.model.model.project["flake.lock"],
+                    fixture.model.model.descriptors, fixture.model.model.descriptor_path.parent,
+                    declared.metadata_alias_roots(fixture.model.model.descriptor_path), deadline=original)
+            # The real complete caller now performs both real source verifications
+            # and retains the same original cutoff for restore and final readbacks.
+            result = fixture.qualify(deadline=original)
+            self.assertTrue(result["locked_sources_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+            self.assertEqual({deadline for _, deadline in fixture.model.calls}, {original})
+
+    def test_source_failure_projection_is_closed_and_original_expiry_still_refuses(self):
+        self.assertEqual(carrier.source_failure(ValueError("native-source-deadline")), "native-source-deadline")
+        self.assertEqual(carrier.source_failure(ValueError("native-source-nar-mismatch")), "native-source-nar-mismatch")
+        for error in (ValueError("private path or arbitrary message"), OSError("private path"),
+                      KeyError("native-source-deadline")):
+            self.assertIsNone(carrier.source_failure(error))
+        with patch.object(carrier.sources, "verify", side_effect=AssertionError("no verifier after expiry")) as verify:
+            with self.assertRaises(ValueError):
+                carrier.verify_locked_sources(b"", b"", Path("/not-opened"), time.monotonic()-1)
+        verify.assert_not_called()
+
     def test_joined_generator_declared_aliases_actual_restore_and_readback(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
             fixture.generate()

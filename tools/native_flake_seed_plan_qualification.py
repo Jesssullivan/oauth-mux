@@ -60,6 +60,31 @@ def helper_pins(deadline):
             "verify_cached_nars.py", "nix_source_probe.py", "nix_interpreter_closure.py")}
 
 
+SOURCE_FAILURES = frozenset((
+    "native-source-lock-bound", "native-source-lock-version", "native-source-revision",
+    "native-source-role-set", "native-source-store-root", "native-source-distinct-roots",
+    "native-source-root-not-directory", "native-source-aggregate-bound",
+    "native-source-descriptor-bound", "native-source-deadline", "native-source-descriptor-lock",
+    "native-source-descriptor-fields", "native-source-lock-role", "native-source-regular-label-set",
+    "native-source-declared-label", "native-source-undeclared-file", "native-source-nar-mismatch",
+    "native-source-wire-size"))
+
+def source_failure(error):
+    # Only fixed nonsecret reason literals from the declared verifier are emitted.
+    return str(error) if type(error) is ValueError and str(error) in SOURCE_FAILURES else None
+
+
+def verify_locked_sources(lock_raw, descriptor_raw, descriptor_path, original_deadline):
+    proof.tick(original_deadline)
+    # This helper independently admits at most its existing600s remaining window.
+    # Narrow the caller's original work cutoff; never extend/reset that cutoff.
+    source_deadline = min(original_deadline, time.monotonic()+sources.MAX_SECONDS)
+    result = sources.verify(lock_raw, descriptor_raw, Path(descriptor_path).parent,
+        metadata_alias_roots(descriptor_path), deadline=source_deadline)
+    proof.tick(original_deadline)
+    return result
+
+
 def qualify(selected_raw, selection_sha256, bundle_raw, mapping_sha256, bundle_path,
             runtime_raw, runtime_metadata, source_raw, source_path, project, wrapper_raw, parent, deadline,
             *, implementation=None, runner=proof.run):
@@ -76,8 +101,7 @@ def qualify(selected_raw, selection_sha256, bundle_raw, mapping_sha256, bundle_p
     phase("producer-success")
     receipt = inputs.producer_success(selected, metadata)
     phase("locked-source-proof")
-    source_report = sources.verify(project["flake.lock"], source_raw, Path(source_path).parent,
-        metadata_alias_roots(source_path), deadline=deadline)
+    source_report = verify_locked_sources(project["flake.lock"], source_raw, source_path, deadline)
     phase("obligations-join")
     body, runtime, records = plan.join_obligations(metadata["obligations"],
         selected["obligations"]["sha256"], runtime_raw, source_report, project, seed.sha(wrapper_raw))
@@ -109,8 +133,7 @@ def qualify(selected_raw, selection_sha256, bundle_raw, mapping_sha256, bundle_p
     phase("producer-success-readback")
     inputs.producer_success(selected, again)
     phase("locked-source-readback")
-    inputs.require(sources.verify(project["flake.lock"], source_raw, Path(source_path).parent,
-        metadata_alias_roots(source_path), deadline=deadline) == source_report)
+    inputs.require(verify_locked_sources(project["flake.lock"], source_raw, source_path, deadline) == source_report)
     if implementation is None:
         inputs.require(helper_pins(deadline) == actual_helpers)
     proof.tick(deadline)
@@ -225,5 +248,8 @@ if __name__ == "__main__":
         if PHASE == "fresh-private-missing-plan" and operation is not None:
             print("native flake restore refused; operation="+operation
                 +"; reason="+plan.restore_failure_reason(error), file=sys.stderr)
+        source_reason = source_failure(error)
+        if source_reason is not None:
+            print("locked native source refused; reason="+source_reason, file=sys.stderr)
         print("native flake seed plan refused at "+PHASE, file=sys.stderr)
         raise SystemExit(1) from None
