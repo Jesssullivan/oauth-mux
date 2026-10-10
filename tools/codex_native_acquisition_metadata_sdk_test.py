@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
+from contextlib import ExitStack, contextmanager
 
 import codex_live_source as source
 import codex_protocol_history_metadata as metadata
@@ -258,6 +260,190 @@ class NinthBindingTests(unittest.TestCase):
         changed=copy.deepcopy(expected);changed['codex-rs/app-server']['deps'][1]='@crates//:libc-0.2.182'
         with self.assertRaises(ValueError):producer.binding.verify_hub_delta(hub(original),hub(changed))
         with self.assertRaises(ValueError):producer.binding.verify_hub_delta(hub(original),{**hub(expected),'defs.bzl':b'# drift\n'})
+
+
+class SourceProofSessionTests(unittest.TestCase):
+    def setUp(self):
+        self.binding=producer.binding
+        original_deadline=source.DEADLINE;original_phase=self.binding.PHASE
+        self.addCleanup(setattr,source,'DEADLINE',original_deadline)
+        self.addCleanup(setattr,self.binding,'PHASE',original_phase)
+        source.DEADLINE=float(producer.time.monotonic()+60)
+
+    def sealed(self,root,files,report):
+        fd=source.write_source(root,files)
+        try:
+            raw=source.encoded(report)
+            writer=os.open('source-receipt.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
+            with os.fdopen(writer,'wb') as stream:
+                stream.write(raw);stream.flush();os.fchmod(stream.fileno(),0o555)
+            os.fchmod(fd,0o555)
+        finally:os.close(fd)
+        return source.sha(raw),len(raw)
+
+    @contextmanager
+    def fixture(self):
+        """Real sealed IO/session/main; external lineage construction is a fixture seam."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            files={'plain':('100644',b'public source\n'),
+                'nested/run':('100755',b'public executable fixture\n'),
+                'nested/link':('120000',b'run')}
+            report={'graph_files':{'plain':{'sha256':source.sha(files['plain'][1])}},
+                'patch_sha256':['a'*64]*9}
+            roots={name:root/name for name in ('third','fifth','sixth','seventh','ninth')}
+            pins={name:self.sealed(path,files,report) for name,path in roots.items()}
+            def witness(path,regular=False):
+                fd=source.directory(path) if not regular else os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+                try:return self.binding.ninth.binding.identity(fd,regular)
+                finally:os.close(fd)
+            n5_config={'root':str(roots['seventh']),'receipt_sha256':pins['seventh'][0],
+                'receipt_bytes':pins['seventh'][1]}
+            n5_witness={'root_identity':witness(roots['seventh']),
+                'source_root_identity':witness(roots['seventh']/'source'),
+                'receipt_identity':witness(roots['seventh']/'source-receipt.json',True)}
+            n9_witness={'root':str(roots['ninth']),'receipt_bytes':pins['ninth'][1],
+                'root_identity':self.binding.identity(os.stat(roots['ninth'])),
+                'source_root_identity':self.binding.identity(os.stat(roots['ninth']/'source')),
+                'receipt_identity':self.binding.identity(os.stat(roots['ninth']/'source-receipt.json'))}
+            value={'source':{'root':str(roots['ninth']),'receipt_sha256':pins['ninth'][0],
+                'inventory_sha256':'b'*64,'producer':{'fixture_only':'not-actual-evidence'}},
+                'binding':None,'metadata':None,'sdk':None,'compile':None}
+            control={'value':value}
+            patch_reader=Mock(return_value=b'fixed public patch fixture\n')
+            constructed=[]
+            def construct(proof):
+                constructed.append(proof)
+                for name,path in roots.items():
+                    self.binding.phase(name)
+                    captured=proof.capture(name,path,pins[name][0],size=pins[name][1])
+                    captured.accept(report,files)
+                    if name=='seventh':proof.join_n5(captured)
+                    elif name=='ninth':proof.join_n9(captured)
+                proof.patch(patch_reader)
+                proof.source_report=copy.deepcopy(report);proof.source_files=proof.snapshots[-1][1].files
+                proof.baseline={'fixture_only':'not-actual-lineage'}
+                proof.report=self.binding.binding_report(proof.value,report)
+            try:
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(self.binding,'config',side_effect=lambda:copy.deepcopy(control['value'])))
+                    stack.enter_context(patch.object(self.binding.ninth.binding,'load',return_value=(n5_config,n5_witness)))
+                    stack.enter_context(patch.object(self.binding,'n9_witness',return_value=n9_witness))
+                    reconstruction=stack.enter_context(patch.object(self.binding.SourceProofSession,'construct',autospec=True,side_effect=construct))
+                    guardian=stack.enter_context(patch.object(self.binding.SourceProofSession,'guardian',autospec=True,side_effect=lambda proof:proof.tick()))
+                    sweeps=stack.enter_context(patch.object(source,'verify_written',wraps=source.verify_written))
+                    yield {'root':root,'roots':roots,'files':files,'report':report,'value':value,
+                        'control':control,'patch':patch_reader,'constructed':constructed,
+                        'reconstruction':reconstruction,'guardian':guardian,'sweeps':sweeps}
+            finally:
+                # Only this disposable public fixture; never a selected real root.
+                for directory,_,_ in os.walk(root,followlinks=False):Path(directory).chmod(0o700)
+
+    def test_real_finish_sweeps_every_ancestor_once_without_reconstruction_or_clock_reset(self):
+        with self.fixture() as fixture:
+            deadline=source.DEADLINE
+            with self.binding.SourceProofSession(fixture['value']) as proof:
+                original=proof.initial_report();changed=proof.initial_report()
+                changed['source_graph']['plain']['sha256']='c'*64
+                with self.assertRaises(TypeError):proof.source_files['unknown']=('100644',b'poison')
+                self.assertEqual(proof.finish(),original)
+                self.assertEqual(fixture['sweeps'].call_count,10)
+                self.assertEqual(fixture['reconstruction'].call_count,1)
+                self.assertEqual(fixture['guardian'].call_count,2)
+                self.assertEqual(fixture['patch'].call_count,3)
+                self.assertEqual(source.DEADLINE,deadline)
+                with self.assertRaises(ValueError):proof.finish()
+            with self.assertRaises(ValueError):proof.initial_report()
+            self.assertTrue(all(row.held is row.tree is row.receipt is None for _,row in proof.snapshots))
+
+    def test_final_sweep_refuses_real_ancestor_bytes_mode_extra_member_and_link_mutation(self):
+        for mutation in ('bytes','mode','extra','link'):
+            with self.subTest(mutation=mutation),self.fixture() as fixture:
+                with self.binding.SourceProofSession(fixture['value']) as proof:
+                    nested=fixture['roots']['third']/'source/nested'
+                    if mutation in ('bytes','mode'):
+                        path=nested/'run';path.chmod(0o600)
+                        if mutation=='bytes':path.write_bytes(b'changed public fixture\n');path.chmod(0o555)
+                    else:
+                        nested.chmod(0o700)
+                        if mutation=='extra':(nested/'extra').write_bytes(b'unselected\n');(nested/'extra').chmod(0o555)
+                        else:(nested/'link').unlink();(nested/'link').symlink_to('different')
+                        nested.chmod(0o555)
+                    with self.assertRaises(ValueError):proof.finish()
+                    self.assertEqual(self.binding.PHASE,'third-readback')
+                    self.assertFalse(proof.finished)
+                    self.assertEqual(fixture['guardian'].call_count,1)
+
+    def test_held_snapshot_refuses_named_root_replacement_and_receipt_replacement(self):
+        for mutation in ('root','receipt'):
+            with self.subTest(mutation=mutation),self.fixture() as fixture:
+                with self.binding.SourceProofSession(fixture['value']) as proof:
+                    root=fixture['roots']['third']
+                    if mutation=='root':
+                        root.rename(root.with_name('retained-old-third'))
+                        self.sealed(root,fixture['files'],fixture['report'])
+                    else:
+                        root.chmod(0o700)
+                        (root/'source-receipt.json').rename(root/'old-receipt.json')
+                        (root/'source-receipt.json').write_bytes(source.encoded(fixture['report']))
+                        (root/'source-receipt.json').chmod(0o555);root.chmod(0o555)
+                    with self.assertRaises(ValueError):proof.finish()
+                    self.assertEqual(self.binding.PHASE,'third-readback')
+
+    def test_changed_fixed_patch_or_selected_configuration_refuses_before_cached_tree_use(self):
+        for mutation in ('patch','configuration'):
+            with self.subTest(mutation=mutation),self.fixture() as fixture:
+                with self.binding.SourceProofSession(fixture['value']) as proof:
+                    if mutation=='patch':fixture['patch'].return_value=b'changed public patch fixture\n'
+                    else:fixture['control']['value']={**fixture['value'],'sdk':{'unreviewed':True}}
+                    with self.assertRaises(ValueError):proof.finish()
+                    self.assertEqual(self.binding.PHASE,'input-readback')
+                    self.assertEqual(fixture['sweeps'].call_count,5)
+                    self.assertFalse(proof.finished)
+
+    def test_original_deadline_exhaustion_and_clock_replacement_refuse_before_final_io(self):
+        for mutation in ('expired','replacement'):
+            with self.subTest(mutation=mutation),self.fixture() as fixture:
+                with self.binding.SourceProofSession(fixture['value']) as proof:
+                    if mutation=='replacement':
+                        source.DEADLINE=proof.deadline+1
+                        with self.assertRaises(ValueError):proof.finish()
+                        source.DEADLINE=proof.deadline
+                    else:
+                        with patch.object(source.time,'monotonic',return_value=proof.deadline),self.assertRaises(ValueError):proof.finish()
+                    self.assertEqual(fixture['sweeps'].call_count,5)
+                    self.assertFalse(proof.finished)
+
+    def test_actual_main_keeps_partial_receipt_unqualified_when_final_ancestor_readback_refuses(self):
+        with self.fixture() as fixture:
+            original=self.binding.SourceProofSession.initial_report
+            def changed_after_report(proof):
+                result=original(proof)
+                file=fixture['roots']['third']/'source/nested/run'
+                file.chmod(0o600);file.write_bytes(b'changed after initial proof\n');file.chmod(0o555)
+                return result
+            with patch.object(self.binding.SourceProofSession,'initial_report',autospec=True,side_effect=changed_after_report), \
+                    patch.object(self.binding.sys,'argv',['binding.py']), \
+                    patch.dict(os.environ,{'TEST_TIMEOUT':'900','TEST_UNDECLARED_OUTPUTS_DIR':str(fixture['root'])}):
+                with self.assertRaises(ValueError):self.binding.main()
+            partial=fixture['root']/'native-acquisition-binding'
+            self.assertTrue((partial/'receipt.json').is_file())
+            self.assertEqual(partial.stat().st_mode & 0o777,0o700)
+            self.assertIsNone(source.DEADLINE)
+            self.assertEqual(self.binding.PHASE,'third-readback')
+            self.assertTrue(all(row.held is row.tree is row.receipt is None
+                for proof in fixture['constructed'] for _,row in proof.snapshots))
+
+    def test_phase_projection_is_closed_and_never_formats_untrusted_values(self):
+        class Poison:
+            def __str__(self):raise AssertionError('untrusted formatting')
+        for value in (Poison(),'unrecognized-path-or-exception-text',None):
+            with patch.object(self.binding,'PHASE',value):
+                self.assertEqual(self.binding.refusal_message(),'ninth source binding refused at input')
+        for value in self.binding.PHASES:
+            self.binding.phase(value)
+            self.assertEqual(self.binding.refusal_message(),'ninth source binding refused at '+value)
+        with self.assertRaises(ValueError):self.binding.phase('not-a-public-stage')
 
 
 if __name__ == "__main__":
