@@ -74,3 +74,7 @@ exports_files(["native-source-context-seventh-input.json"])
 filegroup(name = "native_source_context_readonly_refresh_patch", srcs = ["native-source-context-readonly-refresh-v1.patch"])
 filegroup(name = "native_source_context_refresh_preimages", srcs = glob(["refresh-preimages/**/*.rs"]))
 filegroup(name = "native_source_context_seventh_input", srcs = ["native-source-context-seventh-input.json"])
+
+filegroup(name = "native_source_acquisition_patch", srcs = ["native-source-acquisition-v3.patch"])
+filegroup(name = "native_source_acquisition_n5_binding", srcs = ["native-source-acquisition-n5-binding.json"])
+filegroup(name = "native_source_acquisition_preimages", srcs = glob(["acquisition-preimages/**/*"], exclude_directories = 1))
