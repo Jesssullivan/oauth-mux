@@ -437,11 +437,13 @@ zig_test(
 
 cc_test(
     name = "native_peer_bridge_test",
-    srcs = ["src/platform/native_peer_test.c"],
-    deps = [":native_api"],
-    # The owned distinct-main fixture executes a copied ELF via held fd.
-    # Bind user-library objects so its original $ORIGIN is not required.
-    linkstatic = True,
+    # Exercise the exact production bridge without unrelated vault/SQL DSOs.
+    # Copied primary-image fixtures retain the toolchain's dynamic libc loader.
+    srcs = [
+        "src/platform/native_peer_test.c",
+        "src/platform/native_peer.c",
+        "src/platform/native_peer.h",
+    ],
 )
 
 zig_test(
