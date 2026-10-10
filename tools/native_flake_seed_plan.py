@@ -292,7 +292,10 @@ def restore_plan(obligations, runtime, producer_records, selected_candidates,
                 store.mkdir(parents=True, mode=0o755)
             with _restore_operation("copy"):
                 for logical in sorted(merged):
-                    copied = schedule.copy_tree(descriptors[logical], store/logical.rsplit("/",1)[1], pinned, deadline)
+                    # This owned store is disposable; retain flush/hash/readback,
+                    # without a crash-durability promise for each copied file.
+                    copied = schedule.copy_tree(descriptors[logical], store/logical.rsplit("/",1)[1], pinned, deadline,
+                        durable=False)
                     row = merged[logical]["record"]
                     require(copied["narHash"] == "sha256:"+seed.expected_hash(row[1])
                         and copied["narSize"] == int(row[2]))

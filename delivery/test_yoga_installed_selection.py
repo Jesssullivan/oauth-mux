@@ -15,6 +15,135 @@ import yoga_installed_workspace as workspace
 
 
 class SelectionTests(unittest.TestCase):
+    def test_real_execroot_inventory_route_old_fence_and_exact_leaf_success(self):
+        for name, repository in assembly.INVENTORY_REPOS.items():
+            for runner in ('linux-sandbox', 'processwrapper-sandbox'):
+                with self.subTest(name=name, runner=runner), tempfile.TemporaryDirectory() as temporary:
+                    root, base, parent, alias, canonical, expected = self.hop_fixture(temporary, runner)
+                    if name != 'browserInventory':
+                        expected = base / 'external' / repository / 'inventory.json'
+                        expected.parent.mkdir(parents=True, mode=0o755)
+                        expected.write_bytes(b'{"public":true}\n'); expected.chmod(0o644)
+                        canonical = canonical.parent.parent / repository / 'inventory.json'
+                        canonical.parent.mkdir(parents=True, mode=0o755); canonical.symlink_to(expected)
+                        alias = alias.parent.parent / repository / 'inventory.json'
+                    repository_alias = base / 'execroot/_main/external' / repository
+                    repository_alias.parent.mkdir(parents=True, mode=0o755)
+                    repository_alias.symlink_to(expected.parent, target_is_directory=True)
+                    execroot_inventory = repository_alias / 'inventory.json'
+                    # Reproduce a real sandbox input file pointing directly at
+                    # its artifact's execroot leaf, rather than a runfiles tree.
+                    sandbox_runfiles = alias.parent.parent
+                    sandbox_runfiles.unlink(); sandbox_runfiles.mkdir(mode=0o755)
+                    alias.parent.mkdir(mode=0o755); alias.symlink_to(execroot_inventory)
+                    with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                            patch.object(workspace.payload, 'parent', side_effect=parent):
+                        context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                        try:
+                            previous = (alias, canonical, expected)
+                            diagnostic = assembly._AssemblyDiagnostic()
+                            diagnostic.alias(runner)
+                            with patch.object(workspace.os, 'lstat', wraps=os.lstat) as inspected, self.assertRaises(ValueError):
+                                workspace.safe_resolve(alias, frozenset(), declared_paths=previous,
+                                    _trace=diagnostic.resolver)
+                            witness = json.loads(diagnostic.refusal())
+                            self.assertEqual(witness['operation'], 'namespace-fence')
+                            self.assertEqual(witness['declaredNamespace'], {'aliasLayout': runner,
+                                'candidateClass': 'outside', 'linkForm': 'absolute', 'symbolicHops': 1})
+                            self.assertFalse(any(Path(call.args[0]) == repository_alias for call in inspected.call_args_list))
+                            paths = assembly.declared_alias_paths(alias, expected, repository + '/inventory.json',
+                                selected_base=base, _assembly_context=context)
+                            self.assertEqual(paths, (alias, canonical, execroot_inventory, expected))
+                            self.assertEqual(assembly.declared_inventory(alias, name, selected_base=base,
+                                _assembly_context=context), expected)
+                            # Publication rechecks retain this exact tuple.
+                            self.assertEqual(workspace.safe_resolve(alias, frozenset(), declared_paths=paths), expected)
+                        finally: context.close()
+
+    def test_execroot_inventory_route_keeps_direct_canonical_and_controller_limits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            role = assembly.INVENTORY_REPOS['browserInventory'] + '/inventory.json'
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    execroot_inventory = base / 'execroot/_main/external' / role
+                    self.assertEqual(assembly.declared_alias_paths(expected, expected, role,
+                        selected_base=base, _assembly_context=context), (expected, expected))
+                    self.assertEqual(assembly.declared_alias_paths(canonical, expected, role,
+                        selected_base=base, _assembly_context=context), (canonical, execroot_inventory, expected))
+                    with patch.object(workspace.os, 'lstat') as inspected, self.assertRaises(ValueError):
+                        assembly.declared_inventory(execroot_inventory, 'browserInventory',
+                            selected_base=base, _assembly_context=context)
+                    inspected.assert_not_called()
+                    controller_alias = canonical.parent.parent / '_main/tools/source.py'
+                    destination = assembly.CONTROLLER / 'source.py'
+                    self.assertEqual(assembly.declared_alias_paths(controller_alias, destination,
+                        '_main/tools/source.py', selected_base=base, _assembly_context=context),
+                        (controller_alias, destination))
+                finally: context.close()
+
+    def test_execroot_inventory_route_rejects_foreign_epoch_root_role_and_private_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            repository = assembly.INVENTORY_REPOS['browserInventory']
+            execroot_inventory = base / 'execroot/_main/external' / repository / 'inventory.json'
+            sandbox_runfiles = alias.parent.parent
+            sandbox_runfiles.unlink(); sandbox_runfiles.mkdir(mode=0o755)
+            alias.parent.mkdir(mode=0o755)
+            other_epoch = root / 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+            other_root = root.parent / 'other-root'
+            other_repo = base / 'execroot/_main/external/+undeclared-repository'
+            wrong_known_repo = base / 'execroot/_main/external' / assembly.INVENTORY_REPOS['controllerInventory']
+            invalid = ((other_epoch / 'output-base/execroot/_main/external' / repository / 'inventory.json', other_epoch),
+                (other_root / base.parent.name / 'output-base/execroot/_main/external' / repository / 'inventory.json', other_root),
+                (execroot_inventory.with_name('unowned.json'), execroot_inventory.with_name('unowned.json')),
+                (other_repo / 'inventory.json', other_repo), (wrong_known_repo / 'inventory.json', wrong_known_repo),
+                (Path('/home/private/inventory-canary'), Path('/home/private')))
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    for target, forbidden in invalid:
+                        if alias.is_symlink(): alias.unlink()
+                        alias.symlink_to(target)
+                        diagnostic = assembly._AssemblyDiagnostic()
+                        with patch.object(workspace.os, 'lstat', wraps=os.lstat) as inspected, self.assertRaises(ValueError):
+                            assembly.declared_inventory(alias, 'browserInventory', selected_base=base,
+                                _assembly_context=context, _diagnostic=diagnostic)
+                        self.assertEqual(diagnostic.operation, 'namespace-fence')
+                        self.assertFalse(any(Path(call.args[0]) == forbidden or Path(call.args[0]).is_relative_to(forbidden)
+                            for call in inspected.call_args_list))
+                        self.assertNotIn(str(target), diagnostic.refusal().decode())
+                finally: context.close()
+
+    def test_changed_execroot_repository_alias_refuses_before_foreign_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
+            repository = assembly.INVENTORY_REPOS['browserInventory']
+            repository_alias = base / 'execroot/_main/external' / repository
+            repository_alias.parent.mkdir(parents=True, mode=0o755)
+            repository_alias.symlink_to(expected.parent, target_is_directory=True)
+            canonical.unlink(); canonical.symlink_to(repository_alias / 'inventory.json')
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    self.assertEqual(assembly.declared_inventory(alias, 'browserInventory',
+                        selected_base=base, _assembly_context=context), expected)
+                    other_epoch = root / 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+                    for target, forbidden in ((base / 'external/+undeclared-repository', base / 'external/+undeclared-repository'),
+                            (other_epoch / 'output-base/external' / repository, other_epoch),
+                            (Path('/home/private/metadata-canary'), Path('/home/private'))):
+                        repository_alias.unlink(); repository_alias.symlink_to(target, target_is_directory=True)
+                        with patch.object(workspace.os, 'lstat', wraps=os.lstat) as inspected, self.assertRaises(ValueError):
+                            assembly.declared_inventory(alias, 'browserInventory', selected_base=base,
+                                _assembly_context=context)
+                        self.assertFalse(any(Path(call.args[0]) == forbidden or Path(call.args[0]).is_relative_to(forbidden)
+                            for call in inspected.call_args_list))
+                finally: context.close()
+
     def test_context_precheck_and_postcheck_are_distinct_from_resolver(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
@@ -152,7 +281,8 @@ class SelectionTests(unittest.TestCase):
                             workspace.safe_resolve(alias, frozenset(), declared_paths=(alias, expected))
                         self.assertEqual(assembly.declared_alias_paths(alias, expected,
                             assembly.INVENTORY_REPOS['browserInventory'] + '/inventory.json',
-                            selected_base=base, _assembly_context=context), (alias, canonical, expected))
+                            selected_base=base, _assembly_context=context), (alias, canonical,
+                                base / 'execroot/_main/external' / assembly.INVENTORY_REPOS['browserInventory'] / 'inventory.json', expected))
                         self.assertEqual(assembly.declared_inventory(alias, 'browserInventory',
                             selected_base=base, _assembly_context=context), expected)
                         # The exact tuple must survive publication-time rechecks.

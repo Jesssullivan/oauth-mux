@@ -284,11 +284,11 @@ def resumed_history(before, resumed, thread):
         before[3], resumed[3][len(before[3]):], thread, before[0][3])
 
 
-def wait_resumed_checkpoint(home, thread, terminal, before):
+def wait_resumed_checkpoint(home, thread, terminal, before, *, history_reader=None):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         terminal.alive()
-        observed = metadata(home, thread)
+        observed = metadata(home, thread) if history_reader is None else history_reader(home, thread, before)
         # Only the exact unchanged original history is a pending checkpoint.
         # Changed identity, original bytes or unexpected appends fail promptly.
         require(observed[:2] == before[:2] and observed[3].startswith(before[3]),
@@ -506,19 +506,26 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         # the rollout. The real export command hydrates history and falls back
         # to thread/read(includeTurns=true), which persists the original thread.
         # Do not seed a SessionMeta or treat empty-export Markdown as success.
-        terminal.send("/export omux-native-resume-fixture.md\r")
-        wait_metadata(codex_home, thread, terminal, expected_name=None)
+        if live is None:
+            terminal.send("/export omux-native-resume-fixture.md\r")
+            wait_metadata(codex_home, thread, terminal, expected_name=None)
+        else:
+            accepted = live.first_accepted_history(cli, codex_home, thread, terminal, endpoint, first)
         terminal.alive()
         require(terminal.process.pid == first_pid and status(endpoint, thread) == first,
                 "native history materialization changed process or attachment authority")
         PHASE = "native-rename"
-        terminal.send("/rename " + FIXTURE_NAME + "\r")
-        before = wait_metadata(codex_home, thread, terminal)
+        if live is None:
+            terminal.send("/rename " + FIXTURE_NAME + "\r")
+            before = wait_metadata(codex_home, thread, terminal)
+        else:
+            before = live.history(codex_home, thread, accepted)
         PHASE = "selected-detach"
         first_operation = detach(cli, endpoint, thread, first)
         PHASE = "native-preservation"
         terminal.alive()
-        require(terminal.process.pid == first_pid and metadata(codex_home, thread) == before,
+        inspect_history = metadata if live is None else lambda home, thread: live.history(home, thread, before)
+        require(terminal.process.pid == first_pid and inspect_history(codex_home, thread) == before,
                 "selected detach changed native process or persistent state")
         require(support.private_file(config, 1024 * 1024) == configured
                 and support.private_file(capability_path, 128) == capability,
@@ -530,7 +537,7 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         PHASE = "ordinary-clean-exit"
         terminal.close(require_success=True)
         terminal = None
-        require(metadata(codex_home, thread) == before and not endpoint.exists(),
+        require(inspect_history(codex_home, thread) == before and not endpoint.exists(),
                 "clean native exit changed persistent metadata")
         PHASE = "cold-native-resume"
         terminal = TerminalProcess(binary, environment, work, resume=thread,
@@ -543,11 +550,13 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         PHASE = "resumed-preservation"
         # Native startup appends its explicit settings checkpoint. The exact
         # original byte prefix/inode and stable metadata remain preserved.
-        resumed = wait_resumed_checkpoint(codex_home, thread, terminal, before)
+        resumed = wait_resumed_checkpoint(codex_home, thread, terminal, before,
+                                         history_reader=None if live is None else live.history)
         require(support.private_file(config, 1024 * 1024) == configured
                 and support.private_file(capability_path, 128) == capability,
                 "cold native resume changed retained history or configuration")
         if live is not None:
+            live.verify_accepted_resume(before, resumed, thread, terminal, second)
             result, completed = live.prove(cli, codex_home, thread, terminal, endpoint,
                                            second, resumed, candidate, receipt)
             # Raw encrypted native history retains the existing detach/reentry refusal.

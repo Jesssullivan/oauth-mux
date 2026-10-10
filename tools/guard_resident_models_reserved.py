@@ -16,7 +16,15 @@ ARGUMENTS = ["test",
     "//tools:guard_fresh_native_runtime_input_test",
     "//tools:guard_resident_models_reserved_test",
     "//tools:guard_native_seed_plan_reserved_test",
-    "//tools:execution_guard_test"]
+    "//tools:execution_guard_test",
+    "//delivery:codex_live_contract_test",
+    "//delivery:resident_codex_live_composition_test",
+    "//delivery:resident_codex_live_controller_test",
+    "//delivery:native_resumed_checkpoint_test",
+    "//tools:guard_codex_live_profile_test",
+    "//tools:guard_codex_fresh_live_profile_test",
+    "//tools:guard_resident_continuity_profile_test",
+    "//:docs_check"]
 MEMORY, TASKS, CPU = kernel.MEMORY, kernel.TASKS, kernel.CPU
 Witness = kernel.Witness
 WorkloadWitness = kernel.WorkloadWitness

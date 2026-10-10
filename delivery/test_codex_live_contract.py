@@ -13,19 +13,19 @@ import test_installed_codex_live_continuity as fixture
 def receipt():
     return {
         "schema_version": 1,
-        "scope": "operator_drain_same_process_completed_turn_substitution",
+        "scope": "accepted_history_cold_resume_and_operator_drain_same_process_substitution",
         "transition_reason": "operator_drain", "application": "omux-maintained-codex",
-        "application_version": "0.157.0", "model": "fixture-model", "provider_usage_records": 2,
+        "application_version": "0.157.0", "model": "fixture-model", "provider_usage_records": 3,
         "native_context_mode": "text_transcript_v1", "reasoning_summary": "none", "reasoning_effort": "low",
         "minimum_reasoning_effort_verified": True, "native_detach_proven": False,
         "integration_restoration_proven": False,
         "upstream_commit": "a" * 40, "candidate_patch_sha256": "b" * 64,
         "runtime_archive_sha256": "c" * 64, "accounts": ["account_a", "account_b"],
-        "submitted_turns": 2, "accepted_completed_turns": 2, "tool_calls": 0,
+        "submitted_turns": 3, "accepted_completed_turns": 3, "tool_calls": 0,
         "same_process": True, "same_native_owner": True, "same_native_thread": True,
         "native_store_identity_preserved": True, "accepted_history_prefix_preserved": True,
-        "accepted_work_repeated": False, "empty_native_resume_checkpoint_proven": True,
-        "accepted_history_cold_resume_proven": False, "provider_rejection_handoff_proven": False,
+        "accepted_work_repeated": False, "empty_native_resume_checkpoint_proven": False,
+        "accepted_history_cold_resume_proven": True, "provider_rejection_handoff_proven": False,
         "concurrent_handoff_proven": False, "full_native_account_lifecycle_proven": False,
     }
 
@@ -43,6 +43,73 @@ def completed_events():
     ]
 
 class LiveContractTest(unittest.TestCase):
+    def test_two_turn_same_process_receipt_cannot_inherit_three_turn_resume_scope(self):
+        three = receipt()
+        two = {**three,"scope":"operator_drain_same_process_completed_turn_substitution",
+            "submitted_turns":2,"accepted_completed_turns":2,"provider_usage_records":2,
+            "empty_native_resume_checkpoint_proven":True,"accepted_history_cold_resume_proven":False}
+        fixture.validate_same_process_receipt(two)
+        fixture.validate_receipt(three)
+        with self.assertRaises(ValueError):
+            fixture.validate_receipt(two)
+        with self.assertRaises(ValueError):
+            fixture.validate_same_process_receipt(three)
+
+    def test_initial_accepted_turn_real_loop_has_one_send_and_no_repeat(self):
+        scenario = fixture.LiveScenario({"model":"fixture-model","authorized_source_paths":[]})
+        scenario.accounts = ["a","b"]
+        prompt = fixture.submitted_text_prompt("OMUX_INITIAL_DONE", "00"*16)
+        events = completed_events()
+        events[0]["payload"]["content"][0]["text"] = prompt
+        events[1]["payload"]["content"][0]["text"] = "OMUX_INITIAL_DONE"
+        events[-1]["payload"]["last_agent_message"] = "OMUX_INITIAL_DONE"
+        accepted = history(events)
+        report = {"event":"accepted","response_started":True,"pre_acceptance":False}
+        record = {"request_id":"initial","alternate":None,"first":{"account_handle":"a",
+            "state":"completed","accepted_report":report,
+            "terminal_report":{**report,"event":"completed"}}}
+        empty = {"records":[],"pending_requests":False,"pending_outcomes":False}
+        audit = {**empty,"records":[record],"binding":{"account_handle":"a"}}
+        terminal = mock.Mock()
+        terminal.process.pid = 10
+        observed = {"nativeRef":"original"}
+        with mock.patch.object(scenario,"audit",side_effect=[empty,audit]), \
+                mock.patch.object(scenario,"history",return_value=accepted), \
+                mock.patch.object(fixture.os,"urandom",return_value=bytes(16)), \
+                mock.patch.object(fixture.tui,"process_witness",return_value="witness"), \
+                mock.patch.object(fixture.tui,"status",return_value=observed):
+            self.assertEqual(scenario.first_accepted_history(None,None,"thread",terminal,None,observed),accepted)
+            with self.assertRaises(ValueError):
+                scenario.first_accepted_history(None,None,"thread",terminal,None,observed)
+        terminal.send.assert_called_once_with(prompt+"\r")
+        self.assertEqual(scenario.initial_accepted["request_id"],"initial")
+
+    def test_accepted_resume_refuses_missing_work_old_process_ref_and_changed_prefix(self):
+        scenario = fixture.LiveScenario({"model":"fixture-model","authorized_source_paths":[]})
+        terminal = mock.Mock()
+        terminal.process.pid = 11
+        before = ((),(1,2),b"",b"accepted\n")
+        with self.assertRaises(ValueError):
+            scenario.verify_accepted_resume(before,before,"thread",terminal,{"nativeRef":"new"})
+        scenario.initial_accepted = {"history":before,"pid":10,"native_ref":"old"}
+        for pid,reference,changed in ((10,"new",before),(11,"old",before),
+                (11,"new",((),(1,2),b"",b"changed\n"))):
+            terminal.process.pid = pid
+            with self.assertRaises(ValueError):
+                scenario.verify_accepted_resume(changed,before,"thread",terminal,{"nativeRef":reference})
+        terminal.process.pid = 11
+        with mock.patch.object(fixture.tui,"resumed_history") as checkpoint:
+            scenario.verify_accepted_resume(before,before,"thread",terminal,{"nativeRef":"new"})
+        checkpoint.assert_called_once_with(before,before,"thread")
+        self.assertTrue(scenario.accepted_resume_verified)
+
+    def test_handoff_refuses_before_verified_accepted_resume_without_sending(self):
+        scenario = fixture.LiveScenario({"model":"fixture-model","authorized_source_paths":[]})
+        terminal = mock.Mock()
+        with self.assertRaises(ValueError):
+            scenario.prove(None,None,None,terminal,None,None,None,None,None)
+        terminal.send.assert_not_called()
+
     def setUp(self):
         self.scenario = fixture.LiveScenario({"model": "fixture-model", "authorized_source_paths": []})
         self.previous = history([])
@@ -301,7 +368,7 @@ class LiveContractTest(unittest.TestCase):
                          {"upstream_commit": "a" * 40, "candidate_patch_sha256": "b" * 64})
 
     def test_receipt_rejects_broader_claims(self):
-        for field in ("accepted_history_cold_resume_proven", "provider_rejection_handoff_proven",
+        for field in ("empty_native_resume_checkpoint_proven", "provider_rejection_handoff_proven",
                       "concurrent_handoff_proven", "full_native_account_lifecycle_proven",
                       "native_detach_proven", "integration_restoration_proven"):
             value = receipt()
@@ -318,7 +385,7 @@ class LiveContractTest(unittest.TestCase):
 
     def test_receipt_rejects_replay_tools_and_integer_booleans(self):
         for key, replacement in (("tool_calls", 1), ("accepted_work_repeated", True),
-                                 ("same_process", 1), ("submitted_turns", 3)):
+                                 ("same_process", 1), ("submitted_turns", 2)):
             value = receipt()
             value[key] = replacement
             with self.subTest(field=key), self.assertRaises(ValueError):

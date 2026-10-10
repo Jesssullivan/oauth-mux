@@ -157,10 +157,11 @@ def output_base(path, *, selected_base=None):
 
 
 def declared_alias_paths(alias, expected, role, *, selected_base, _assembly_context):
-    """One same-target canonical leaf, never the whole current output base."""
+    """Exact same-target aliases, never a current base or repository tree."""
     alias, expected = workspace.source_path(str(alias)), workspace.source_path(str(expected))
     base = workspace.assembly_base(selected_base)
-    if role in {repository + '/inventory.json' for repository in INVENTORY_REPOS.values()}:
+    inventory = role in {repository + '/inventory.json' for repository in INVENTORY_REPOS.values()}
+    if inventory:
         workspace.require(expected == base / 'external' / role)
     elif re.fullmatch(r'_main/tools/[A-Za-z0-9_-]+\.py', role):
         workspace.require(expected == CONTROLLER / Path(role).name)
@@ -177,6 +178,12 @@ def declared_alias_paths(alias, expected, role, *, selected_base, _assembly_cont
             + re.escape(suffix), relative) is not None)
         canonical = base / suffix
         paths = (alias, expected) if alias == canonical else (alias, canonical, expected)
+        if inventory:
+            # A sandbox input may target the artifact's exact execroot external
+            # leaf; that repository alias redirects to the physical repository.
+            # Declare only this inventory leaf, not external or the repo tree.
+            execroot_inventory = base / 'execroot/_main/external' / role
+            paths = paths[:-1] + (execroot_inventory, expected)
     workspace.require(type(_assembly_context) is workspace.AssemblyContext
         and _assembly_context.base == base)
     return paths

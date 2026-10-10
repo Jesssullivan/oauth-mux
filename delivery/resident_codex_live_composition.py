@@ -237,7 +237,7 @@ class ResidentScenario(live.LiveScenario):
                 and health["request_authority"]["snapshot_bytes_remaining"] >= 65536
                 and health["mutation_authority"]["guaranteed_admissions_remaining"] >= 1)
         self.check_domain(control("state.snapshot"))
-        result, completed = super().prove(control, home, thread, terminal, endpoint,
+        result, completed = super().prove_same_process(control, home, thread, terminal, endpoint,
                                           observed, baseline, candidate, receipt)
         self.check_domain(control("state.snapshot"))
         recheck_resident()

@@ -1,5 +1,7 @@
 """Provider-free selected resident metadata/refusal models."""
 import copy
+import json
+from pathlib import Path
 import time
 import unittest
 from unittest import mock
@@ -32,6 +34,63 @@ def domain():
 
 
 class ResidentSelectedDomainTest(unittest.TestCase):
+    def test_attached_composition_runs_actual_two_turn_loop_without_isolated_resume_flags(self):
+        snapshot, handles = domain()
+        scenario = resident.ResidentScenario("fixture-model",handles,Path("/synthetic-pin"),
+            allow_account_wide_drain=True,drain_account_handle=handles[0]["account_handle"])
+        scenario.reasoning_effort = "low"
+        scenario.cli_overrides = ("context","summary","effort")
+        scenario.verified_runtime_identity = {"upstream_commit":"a"*40,
+            "candidate_patch_sha256":"b"*64}
+        terminal = mock.Mock()
+        terminal.process.pid = 10
+        observed = {"nativeRef":"same-reference"}
+        baseline = ((None,None,None,None,None,"0.157.0"),(1,2),b"",json.dumps({"payload":{
+            "thread_settings":{"model":"fixture-model","reasoning_summary":"none",
+                               "reasoning_effort":"low"}}}).encode()+b"\n")
+        sent = []
+        terminal.send.side_effect = sent.append
+        def audit(*unused):
+            records = []
+            for index in range(len(sent)):
+                account = handles[index]["account_handle"]
+                scenario.route_observations[account] = {"synthetic":True}
+                records.append({"request_id":"request-"+str(index),"alternate":None,
+                    "first":{"account_handle":account,"issued_sequence":index+1,
+                        "state":"completed","accepted_report":{"event":"accepted",
+                            "response_started":True,"pre_acceptance":False},
+                        "terminal_report":{"event":"completed","response_started":True,
+                            "pre_acceptance":False},"route_generation":index+1}})
+            return {"records":records,"pending_requests":False,"pending_outcomes":False,
+                "binding":None if not records else {"account_handle":records[-1]["first"]["account_handle"],
+                                                   "route_generation":len(records)}}
+        def mutate(*unused):
+            scenario.drained = handles[0]["account_handle"]
+            return {"updated":True}
+        drained = copy.deepcopy(snapshot)
+        drained["accounts"][0]["lifecycle"] = "draining"
+        health = {"protocol_version":2,"custody_available":True,
+            "request_authority":{"remaining":2,"snapshot_bytes_remaining":65536},
+            "mutation_authority":{"guaranteed_admissions_remaining":1}}
+        def cli(method,params):
+            return health if method == "system.health" else drained
+        with mock.patch.object(scenario,"audit",side_effect=audit), \
+                mock.patch.object(scenario,"mutate",side_effect=mutate), \
+                mock.patch.object(scenario,"check_domain"), \
+                mock.patch.object(scenario,"history",return_value=baseline), \
+                mock.patch.object(scenario,"completed_text",return_value=True), \
+                mock.patch.object(resident.live.tui,"process_witness",return_value="witness"), \
+                mock.patch.object(resident.live.tui,"status",return_value=observed), \
+                mock.patch.object(resident.live,"public_runtime_file",return_value=json.dumps({"archive_sha256":"c"*64}).encode()):
+            result = scenario.prove_attached(cli,mock.Mock(),None,"thread",terminal,None,
+                                             observed,baseline,None,None)
+        self.assertEqual(len(sent),2)
+        self.assertIsNone(scenario.initial_accepted)
+        self.assertFalse(scenario.accepted_resume_verified)
+        self.assertEqual(result["resident_scope"],resident.SCOPE)
+        self.assertEqual(result["native_result"]["submitted_turns"],2)
+        self.assertFalse(result["native_result"]["accepted_history_cold_resume_proven"])
+
     def test_preserves_unrelated_provider_records_without_global_two_account_requirement(self):
         snapshot, handles = domain()
         snapshot["accounts"].append({"id": "1" * 64,

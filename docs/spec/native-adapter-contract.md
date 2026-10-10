@@ -75,6 +75,50 @@ rather than reporting an uncommitted cache. Cancellation uses `target_operation_
 separately from its own mutation ID. The native adapter capability protocol and browser native messaging remain
 version 1; neither inherits control version 2.
 
+## Native credential-source context acceptance gap
+
+Daemon-default enrollment and verified active-application source context are
+separate. Omitted Codex `source_path` in [engine.zig](../../src/engine.zig)
+resolves from the daemon's `HOME`/`CODEX_HOME`; it does not identify the context
+used by an independently ordinary-started application. Selected-context discovery
+in [native_probe.zig](../../src/integrations/native_probe.zig) authenticates
+owner/thread incarnations but carries no credential-source context authority.
+Native conversational context reconstruction and session/history preservation
+are not credential-source discovery. This bridge is unimplemented and requires
+version-bound native/daemon qualification; no method or capability is introduced
+by this contract. The product requires discovery without asking users for raw
+profile locations, and ordinary launch without an Omux wrapper or alternate home.
+
+Acceptance requires:
+
+- The compatible native owner declares its actual resolved source context through
+  the existing authenticated owner boundary. Opaque source-context authority is
+  bound to owner, process nonce, peer witness and endpoint generation, plus thread
+  incarnation when applicable. Hints, guessed home/profile paths or arbitrary
+  process/environment scanning cannot establish this authority.
+- Explicit source acquisition consent precedes credential access. Controls pass
+  opaque authenticated context authority, never raw paths, credentials or identity
+  PII. Trusted daemon acquisition validates bounded owned native-store custody and
+  rechecks original owner/context identity before and after; stale, replaced,
+  ambiguous or unsupported contexts refuse.
+- The [source lifecycle contract](native-lifecycle-and-custody.md) still requires
+  provider identity verification before activation, same-identity deduplication,
+  ambiguity quarantine and forget tombstones. Native import keeps renewal
+  ownership external; source consent, verified identity, refresh adoption and
+  native attachment remain separate. Accepted requests/tools and history are not
+  replayed.
+- Exact source-bound tests cover different ordinary-native/daemon homes, missing
+  consent/custody, forged context/path, stale owner/thread/generation, replacement,
+  ambiguity and lost replies without repeated mutations. Actual ordinary launch,
+  authenticated source selection, verification and retained normal custody need
+  separate evidence before attachment or same-process handoff claims.
+
+Existing daemon-default and explicitly selected sources retain their narrower
+meaning. Missing native declarations report the gap; stock Codex and experimental
+candidates gain no support from these requirements. Existing TIN-5338 native and
+TIN-2063 account-lifecycle carriers retain implementation/evidence ownership;
+no new ticket or completed acceptance is implied.
+
 ## Common lifecycle and safety requirements
 
 Explicit setup verification has scoped historical Linux passes: `33452a55`

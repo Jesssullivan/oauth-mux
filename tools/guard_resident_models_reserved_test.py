@@ -26,14 +26,21 @@ class ResidentModelsReservation(unittest.TestCase):
             "//delivery:native_terminal_failure_test",
             "//tools:codex_owner_runtime_input_test", "//tools:guard_owner_runtime_input_test",
             "//tools:guard_fresh_native_runtime_input_test", "//tools:guard_resident_models_reserved_test",
-            "//tools:guard_native_seed_plan_reserved_test", "//tools:execution_guard_test"]
+            "//tools:guard_native_seed_plan_reserved_test", "//tools:execution_guard_test",
+            "//delivery:codex_live_contract_test", "//delivery:resident_codex_live_composition_test",
+            "//delivery:resident_codex_live_controller_test", "//delivery:native_resumed_checkpoint_test",
+            "//tools:guard_codex_live_profile_test", "//tools:guard_codex_fresh_live_profile_test",
+            "//tools:guard_resident_continuity_profile_test", "//:docs_check"]
         self.assertEqual(models.ARGUMENTS, expected)
         self.assertTrue(models.request(self.args(), expected))
         self.assertFalse(set(expected[1:]) & retained.CONSUMERS)
         self.assertEqual(models.selected(models.PROFILE, expected), {"PrivateNetwork": "yes"})
-        invalid = [expected[:-1], expected + [expected[1]], ["build", *expected[1:]],
+        for profile in ("codex-live", "resident-continuity", "standard"):
+            with self.assertRaises(ValueError): models.selected(profile, expected)
+        invalid = [expected[:13], expected[:-1], expected + [expected[1]], ["build", *expected[1:]],
             ["run", *expected[1:]], ["test", *reversed(expected[1:])],
-            expected + ["//:docs_check"], expected + ["--test_filter=untrusted"]]
+            expected + ["//:docs_check"], expected + ["//delivery:resident_codex_live_continuity"],
+            expected + ["--test_filter=untrusted"]]
         invalid.extend(["test", label] for label in retained.CONSUMERS)
         with patch.object(guard, "immutable", side_effect=AssertionError("tool read")) as tool, \
                 patch.object(models, "Witness", side_effect=AssertionError("resident read")) as witness:
@@ -49,7 +56,8 @@ class ResidentModelsReservation(unittest.TestCase):
         cases = (("manager", "user"), ("source_dirty", "true"), ("source_commit", "a" * 39),
             ("reuse_owned_cache", True), ("resident_manifest", Path("/model/normal-state")),
             ("codex_owner_runtime_directory", Path("/model/retained")), ("native_mode", "schema"),
-            ("codex_login_manifest", Path("/model/normal-login")), ("site_phase", "build"))
+            ("codex_login_manifest", Path("/model/normal-login")),
+            ("codex_live_manifest", Path("/model/normal-live")), ("site_phase", "build"))
         for name, value in cases:
             args = self.args()
             setattr(args, name, value)
@@ -59,7 +67,8 @@ class ResidentModelsReservation(unittest.TestCase):
         self.assertFalse(models.request(args, models.ARGUMENTS))
         with patch.object(guard, "immutable", side_effect=AssertionError("tool read")) as tool:
             for option in (["--resident-manifest", "/model/private"],
-                    ["--codex-owner-runtime-directory", "/model/retained"], ["--reuse-owned-cache"]):
+                    ["--codex-owner-runtime-directory", "/model/retained"],
+                    ["--codex-live-manifest", "/model/private-live"], ["--reuse-owned-cache"]):
                 with self.assertRaises(ValueError):
                     guard.main(["--profile", models.PROFILE, "--manager", "system",
                         "--source-commit", "a" * 40, "--source-dirty", "false", *option,

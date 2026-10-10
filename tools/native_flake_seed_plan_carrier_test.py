@@ -427,6 +427,72 @@ class CarrierModels(unittest.TestCase):
         self.assertIsNone(carrier.plan.restore_failure(error))
         self.assertIsNone(carrier.plan.restore_failure(ValueError("copy")))
 
+    def test_disposable_restore_reaches_real_query_and_readbacks_without_copy_fsync(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            original_copy = carrier.plan.schedule.copy_tree
+            copied = []
+            before = {name: path.read_bytes() for name, path in fixture.physical.items() if path.is_file()}
+            def copy(*args, **kwargs):
+                with patch.object(carrier.plan.schedule.os, "fsync", side_effect=AssertionError("disposable copy fsync")):
+                    result = original_copy(*args, **kwargs)
+                for node in args[0]["nodes"]:
+                    if node["type"] == "regular":
+                        self.assertEqual((args[1]/node["path"]).stat().st_mode & 0o777,
+                            0o555 if node["executable"] else 0o444)
+                copied.append((args[3], result))
+                return result
+            with patch.object(carrier.plan.schedule, "copy_tree", side_effect=copy):
+                result = fixture.qualify()
+            self.assertEqual(len(copied), result["verified_roots"])
+            self.assertTrue(copied)
+            self.assertEqual(len({deadline for deadline, _ in copied}), 1)
+            self.assertEqual({deadline for deadline, _ in copied}, {deadline for _, deadline in fixture.model.calls})
+            self.assertEqual(result["verified_nar_bytes"], sum(row["narSize"] for _, row in copied))
+            self.assertTrue(result["original_and_copied_bytes_rechecked"])
+            self.assertTrue(result["input_metadata_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+            self.assertEqual(result["plan"]["willBuild"], sorted({models.DRV, models.CHILD}))
+            self.assertTrue(all(result[name] is False for name in
+                ("realized", "complete_build_seed_verified", "native_runtime_qualified", "sdk_qualified", "execution_authority")))
+            self.assertEqual({name: fixture.physical[name].read_bytes() for name in before}, before)
+            self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+
+    def test_disposable_restore_real_copy_flush_failure_keeps_primary_and_owned_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            original_copy = carrier.plan.schedule.copy_tree
+            original_fdopen = carrier.plan.schedule.os.fdopen
+            refused = OSError("private flush diagnostic bait")
+            before = {name: path.read_bytes() for name, path in fixture.physical.items() if path.is_file()}
+            class FlushFailure:
+                def __init__(self, stream):
+                    self.stream = stream
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    self.stream.close()
+                def write(self, raw):
+                    return self.stream.write(raw)
+                def flush(self):
+                    raise refused
+                def fileno(self):
+                    return self.stream.fileno()
+            def fdopen(fd, mode, *args, **kwargs):
+                stream = original_fdopen(fd, mode, *args, **kwargs)
+                return FlushFailure(stream) if mode == "wb" else stream
+            def copy(*args, **kwargs):
+                with patch.object(carrier.plan.schedule.os, "fdopen", side_effect=fdopen):
+                    return original_copy(*args, **kwargs)
+            with patch.object(carrier.plan.schedule, "copy_tree", side_effect=copy):
+                with self.assertRaises(OSError) as caught:
+                    fixture.qualify()
+            self.assertIs(caught.exception, refused)
+            self.assertEqual(carrier.plan.restore_failure(refused), "copy")
+            self.assertEqual(fixture.model.calls, [])
+            self.assertEqual({name: fixture.physical[name].read_bytes() for name in before}, before)
+            self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+
     def test_joined_generator_declared_aliases_actual_restore_and_readback(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
             fixture.generate()
