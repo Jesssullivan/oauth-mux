@@ -141,7 +141,7 @@ def verify_hub_delta(before,after):
     source.require(type(before) is dict and type(after) is dict and set(before)==set(after)
         and {'BUILD.bazel','defs.bzl','data.bzl'}<=set(before) and len(before)<=16
         and all(type(name) is str and '/' not in name and name not in ('','.','..')
-            and type(raw) is bytes and len(raw)<=metadata.MAX_HUB_FILE for rows in (before,after) for name,raw in rows.items())
+            and type(raw) is bytes and len(raw)<=metadata.MAX_HUB_FILE for rows in (before,after) for name,raw in rows.items()))
     source.require(all(before[name]==after[name] for name in before if name!='data.bzl'))
     old=metadata.dep_data(before['data.bzl']);new=metadata.dep_data(after['data.bzl']);expected=copy.deepcopy(old)
     row=expected[metadata.PACKAGE]
