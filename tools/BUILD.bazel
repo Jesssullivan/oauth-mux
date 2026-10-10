@@ -53,7 +53,7 @@ _CODEX_GIT_INPUT_SOURCES = _CODEX_SDK_SOURCES + [
     "codex_dependency_bundle.py", "codex_dependency_union.py", "codex_repository_inputs.py",
 ]
 
-_YOGA_DELIVERY_GUARD_SOURCES = ['guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
+_YOGA_DELIVERY_GUARD_SOURCES = ['yoga_controller_http_inputs.py', 'guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
     'yoga_executable_qualification.py','guard_yoga_install_inputs_profile.py',
     'yoga_install_inputs_receiver.py','yoga_install_inputs_stage.py',
     'guard_yoga_controller_qualify_reserved.py','guard_yoga_sealed_transfer_profile.py','guard_yoga_sealed_transfer_models_reserved.py','yoga_sealed_transfer_schema.py',

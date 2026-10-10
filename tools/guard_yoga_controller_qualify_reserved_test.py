@@ -1,5 +1,9 @@
 """Reserved prerequisite and distinct unchanged standard receipt authority."""
 from pathlib import Path
+from contextlib import contextmanager
+import hashlib
+import os
+import tempfile
 import copy
 import time
 from types import SimpleNamespace
@@ -38,6 +42,13 @@ class PrerequisiteModels(unittest.TestCase):
             'initial_direct_processes_retained':True,'outer_pid_namespace_matched':True,
             'hierarchical_caps':True,'resident_signalled':False,
             'kernel_bounds':{'memory.max':'268435456','memory.swap.max':'0','pids.max':'32','cpu.max':'10000 100000'}}
+        count=sum(required for _,required in route.http_inputs.DECLARED)
+        inputs={'scope':'fixed-yoga-controller-locked-http-snapshot-v1',
+            'module_sha256':route.http_inputs.MODULE_SHA256,'lock_sha256':route.http_inputs.LOCK_SHA256,
+            'declared_inputs':len(route.http_inputs.DECLARED),'copied_files':count,'copied_bytes':count,
+            'missing_optional_inputs':len(route.http_inputs.DECLARED)-count,'snapshot_sha256':'e'*64,
+            'verified_after_cleanup':True,'custody_released':True,'downloads_allowed':False,
+            'complete_dependency_closure_proved':False}
         receipt={'id':epoch,'artifact_epoch':epoch,'source_commit':'a'*40,'source_dirty':'false',
             'exit':0,'workload_exit':0,'descendants_empty':True,'controller_failure':None,'rejection':None,
             'cleanup':{'state':'empty','ownership':'verified','readback_attempts':2},'verb':'run',
@@ -45,6 +56,7 @@ class PrerequisiteModels(unittest.TestCase):
             'coordination_directory':str(route.COORDINATION),'coordination_lock':str(route.COORDINATION/'execution.lock'),
             'graph_sha256':'b'*64,'limits':route.properties(guard.PROPERTIES),
             'closure_manifest_sha256':readonly.NATIVE,'bootstrap_manifest_sha256':readonly.executable.BOOTSTRAP_SHA,
+            'yoga_controller_http_inputs':inputs,
             'reserved_failure':None,'yoga_controller_qualify_reservation':route.projection(1,1+1200*10**9,True,resident),
             'yoga_delivery':{'source_verified_after_cleanup':True,'controller_tools':readonly.TOOLS,'mode':'qualify',
                 'coordination_lock_witness':lock,'remote_owned_containment_verified':False,'copy_performed':False,
@@ -61,7 +73,13 @@ class PrerequisiteModels(unittest.TestCase):
             lambda r:r['yoga_controller_qualify_reservation'].update(verified_after_cleanup=False),
             lambda r:r['yoga_controller_qualify_reservation']['resident'].update(resident_signalled=True),
             lambda r:r['yoga_controller_qualify_reservation']['resident']['kernel_bounds'].update(**{'pids.max':'64'}),
-            lambda r:r['yoga_delivery'].update(coordination_lock_witness={'other':True})):
+            lambda r:r['yoga_delivery'].update(coordination_lock_witness={'other':True}),
+            lambda r:r['yoga_controller_http_inputs'].update(verified_after_cleanup=False),
+            lambda r:r['yoga_controller_http_inputs'].update(custody_released=False),
+            lambda r:r['yoga_controller_http_inputs'].update(downloads_allowed=True),
+            lambda r:r['yoga_controller_http_inputs'].update(module_sha256='0'*64),
+            lambda r:r['yoga_controller_http_inputs'].update(snapshot_sha256='unknown'),
+            lambda r:r['yoga_controller_http_inputs'].update(copied_files=True)):
             bad=copy.deepcopy(receipt);mutation(bad)
             with self.assertRaises(ValueError):route.prior_receipt(bad,epoch,'b'*64,guard.PROPERTIES,lock,source_commit='a'*40)
 
@@ -77,7 +95,8 @@ class PrerequisiteModels(unittest.TestCase):
         with patch.object(guard,'yoga_delivery_command',return_value=(['bazel','run',route.ARGUMENTS[1]],{})) as constructor:
             result=route.command(None,'bazel',Path('/fixed/run'),route.ARGUMENTS,route.PROFILE,entry,deadline,
                 source_commit='a'*40,source_dirty='false',repository_cache=None,nixpkgs_source=None)
-        self.assertEqual(result,['bazel','run','--repository_disable_download','--repo_contents_cache=',route.ARGUMENTS[1]])
+        self.assertEqual(result,['bazel','run','--repository_disable_download','--repo_contents_cache=',
+            '--repository_cache=/fixed/run/yoga-controller-http-inputs',route.ARGUMENTS[1]])
         self.assertEqual(constructor.call_args.args[3],deadline)
         with self.assertRaises(ValueError):guard.bazel_command('/fixed/bazel',Path('/fixed/run'),route.ARGUMENTS)
 
@@ -131,6 +150,7 @@ class PrerequisiteModels(unittest.TestCase):
             self.assertEqual(command[command.index('run')+1:command.index('run')+3],
                 ['--repository_disable_download','--repo_contents_cache='])
             self.assertEqual(command[-1],route.ARGUMENTS[1])
+            self.assertEqual(command.count('--repository_cache=/fixed/run/yoga-controller-http-inputs'),1)
             self.assertIn('--run_env=OMUX_YOGA_DELIVERY_DEADLINE_NS='+str(deadline),command)
             self.assertIn('--run_env=OMUX_YOGA_DELIVERY_MODE=qualify',command)
             self.assertIn('--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256=',command)
@@ -171,5 +191,102 @@ class PrerequisiteModels(unittest.TestCase):
                     ('PrivateNetwork','yes')):
                 with self.subTest(property=key,value=value),self.assertRaises(ValueError):
                     guard.verify({**actual,key:value},root,'system',isolation,route.PROFILE,runtime_seconds=17)
+
+    @contextmanager
+    def http_fixture(self):
+        http=route.http_inputs
+        entry,deadline=100*10**9,1300*10**9
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as temporary:
+            root=Path(temporary)
+            source=root/'source';source.mkdir(mode=0o700)
+            module,lock=b'locked-module',b'locked-module-lock'
+            (source/'MODULE.bazel').write_bytes(module);(source/'MODULE.bazel.lock').write_bytes(lock)
+            cache=root/'cache';payloads=cache/'content_addressable'/'sha256';payloads.mkdir(parents=True)
+            rows=[]
+            for payload,required,present in ((b'registry',True,True),(b'archive',False,True),(b'absent',False,False)):
+                sha=hashlib.sha256(payload).hexdigest();rows.append((sha,required))
+                if present:
+                    parent=payloads/sha;parent.mkdir();(parent/'file').write_bytes(payload)
+            run=root/'epoch';run.mkdir(mode=0o700)
+            with patch.object(http,'SOURCE_ROOT',source),patch.object(http,'CACHE',cache), \
+                    patch.object(http,'MODULE_SHA256',hashlib.sha256(module).hexdigest()), \
+                    patch.object(http,'LOCK_SHA256',hashlib.sha256(lock).hexdigest()), \
+                    patch.object(http,'DECLARED',tuple(rows)),patch.object(http.kernel.time,'monotonic_ns',return_value=entry):
+                yield http,root,run,source,payloads,rows,entry,deadline
+
+    def test_http_snapshot_copies_only_pinned_bytes_and_actual_derived_command(self):
+        with self.http_fixture() as (http,root,run,source,payloads,rows,entry,deadline):
+            unrelated=payloads/('f'*64);unrelated.mkdir();(unrelated/'file').write_bytes(b'undeclared')
+            snapshot=http.Snapshot(run,entry,deadline)
+            try:
+                self.assertEqual(snapshot.facts()['copied_files'],2)
+                self.assertEqual(snapshot.facts()['missing_optional_inputs'],1)
+                self.assertFalse(snapshot.facts()['complete_dependency_closure_proved'])
+                for sha,_,descriptor,before in snapshot.rows:
+                    self.assertEqual(http.digest_file(descriptor,snapshot.budget,http.MAX_FILE)[0],sha)
+                    self.assertEqual(before[2]&0o777,0o444)
+                command=route.command(None,'/fixed/bazel',run,route.ARGUMENTS,route.PROFILE,entry,deadline,
+                    source_commit='a'*40,source_dirty='false')
+                self.assertEqual(command.count('--repository_cache='+str(snapshot.path)),1)
+                self.assertIn('--repository_disable_download',command)
+                self.assertIn('--repo_contents_cache=',command)
+                self.assertNotIn(str(http.CACHE),command)
+                snapshot.verify_binding({'BindReadOnlyPaths':snapshot.binding(),'BindPaths':''})
+                for bad in ({'BindReadOnlyPaths':str(http.CACHE),'BindPaths':''},
+                    {'BindReadOnlyPaths':snapshot.binding(),'BindPaths':'/other'},
+                    {'BindReadOnlyPaths':snapshot.binding()+' /other','BindPaths':''}):
+                    with self.assertRaises(ValueError):snapshot.verify_binding(bad)
+                with self.assertRaises(ValueError):route.command(None,'/fixed/bazel',run,route.ARGUMENTS,
+                    route.PROFILE,entry,deadline,repository_cache=http.CACHE)
+                snapshot.recheck(content=True,cleanup=True)
+                self.assertTrue(snapshot.facts()['verified_after_cleanup'])
+                self.assertFalse(snapshot.facts()['downloads_allowed'])
+            finally:snapshot.close()
+            self.assertTrue(snapshot.facts()['custody_released'])
+
+    def test_http_snapshot_missing_mismatched_linked_or_rebound_source_refuses(self):
+        import os
+        for mutation in ('required-missing','changed-payload','symlink-payload','hardlink-payload','source-lock'):
+            with self.subTest(mutation=mutation),self.http_fixture() as fixture:
+                http,root,run,source,payloads,rows,entry,deadline=fixture
+                target=payloads/rows[0][0]/'file'
+                if mutation=='required-missing':
+                    target.unlink();target.parent.rmdir()
+                elif mutation=='changed-payload':target.write_bytes(b'changed')
+                elif mutation=='symlink-payload':
+                    target.unlink();target.symlink_to(source/'MODULE.bazel')
+                elif mutation=='hardlink-payload':os.link(target,root/'extra-link')
+                else:(source/'MODULE.bazel.lock').write_bytes(b'other-lock')
+                with self.assertRaises((ValueError,OSError)):http.Snapshot(run,entry,deadline)
+
+    def test_http_snapshot_rechecks_actual_namespace_without_trusting_mode_only(self):
+        for mutation in ('byte-change','extra-member','rebound-directory'):
+            with self.subTest(mutation=mutation),self.http_fixture() as fixture:
+                http,root,run,source,payloads,rows,entry,deadline=fixture
+                snapshot=http.Snapshot(run,entry,deadline)
+                try:
+                    hashes=snapshot.path/'content_addressable'/'sha256';target=hashes/rows[0][0]/'file'
+                    if mutation=='byte-change':
+                        target.chmod(0o644);target.write_bytes(b'changed');target.chmod(0o444)
+                    elif mutation=='extra-member':
+                        hashes.chmod(0o755);(hashes/'undeclared').write_bytes(b'x');hashes.chmod(0o555)
+                    else:
+                        hashes.chmod(0o755)
+                        parent=target.parent;parent.rename(hashes/'retained-old')
+                        parent.mkdir(mode=0o755);(parent/'file').write_bytes(b'registry')
+                        (parent/'file').chmod(0o444);parent.chmod(0o555);hashes.chmod(0o555)
+                    with self.assertRaises(ValueError):snapshot.recheck(content=True)
+                finally:snapshot.close()
+
+    def test_http_snapshot_preserves_original_work_and_cleanup_deadlines(self):
+        with self.http_fixture() as (http,root,run,source,payloads,rows,entry,deadline):
+            snapshot=http.Snapshot(run,entry,deadline)
+            try:
+                with patch.object(http.kernel.time,'monotonic_ns',return_value=deadline-30*10**9):
+                    with self.assertRaises(ValueError):snapshot.recheck()
+                    snapshot.recheck(content=True,cleanup=True)
+                with patch.object(http.kernel.time,'monotonic_ns',return_value=deadline):
+                    with self.assertRaises(ValueError):snapshot.recheck(content=True,cleanup=True)
+            finally:snapshot.close()
 
 if __name__=='__main__':unittest.main()

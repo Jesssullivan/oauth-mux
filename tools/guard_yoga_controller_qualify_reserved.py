@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import guard_native_seed_plan_reserved as kernel
 import yoga_delivery_settings as readonly
+import yoga_controller_http_inputs as http_inputs
 
 PROFILE='yoga-controller-qualify-reserved'
 STATE_PROFILE='yoga-controller-delivery'
@@ -44,7 +45,8 @@ def command(builder,bazel,run,arguments,profile,entry,deadline,**kwargs):
     from execution_guard import yoga_delivery_command
     result,_=yoga_delivery_command(bazel,run,arguments,deadline,None,**kwargs)
     index=result.index('run')+1
-    result[index:index]=['--repository_disable_download','--repo_contents_cache=']
+    result[index:index]=['--repository_disable_download','--repo_contents_cache=',
+        '--repository_cache='+str(http_inputs.cache_path(run))]
     return result
 
 def projection(entry,deadline,verified,resident):
@@ -71,6 +73,19 @@ def prior_receipt(receipt,epoch,graph,base_limits,lock,*,source_commit):
         and type(receipt.get('cleanup')) is dict and receipt['cleanup'].get('ownership')=='verified'
         and type(receipt['cleanup'].get('readback_attempts')) is int
         and receipt['cleanup']['readback_attempts']>=2 and receipt.get('reserved_failure') is None)
+    inputs=receipt.get('yoga_controller_http_inputs')
+    kernel.require(type(inputs) is dict and inputs.get('scope')=='fixed-yoga-controller-locked-http-snapshot-v1'
+        and inputs.get('module_sha256')==http_inputs.MODULE_SHA256 and inputs.get('lock_sha256')==http_inputs.LOCK_SHA256
+        and type(inputs.get('declared_inputs')) is int and inputs['declared_inputs']==len(http_inputs.DECLARED)
+        and type(inputs.get('copied_files')) is int
+        and sum(required for _,required in http_inputs.DECLARED)<=inputs['copied_files']<=len(http_inputs.DECLARED)
+        and type(inputs.get('missing_optional_inputs')) is int
+        and inputs['missing_optional_inputs']==len(http_inputs.DECLARED)-inputs['copied_files']
+        and type(inputs.get('copied_bytes')) is int
+        and inputs['copied_files']<=inputs['copied_bytes']<=http_inputs.MAX_TOTAL
+        and type(inputs.get('snapshot_sha256')) is str and re.fullmatch('[a-f0-9]{64}',inputs['snapshot_sha256']) is not None
+        and inputs.get('verified_after_cleanup') is True and inputs.get('custody_released') is True
+        and inputs.get('downloads_allowed') is False and inputs.get('complete_dependency_closure_proved') is False)
     reservation=receipt.get('yoga_controller_qualify_reservation')
     kernel.require(type(reservation) is dict and reservation.get('scope')==SCOPE
         and reservation.get('verified_after_cleanup') is True)
@@ -95,3 +110,5 @@ finish=readonly.finish
 
 def runtime_seconds(deadline):
     return int(remaining(deadline-1200*10**9,deadline))
+
+http_snapshot=http_inputs.Snapshot

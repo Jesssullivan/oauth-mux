@@ -1539,6 +1539,7 @@ def _main(argv, admission_resources):
     elif args.yoga_sealed_transfer_input is not None or args.yoga_sealed_transfer_input_sha256 is not None:
         raise ValueError('sealed-transfer-input-exclusive-to-exact-stage-profile')
     delivery_settings = None
+    delivery_http = None
     delivery_prior = None
     delivery_summary = None
     delivery_verified_after = None
@@ -1857,6 +1858,9 @@ def _main(argv, admission_resources):
             finally:
                 os.close(operator_read)
         DIAGNOSTIC_STAGE = 'private-epoch'
+        if args.profile == 'yoga-controller-qualify-reserved':
+            delivery_http = delivery_settings.http_snapshot(run,delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
+            resources.callback(delivery_http.close)
         if args.profile == resident_dispatch.SETUP_PROFILE:
             command = resident_enrollment_command(bazel,run,arguments,resident_input.inner,
                 source_commit=args.source_commit,source_dirty=args.source_dirty,
@@ -2068,6 +2072,8 @@ def _main(argv, admission_resources):
                 if not require_delivery_graph: raise ValueError('delivery graph changed before dispatch')
                 if delivery_settings.lock_witness(lock.fileno(), delivery_entry_deadline_ns) != delivery_lock:
                     raise ValueError('original-home-lock-changed-before-launch')
+                if delivery_http is not None:
+                    delivery_http.recheck()
                 if delivery_prior:
                     delivery_settings.recheck(delivery_prior, graph_sha256, PROPERTIES, delivery_entry_deadline_ns, delivery_lock)
             if yoga:
@@ -2176,6 +2182,8 @@ def _main(argv, admission_resources):
                 launch += ['--property=BindReadOnlyPaths=' + yoga.display.readonly_setting(yoga_admission['witness'])]
             if args.profile in ('yoga-install-inputs','yoga-sealed-workspace-stage'):
                 launch += ['--property=BindReadOnlyPaths='+' '.join(delivery_settings.AGENT.bindings())]
+            if delivery_http is not None:
+                launch += ['--property=BindReadOnlyPaths='+delivery_http.binding()]
             if native_sdk:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(native_sdk.readonly_paths(args, native_plan))]
                 if native_cache is not None or native_fresh is not None or native_staged is not None or native_history is not None or native_cli is not None:
@@ -2292,6 +2300,8 @@ def _main(argv, admission_resources):
                        or (native_staged is not None and native_staged.staged_verified_before_launch is True)
                        or (native_history is not None and native_history.verified_before_launch is True)
                        or (native_cli is not None and native_cli.verified_before_launch is True))
+            if delivery_http is not None:
+                delivery_http.verify_binding(actual)
             if native_sdk:
                 native_sdk.verify_readonly(actual, args, native_plan)
             if resident_input is not None:
@@ -2385,6 +2395,8 @@ def _main(argv, admission_resources):
                     seed_reservation.observe()
                 if yoga_installed_input is not None:
                     yoga_installed_input.recheck()
+                if delivery_http is not None:
+                    delivery_http.recheck()
                 (run / 'go').touch(mode=0o600, exist_ok=False)
             deadline = ((args.yoga_deadline_monotonic_ns - yoga.CLEANUP_RESERVE_NS) / 10**9
                         if yoga else time.monotonic() + 1200)
@@ -2395,6 +2407,8 @@ def _main(argv, admission_resources):
             elif reservation_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
+                if delivery_http is not None:
+                    delivery_http.recheck()
                 if yoga_installed_input is not None:
                     yoga_installed_input.recheck()
                 if seed_reservation is not None:
@@ -2490,10 +2504,17 @@ def _main(argv, admission_resources):
                     delivery_settings.budget(delivery_entry_deadline_ns)
                     if delivery_settings.lock_witness(lock.fileno(), delivery_entry_deadline_ns) != delivery_lock:
                         raise ValueError('original-home-lock-changed-after-cleanup')
+                    if delivery_http is not None:
+                        delivery_http.recheck(content=True,cleanup=True)
+                        delivery_http.close()
+                        delivery_http.verified_after_cleanup = cleanup is True
                     delivery_summary = delivery_settings.finish(run, arguments, result, cleanup,
                         delivery_verified_after, delivery_entry_deadline_ns, delivery_lock)
                 except (OSError, ValueError, KeyError, TypeError, UnicodeError):
                     delivery_verified_after = False
+                    if delivery_http is not None:
+                        result = 125
+                        delivery_http.verified_after_cleanup = False
                     delivery_summary = {'mode': 'unproved', 'source_verified_after_cleanup': False,
                                         'qualification': None, 'copy_performed': False,
                                         'remote_owned_containment_verified': False, 'remote_cleanup': 'unknown'}
@@ -2829,6 +2850,8 @@ def _main(argv, admission_resources):
                        'graph_binding': 'caller must verify locked-flake and exact local action graph',
                        'bootstrap': 'pre-realized immutable tools; no Nix build',
                        'authority': 'AGENTS.md; R-N11; R-N13'}
+            if delivery_http is not None:
+                receipt['yoga_controller_http_inputs'] = delivery_http.facts()
             if reservation_selected:
                 receipt['reserved_failure'] = seed_failure
                 if yoga_installed_input is not None:
