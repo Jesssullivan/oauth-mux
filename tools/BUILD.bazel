@@ -2034,14 +2034,14 @@ python_test(
 python_test(
     name = "codex_protocol_history_native_test",
     main = "codex_protocol_history_native_test.py",
-    srcs = ["codex_protocol_history_sdk_export_test.py", "codex_protocol_history_metadata_test.py",
+    srcs = depset(["codex_protocol_history_sdk_export_test.py", "codex_protocol_history_metadata_test.py",
         "codex_live_source_test.py", "execution_guard.py", "guard_cache.py", "guard_test_evidence.py",
         "system_mask_policy.py", "guard_dependency_profile.py", "guard_site_profile.py",
         "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
         "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
         "site_coordinator_qualification.py", "cached_nix_inventory.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
-        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES,
+        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
 )
 
 # Pinned missing-plan grammar and held-FD stream models; no Nix execution.
@@ -2161,14 +2161,14 @@ python_test(
 python_test(
     name = "codex_protocol_history_cli_test",
     main = "codex_protocol_history_cli_test.py",
-    srcs = ["codex_protocol_history_native_test.py", "codex_protocol_history_sdk_export_test.py",
+    srcs = depset(["codex_protocol_history_native_test.py", "codex_protocol_history_sdk_export_test.py",
         "codex_protocol_history_metadata_test.py", "codex_live_source_test.py", "execution_guard.py",
         "guard_cache.py", "guard_test_evidence.py", "system_mask_policy.py", "guard_dependency_profile.py",
         "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
         "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
         "site_coordinator_qualification.py", "cached_nix_inventory.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
-        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES,
+        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
 )
 
 # Existing installed setup closure, independent of native compiler selectors.
