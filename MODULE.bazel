@@ -250,3 +250,7 @@ native_flake_seed_plan(
 # No future successful plan or ready tool byte pins are invented here.
 protocol_history_query_tools = use_repo_rule("//tools:protocol_history_query_tools_repository.bzl", "protocol_history_query_tools_repository")
 protocol_history_query_tools(name = "omux_protocol_history_query_tools")
+
+# Exact actual seventh-source input; eighth output remains independently unqualified.
+codex_native_source_context_refresh_inputs = use_repo_rule("//tools:codex_native_source_context_refresh_inputs.bzl", "codex_native_source_context_refresh_inputs")
+codex_native_source_context_refresh_inputs(name="omux_codex_native_source_context_refresh_inputs", manifest="//integrations/codex-upstream:native-source-context-seventh-input.json")

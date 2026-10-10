@@ -193,7 +193,12 @@ class Capture:
             reserved = {'guard_yoga_toolbar_reserved.py', 'yoga_reserved_session_qualification.py'}.issubset(
                 self.record['controllerPackageSha256'])
             require(not reserved or self.record['schemaVersion'] == support.SCHEMA)
-            targets = ('execution_guard','yoga_session_qualification') + (('yoga_reserved_session_qualification',) if reserved else ())
+            console_files = {'yoga_local_console_scope.py','yoga_local_console_qualification.py'}
+            present_console = console_files.intersection(self.record['controllerPackageSha256'])
+            require(not present_console or present_console == console_files)
+            console = bool(present_console)
+            require(not console or reserved)
+            targets = ('execution_guard','yoga_session_qualification') + (('yoga_reserved_session_qualification',) if reserved else ()) + (('yoga_local_console_qualification',) if console else ())
             for target in targets:
                 launcher = self.bytes('installed-launcher.sh',1024*1024)
                 require(launcher.count(b'_main/delivery/yoga_toolbar_consent.py') == 1

@@ -1,0 +1,443 @@
+diff --git a/codex-rs/app-server/src/owner_control.rs b/codex-rs/app-server/src/owner_control.rs
+--- a/codex-rs/app-server/src/owner_control.rs
++++ b/codex-rs/app-server/src/owner_control.rs
+@@ -1,7 +1,7 @@
+ //! Same-process private native owner carrier. R-N13.
+ 
+ use crate::message_processor::MessageProcessor;
+-use crate::owner_source_context::SourceContext;
++use crate::owner_source_context::{SourceContext, SourceSnapshot};
+ use codex_app_server_protocol::{
+     OmuxBrokerCapabilities, OmuxOwnerAnnounceParams, OmuxOwnerAnnounceResponse,
+     OmuxOwnerCapabilitiesParams, OmuxOwnerCapabilitiesResponse, OmuxOwnerIdentifyParams,
+@@ -112,43 +112,89 @@ fn ack_result(ack: NativeAckTuple, field: &str) -> io::Result<Value> {
+ 
+ // A new optional declaration cannot disable existing owner/handoff service.
+ // Preparation/recheck refusal is explicit unavailable metadata, never readiness.
+-struct SourceDeclaration(Option<SourceContext>);
++struct SourceDeclaration {
++    original: Option<Arc<SourceContext>>,
++    current: std::sync::Mutex<Option<SourceSnapshot>>,
++    worker: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
++    stopping: std::sync::atomic::AtomicBool,
++    active: std::sync::atomic::AtomicBool,
++}
++struct CaptureGuard<'a>(&'a std::sync::atomic::AtomicBool);
++impl Drop for CaptureGuard<'_> {
++    fn drop(&mut self) { self.0.store(false, std::sync::atomic::Ordering::Release); }
++}
+ fn install_owner_with_source_context(
+     prepare: impl FnOnce() -> io::Result<SourceContext>,
+     install: impl FnOnce() -> io::Result<()>,
+ ) -> io::Result<SourceDeclaration> {
+-    let declaration = match prepare() {
+-        Ok(context) => SourceDeclaration(Some(context)),
+-        Err(_) => SourceDeclaration(None), // Explicit unavailable reply; no I/O diagnostic material.
+-    };
++    let declaration = SourceDeclaration { original: prepare().ok().map(Arc::new),
++        current: std::sync::Mutex::new(None), worker: std::sync::Mutex::new(None),
++        stopping: std::sync::atomic::AtomicBool::new(false), active: std::sync::atomic::AtomicBool::new(false) };
+     install()?;
+     Ok(declaration)
+ }
+ impl SourceDeclaration {
+-    fn response(&self, owner: &ProcessOwner) -> OmuxOwnerSourceContextResponse {
+-        let mut result = OmuxOwnerSourceContextResponse {
++    fn unavailable(&self, owner: &ProcessOwner) -> OmuxOwnerSourceContextResponse {
++        OmuxOwnerSourceContextResponse {
+             protocol_version: 2, owner_id: owner.owner_id.clone(),
+             process_nonce: owner.process_nonce.clone(),
+             endpoint_generation: owner.endpoint_generation.clone(),
+             status: OmuxOwnerSourceContextStatus::Unavailable,
+             source_context_id: None, source_context_generation: None,
+             store_present: None, credential_acquisition_authorized: false,
+-        };
+-        if let Some(context) = &self.0 {
+-            if context.recheck(owner).is_ok() {
+-                result.status = OmuxOwnerSourceContextStatus::Available;
+-                result.source_context_id = Some(context.context_id.clone());
+-                result.source_context_generation = Some(context.generation.clone());
+-                result.store_present = Some(context.store_present);
+-                if context.recheck(owner).is_err() {
+-                    result.status = OmuxOwnerSourceContextStatus::Unavailable;
+-                    result.source_context_id = None;
+-                    result.source_context_generation = None;
+-                    result.store_present = None;
+-                }
+-            }
+         }
+-        result
++    }
++    async fn response(&self, owner: &ProcessOwner, deadline: std::time::Instant) -> OmuxOwnerSourceContextResponse {
++        self.capture(owner, deadline).await.unwrap_or_else(|_| self.unavailable(owner))
++    }
++    async fn capture(&self, owner: &ProcessOwner, deadline: std::time::Instant) -> io::Result<OmuxOwnerSourceContextResponse> {
++        self.capture_after(owner, deadline, || Ok(())).await
++    }
++    async fn capture_after(&self, owner: &ProcessOwner, deadline: std::time::Instant,
++        after_snapshot: impl FnOnce() -> io::Result<()> + Send + 'static) -> io::Result<OmuxOwnerSourceContextResponse> {
++        use std::sync::atomic::Ordering;
++        if self.stopping.load(Ordering::Acquire) || std::time::Instant::now() >= deadline { return Err(invalid()); }
++        let Some(original) = &self.original else { return Ok(self.unavailable(owner)); };
++        self.active.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).map_err(|_| invalid())?;
++        let _active = CaptureGuard(&self.active);
++        let (send, receive) = tokio::sync::oneshot::channel();
++        {
++            let mut worker = self.worker.try_lock().map_err(|_| invalid())?;
++            if worker.as_ref().is_some_and(|handle| !handle.is_finished()) { return Err(invalid()); }
++            // Completed handles may be released. Inflight handles remain owned
++            // even if the requesting future disappears at its deadline.
++            *worker = None;
++            let previous = self.current.try_lock().map_err(|_| invalid())?.as_ref().map(SourceSnapshot::key);
++            let original = Arc::clone(original);
++            let owner = owner.clone();
++            *worker = Some(tokio::task::spawn_blocking(move || {
++                let value = original.snapshot(&owner, previous).and_then(|snapshot| {
++                    after_snapshot()?;
++                    Ok(snapshot)
++                });
++                // Failed delivery drops a late snapshot and its descriptor.
++                let _ = send.send(value);
++            }));
++        }
++        let snapshot = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), receive)
++            .await.map_err(|_| invalid())?.map_err(|_| invalid())??;
++        let mut current = self.current.try_lock().map_err(|_| invalid())?;
++        // This is the sole adoption boundary. The worker never changes state.
++        let mut result = self.unavailable(owner);
++        result.status = OmuxOwnerSourceContextStatus::Available;
++        result.source_context_id = Some(snapshot.context_id.clone());
++        result.source_context_generation = Some(snapshot.generation.clone());
++        result.store_present = Some(snapshot.store_present);
++        if self.stopping.load(Ordering::Acquire) || std::time::Instant::now() >= deadline { return Err(invalid()); }
++        *current = Some(snapshot);
++        Ok(result)
++    }
++    async fn drain(&self) {
++        self.stopping.store(true, std::sync::atomic::Ordering::Release);
++        let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
++        if let Some(worker) = worker { let _ = worker.await; }
++        // Joining real terminal work is not an assertion of kernel cancellation
++        // or finite shutdown when an underlying filesystem syscall is stalled.
+     }
+ }
+ 
+@@ -169,12 +215,13 @@ impl MessageProcessor {
+         peer: native_peer::PeerWitness,
+         owner: &ProcessOwner,
+         source_context: &SourceDeclaration,
++        deadline: std::time::Instant,
+     ) -> io::Result<Value> {
+         match method {
+             "owner/source/context" => {
+                 let p: OmuxOwnerSourceContextParams = frame_params(bytes)?;
+                 source_context_selector(&p, owner)?;
+-                encoded(source_context.response(owner))
++                encoded(source_context.response(owner, deadline).await)
+             }
+             "owner/capabilities" => {
+                 let p: OmuxOwnerCapabilitiesParams = frame_params(bytes)?;
+@@ -339,7 +386,7 @@ async fn serve(
+         let peer = connection.witness();
+         let result = tokio::time::timeout(
+             std::time::Duration::from_secs(8),
+-            processor.dispatch_owner(&request.method, &bytes, peer, &owner, &source_context),
++            processor.dispatch_owner(&request.method, &bytes, peer, &owner, &source_context, connection.deadline()),
+         )
+         .await;
+         let response = match result {
+@@ -458,6 +505,7 @@ pub(crate) async fn start(
+             // Do not cancel a worker halfway through an authority transition.
+             // Every worker/connection has an intrinsic bounded deadline.
+             while workers.join_next().await.is_some() {}
++            source_context.drain().await;
+             drop(source_context);
+             drop(listener);
+             let _ = tokio::task::spawn_blocking(move || drop(cleanup)).await;
+@@ -477,10 +525,70 @@ pub(crate) async fn start(
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    async fn settle(declaration: &SourceDeclaration) {
++        let worker = declaration.worker.lock().unwrap().take();
++        if let Some(worker) = worker { worker.await.unwrap(); }
++    }
+ 
+     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+-    #[test]
+-    fn refused_optional_context_preserves_owner_installation_and_rotation_is_unavailable() {
++    #[tokio::test]
++    async fn expired_snapshot_is_not_adopted_and_owned_worker_blocks_replacement_until_terminal() {
++        use std::os::unix::fs::PermissionsExt;
++        use std::os::unix::net::UnixListener;
++        let root = tempfile::tempdir().unwrap();
++        let home = root.path().join("home");
++        let runtime = root.path().join("runtime");
++        let parent = home.join("owner");
++        for path in [&home, &runtime, &parent] {
++            std::fs::create_dir(path).unwrap();
++            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
++        }
++        let endpoint = parent.join("owner.sock");
++        let _listener = UnixListener::bind(&endpoint).unwrap();
++        std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
++        let owner = ProcessOwner { owner_id: "a".repeat(64), process_nonce: "b".repeat(64),
++            owner_endpoint: endpoint, endpoint_generation: "1".into() };
++        let declaration = Arc::new(install_owner_with_source_context(
++            || SourceContext::prepare_fixture(&home, &owner, &owner.owner_endpoint, &runtime), || Ok(())).unwrap());
++        let hints = runtime.join("omux-native-owners");
++        let before: Vec<_> = std::fs::read_dir(&hints).unwrap().map(|v| v.unwrap().file_name()).collect();
++        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
++        let worker_gate = Arc::clone(&gate);
++        let (ready_send, ready) = tokio::sync::oneshot::channel();
++        let task_declaration = Arc::clone(&declaration);
++        let task_owner = owner.clone();
++        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
++        let request = tokio::spawn(async move {
++            task_declaration.capture_after(&task_owner, deadline, move || {
++                let _ = ready_send.send(());
++                let (lock, wake) = &*worker_gate;
++                let mut released = lock.lock().unwrap();
++                while !*released { released = wake.wait(released).unwrap(); }
++                Ok(())
++            }).await
++        });
++        ready.await.unwrap(); // Real descriptor capture completed before gate.
++        assert!(request.await.unwrap().is_err());
++        assert!(declaration.current.lock().unwrap().is_none());
++        assert!(declaration.worker.lock().unwrap().as_ref().is_some_and(|v| !v.is_finished()));
++        assert!(declaration.capture(&owner, std::time::Instant::now() + std::time::Duration::from_secs(1)).await.is_err());
++        let draining_declaration = Arc::clone(&declaration);
++        let draining = tokio::spawn(async move { draining_declaration.drain().await; });
++        tokio::task::yield_now().await;
++        assert!(!draining.is_finished());
++        let (lock, wake) = &*gate;
++        *lock.lock().unwrap() = true;
++        wake.notify_all();
++        draining.await.unwrap();
++        assert!(declaration.current.lock().unwrap().is_none());
++        let after: Vec<_> = std::fs::read_dir(&hints).unwrap().map(|v| v.unwrap().file_name()).collect();
++        assert_eq!(before, after); // No refresh publication, even after expiry.
++        assert!(declaration.worker.lock().unwrap().is_none());
++    }
++
++    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++    #[tokio::test]
++    async fn optional_context_preserves_installation_and_readonly_rotation_preserves_locator() {
+         use std::cell::Cell;
+         use std::os::unix::fs::PermissionsExt;
+         use std::os::unix::net::UnixListener;
+@@ -503,7 +611,8 @@ mod tests {
+         let unavailable = install_owner_with_source_context(
+             || SourceContext::prepare_fixture(&home, &owner, &owner.owner_endpoint, &runtime), install).unwrap();
+         assert_eq!(installed.get(), 1);
+-        let reply = unavailable.response(&owner);
++        let until = || std::time::Instant::now() + std::time::Duration::from_secs(8);
++        let reply = unavailable.response(&owner, until()).await;
+         assert_eq!(reply.status, OmuxOwnerSourceContextStatus::Unavailable);
+         assert!(reply.source_context_id.is_none() && reply.store_present.is_none());
+         assert!(!reply.credential_acquisition_authorized);
+@@ -511,16 +620,29 @@ mod tests {
+         let available = install_owner_with_source_context(
+             || SourceContext::prepare_fixture(&home, &owner, &owner.owner_endpoint, &runtime), install).unwrap();
+         assert_eq!(installed.get(), 2);
+-        assert_eq!(available.response(&owner).status, OmuxOwnerSourceContextStatus::Available);
++        let original = available.response(&owner, until()).await;
++        assert_eq!(original.status, OmuxOwnerSourceContextStatus::Available);
++        settle(&available).await;
+         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777)).unwrap();
+-        assert_eq!(available.response(&owner).status, OmuxOwnerSourceContextStatus::Unavailable);
++        assert_eq!(available.response(&owner, until()).await.status, OmuxOwnerSourceContextStatus::Unavailable);
++        settle(&available).await;
+         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+         let auth = home.join("auth.json");
+         std::fs::write(&auth, b"synthetic metadata-only test material").unwrap();
+         std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+-        let rotated = available.response(&owner);
+-        assert_eq!(rotated.status, OmuxOwnerSourceContextStatus::Unavailable);
+-        assert!(rotated.source_context_id.is_none() && rotated.store_present.is_none());
++        let rotated = available.response(&owner, until()).await;
++        assert_eq!(rotated.status, OmuxOwnerSourceContextStatus::Available);
++        assert_eq!(rotated.source_context_generation.as_deref(), Some("2"));
++        assert_eq!(rotated.store_present, Some(true));
++        assert_ne!(rotated.source_context_id, original.source_context_id);
++        assert_eq!(installed.get(), 2);
++        settle(&available).await;
++        std::fs::remove_file(&auth).unwrap();
++        let removed = available.response(&owner, until()).await;
++        assert_eq!(removed.source_context_generation.as_deref(), Some("3"));
++        assert_eq!(removed.store_present, Some(false));
++        available.drain().await;
++        assert_eq!(available.response(&owner, until()).await.status, OmuxOwnerSourceContextStatus::Unavailable);
+         let refused_install = install_owner_with_source_context(
+             || Err(io::Error::new(io::ErrorKind::Unsupported, "fixture unavailable")),
+             || Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture installer refusal")));
+diff --git a/codex-rs/app-server/src/owner_source_context.rs b/codex-rs/app-server/src/owner_source_context.rs
+--- a/codex-rs/app-server/src/owner_source_context.rs
++++ b/codex-rs/app-server/src/owner_source_context.rs
+@@ -118,7 +118,7 @@ mod linux {
+         home: File,
+         home_identity: (u64, u64),
+         auth_identity: Option<Identity>,
+-        auth_file: Option<File>,
++        auth_file: std::sync::Mutex<Option<File>>,
+         endpoint_parent: File,
+         endpoint_parent_identity: (u64, u64),
+         endpoint: File,
+@@ -132,6 +132,18 @@ mod linux {
+         hint: File,
+         hint_identity: Identity,
+     }
++    #[derive(Clone)]
++    pub struct SourceSnapshotKey { id: String, generation: u64, auth: Option<Identity> }
++    pub struct SourceSnapshot {
++        pub context_id: String,
++        pub generation: String,
++        pub store_present: bool,
++        key: SourceSnapshotKey,
++        _auth: Option<File>,
++    }
++    impl SourceSnapshot {
++        pub fn key(&self) -> SourceSnapshotKey { self.key.clone() }
++    }
+     fn inode(m: &Metadata) -> (u64, u64) { (m.dev(), m.ino()) }
+     struct HintPreparation { parent: File, name: String, original: (u64, u64), armed: bool }
+     impl Drop for HintPreparation {
+@@ -211,7 +223,7 @@ mod linux {
+             let hint_identity = identity(&hint_metadata);
+             let result = Self { context_id, generation, store_present: auth_identity.is_some(),
+                 store_identity: auth_identity.as_ref().map(|id| (id.0, id.1)), owner: owner.clone(),
+-                home_path: home_path.to_path_buf(), home, home_identity, auth_identity, auth_file,
++                home_path: home_path.to_path_buf(), home, home_identity, auth_identity, auth_file: std::sync::Mutex::new(auth_file),
+                 endpoint_parent: endpoint_directory, endpoint_parent_identity,
+                 endpoint, endpoint_identity, runtime_path: runtime_path.to_path_buf(), runtime, runtime_identity,
+                 hints, hints_identity, hint_name, hint, hint_identity };
+@@ -222,12 +234,33 @@ mod linux {
+             Ok(result)
+         }
+         pub fn recheck(&self, owner: &ProcessOwner) -> io::Result<()> {
++            self.recheck_authority(owner)?;
++            require(auth_metadata(&self.home)?.map(|(_, id)| id) == self.auth_identity
++                && self.auth_file.try_lock().map_err(|_| invalid())?.as_ref().map(|file| file.metadata().map(|m| identity(&m))).transpose()? == self.auth_identity)
++        }
++        /// Supervised blocking read only; never republish the original locator.
++        pub fn snapshot(&self, owner: &ProcessOwner, previous: Option<SourceSnapshotKey>) -> io::Result<SourceSnapshot> {
++            self.recheck_authority(owner)?;
++            let previous = previous.unwrap_or(SourceSnapshotKey { id: self.context_id.clone(), generation: 1, auth: self.auth_identity.clone() });
++            let auth = auth_metadata(&self.home)?;
++            let auth_identity = auth.as_ref().map(|(_, id)| id.clone());
++            let changed = auth_identity != previous.auth;
++            let generation = if changed { previous.generation.checked_add(1).ok_or_else(invalid)? } else { previous.generation };
++            let context_id = if changed { native_peer::random_handle()? } else { previous.id };
++            self.recheck_authority(owner)?;
++            require(auth_metadata(&self.home)?.map(|(_, id)| id) == auth_identity
++                && auth.as_ref().map(|(file, _)| file.metadata().map(|m| identity(&m))).transpose()? == auth_identity)?;
++            // Retire baseline metadata descriptor on the blocking owner; the
++            // captured snapshot owns the fresh descriptor, even if reply is late.
++            drop(self.auth_file.try_lock().map_err(|_| invalid())?.take());
++            Ok(SourceSnapshot { context_id: context_id.clone(), generation: generation.to_string(), store_present: auth_identity.is_some(),
++                key: SourceSnapshotKey { id: context_id, generation, auth: auth_identity }, _auth: auth.map(|(file, _)| file) })
++        }
++        fn recheck_authority(&self, owner: &ProcessOwner) -> io::Result<()> {
+             require(owner == &self.owner)?;
+             require(inode(&owned_home(&self.home_path)?.metadata()?) == self.home_identity
+                 && inode(&self.home.metadata()?) == self.home_identity
+-                && self.home.metadata()?.is_dir() && self.home.metadata()?.uid() == uid() && self.home.metadata()?.mode() & 0o022 == 0
+-                && auth_metadata(&self.home)?.map(|(_, id)| id) == self.auth_identity
+-                && self.auth_file.as_ref().map(|file| file.metadata().map(|m| identity(&m))).transpose()? == self.auth_identity)?;
++                && self.home.metadata()?.is_dir() && self.home.metadata()?.uid() == uid() && self.home.metadata()?.mode() & 0o022 == 0)?;
+             let parent = private_directory(self.owner.owner_endpoint.parent().ok_or_else(invalid)?)?;
+             let named = open(parent.as_raw_fd(), self.owner.owner_endpoint.file_name().ok_or_else(invalid)?, O_PATH | O_NOFOLLOW | O_CLOEXEC)?;
+             require(inode(&parent.metadata()?) == self.endpoint_parent_identity
+@@ -277,6 +310,47 @@ mod linux {
+             (root, home, runtime, owner, listener)
+         }
+         #[test]
++        fn readonly_snapshots_track_rotation_and_deletion_without_hint_republication() {
++            let (_root, home, runtime, owner, _listener) = fixture();
++            let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
++            let hint = runtime.join("omux-native-owners").join(&context.hint_name);
++            let bytes = std::fs::read(&hint).unwrap();
++            let hint_id = identity(&std::fs::metadata(&hint).unwrap());
++            let mut snapshot = context.snapshot(&owner, None).unwrap();
++            assert_eq!(snapshot.generation, "1");
++            let auth = home.join("auth.json");
++            for generation in 2..=4 {
++                let staged = home.join("staged-auth");
++                std::fs::write(&staged, vec![b'x'; generation]).unwrap();
++                std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600)).unwrap();
++                std::fs::rename(&staged, &auth).unwrap();
++                let next = context.snapshot(&owner, Some(snapshot.key())).unwrap();
++                assert_eq!(next.generation, generation.to_string());
++                assert_ne!(next.context_id, snapshot.context_id);
++                assert!(next.store_present);
++                assert_eq!(inode(&next._auth.as_ref().unwrap().metadata().unwrap()), inode(&std::fs::metadata(&auth).unwrap()));
++                snapshot = next;
++                let unchanged = context.snapshot(&owner, Some(snapshot.key())).unwrap();
++                assert_eq!(unchanged.context_id, snapshot.context_id);
++                assert_eq!(unchanged.generation, snapshot.generation);
++                assert!(identity(&std::fs::metadata(&hint).unwrap()) == hint_id);
++                assert_eq!(std::fs::read(&hint).unwrap(), bytes);
++                assert_eq!(std::fs::read_dir(runtime.join("omux-native-owners")).unwrap().count(), 1);
++            }
++            std::fs::remove_file(&auth).unwrap();
++            let absent = context.snapshot(&owner, Some(snapshot.key())).unwrap();
++            assert_eq!(absent.generation, "5");
++            assert!(!absent.store_present && absent._auth.is_none());
++            let mut exhausted = absent.key(); exhausted.generation = u64::MAX;
++            std::fs::write(&auth, b"synthetic").unwrap();
++            std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
++            assert!(context.snapshot(&owner, Some(exhausted)).is_err());
++            std::fs::remove_file(&auth).unwrap();
++            symlink(home.join("absent"), &auth).unwrap();
++            assert!(context.snapshot(&owner, Some(absent.key())).is_err());
++            assert_eq!(std::fs::read(&hint).unwrap(), bytes);
++        }
++        #[test]
+         fn different_home_publication_is_opaque_and_missing_store_never_becomes_authority() {
+             let (_root, home, runtime, owner, _listener) = fixture();
+             let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
+@@ -355,7 +429,7 @@ mod linux {
+ }
+ 
+ #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+-pub use linux::SourceContext;
++pub use linux::{SourceContext, SourceSnapshot, SourceSnapshotKey};
+ 
+ #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+ pub struct SourceContext {
+@@ -363,7 +437,17 @@ pub struct SourceContext {
+     pub store_present: bool, pub store_identity: Option<(u64, u64)>,
+ }
+ #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
++#[derive(Clone)]
++pub struct SourceSnapshotKey;
++#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
++pub struct SourceSnapshot { pub context_id: String, pub generation: String, pub store_present: bool }
++#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
++impl SourceSnapshot { pub fn key(&self) -> SourceSnapshotKey { SourceSnapshotKey } }
++#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+ impl SourceContext {
++    pub fn snapshot(&self, _owner: &ProcessOwner, _previous: Option<SourceSnapshotKey>) -> io::Result<SourceSnapshot> {
++        Err(io::Error::new(io::ErrorKind::Unsupported, "native source context unavailable"))
++    }
+     pub fn prepare(_home: &Path, _owner: &ProcessOwner, _endpoint: &Path) -> io::Result<Self> {
+         Err(io::Error::new(io::ErrorKind::Unsupported, "native source context unavailable"))
+     }
+diff --git a/codex-rs/core/src/native_peer.rs b/codex-rs/core/src/native_peer.rs
+--- a/codex-rs/core/src/native_peer.rs
++++ b/codex-rs/core/src/native_peer.rs
+@@ -429,6 +429,13 @@ pub struct VerifiedPacket {
+     unavailable: (),
+ }
+ impl VerifiedPacket {
++    /// Original exchange cutoff; callers must not restart this clock.
++    pub fn deadline(&self) -> Instant {
++        #[cfg(unix)]
++        { self.connection.deadline }
++        #[cfg(not(unix))]
++        { unreachable!("unsupported platforms cannot construct verified packets") }
++    }
+     pub fn witness(&self) -> PeerWitness {
+         #[cfg(unix)]
+         {

@@ -2,6 +2,7 @@ load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
 load("@rules_zig//zig/translate-c:toolchain.bzl", "translate_c_toolchain")
 load(":zig_tools.bzl", "zig_format", "zig_format_test")
 load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
+load(":codex_native_source_context_refresh_targets.bzl", "native_context_refresh_targets")
 load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
 load(":yoga_selection_inputs.bzl", "yoga_selection_declaration_test")
 load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA256")
@@ -55,6 +56,9 @@ _CODEX_GIT_INPUT_SOURCES = _CODEX_SDK_SOURCES + [
 _YOGA_DELIVERY_GUARD_SOURCES = ['guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
     'yoga_executable_qualification.py','guard_yoga_install_inputs_profile.py',
     'yoga_install_inputs_receiver.py','yoga_install_inputs_stage.py',
+    'guard_yoga_controller_qualify_reserved.py','guard_yoga_sealed_transfer_profile.py','guard_yoga_sealed_transfer_models_reserved.py','yoga_sealed_transfer_schema.py',
+    'yoga_sealed_transfer_receiver.py','yoga_sealed_transfer_stage.py',
+    'nar_descriptor.py',
     'guard_resident_owned_update.py','guard_resident_enrollment_profile.py',
     '//delivery:install.py','//delivery:pack.py','//delivery:portable.py']
 
@@ -1180,7 +1184,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -1194,6 +1198,13 @@ python_test(name='guard_resident_sources_profile_test',main='guard_resident_sour
     target_compatible_with=['@platforms//os:linux'])
 filegroup(name='resident_continuity_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
 filegroup(name='resident_namespace_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
+python_test(name='guard_resident_native_source_context_metadata_reserved_test',main='guard_resident_native_source_context_metadata_reserved_test.py',
+    srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
+        'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
+        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
+        +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_custody_runtime_reserved_test',main='guard_resident_custody_runtime_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
@@ -2399,6 +2410,18 @@ python_test(
     ]).to_list(),
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+# Exact read-only Yoga console scope and qualification dependencies.
+_YOGA_LOCAL_CONSOLE_SOURCES = _YOGA_GUARD_SOURCES + [
+    "yoga_local_console_scope.py", "yoga_session_qualification.py",
+    "system_mask_policy.py", "guard_native_seed_plan_reserved.py",
+    "guard_resident_observation.py", "guard_resident_enrollment_profile.py",
+]
+python_binary(name = "yoga_local_console_qualification", main = "yoga_local_console_qualification.py",
+    srcs = _YOGA_LOCAL_CONSOLE_SOURCES,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
+python_test(name = "yoga_local_console_scope_test", main = "yoga_local_console_scope_test.py",
+    srcs = _YOGA_LOCAL_CONSOLE_SOURCES + ["yoga_local_console_qualification.py"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
 
 # Seventh source-only lineage; no SDK/compiler/schema/native admission.
 _NATIVE_SOURCE_CONTEXT_SOURCES = _OWNER_STATUS_PERSISTENCE_SOURCES + [
@@ -2435,4 +2458,64 @@ python_test(
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with = ['@platforms//os:linux'],
+)
+
+# Separate externally selected public inputs; sealed workspace is never amended.
+_YOGA_SEALED_TRANSFER_SOURCES = depset(_YOGA_DELIVERY_GUARD_SOURCES + _YOGA_GUARD_SOURCES
+    + _RESIDENT_GUARD_SOURCES + ['yoga_controller_delivery.py','host_closure_transfer.py',
+    'verify_cached_nars.py','ssh_policy.py']).to_list()
+
+host_python_binary(
+    name='yoga_sealed_transfer_stage',main='yoga_sealed_transfer_stage.py',
+    srcs=_YOGA_SEALED_TRANSFER_SOURCES,
+    data=['@omux_yoga_controller_nars//:inventory.json',
+          '@omux_yoga_delivery_inputs//:d631-receipt.json',
+          '@omux_yoga_delivery_inputs//:bootstrap-native.json',
+          '@omux_yoga_delivery_inputs//:yoga-ssh-known-hosts',
+          '@omux_yoga_delivery_inputs//:authority.json'],
+    args=['--inventory','$(location @omux_yoga_controller_nars//:inventory.json)',
+          '--receipt','$(location @omux_yoga_delivery_inputs//:d631-receipt.json)',
+          '--bootstrap-manifest','$(location @omux_yoga_delivery_inputs//:bootstrap-native.json)',
+          '--known-hosts','$(location @omux_yoga_delivery_inputs//:yoga-ssh-known-hosts)',
+          '--authority','$(location @omux_yoga_delivery_inputs//:authority.json)'],
+    tags=['manual','no-remote','no-cache'],
+    target_compatible_with=['@platforms//os:linux','@platforms//cpu:x86_64'],
+)
+
+python_test(
+    name='yoga_sealed_transfer_test',main='yoga_sealed_transfer_test.py',
+    srcs=depset(_YOGA_SEALED_TRANSFER_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES
+        + ['yoga_install_inputs_stage_test.py','execution_guard.py','system_mask_policy.py',
+        'guard_cache.py','guard_test_evidence.py','guard_dependency_profile.py','guard_site_profile.py',
+        'guard_owner_runtime_input.py','codex_owner_runtime_input.py','site_coordinator_closure_qualification.py',
+        'site_coordinator_qualification.py','cached_nix_inventory.py']).to_list(),
+    tags=['manual','no-remote','no-cache'],target_compatible_with=['@platforms//os:linux'],
+)
+
+python_test(
+    name='guard_yoga_sealed_transfer_models_reserved_test',main='guard_yoga_sealed_transfer_models_reserved_test.py',
+    srcs=_YOGA_SEALED_TRANSFER_SOURCES,
+    tags=['manual','no-remote','no-cache'],target_compatible_with=['@platforms//os:linux'],
+)
+
+python_test(
+    name='guard_yoga_controller_qualify_reserved_test',main='guard_yoga_controller_qualify_reserved_test.py',
+    srcs=depset(_YOGA_SEALED_TRANSFER_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES
+        + ['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
+        'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
+        'site_coordinator_qualification.py','cached_nix_inventory.py']).to_list(),
+    tags=['manual','no-remote','no-cache'],target_compatible_with=['@platforms//os:linux'],
+)
+
+native_context_refresh_targets(_NATIVE_SOURCE_CONTEXT_SOURCES, _NATIVE_SOURCE_CONTEXT_PARENT_DATA)
+
+python_test(
+    name='guard_resident_native_source_context_refresh_source_reserved_test',
+    main='guard_resident_native_source_context_refresh_source_reserved_test.py',
+    srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
+        'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
+        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
+        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
+    target_compatible_with=['@platforms//os:linux'],
 )

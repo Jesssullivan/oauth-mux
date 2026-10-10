@@ -70,3 +70,7 @@ python_binary(
 
 filegroup(name = "native_source_context_patch", srcs = ["native-source-context-v1.patch"])
 filegroup(name = "native_source_context_preimages", srcs = glob(["source-context-preimages/**/*.rs"]))
+exports_files(["native-source-context-seventh-input.json"])
+filegroup(name = "native_source_context_readonly_refresh_patch", srcs = ["native-source-context-readonly-refresh-v1.patch"])
+filegroup(name = "native_source_context_refresh_preimages", srcs = glob(["refresh-preimages/**/*.rs"]))
+filegroup(name = "native_source_context_seventh_input", srcs = ["native-source-context-seventh-input.json"])

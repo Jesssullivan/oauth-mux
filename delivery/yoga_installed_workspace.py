@@ -420,7 +420,8 @@ installed_store_files = repository_rule(implementation = _impl,
 '''
 
 
-def build_files(mapping, copied, store, *, reserved=False):
+def build_files(mapping, copied, store, *, reserved=False, console=False):
+    require(not console or reserved)
     assets, entries, positions = [], {}, {}
     for index, key in enumerate(sorted(mapping)):
         alias = 'f%06d' % index
@@ -439,7 +440,8 @@ def build_files(mapping, copied, store, *, reserved=False):
     root_paths = {name for name in copied.values() if not name.startswith(('delivery/', 'tools/'))}
     root = 'exports_files(' + repr(sorted(root_paths | {'installed-launcher.sh', 'installed-store-files.json',
         'yoga_session_qualification.sh', 'execution_guard.sh'} |
-        ({'yoga_reserved_session_qualification.sh'} if reserved else set()))) + ')\n'
+        ({'yoga_reserved_session_qualification.sh'} if reserved else set()) |
+        ({'yoga_local_console_qualification.sh'} if console else set()))) + ')\n'
     delivery = 'load("//tools:installed_toolbar.bzl", "installed_toolbar")\n'
     delivery += 'exports_files(' + repr(sorted({name[len('delivery/'):] for name in copied.values()
                                                if name.startswith('delivery/')})) + ')\n'
@@ -448,7 +450,7 @@ def build_files(mapping, copied, store, *, reserved=False):
     tools = 'load(":installed_toolbar.bzl", "installed_toolbar")\n'
     tools += 'exports_files(' + repr(sorted({'installed_toolbar.bzl','installed_store_files.bzl'} |
         {name[len('tools/'):] for name in copied.values() if name.startswith('tools/')})) + ')\n'
-    targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ())
+    targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ()) + (('yoga_local_console_qualification',) if console else ())
     for target in targets:
         tools += 'installed_toolbar(name = ' + repr(target) + ', launcher = "//:' + target + '.sh", assets = ' + repr(assets) + ', entries = ' + repr(entries) + ')\n'
     return {'MODULE.bazel': module.encode(), 'BUILD.bazel': root.encode(),
@@ -731,11 +733,16 @@ def produce(selection_path, selection_sha256, output, deadline_ns):
         require(files['installed-launcher.sh'].count(old_main) == 1)
         reserved = selection['schemaVersion'] == support.SCHEMA and {
             'guard_yoga_toolbar_reserved.py', 'yoga_reserved_session_qualification.py'}.issubset(package['files'])
-        targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ())
+        console_files = {'yoga_local_console_scope.py','yoga_local_console_qualification.py'}
+        present_console = console_files.intersection(package['files'])
+        require(not present_console or present_console == console_files)
+        console = bool(present_console)
+        require(not console or reserved)
+        targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ()) + (('yoga_local_console_qualification',) if console else ())
         for target in targets:
             files[target + '.sh'] = files['installed-launcher.sh'].replace(old_main, ('_main/tools/' + target + '.py').encode())
             modes[target + '.sh'] = 0o555
-        files.update(build_files(mapping, copied, store, reserved=reserved))
+        files.update(build_files(mapping, copied, store, reserved=reserved, console=console))
         fixed = {'BUILD', 'BUILD.bazel', 'MODULE.bazel', 'MODULE.bazel.lock', 'WORKSPACE', 'WORKSPACE.bazel',
                  'flake.nix', 'flake.lock', '.bazelrc', '.bazelversion'}
         graph_content = [content for name, content in files.items() if PurePosixPath(name).name in fixed

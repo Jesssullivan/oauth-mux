@@ -206,15 +206,23 @@ def prior_receipt(receipt, epoch, graph_sha256, expected_limits, expected_lock):
             and executable.SHA.fullmatch(record['qualification']['sha256']), 'guard-owned-qualification-extraction-required')
     return record['qualification']['sha256']
 
-def select_prior(epoch, graph_sha256, expected_limits, deadline_ns, expected_lock):
+def select_prior(epoch, graph_sha256, expected_limits, deadline_ns, expected_lock, *, reserved=False, source_commit=None):
     """Called only under existing HOME execution lock; no caller path/hash."""
+    require(type(reserved) is bool, 'closed-prior-qualification-kind-required')
+    require(type(source_commit) is str and re.fullmatch('[a-f0-9]{40}', source_commit) is not None
+            if reserved else source_commit is None, 'exact-reserved-prior-source-required')
     require(type(epoch) is str and UUID.fullmatch(epoch), 'exact-prior-qualify-epoch-required')
     directory = trusted_directory(profile.STATE / epoch, deadline_ns)
     try:
         directory_identity = witness(os.fstat(directory))
         receipt_data, receipt_identity = read_owned(directory, 'receipt.json', 1024 * 1024, deadline_ns, capture=True)
         receipt = decode(receipt_data)
-        approved = prior_receipt(receipt, epoch, graph_sha256, expected_limits, expected_lock)
+        if reserved:
+            from guard_yoga_controller_qualify_reserved import prior_receipt as validate_prior
+        else:
+            validate_prior = prior_receipt
+        approved = validate_prior(receipt, epoch, graph_sha256, expected_limits, expected_lock,
+            **({'source_commit':source_commit} if reserved else {}))
         content, content_identity = read_owned(directory, 'qualification.json', 16384, deadline_ns, capture=True)
         require(hashlib.sha256(content).hexdigest() == approved, 'guard-extraction-digest-differs')
         require(canonical(qualification(decode(content))) == content, 'guard-extraction-not-canonical')
@@ -233,8 +241,8 @@ def select_prior(epoch, graph_sha256, expected_limits, deadline_ns, expected_loc
     finally:
         close_directory(directory)
 
-def recheck(prior, graph_sha256, expected_limits, deadline_ns, expected_lock):
-    require(select_prior(prior['producer_epoch'], graph_sha256, expected_limits, deadline_ns, expected_lock) == prior,
+def recheck(prior, graph_sha256, expected_limits, deadline_ns, expected_lock, *, reserved=False, source_commit=None):
+    require(select_prior(prior['producer_epoch'], graph_sha256, expected_limits, deadline_ns, expected_lock, reserved=reserved, source_commit=source_commit) == prior,
             'prior-guard-qualification-chain-changed-before-launch')
 
 def extract(log, deadline_ns):

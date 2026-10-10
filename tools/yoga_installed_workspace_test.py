@@ -19,7 +19,7 @@ def encoded(value):
 
 
 class InstalledInventoryTests(unittest.TestCase):
-    def fixture(self,root):
+    def fixture(self,root,*,console=False):
         # Synthetic closed producer shape exercises real file/descriptor custody.
         # Hard actual origin pins are patched ONLY in this synthetic test fixture.
         origin={name:None for name in installed.ORIGIN_FIELDS}
@@ -34,6 +34,13 @@ class InstalledInventoryTests(unittest.TestCase):
             files[target+'.sh']=launcher.replace(b'_main/delivery/yoga_toolbar_consent.py',('_main/tools/'+target+'.py').encode())
         package={name:'b'*64 for name in ('execution_guard.py','guard_yoga_installed_workspace.py',
             'guard_yoga_profile.py','yoga_operator_launch.py','yoga_operator_coordinator.py','yoga_session_qualification.py')}
+        if console:
+            package.update({name:'b'*64 for name in ('guard_yoga_toolbar_reserved.py',
+                'yoga_reserved_session_qualification.py','yoga_installed_controller_support.py',
+                'yoga_local_console_scope.py','yoga_local_console_qualification.py')})
+            for target in ('yoga_reserved_session_qualification','yoga_local_console_qualification'):
+                files[target+'.sh']=launcher.replace(b'_main/delivery/yoga_toolbar_consent.py',('_main/tools/'+target+'.py').encode())
+            files['delivery/codex_device_acquisition_component.py']=b'public synthetic support'
         for name in package:
             files['tools/'+name]=b'"""synthetic inert source"""\n'
             package[name]=hashlib.sha256(files['tools/'+name]).hexdigest()
@@ -49,6 +56,10 @@ class InstalledInventoryTests(unittest.TestCase):
             'workspaceFiles':{name:{'sha256':hashlib.sha256(content).hexdigest(),'bytes':len(content),'mode':modes[name]}
                 for name,content in files.items()},'executionAuthority':False,'destinationRegistrationVerified':False,
             'seatQualified':False,'toolbarConsentProved':False,'embeddedArtifactProvenanceRewritten':False}
+        if console:
+            record.update(schemaVersion=installed.support.SCHEMA,scope=installed.support.WORKSPACE_SCOPE,
+                controllerDeliverySha256={'codex_device_acquisition_component.py':
+                    hashlib.sha256(files['delivery/codex_device_acquisition_component.py']).hexdigest()})
         files['installed-workspace.json']=encoded(record)
         for name,content in files.items():
             path=root/name; path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -207,6 +218,24 @@ class InstalledInventoryTests(unittest.TestCase):
                 self.assertEqual(bad['origin'],origin)
             bad=copy.deepcopy(record);bad['schemaVersion']=1;bad['scope']=installed.SCOPE
             with self.assertRaises(ValueError): installed.shape(bad)
+
+    def test_console_carrier_exact_fourth_launcher_and_complete_pair(self):
+        for change in ('valid','substitute','partial'):
+            with tempfile.TemporaryDirectory() as directory,ExitStack() as stack:
+                root=Path(directory); record,pin=self.fixture(root,console=True)
+                if change=='substitute':
+                    path=root/'yoga_local_console_qualification.sh'
+                    path.chmod(0o755); path.write_bytes(b'#!/different-public-entry\n'); path.chmod(0o555)
+                    record['workspaceFiles'][path.name].update(bytes=path.stat().st_size,sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+                elif change=='partial':
+                    name='yoga_local_console_scope.py'
+                    record['controllerPackageSha256'].pop(name); record['workspaceFiles'].pop('tools/'+name)
+                    (root/'tools'/name).unlink()
+                if change!='valid':
+                    path=root/'installed-workspace.json'; path.chmod(0o644); path.write_bytes(encoded(record));path.chmod(0o444)
+                    pin['sha256']=hashlib.sha256(encoded(record)).hexdigest()
+                    with self.assertRaises(ValueError): self.open_fixture(root,record,pin,stack)
+                else: self.open_fixture(root,record,pin,stack).recheck()
 
 if __name__=='__main__':
     unittest.main()

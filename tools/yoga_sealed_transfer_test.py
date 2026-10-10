@@ -1,0 +1,173 @@
+"""Real closed-manifest, file-custody and exact admission regressions."""
+import copy
+import hashlib
+import os
+from pathlib import Path
+import tempfile
+import time
+import unittest
+from unittest import mock
+import yoga_sealed_transfer_schema as schema
+import yoga_sealed_transfer_receiver as receiver
+import yoga_sealed_transfer_stage as stage
+import guard_yoga_sealed_transfer_profile as profile
+import execution_guard as guard
+from yoga_install_inputs_stage_test import FixtureDirectory
+
+def fixture():
+    uid='01234567-89ab-cdef-0123-456789abcdef'
+    sha=hashlib.sha256(b'x').hexdigest()
+    required=('MODULE.bazel','BUILD.bazel','tools/BUILD.bazel','installed-launcher.sh',
+        'execution_guard.sh','yoga_reserved_session_qualification.sh','browser-inventory.json',
+        'controller-inventory.json','tools/guard_yoga_toolbar_reserved.py',
+        'tools/guard_yoga_installed_workspace.py','yoga_local_console_qualification.sh',
+        'tools/yoga_local_console_qualification.py','tools/yoga_local_console_scope.py')
+    root='/nix/store/'+'0'*32+'-fixture'
+    value={'schemaVersion':1,'scope':schema.SCOPE,'transferId':uid,'producerSourceCommit':'a'*40,
+        'producerGraphSha256':'b'*64,'workspaceReceipt':{'sha256':sha,'bytes':1},
+        'selectedData':{'sha256':sha,'bytes':1},
+        'workspaceFiles':{name:{'sha256':sha,'bytes':1,'mode':0o444} for name in required},
+        'evidence':{'controller-nar-proof.json':{'path':schema.PUBLIC[0]+'/'+uid+
+            '/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/verify_declared_nars/test.outputs/receipt.json',
+            'sha256':sha,'bytes':1}},
+        'narRows':[{'path':root,'narSha256':sha,'narSize':1,'references':[root]}],
+        'bootstrapSha256':{name:sha for name in schema.BOOTSTRAP},
+        'destination':{'host':'yoga','user':'jsullivan2','parent':schema.PARENT,
+            'workspace':schema.PARENT+'/'+uid+'/workspace'}}
+    for key,epoch in (('selector',uid),('workspaceProducer','11234567-89ab-cdef-0123-456789abcdef')):
+        value[key]={'epoch':epoch,'path':schema.PUBLIC[0]+'/'+epoch+'/receipt.json','sha256':sha,'bytes':1}
+    return value
+
+def checked(value):
+    raw=schema.canonical(value)
+    return schema.manifest(raw,hashlib.sha256(raw).hexdigest())
+
+class TransferModels(unittest.TestCase):
+    def test_digest_and_exact_manifest_members(self):
+        value=fixture(); checked(value)
+        raw=schema.canonical(value)
+        with self.assertRaises(ValueError): schema.manifest(raw,'0'*64)
+        for mutate in (lambda v:v.update(password='forbidden'),
+            lambda v:v['workspaceFiles'].update({'../escape':{'sha256':'a'*64,'bytes':1,'mode':0o444}}),
+            lambda v:v['workspaceFiles']['MODULE.bazel'].update(mode=0o600),
+            lambda v:v['workspaceFiles'].update({'installed-workspace.json':{'sha256':'a'*64,'bytes':1,'mode':0o444}})):
+            bad=copy.deepcopy(value); mutate(bad)
+            with self.assertRaises(ValueError): checked(bad)
+
+    def test_empty_declared_files_preserved(self):
+        value=fixture(); value['workspaceFiles']['empty']={'sha256':hashlib.sha256(b'').hexdigest(),'bytes':0,'mode':0o444}
+        self.assertIn(('workspace/empty',0,hashlib.sha256(b'').hexdigest(),0o444),schema.member_rows(checked(value)))
+
+    def test_exact_destination_and_closed_store_topology(self):
+        value=fixture()
+        for mutation in (lambda v:v['destination'].update(workspace='/home/jsullivan2/workspace'),
+            lambda v:v['destination'].update(user='other'),
+            lambda v:v['narRows'][0]['references'].append('/nix/store/'+'1'*32+'-undeclared'),
+            lambda v:v['narRows'][0].update(path='/home/jsullivan2/.config/private')):
+            bad=copy.deepcopy(value); mutation(bad)
+            with self.assertRaises(ValueError): checked(bad)
+
+    def test_producer_outer_failure_cleanup_source_and_epoch_refuse(self):
+        value=fixture(); selected=value['selector']
+        receipt={'id':selected['epoch'],'artifact_epoch':selected['epoch'],'source_commit':value['producerSourceCommit'],
+            'source_dirty':'false','graph_sha256':value['producerGraphSha256'],'profile':'yoga-installed-selection-reserved',
+            'targets':['//delivery:yoga_installed_selection'],'verb':'test','exit':0,'workload_exit':0,
+            'controller_failure':None,'rejection':None,'descendants_empty':True,
+            'cleanup':{'ownership':'verified','state':'empty','readback_attempts':2},
+            'output_base':str(Path(selected['path']).parent/'output-base'),
+            'yoga_installed_reservation':{'mode':'selection','verified_after_cleanup':True,'browser_invoked':False,'provider_invoked':False}}
+        schema.producer(receipt,selected,value,'selector')
+        for mutation in (lambda r:r.update(exit=125),lambda r:r.update(source_commit='c'*40),
+            lambda r:r.update(artifact_epoch=value['workspaceProducer']['epoch']),
+            lambda r:r['cleanup'].update(readback_attempts=1)):
+            bad=copy.deepcopy(receipt); mutation(bad)
+            with self.assertRaises(ValueError): schema.producer(bad,selected,value,'selector')
+
+    def test_selected_data_join_requires_actual_after_cleanup(self):
+        value=fixture(); selection={'schemaVersion':2,'controllerPackage':{'root':'/srv/fast-local/jess/git/oauth-mux-protocol-sdk-20261008/tools','files':{'a.py':{'sha256':'d'*64}}},
+            'inputSha256':{'fixture':'e'*64},'nativeManifestSha256':'f'*64}
+        record={'controllerPackageSha256':{'a.py':'d'*64},'inputSha256':{'fixture':'e'*64},'nativeManifestSha256':'f'*64}
+        row={'selection_sha256':value['selectedData']['sha256']}
+        receipt={'yoga_installed_producer_input':{'before':row,'after':row,'verified_after_cleanup':True}}
+        schema.selected_join(selection,record,receipt,value)
+        receipt['yoga_installed_producer_input']['after']={'selection_sha256':'0'*64}
+        with self.assertRaises(ValueError): schema.selected_join(selection,record,receipt,value)
+
+    def test_real_transaction_rehash_no_replace_and_extra_member(self):
+        value=fixture(); raw=schema.canonical(value); digest=hashlib.sha256(raw).hexdigest()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(receiver.base,'Directory',FixtureDirectory), mock.patch.object(receiver,'PARENT',directory), \
+                mock.patch.object(receiver,'INPUT_SHA256',digest):
+            transaction=receiver.Transaction(time.monotonic_ns()+60*10**9,raw,value['transferId'])
+            try:
+                transaction.create()
+                for name,size,sha,mode in transaction.rows: transaction.leaf(name,size,sha,mode,raw=b'x')
+                transaction.leaf('transfer-input.json',len(raw),digest,0o444,raw=raw)
+                transaction.readback(); transaction.published=True
+                self.assertEqual(receiver.destination_readback(value['transferId'],transaction.deadline),value)
+                with self.assertRaises(ValueError): receiver.Transaction(transaction.deadline,raw,value['transferId'])
+                extra=Path(directory)/value['transferId']/'workspace'/'unexpected'
+                extra.write_bytes(b'x')
+                with self.assertRaises(ValueError): receiver.destination_readback(value['transferId'],transaction.deadline)
+                extra.unlink()
+                target=Path(directory)/value['transferId']/'workspace'/'MODULE.bazel'
+                target.chmod(0o644); target.write_bytes(b'y'); target.chmod(0o444)
+                with self.assertRaises(ValueError): receiver.destination_readback(value['transferId'],transaction.deadline)
+            finally: transaction.close()
+
+    def test_real_symlink_destination_parent_refused(self):
+        value=fixture(); raw=schema.canonical(value); digest=hashlib.sha256(raw).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            parent=Path(directory)/'alias'; parent.symlink_to(directory,target_is_directory=True)
+            with mock.patch.object(receiver.base,'Directory',FixtureDirectory), mock.patch.object(receiver,'PARENT',str(parent)),mock.patch.object(receiver,'INPUT_SHA256',digest):
+                with self.assertRaises(OSError): receiver.Transaction(time.monotonic_ns()+60*10**9,raw,value['transferId'])
+
+    def test_new_finite_profile_preserves_standard_and_old_stage_refusals(self):
+        self.assertEqual(profile.selected(['run',profile.LABEL]),{'PrivateNetwork':'no'})
+        for vector in (['run','//tools:yoga_install_inputs_stage'],['run',profile.LABEL,'--','arbitrary']):
+            with self.assertRaises(ValueError): profile.selected(vector)
+        with self.assertRaises(ValueError): guard.bazel_command('/nix/store/fixture/bin/bazel',Path('/tmp/fixture'),['run',profile.LABEL])
+        profile.effective_runtime('10s',10)
+        with self.assertRaises(ValueError): profile.effective_runtime('9s',10)
+
+    def test_changed_nar_stream_never_yields_matching_digest(self):
+        import nar_descriptor as nar
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'store'; root.mkdir(); leaf=root/'file'; leaf.write_bytes(b'original')
+            descriptor=nar.describe(root); first=nar.hash_descriptor(descriptor)
+            leaf.write_bytes(b'modified')
+            self.assertNotEqual(nar.hash_descriptor(descriptor)['narHash'],first['narHash'])
+
+    def test_remote_unit_parent_caps_and_exact_runtime(self):
+        from yoga_install_inputs_stage_test import ReceiverTest,TOKEN
+        actual=ReceiverTest().effective()
+        actual['ReadWritePaths']=receiver.PARENT
+        receiver.verify_unit(actual,TOKEN,10*1000000)
+        for key,value in (('ReadWritePaths',receiver.base.PARENT),('MemoryMax','536870912'),
+            ('RuntimeMaxUSec','9s'),('TasksMax','64'),('PrivateNetwork','no')):
+            bad=dict(actual); bad[key]=value
+            with self.assertRaises(ValueError): receiver.verify_unit(bad,TOKEN,10*1000000)
+
+    def test_go_digest_refuses_before_any_destination_allocation(self):
+        import signal
+        value=fixture(); deadline=time.monotonic_ns()+60*10**9
+        with mock.patch.object(receiver.base,'line',return_value={'go':value['transferId'],'scope':receiver.SCOPE,'inputSha256':'a'*64}), \
+                mock.patch.object(receiver,'INPUT_SHA256','b'*64),mock.patch.object(receiver.os,'set_blocking'), \
+                mock.patch.object(signal,'signal'),mock.patch.object(receiver,'Transaction') as transaction:
+            with self.assertRaises(ValueError): receiver.worker(value['transferId'],deadline)
+            transaction.assert_not_called()
+
+    def test_closed_result_boolean_numbers_and_extra_data_refuse(self):
+        value=fixture()
+        with mock.patch.object(receiver,'INPUT_SHA256','a'*64):
+            expected=receiver.result(value,'complete')
+        schema.exact_result(expected,expected)
+        for change in ({'destinationRehashed':1},{'files':True},{'unexpectedPath':'forbidden'}):
+            bad=dict(expected); bad.update(change)
+            with self.assertRaises(ValueError): schema.exact_result(bad,expected)
+
+    def test_single_argument_budget_is_closed_without_launch(self):
+        code=stage.program('worker=None\n',{}, {})
+        self.assertLessEqual(len(code.encode()),120*1024)
+        with self.assertRaises(ValueError): stage.program('x'*120*1024,{}, {})
+
+if __name__=='__main__': unittest.main()

@@ -259,5 +259,16 @@ class InstalledWorkspaceTests(unittest.TestCase):
         self.assertEqual(reserved['delivery/BUILD.bazel'],original['delivery/BUILD.bazel'])
         self.assertEqual(installed.SOURCE_COMMIT,'c106a52523d2161063a6a58d6d29a8f86039f827')
 
+    def test_console_fourth_target_requires_reserved_and_preserves_origin(self):
+        mapping={'_main/tools/yoga_local_console_qualification.py':'/srv/root/tools/yoga_local_console_qualification.py'}
+        copied={'f000000':'tools/yoga_local_console_qualification.py'}
+        original=installed.build_files(mapping,copied,{},reserved=True)
+        console=installed.build_files(mapping,copied,{},reserved=True,console=True)
+        self.assertNotIn(b'yoga_local_console_qualification.sh',original['BUILD.bazel'])
+        self.assertIn(b'yoga_local_console_qualification.sh',console['BUILD.bazel'])
+        self.assertIn(b"name = 'yoga_local_console_qualification'",console['tools/BUILD.bazel'])
+        self.assertEqual(console['delivery/BUILD.bazel'],original['delivery/BUILD.bazel'])
+        with self.assertRaises(ValueError): installed.build_files(mapping,copied,{},console=True)
+
 if __name__ == '__main__':
     unittest.main()

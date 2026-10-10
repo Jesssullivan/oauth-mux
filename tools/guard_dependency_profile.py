@@ -68,6 +68,9 @@ def selected_profile(profile, arguments, site_inputs=False, pack_input=False, re
         if site_inputs or pack_input or recovery_input:
             raise ValueError('codex-live-unrelated-inputs')
         return selected(arguments)
+    if profile == 'yoga-sealed-workspace-stage':
+        from guard_yoga_sealed_transfer_profile import selected
+        return selected(arguments,site=site_inputs,pack=pack_input,recovery=recovery_input)
     if profile == 'yoga-install-inputs':
         from guard_yoga_install_inputs_profile import selected
         return selected(arguments,site=site_inputs,pack=pack_input,recovery=recovery_input)
@@ -106,6 +109,9 @@ def recovery_source(path, validate_private):
 
 def validate_coordination(profile, selected, state_root, *, arguments=None):
     state_root = Path(state_root)
+    if profile == 'yoga-sealed-workspace-stage':
+        from guard_yoga_sealed_transfer_profile import coordination
+        return coordination(selected,state_root,arguments)
     if profile == 'yoga-install-inputs':
         from guard_yoga_install_inputs_profile import coordination
         return coordination(selected,state_root,arguments)
