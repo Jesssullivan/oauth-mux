@@ -224,3 +224,61 @@ receipts. The original15-hour clock and compiler7/8 HOLD remain unchanged.
 Sting's normal OS vault remains Locked; Yoga's attended Wayland/browser proof,
 ordinary candidate resume/live handoff, delivered adapter support and Darwin
 remain separate unpassed gates.
+
+
+## Actual models/runtime checkpoint and packed-source successor
+
+IA5 on 2580eb1/430 (epoch d274476f-d055-4304-9fb8-eacd8a15f168) passed all
+seven exact Home Manager model/docs targets: 96 Python cases plus docs.
+Raw receipt 0b1030e7871da982b5f26ce77a12596015f571b83e24f0511f350309c0af707f;
+copied evidence 1aa82637a3d6693734f3a6330cf7ebf083fb675d74157cbee50f8b48199e3ba0,
+14 files/7139 bytes. Owned cleanup was empty with two readbacks and absent cgroup.
+This qualifies canonical retained reconstruction fixtures and the repaired framing
+fixture, not genuine source-pair production, evaluation or activation.
+
+The finite runtime extension fc468e7/430 ran LR1
+(d7813510-02b9-4504-86c5-30af0b3a2c71), original125/work3. Seven of eight targets
+passed: lifecycle17, source actor288, setup37, engine283 and CLI339 Zig cases;
+guard14 Python cases and docs. These are per-target executions, with shared
+dependencies counted per target. The witness target ran28/29 and failed the
+old universal omission assertion: historical schema1 deliberately accepts
+missing daemon_request_elapsed as unknown. Its unexpectedly accepted Parsed
+was not freed by that failed assertion. Raw432a4de8ffd923507d95de358bcb5b7d6978fcd92457bdfab2557720eb957e19;
+evidence75ffea249d692ea85053b1532cca2e4dce71f48e32e4c9b62d9c2890c1a6f912,
+16 files/226298 bytes; original owned cleanup empty twice/cgroup absent.
+The original failed run stays failed. Independently reviewed fixture0bbfe0b2
+exercises both real Session variants, accepts/frees only that exact legacy case,
+and rejects all required top-level and four duration-field omissions. Production
+validation is unchanged. Its corrected gate is UNRUN at source adoption.
+
+Packed-source replacement f8539d0a responds to HP1's measured cold input cost.
+The existing acquisition producer authors a bounded readonly regular frame in
+its original private owner, preserving source inventory and full canonical NARs.
+Current reconstruction declares at most seven regular pack/layout/evidence
+inputs instead of57115 source leaves. Fresh acquisition guardian/evidence are
+independently authenticated; historical9e9 metadata remains content authority.
+Current action binding is separate. One decoder/shared budget/private owner
+restores authenticated executable modes and retains original before/after
+NAR, full byte/name custody, deadline and cleanup checks. Compact receiptv2
+carries actual sourceTransport lineage; production model/leaf fallback refuses.
+Both independent source reviews are CLEAR. Fifteen new methods (nine acquisition,
+six current-pair, including four added writer expiry/FD ownership methods) remain
+UNRUN; graph reduction has no measured genuine producer result yet.
+
+Predecessor e8a1168a remains custody BLOCK84ce3070 for late effects and failed
+descriptor enrollment. V2 fences after anchors/scans before effects and closes
+the locally owned descriptor on enrollment failure. Its predecessor author used
+standalone stdlib AST inspection outside Bazel; that supplies no project check
+qualification. V2 performed no further standalone parser/check/import execution.
+Both source and current-bundle selectors stay null; only actual fresh successful
+producer output can support a separately reviewed selection.
+
+Current ordinary TUI files already match83e4b35c; no duplicate reapplication was
+needed. integrations/codex-upstream/native-acquisition-ordinary-inputs.json
+remains selection:null pending genuine PACKAGE output/guardian. Q-to-QR-to-SDK,
+plan/query, final8of8 Rust qualification, packaging, ordinary resume and
+same-process handoff remain gates. Current normal vault enrollment, installed
+Home Manager activation, human browser consent, full user-time/demand/provenance
+accounting, achieved SLO and Darwin/live/stock support remain unproved.
+Original goal clocks, protected nine helper files and compiler7/8 HOLD are unchanged.
+PR541 and TIN-2063/TIN-5338 retain their scopes and completion states.

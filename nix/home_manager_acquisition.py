@@ -28,6 +28,7 @@ from contextvars import ContextVar
 import sys
 
 import home_manager_acquired_inputs as acquired
+import home_manager_source_pack as source_pack
 from home_manager_inputs import paired_lock
 
 PINNED_NIX = Path("/nix/store/fphbr6vvc2fdmx02nkagnbx0nv04f709-nix-2.34.6/bin/nix")
@@ -53,7 +54,7 @@ PHASES = {"inputs", "source", "prefetch", "prefetch-admission", "prefetch-monito
           "private-budget-scan", "source-inventory", "source-nar", "source-recheck", "export",
           "copy", "copy-baseline", "copy-final-budget", "copied-proof", "metadata",
           "pair-proof", "publication", "publication-witness", "publication-proof",
-          "publication-recheck", "publication-rename", "owned-child-cleanup", "owned-tree-cleanup"}
+          "publication-recheck", "publication-rename", "packed-source", "owned-child-cleanup", "owned-tree-cleanup"}
 COUNTERS = {"privateScanCount", "privateScanMs", "narPassCount", "narPassMs",
             "pairProofCount", "pairProofMs", "copiedNodes", "copiedBytes", "monitorPolls",
             "ancestryCheckCount", "ancestryCheckMs", "fileSyncCount", "fileSyncMs",
@@ -77,6 +78,10 @@ ERROR_SUFFIXES = {
         "rollback-destination-exists publication-envelope-mode output-exists publication-source-replaced "
         "publication-replaced retained-pair-bound output-filesystem cleanup-custody cleanup-inventory-bound "
         "cleanup-replaced cleanup-fd-support contained-context-required action-filesystem requires-empty-outputs"
+    ).split()),
+    "source": frozenset((
+        "pack-header-bound pack-inventory pack-source-inventory pack-truncated pack-growth "
+        "pack-source-changed pack-output-changed pack-byte-bound pack-short-write pack-custody pack-closed pack-readback"
     ).split()),
     "acquired": frozenset((
         "duplicate-json-key metadata-byte-bound metadata-fields verification-deadline physical-root unsafe-ancestor "
@@ -1291,17 +1296,35 @@ def rollback_envelope(root, outputs, staging):
     staging.check()
 
 
+@contextmanager
+def packed_witness(staging, raw_metadata, deadline):
+    if raw_metadata is None:
+        yield None
+        return
+    value = source_pack.metadata(raw_metadata)
+    packed = source_pack.PackedFile(staging.fd, value, deadline)
+    try:
+        yield packed
+    finally:
+        primary = sys.exc_info()[1]
+        try: packed.close()
+        except BaseException:
+            if primary is None: raise
+            primary.cleanup_category = "source-pack-close-refused"
+
+
 def publish_pair(root, outputs, staging, lock_bytes, receipt_bytes, receipt_digest,
-                 inventory_bytes, report_bytes, deadline):
+                 inventory_bytes, report_bytes, deadline, *, packed_metadata=None):
     root.check()
     outputs.check()
     staging.check()
     require(stat.S_IMODE(os.fstat(staging.fd).st_mode) == 0o700,
             "acquisition-publication-envelope-mode")
-    with metadata_witnesses(staging, {"inventory.json": inventory_bytes,
-                                      "receipt.json": receipt_bytes,
-                                      "acquisition.json": report_bytes}, deadline) as witnesses, \
-            source_witnesses(staging, deadline) as source_capture:
+    metadata = {"inventory.json": inventory_bytes, "receipt.json": receipt_bytes, "acquisition.json": report_bytes}
+    if packed_metadata is not None: metadata["source-pack.json"] = packed_metadata
+    with metadata_witnesses(staging, metadata, deadline) as witnesses, \
+            source_witnesses(staging, deadline) as source_capture, \
+            packed_witness(staging, packed_metadata, deadline) as packed:
         # All writes, chmod and disk traversal are finished. Rehash the expected
         # pair after that interval, then recheck held metadata and publish.
         verify_pair(lock_bytes, receipt_bytes, receipt_digest, inventory_bytes,
@@ -1312,6 +1335,7 @@ def publish_pair(root, outputs, staging, lock_bytes, receipt_bytes, receipt_dige
         staging.check()
         check_metadata_witnesses(staging, witnesses)
         check_source_witnesses(staging, source_capture, deadline)
+        if packed is not None: packed.recheck()
         try:
             os.stat("home-manager-pair", dir_fd=outputs.fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -1333,6 +1357,7 @@ def publish_pair(root, outputs, staging, lock_bytes, receipt_bytes, receipt_dige
                     "acquisition-publication-envelope-mode")
             check_metadata_witnesses(staging, witnesses)
             check_source_witnesses(staging, source_capture, deadline)
+            if packed is not None: packed.recheck()
             root.check()
             outputs.check()
         except BaseException:
@@ -1373,6 +1398,21 @@ def produce_held(nix, ca, lock_bytes, locked, root, outputs, staging):
     proof = verify_pair(lock_bytes, receipt_bytes, receipt_digest, inventory_bytes,
         {name: str(staging.path / name) for name in acquired.NAMES}, deadline, "pair-proof")
     acquired.check_deadline(deadline)
+    # One bounded regular transport is authored inside the existing private
+    # owner. Source proof before/through publication still reads all NAR bytes.
+    with phase("packed-source", source="pair", deadline=deadline):
+        baseline = usage(root, deadline, details=True, quiescent=True)
+        require(baseline["nodes"] + 2 <= MAX_PRIVATE_NODES
+            and baseline["metadata"] + 1024 <= MAX_PRIVATE_METADATA, "acquisition-private-inventory-bound")
+        def charge_pack(info):
+            acquired.check_deadline(deadline)
+            require(max(baseline["logical"] + info.st_size + 65536,
+                baseline["allocated"] + info.st_blocks * 512 + 65536) <= DISK_BUDGET,
+                "acquisition-private-disk-budget")
+        pack = source_pack.write(staging.fd, receipt_bytes, inventory_bytes, deadline,
+            anchor=lambda: (root.check(), staging.check()), charge=charge_pack, sync=file_sync)
+        packed_metadata = write_metadata(staging, "source-pack.json", pack, acquired.MAX_RECEIPT_BYTES)
+        disk_check(root, deadline, quiescent=True)
     destination = outputs.path / "home-manager-pair"
     require(os.fstat(staging.fd).st_dev == os.fstat(outputs.fd).st_dev, "acquisition-output-filesystem")
     # The report describes the final declared physical roots. Source inode
@@ -1387,14 +1427,14 @@ def produce_held(nix, ca, lock_bytes, locked, root, outputs, staging):
               "evaluationExecuted": False, "globalStoreWritten": False,
               "diskBudgetBytes": DISK_BUDGET, "freeFloorBytes": FREE_FLOOR,
               "diskEnforcement": "sampled allocation monitor with possible overshoot; not an aggregate quota",
-              "childFileLimitBytes": file_limits()[0]}
+              "childFileLimitBytes": file_limits()[0], "packedSource": pack}
     with phase("metadata", source="pair", deadline=deadline):
         report_bytes = write_metadata(staging, "acquisition.json", report, acquired.MAX_RECEIPT_BYTES)
         staging.check()
         disk_check(root, deadline, quiescent=True)
     with phase("publication", source="pair", deadline=deadline):
         publish_pair(root, outputs, staging, lock_bytes, receipt_bytes, receipt_digest,
-                     inventory_bytes, report_bytes, deadline)
+                     inventory_bytes, report_bytes, deadline, packed_metadata=packed_metadata)
     return report
 
 
@@ -1501,7 +1541,9 @@ def run(args):
         with private_worker(scratch_anchor) as worker:
             report = produce(nix, ca, lock_bytes, locked, worker, output_anchor)
     print(encoded({"scope": report["scope"], "receiptSha256": report["receiptSha256"],
-                   "evaluationExecuted": False, "activation": "unproved"}).decode())
+                   "evaluationExecuted": False, "activation": "unproved",
+                   "packedSourceSha256": report["packedSource"]["packSha256"],
+                   "packedSourceMetadataSha256": sha(encoded(report["packedSource"]))}).decode())
     return 0
 
 

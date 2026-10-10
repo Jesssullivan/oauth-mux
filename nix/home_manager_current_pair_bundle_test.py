@@ -3,6 +3,7 @@ import copy
 from contextlib import contextmanager
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -34,7 +35,7 @@ class PairTests(unittest.TestCase):
 
     def produce(self):
         f=self.fixture
-        return pair.reconstruct(f.layout,f.lock_path,f.outputs,self.binding,deadline=time.monotonic()+180)
+        return pair.reconstruct(f.layout,f.lock_path,f.outputs,self.binding,deadline=time.monotonic()+180,leaf_model=True)
 
     def test_real_pair_without_artifact_publishes_final_flags_and_retains_inputs(self):
         f=self.fixture;source=f.retained/'pair/home-manager/default.nix'
@@ -176,5 +177,126 @@ class PairTests(unittest.TestCase):
         raw=old.encoded(changed);contents[parent+'/test-evidence.json']=raw
         duplicated=copy.deepcopy(outer);duplicated['test_evidence']['sha256']=pair.sha(raw)
         with self.assertRaisesRegex(ValueError,'marker'):run(duplicated)
+
+    def packed_fixture(self, *, mutate_outer=None, log_suffix=b'', corrupt_pack=False):
+        f=self.fixture;root=f.base/'packed';root.mkdir(mode=0o700)
+        raw_pair=(f.retained/'pair/receipt.json').read_bytes()
+        inventory=(f.retained/'pair/inventory.json').read_bytes()
+        for name in old.acquired.NAMES:
+            shutil.copytree(f.fixture.roots[name],root/name,symlinks=True)
+        with pair.acquisition.HeldDirectory(root) as held:
+            meta=pair.source_pack.write(held.fd,raw_pair,inventory,time.monotonic()+120,
+                anchor=held.check,charge=lambda info:self.assertLessEqual(info.st_size,pair.source_pack.MAX_BYTES))
+        # The bootstrap fixture has no source leaves after packing. Canonical
+        # proof must therefore come from actual decoded regular bytes.
+        for name in old.acquired.NAMES:
+            for directory,_,_ in os.walk(root/name):Path(directory).chmod(0o700)
+            shutil.rmtree(root/name)
+        if corrupt_pack:
+            path=root/'source.pack';data=path.read_bytes()
+            f.write(path,data[:-1]+bytes([data[-1]^1]));meta['packSha256']=pair.sha(path.read_bytes())
+        metadata=pair.source_pack.encoded(meta);f.write(root/'source-pack.json',metadata)
+        epoch='00000000-0000-0000-0000-000000000010';parent=pair.source_pack.STATE+'/'+epoch
+        marker={'scope':'finite-paired-source-acquisition','receiptSha256':old.PAIR_SHA,
+            'evaluationExecuted':False,'activation':'unproved','packedSourceSha256':meta['packSha256'],
+            'packedSourceMetadataSha256':pair.sha(metadata)}
+        log=old.encoded(marker)+log_suffix
+        xml=b'<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase name="source-pack"/></testsuite>'
+        authority=root/'authority';authority.mkdir(mode=0o700);members=[]
+        for name,data in [('test.log',log),('test.xml',xml)]:
+            digest=pair.sha(data);leaf=digest+'.evidence';f.write(authority/leaf,data)
+            members.append({'source':name,'state':'copied','file':leaf,'sha256':digest,'bytes':len(data)})
+        evidence=old.encoded({'schema':1,'bazel_exit':0,'epoch_start_ns':123,'targets':[pair.source_pack.TARGET],
+            'results':[{'target':pair.source_pack.TARGET,'state':'observed','files':members}]})
+        f.write(authority/'test-evidence.json',evidence)
+        caps={'MemoryMax':'4294967296','MemorySwapMax':'0','TasksMax':'512','CPUQuotaPerSecUSec':'2s',
+            'RuntimeMaxUSec':'20min','KillMode':'control-group','SendSIGKILL':'yes','TimeoutStopUSec':'10s','OOMPolicy':'kill'}
+        outer={'id':epoch,'unit':'omux-execution-'+epoch+'.service','manager':'system','profile':'dependency-prefetch',
+            'exit':0,'workload_exit':0,'controller_failure':None,'descendants_empty':True,
+            'cleanup':{'state':'empty','ownership':'verified','readback_attempts':2},
+            'source_commit':'c'*40,'source_dirty':'false','graph_sha256':'d'*64,'verb':'test',
+            'targets':[pair.source_pack.TARGET],'test_evidence':{'state':'preserved','sha256':pair.sha(evidence)},
+            'output_base':parent+'/output-base','epoch_start_ns':123,'cache_reuse_requested':False,
+            'cache_policy':None,'cache_key':None,'coordination_directory':'/home/jess/.local/state/omux-execution-20261005',
+            'coordination_lock':'/home/jess/.local/state/omux-execution-20261005/execution.lock','limits':caps,
+            'observed_properties':{**caps,'PrivateNetwork':'no','PrivateUsers':'no','NoNewPrivileges':'yes',
+                'ProtectControlGroups':'yes','RestrictSUIDSGID':'yes','User':str(os.getuid()),'Group':str(os.getgid())}}
+        if mutate_outer is not None:mutate_outer(outer)
+        raw=old.encoded(outer);f.write(authority/'receipt.json',raw)
+        selection={'schemaVersion':1,'kind':pair.source_pack.SELECT,'selection':{
+            'root':parent+'/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/home_manager_acquisition_producer/test.outputs/home-manager-pair',
+            'packSha256':meta['packSha256'],'packBytes':meta['packBytes'],'metadataSha256':pair.sha(metadata),
+            'producer':{'receipt':parent+'/receipt.json','sha256':pair.sha(raw),'source_commit':'c'*40,
+                'source_dirty':'false','graph_sha256':'d'*64}}}
+        layout=root/'layout.json';f.write(layout,old.encoded({'schemaVersion':1,
+            'kind':'omux-current-home-manager-packed-layout-v1','sourceSelection':selection}))
+        return root,layout,selection,meta
+
+    def packed_produce(self,layout):
+        f=self.fixture
+        return pair.reconstruct(layout,f.lock_path,f.outputs,self.binding,deadline=time.monotonic()+180)
+
+    def test_real_packed_only_input_runs_decoder_full_nar_before_after_and_private_cleanup(self):
+        root,layout,selection,meta=self.packed_fixture();calls=[];actual=pair.canonical_pair
+        def checking(*args,**kwargs):
+            value=actual(*args,**kwargs);calls.append(value);return value
+        with patch.object(pair,'canonical_pair',side_effect=checking):result=self.packed_produce(layout)
+        self.assertEqual(len(calls),2);self.assertEqual(calls[0],calls[1])
+        self.assertEqual(result['sourceTransport']['producerReceiptSha256'],selection['selection']['producer']['sha256'])
+        self.assertEqual(result['sourceTransport']['packSha256'],meta['packSha256'])
+        self.assertFalse(result['retainedPhysicalNarVerified']);self.assertFalse(result['activationQualified'])
+        self.assertEqual(sorted(x.name for x in self.fixture.outputs.iterdir()),['bundle','receipt.json'])
+        pair.validate_compact((self.fixture.outputs/'receipt.json').read_bytes(),result['receiptSha256'])
+        self.assertFalse(any(x.name.startswith('omux-hm') for x in self.fixture.outputs.iterdir()))
+        self.assertFalse((root/'home-manager').exists());self.assertFalse((root/'nixpkgs').exists())
+
+    def test_pack_and_all_authority_fds_stay_held_and_late_equal_size_bytes_refuse(self):
+        root,layout,selection,_=self.packed_fixture();inputs=old.Inputs(root,time.monotonic()+120)
+        with self.assertRaises(ValueError),pair.PackedSources(inputs,old.encoded(selection),time.monotonic()+120) as packed:
+            self.assertEqual(len(packed.held),6)
+            for row in packed.held.values():self.assertFalse(row[0].closed)
+            path=root/'source.pack';data=path.read_bytes();path.chmod(0o600)
+            path.write_bytes(data[:-1]+bytes([data[-1]^1]));path.chmod(0o444)
+            packed.recheck()
+        for row in packed.held.values():self.assertTrue(row[0].closed)
+
+    def test_packed_pending_and_production_leaf_layout_refuse_before_lock_io(self):
+        f=self.fixture;root=f.base/'pending-pack';root.mkdir()
+        layout=root/'layout.json';f.write(layout,old.encoded({'schemaVersion':1,
+            'kind':'omux-current-home-manager-packed-layout-v1','sourceSelection':{
+                'schemaVersion':1,'kind':pair.source_pack.SELECT,'selection':None}}))
+        for candidate in (layout,f.layout):
+            with self.subTest(candidate=candidate.name),patch.object(pair.evaluator,'read_declared') as read, self.assertRaises(ValueError):
+                self.packed_produce(candidate)
+            read.assert_not_called()
+        self.assertEqual(list(f.outputs.iterdir()),[])
+
+    def test_upstream_failed_dirty_wrong_profile_cleanup_and_caps_refuse_before_worker(self):
+        changes=[lambda v:v.update(exit=125),lambda v:v.update(source_dirty='true'),
+            lambda v:v.update(profile=pair.current.admission.PAIR),
+            lambda v:v['cleanup'].update(ownership='unproved'),
+            lambda v:v['observed_properties'].update(TasksMax='513'),
+            lambda v:v.update(cache_reuse_requested=True)]
+        for change in changes:
+            root,layout,_,_=self.packed_fixture(mutate_outer=change)
+            with patch.object(old,'private_tree') as worker,self.assertRaises(ValueError):self.packed_produce(layout)
+            worker.assert_not_called();self.assertEqual(list(self.fixture.outputs.iterdir()),[])
+            for directory,_,_ in os.walk(root):Path(directory).chmod(0o700)
+            shutil.rmtree(root)
+
+    def test_late_held_pack_rebinding_rolls_back_final_bundle_and_owned_worker(self):
+        root,layout,_,_=self.packed_fixture();actual=pair.write_frame
+        def rebinding(*args,**kwargs):
+            result=actual(*args,**kwargs);path=root/'source.pack';path.rename(root/'retired.pack')
+            self.fixture.write(path,(root/'retired.pack').read_bytes());return result
+        with patch.object(pair,'write_frame',side_effect=rebinding),self.assertRaises(ValueError):self.packed_produce(layout)
+        self.assertEqual(list(self.fixture.outputs.iterdir()),[])
+
+    def test_correct_digest_corrupt_packed_payload_still_requires_actual_canonical_nar(self):
+        # All actual transport/producer predicate functions run. This modeled
+        # producer's honestly rehashed corrupt payload still fails original NAR.
+        root,layout,_,_=self.packed_fixture(corrupt_pack=True)
+        with self.assertRaisesRegex(ValueError,'(nar|hash|binding)'):self.packed_produce(layout)
+        self.assertEqual(list(self.fixture.outputs.iterdir()),[])
 
 if __name__=='__main__':unittest.main()

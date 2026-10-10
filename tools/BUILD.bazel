@@ -622,7 +622,7 @@ python_test(
 python_test(
     name = "home_manager_acquisition_test",
     main = "//:nix/home_manager_acquisition_test.py",
-    srcs = ["//:nix/home_manager_acquisition.py", "//:nix/home_manager_acquired_inputs.py",
+    srcs = ["//:nix/home_manager_acquisition.py", "//:nix/home_manager_source_pack.py", "//:nix/home_manager_acquired_inputs.py",
             "//:nix/home_manager_inputs.py", "nar_descriptor.py"],
     target_compatible_with = ["@platforms//os:linux"],
 )
@@ -654,7 +654,7 @@ python_test(
     name = "home_manager_acquired_evaluation_test",
     main = "//:nix/home_manager_acquired_evaluation_test.py",
     srcs = ["//:nix/home_manager_acquired_evaluation.py", "//:nix/home_manager_acquired_inputs.py",
-            "//:nix/home_manager_acquired_inputs_test.py", "//:nix/home_manager_acquisition.py",
+            "//:nix/home_manager_acquired_inputs_test.py", "//:nix/home_manager_acquisition.py", "//:nix/home_manager_source_pack.py",
             "//:nix/home_manager_artifact.py", "//:nix/home_manager_artifact_test.py",
             "//:nix/home_manager_inputs.py", "//:nix/home_manager_evaluation_runner.py",
             "//:nix/evaluation_runner.py", "//:nix/home_manager_io.py", "nar_descriptor.py",
@@ -669,7 +669,7 @@ python_test(
     main = "//:nix/home_manager_bundle.py",
     srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquired_evaluation.py",
             "//:nix/home_manager_evaluation_runner.py", "//:nix/home_manager_io.py", "//:nix/evaluation_runner.py",
-            "//:nix/home_manager_acquisition.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py",
+            "//:nix/home_manager_acquisition.py", "//:nix/home_manager_source_pack.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py",
             "//:nix/home_manager_artifact.py", "//delivery:pack.py", "//delivery:portable.py"],
     data = ["@omux_retained_hm//:retained_inputs", "@omux_retained_hm//:layout.json",
             "@omux_lab_home_manager_inputs//:lab-lock.json"],
@@ -687,7 +687,7 @@ python_test(
     main = "//:nix/home_manager_bundle.py",
     srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquired_evaluation.py",
             "//:nix/home_manager_evaluation_runner.py", "//:nix/home_manager_io.py", "//:nix/evaluation_runner.py",
-            "//:nix/home_manager_acquisition.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py",
+            "//:nix/home_manager_acquisition.py", "//:nix/home_manager_source_pack.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py",
             "//:nix/home_manager_artifact.py", "//delivery:pack.py", "//delivery:portable.py"],
     data = ["@omux_retained_hm//:retained_inputs", "@omux_retained_hm//:layout.json",
             "@omux_lab_home_manager_inputs//:lab-lock.json"],
@@ -702,7 +702,7 @@ python_test(
 python_test(
     name = "home_manager_acquired_evaluation",
     main = "//:nix/home_manager_bundle.py",
-    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquisition.py",
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquisition.py", "//:nix/home_manager_source_pack.py",
             "//:nix/home_manager_artifact.py", "//:nix/home_manager_inputs.py",
             "//:nix/home_manager_acquired_evaluation.py",
             "//:nix/home_manager_evaluation_runner.py", "//:nix/evaluation_runner.py",
@@ -734,7 +734,7 @@ python_test(
     main = "//:nix/home_manager_bundle_test.py",
     srcs = ["//:nix/home_manager_bundle.py", "//:nix/home_manager_acquired_evaluation_test.py"] +
            ["//:nix/home_manager_acquired_evaluation.py", "//:nix/home_manager_acquired_inputs.py",
-            "//:nix/home_manager_acquired_inputs_test.py", "//:nix/home_manager_acquisition.py",
+            "//:nix/home_manager_acquired_inputs_test.py", "//:nix/home_manager_acquisition.py", "//:nix/home_manager_source_pack.py",
             "//:nix/home_manager_artifact.py", "//:nix/home_manager_artifact_test.py",
             "//:nix/home_manager_inputs.py", "//:nix/home_manager_evaluation_runner.py",
             "//:nix/home_manager_io.py", "//:nix/evaluation_runner.py", "nar_descriptor.py",
@@ -746,7 +746,7 @@ python_test(
 python_test(
     name = "home_manager_acquisition_producer",
     main = "//:nix/home_manager_acquisition.py",
-    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py"],
+    srcs = ["//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_source_pack.py", "//:nix/home_manager_inputs.py", "nar_descriptor.py"],
     data = ["@omux_host//:executables/nix", "@omux_host//:ca-bundle.crt", "@omux_host//:all_tools",
             "@omux_lab_home_manager_inputs//:lab-lock.json"],
     args = ["--nix", "$(location @omux_host//:executables/nix)",
@@ -2653,7 +2653,7 @@ python_test(name='guard_current_home_manager_artifact_reserved_test',main='guard
 exports_files(["home_manager_current_repository.bzl", "home_manager_current_selection.json"])
 _CURRENT_HM_CONSUMER_SOURCES = ["//:nix/home_manager_current_retained_artifact.py", "//:nix/home_manager_current_pair_bundle.py", "//:nix/home_manager_current_artifact.py", "//:nix/home_manager_current_evaluation.py",
     "//:nix/home_manager_bundle.py", "//:nix/home_manager_acquired_evaluation.py", "//:nix/home_manager_artifact.py",
-    "//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquisition.py", "//:nix/home_manager_inputs.py",
+    "//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquisition.py", "//:nix/home_manager_source_pack.py", "//:nix/home_manager_inputs.py",
     "//:nix/home_manager_evaluation_runner.py", "//:nix/evaluation_runner.py", "//:nix/home_manager_io.py",
     "nar_descriptor.py", "//delivery:pack.py", "//delivery:portable.py"]
 python_test(name="home_manager_current_artifact_test",main="//:nix/home_manager_current_artifact_test.py",
@@ -2683,7 +2683,7 @@ python_test(name="home_manager_current_evaluation",main="//:nix/home_manager_cur
     target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])
 
 exports_files(["home_manager_current_pair_repository.bzl", "home_manager_current_pair_bundle_repository.bzl",
-               "home_manager_current_pair_inputs.json"])
+               "home_manager_current_pair_inputs.json", "home_manager_current_pair_source_inputs.json"])
 python_test(name="home_manager_current_pair_reconstruction_producer",
     main="//:nix/home_manager_current_pair_bundle.py",
     srcs=depset(_CURRENT_HM_CONSUMER_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),

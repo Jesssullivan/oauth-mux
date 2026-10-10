@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import resource
+import shutil
 import stat
+import struct
 import tempfile
 import threading
 import time
@@ -85,6 +87,124 @@ class AcquisitionTests(unittest.TestCase):
                 patch.object(acquisition, "prefetch", side_effect=prefetch or self.fake_prefetch):
             return acquisition.produce(acquisition.PINNED_NIX, acquisition.PINNED_CA,
                 acquisition.encoded(self.lock), self.locked(), self.worker, self.outputs)
+
+    def test_actual_producer_pack_carries_exact_headers_sorted_regular_bytes_and_no_link_reads(self):
+        report=self.produce();root=self.outputs/'home-manager-pair'
+        raw_metadata=(root/'source-pack.json').read_bytes()
+        meta=acquisition.source_pack.metadata(raw_metadata);payload=(root/'source.pack').read_bytes()
+        self.assertEqual(meta,report['packedSource']);self.assertEqual(meta['packBytes'],len(payload))
+        self.assertEqual(meta['packSha256'],hashlib.sha256(payload).hexdigest())
+        self.assertEqual(stat.S_IMODE((root/'source.pack').stat().st_mode),0o444)
+        stream=io.BytesIO(payload);self.assertEqual(stream.read(len(acquisition.source_pack.MAGIC)),acquisition.source_pack.MAGIC)
+        receipt=stream.read(struct.unpack('<Q',stream.read(8))[0]);inventory=stream.read(struct.unpack('<Q',stream.read(8))[0])
+        self.assertEqual(receipt,(root/'receipt.json').read_bytes());self.assertEqual(inventory,(root/'inventory.json').read_bytes())
+        nodes=json.loads(inventory)
+        expected=b''.join((root/name/node['path']).read_bytes()
+            for name,node in acquisition.source_pack.regular_entries(nodes))
+        self.assertEqual(stream.read(),expected)
+        self.assertFalse(report['evaluationExecuted']);self.assertEqual(report['activation'],'unproved')
+
+    def test_pack_writer_expiry_refuses_before_source_or_output_fd_open(self):
+        report=self.produce();root=self.outputs/'home-manager-pair'
+        with acquisition.HeldDirectory(root) as held,patch.object(acquisition.source_pack.os,'open') as opening:
+            with self.assertRaisesRegex(ValueError,'deadline'):
+                acquisition.source_pack.write(held.fd,(root/'receipt.json').read_bytes(),
+                    (root/'inventory.json').read_bytes(),time.monotonic()-1,anchor=held.check,charge=lambda info:None)
+            opening.assert_not_called()
+
+    def test_pack_byte_bound_refusal_never_publishes_pair_and_keeps_original_budget(self):
+        with patch.object(acquisition.source_pack,'MAX_BYTES',1),self.assertRaisesRegex(ValueError,'source-pack-byte-bound'):
+            self.produce()
+        self.assertEqual(list(self.outputs.iterdir()),[])
+        self.assertEqual(acquisition.MAX_SECONDS,1200);self.assertEqual(acquisition.DISK_BUDGET,8*1024**3)
+        self.assertEqual(acquisition.source_pack.MAX_BYTES,acquired.MAX_FILE_BYTES)
+
+    def test_held_pack_late_same_size_byte_corruption_refuses_original_output_readback(self):
+        report=self.produce();root=self.outputs/'home-manager-pair';path=root/'source.pack'
+        with acquisition.HeldDirectory(root) as held:
+            packed=acquisition.source_pack.PackedFile(held.fd,report['packedSource'],time.monotonic()+120)
+            try:
+                raw=path.read_bytes();path.chmod(0o600);path.write_bytes(raw[:-1]+bytes([raw[-1]^1]));path.chmod(0o444)
+                with self.assertRaisesRegex(ValueError,'source-pack-readback'):packed.recheck()
+            finally:packed.close()
+
+    def test_pack_changed_before_original_publication_refuses_without_promoting_tree(self):
+        actual=acquisition.publish_pair
+        def changing(root,outputs,staging,*args,**kwargs):
+            path=staging.path/'source.pack';data=path.read_bytes();path.chmod(0o600)
+            path.write_bytes(data[:-1]+bytes([data[-1]^1]));path.chmod(0o444)
+            return actual(root,outputs,staging,*args,**kwargs)
+        with patch.object(acquisition,'publish_pair',side_effect=changing),self.assertRaisesRegex(ValueError,'source-pack-readback'):
+            self.produce()
+        self.assertEqual(list(self.outputs.iterdir()),[])
+
+    def independent_pack_stage(self):
+        report=self.produce();original=self.outputs/'home-manager-pair'
+        stage=self.worker/'standalone-pack';stage.mkdir(mode=0o700)
+        for name in acquired.NAMES:shutil.copytree(original/name,stage/name,symlinks=True)
+        return stage,(original/'receipt.json').read_bytes(),(original/'inventory.json').read_bytes(),report
+
+    def test_pack_expiry_inside_anchor_blocks_first_actual_source_open(self):
+        stage,receipt,inventory,_=self.independent_pack_stage();clock=[10.0]
+        with acquisition.HeldDirectory(stage) as held:
+            def anchor():held.check();clock[0]=21.0
+            with patch.object(acquired.time,'monotonic',side_effect=lambda:clock[0]), \
+                    patch.object(acquisition.source_pack.os,'open') as opening, \
+                    self.assertRaisesRegex(ValueError,'deadline'):
+                acquisition.source_pack.write(held.fd,receipt,inventory,20.0,anchor=anchor,charge=lambda info:None)
+            opening.assert_not_called()
+        self.assertFalse((stage/'source.pack').exists())
+
+    def test_pack_expiry_inside_postscan_anchor_blocks_output_creation_and_closes_sources(self):
+        stage,receipt,inventory,_=self.independent_pack_stage();clock=[10.0];opened=[]
+        actual=acquisition.source_pack.os.open
+        with acquisition.HeldDirectory(stage) as held:
+            def opening(name,*args,**kwargs):
+                fd=actual(name,*args,**kwargs)
+                if name in acquired.NAMES:opened.append(fd)
+                return fd
+            def anchor():
+                held.check()
+                if len(opened)==2:clock[0]=21.0
+            with patch.object(acquired.time,'monotonic',side_effect=lambda:clock[0]), \
+                    patch.object(acquisition.source_pack.os,'open',side_effect=opening), \
+                    self.assertRaisesRegex(ValueError,'deadline'):
+                acquisition.source_pack.write(held.fd,receipt,inventory,20.0,anchor=anchor,charge=lambda info:None)
+        self.assertEqual(len(opened),2);self.assertFalse((stage/'source.pack').exists())
+        for fd in opened:
+            with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_pack_full_bytes_anchor_expiry_blocks_seal_and_fchmod_expiry_blocks_sync(self):
+        stage,receipt,inventory,report=self.independent_pack_stage();clock=[10.0]
+        with acquisition.HeldDirectory(stage) as held:
+            def anchor():
+                held.check();path=stage/'source.pack'
+                if path.exists() and path.stat().st_size==report['packedSource']['packBytes']:clock[0]=21.0
+            with patch.object(acquired.time,'monotonic',side_effect=lambda:clock[0]), \
+                    patch.object(acquisition.source_pack.os,'fchmod') as chmod, \
+                    self.assertRaisesRegex(ValueError,'deadline'):
+                acquisition.source_pack.write(held.fd,receipt,inventory,20.0,anchor=anchor,charge=lambda info:None)
+            chmod.assert_not_called()
+        self.assertEqual(stat.S_IMODE((stage/'source.pack').stat().st_mode),0o600)
+        (stage/'source.pack').unlink();clock[0]=10.0;actual=os.fchmod
+        with acquisition.HeldDirectory(stage) as held:
+            def chmodding(fd,mode):actual(fd,mode);clock[0]=21.0
+            with patch.object(acquired.time,'monotonic',side_effect=lambda:clock[0]), \
+                    patch.object(acquisition.source_pack.os,'fchmod',side_effect=chmodding), \
+                    self.assertRaisesRegex(ValueError,'deadline'):
+                acquisition.source_pack.write(held.fd,receipt,inventory,20.0,anchor=held.check,charge=lambda info:None,
+                    sync=lambda fd:self.fail('sync after original deadline'))
+        self.assertEqual(stat.S_IMODE((stage/'source.pack').stat().st_mode),0o444)
+
+    def test_pack_source_registration_memory_failure_closes_just_opened_original_fd(self):
+        stage,receipt,inventory,_=self.independent_pack_stage();opened=[]
+        def refusing(sources,name,fd):opened.append(fd);raise MemoryError('modeled enrollment failure')
+        with acquisition.HeldDirectory(stage) as held, \
+                patch.object(acquisition.source_pack,'register_source',side_effect=refusing), \
+                self.assertRaises(MemoryError):
+            acquisition.source_pack.write(held.fd,receipt,inventory,time.monotonic()+120,anchor=held.check,charge=lambda info:None)
+        self.assertEqual(len(opened),1);self.assertFalse((stage/'source.pack').exists())
+        with self.assertRaises(OSError):os.fstat(opened[0])
 
     def test_exact_command_uses_private_store_unpacked_nar_and_literal_url(self):
         locked = self.locked()
@@ -172,7 +292,7 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(copied_proof_times, [301.0, 301.0])
         self.assertEqual(observer.counters["narPassCount"], 4)
         self.assertEqual(observer.counters["pairProofCount"], 2)
-        self.assertEqual(observer.counters["fileSyncCount"], 9)
+        self.assertEqual(observer.counters["fileSyncCount"], 11)
         self.assertTrue(report["byteProof"]["contentRehashed"])
         self.assertFalse(report["evaluationExecuted"])
         self.assertEqual(report["activation"], "unproved")
@@ -614,7 +734,7 @@ class AcquisitionTests(unittest.TestCase):
         self.assertFalse(report["evaluationExecuted"])
         self.assertEqual(observer.counters["narPassCount"], 4)  # Original and copy for each source.
         self.assertEqual(observer.counters["pairProofCount"], 2)  # Readback and final publication proof.
-        self.assertEqual(observer.counters["privateScanCount"], 7)
+        self.assertEqual(observer.counters["privateScanCount"], 9)
         self.assertEqual(observer.counters["copiedNodes"], 10)
         self.assertGreater(observer.counters["copiedBytes"], 0)
         self.assertIsNone(observer.failure)
@@ -1311,12 +1431,12 @@ class AcquisitionTests(unittest.TestCase):
             original = self.worker / "private-store/nix/store" / (digit * 32 + "-source")
             retained = self.outputs / "home-manager-pair" / name
             self.assertEqual(scans[acquisition.directory_identity(original.stat())], 5)
-            self.assertEqual(scans[acquisition.directory_identity(retained.stat())], 12)
-        self.assertEqual(sum(scans.values()), 34)
-        self.assertEqual(sibling_changes, 7)  # Every complete private budget scan stays present.
-        self.assertEqual(len(synced), 9)  # Six copied files and three metadata files.
-        self.assertEqual(len(set(synced)), 9)
-        self.assertEqual(observer.counters["fileSyncCount"], 9)
+            self.assertEqual(scans[acquisition.directory_identity(retained.stat())], 14)
+        self.assertEqual(sum(scans.values()), 38)
+        self.assertEqual(sibling_changes, 9)  # Every complete private budget scan stays present.
+        self.assertEqual(len(synced), 11)  # Six source files, pack, and four metadata files.
+        self.assertEqual(len(set(synced)), 11)
+        self.assertEqual(observer.counters["fileSyncCount"], 11)
         self.assertGreater(observer.counters["ancestryCheckCount"], 0)
         self.assertEqual(observer.counters["sourceExpectedNodes"], 5)
         expected_bytes = sum(path.stat().st_size for path in
