@@ -1061,7 +1061,7 @@ fn modernMaterial(a: std.mem.Allocator,budget: Budget,inputs: Inputs,manifest: s
     try expectText(selection.value,"purpose","evaluation-only");
     const roles=try objectField(selection.value,"files");
     if(roles.object.count()!=12) return error.InvalidRuntimeProvenance;
-    inline for(std.meta.fields(ModernRole),0..) |role,index| {
+    inline for(@typeInfo(ModernRole).@"enum".fields,0..) |role,index| {
         const row=try objectField(roles,role.name); try exactObject(row,&.{"path","sha256","bytes"});
         try canonicalAbsolute(try stringField(row,"path")); try inputRow(row,modern.roles[index]);
     }
@@ -1069,7 +1069,7 @@ fn modernMaterial(a: std.mem.Allocator,budget: Budget,inputs: Inputs,manifest: s
     try memberMap(budget,try field(selection.value,"native_acquisition_artifact_files"),modern.native_acquisition_artifact_files);
     const authorities=try objectField(selection.value,"authority_receipts");
     try exactObject(authorities,&.{"source","sdk","plan","query","compiler"});
-    inline for(std.meta.fields(ModernAuthorityRole),0..) |role,index| try authorityMap(budget,try field(authorities,role.name),modern.authority_receipts[index]);
+    inline for(@typeInfo(ModernAuthorityRole).@"enum".fields,0..) |role,index| try authorityMap(budget,try field(authorities,role.name),modern.authority_receipts[index]);
     if(!std.meta.eql(modern.roles[@intFromEnum(ModernRole.source)].sha256,inputs.source_receipt.sha256) or
         modern.roles[@intFromEnum(ModernRole.source)].bytes!=inputs.source_receipt.bytes) return error.RuntimeSelectionDrift;
     // The exact declared PACKAGE producer performs full source/SDK/compiler,
@@ -1232,7 +1232,7 @@ test "evaluation package output marker refuses absence duplication unrelated has
     const io=std.testing.io;
     const until=std.Io.Clock.Timestamp.now(io,.awake).addDuration(.{.clock=.awake,.raw=.fromSeconds(30)});
     const budget: Budget=.{.io=io,.deadline=until};
-    const hash=[_]u8{0x12} ** 32;
+    const hash: [32]u8 = @splat(0x12);
     const hex=std.fmt.bytesToHex(hash,.lower);
     const one=try std.fmt.allocPrint(a,"test banner\nomux-native-package-output-sha256={s}\n",.{hex}); defer a.free(one);
     try validateOutputMarker(a,budget,one,hash);
@@ -1287,7 +1287,7 @@ test "modern retention hashes actual selected FD bytes owns duplicates and rejec
 
 test "direct materialization rejects aggregate disk payload before a staging sink" {
     const a=std.testing.allocator;
-    const hash=[_]u8{'1'} ** 64;
+    const hash: [64]u8 = @splat('1');
     var parsed=try std.json.parseFromSlice(std.json.Value,a,
         "{\"runtime\":{\"launchProfile\":\"linux_nix_direct_main_v1\"},\"files\":{}}",.{});
     defer parsed.deinit();

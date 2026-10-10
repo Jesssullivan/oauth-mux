@@ -364,8 +364,8 @@ fn archiveImpl(budget: Budget, source: ArchiveSource, manifest: std.json.Value, 
     if(source.size()<18 or source.size()>256*1024*1024) return error.InvalidRuntimeArchive;
     var input_buffer: [4096]u8 = undefined;
     var input = switch(source) { .bytes => |bytes| CompressedReader.init(budget,bytes,&input_buffer), .selected => |value| try CompressedReader.selected(budget,value,&input_buffer) };
-    const prefix = input.reader.peek(4) catch { return input.failure orelse error.InvalidRuntimeArchive; };
-    if(!std.mem.eql(u8,prefix,&.{0x1f,0x8b,8,0})) return error.InvalidRuntimeArchive;
+    const gzip_prefix = input.reader.peek(4) catch { return input.failure orelse error.InvalidRuntimeArchive; };
+    if(!std.mem.eql(u8,gzip_prefix,&.{0x1f,0x8b,8,0})) return error.InvalidRuntimeArchive;
     var window: [std.compress.flate.max_window_len]u8 = undefined;
     var decoder = std.compress.flate.Decompress.init(&input.reader, .gzip, &window);
     var raw: ArchiveReader = .{ .budget = budget, .reader = &decoder.reader, .compressed = &input };

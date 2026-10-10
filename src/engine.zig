@@ -8060,11 +8060,11 @@ test "native context engine joins actual hint and peer metadata without source o
         const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
         defer allocator.free(registry);
         if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
-        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aa" ** 32 });
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
         defer allocator.free(hint_path);
         const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
         const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
-        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aa" ** 32,
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             .contextGeneration = "1", .ownerId = owner_hex[0..],
             .processNonce = nonce_hex[0..], .endpointGeneration = "1",
             .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
@@ -8112,7 +8112,7 @@ test "native context engine joins actual hint and peer metadata without source o
             try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
         } else {
             try std.testing.expectEqual(.available, context.status);
-            try std.testing.expectEqualStrings("aa" ** 32, context.source_context_id.?);
+            try std.testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", context.source_context_id.?);
             try std.testing.expectEqualStrings("1", context.source_context_generation.?);
             try std.testing.expectEqual(false, context.store_present.?);
         }
@@ -8140,11 +8140,11 @@ test "native discovery perform refuses unsafe homes and permits only absent impl
         const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
         defer allocator.free(registry);
         if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
-        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aa" ** 32 });
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
         defer allocator.free(hint_path);
         const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
         const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
-        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aa" ** 32,
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             .contextGeneration = "1", .ownerId = owner_hex[0..],
             .processNonce = nonce_hex[0..], .endpointGeneration = "1",
             .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
@@ -8215,7 +8215,7 @@ test "native discovery perform refuses unsafe homes and permits only absent impl
             try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
         } else {
             try std.testing.expectEqual(.available, context.status);
-            try std.testing.expectEqualStrings(if (mode == 3) "cc" ** 32 else "aa" ** 32, context.source_context_id.?);
+            try std.testing.expectEqualStrings(if (mode == 3) "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" else "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", context.source_context_id.?);
             try std.testing.expectEqualStrings(if (mode == 3) "2" else "1", context.source_context_generation.?);
             try std.testing.expectEqual(false, context.store_present.?);
         }

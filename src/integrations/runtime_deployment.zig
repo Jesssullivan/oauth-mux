@@ -50,16 +50,16 @@ const Held = struct {
 };
 
 pub const OwnedInputs = opaque {
-    fn held(self: *const OwnedInputs) *const Held { return @ptrCast(@alignCast(self)); }
-    pub fn inputs(self: *const OwnedInputs) producer.Inputs { return self.held().selected; }
+    fn heldState(self: *const OwnedInputs) *const Held { return @ptrCast(@alignCast(self)); }
+    pub fn inputs(self: *const OwnedInputs) producer.Inputs { return self.heldState().selected; }
     pub fn inputsForInstallation(self: *const OwnedInputs, directory: c.fd_t) producer.Inputs {
-        var selected = self.held().selected;
+        var selected = self.heldState().selected;
         selected.installation_directory = directory;
         return selected;
     }
     pub fn recheck(self: *const OwnedInputs, io: std.Io) !void {
         try self.recheckIdentity(io);
-        const held = self.held();
+        const held = self.heldState();
         const declaration_hex = std.fmt.bytesToHex(held.selected.deployment_declaration.?.sha256,.lower);
         try hash(io,held.until,held.selector_fd,.{.path=selector,.sha256=&declaration_hex,.bytes=held.selected.deployment_declaration.?.bytes});
         for (held.selected_roles,held.descriptors) |role,fd| try hash(io,held.until,fd,role);
@@ -68,7 +68,7 @@ pub const OwnedInputs = opaque {
     /// Final actor handoff uses only finite held/named metadata; full byte
     /// validation remains in the supervised worker under this original clock.
     pub fn recheckIdentity(self: *const OwnedInputs, io: std.Io) !void {
-        const held = self.held();
+        const held = self.heldState();
         try check(io, held.until);
         if (!std.meta.eql(held.root_status, try metadata.statFd(held.root)) or
             !std.meta.eql(held.selector_status, try metadata.statFd(held.selector_fd))) return error.RuntimeSelectionDrift;
@@ -185,7 +185,7 @@ fn parseDeclaration(allocator: std.mem.Allocator, raw: []const u8) !std.json.Par
     _ = try roleDigest(modern.package_outputs);
     if (modern.package_outputs.bytes > maximum_declaration_bytes) return error.InvalidDeploymentSelection;
     total = std.math.add(u64,total,modern.package_outputs.bytes) catch return error.InvalidDeploymentSelection;
-    inline for (std.meta.fields(ModernRoles),0..) |field,index| {
+    inline for (@typeInfo(ModernRoles).@"struct".fields,0..) |field,index| {
         const role = @field(modern.roles,field.name);
         _ = try roleDigest(role);
         if (role.bytes > (if (index == 10) producer.maximum_payload_bytes else producer.maximum_metadata_bytes)) return error.InvalidDeploymentSelection;
@@ -223,7 +223,7 @@ fn parseDeclaration(allocator: std.mem.Allocator, raw: []const u8) !std.json.Par
     for (selected) |role| try consistentRole(allocator,&seen,role);
     try consistentRole(allocator,&seen,modern.package_selection);
     try consistentRole(allocator,&seen,modern.package_outputs);
-    inline for (std.meta.fields(ModernRoles)) |field| try consistentRole(allocator,&seen,@field(modern.roles,field.name));
+    inline for (@typeInfo(ModernRoles).@"struct".fields) |field| try consistentRole(allocator,&seen,@field(modern.roles,field.name));
     for ([_][]const Member{modern.protocol_schema_files,modern.native_acquisition_artifact_files}) |members| {
         for (members) |member| try consistentRole(allocator,&seen,.{.path=member.path,.sha256=member.sha256,.bytes=member.bytes});
     }
@@ -302,12 +302,12 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, registered: RegisteredDepl
     errdefer allocator.free(selected_roles);
     const base_roles = roles(value);
     @memcpy(selected_roles[0..6],&base_roles);
-    inline for (std.meta.fields(ModernRoles),0..) |field,index| selected_roles[6+index] = @field(modern.roles,field.name);
+    inline for (@typeInfo(ModernRoles).@"struct".fields,0..) |field,index| selected_roles[6+index] = @field(modern.roles,field.name);
     for (modern.protocol_schema_files,0..) |member,index| selected_roles[18+index] = .{.path=member.path,.sha256=member.sha256,.bytes=member.bytes};
     for (modern.native_acquisition_artifact_files,0..) |member,index| selected_roles[18+modern.protocol_schema_files.len+index] = .{.path=member.path,.sha256=member.sha256,.bytes=member.bytes};
     const authority_start = 18 + modern.protocol_schema_files.len + modern.native_acquisition_artifact_files.len;
     var authority_cursor: usize = authority_start;
-    inline for (std.meta.fields(Authorities)) |field| {
+    inline for (@typeInfo(Authorities).@"struct".fields) |field| {
         const group = @field(modern.authority_receipts,field.name);
         selected_roles[authority_cursor] = group.outer;
         selected_roles[authority_cursor+1] = group.evidence;
@@ -349,7 +349,7 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, registered: RegisteredDepl
     var authorities: [5]producer.ModernAuthority = undefined;
     authority_cursor = authority_start;
     var member_cursor: usize = 0;
-    inline for (std.meta.fields(Authorities),0..) |field,index| {
+    inline for (@typeInfo(Authorities).@"struct".fields,0..) |field,index| {
         const group = @field(modern.authority_receipts,field.name);
         const first = member_cursor;
         authorities[index] = .{.outer=inputs[authority_cursor],.evidence=inputs[authority_cursor+1],.members=authority_members[first..first+group.members.len]};
@@ -393,7 +393,7 @@ pub fn recheckWitness(io: std.Io, allocator: std.mem.Allocator, until: std.Io.Cl
     if (!std.meta.eql(root.status,try metadata.statFd(fd))) return error.RuntimeSelectionDrift;
     const selected = try load(io,allocator,.{.path=root.path,.descriptor=fd},until);
     defer selected.deinit();
-    const held = selected.held();
+    const held = selected.heldState();
     const raw_input = held.selected.deployment_declaration.?;
     if (!std.meta.eql(declaration.status,held.selector_status) or declaration.bytes != raw_input.bytes or
         !std.meta.eql(declaration.sha256,raw_input.sha256)) return error.RuntimeSelectionDrift;
@@ -441,7 +441,7 @@ test "actual declaration parser binds distinct package output input and canonica
     }
     const group: AuthorityGroup = .{.outer=role,.evidence=role,.members=members[0..2]};
     var modern_roles: ModernRoles = undefined;
-    inline for (std.meta.fields(ModernRoles)) |field| @field(modern_roles,field.name)=role;
+    inline for (@typeInfo(ModernRoles).@"struct".fields) |field| @field(modern_roles,field.name)=role;
     var value: Declaration = .{.schema_version=2,.kind="omux-native-source-acquisition-deployment-v1",
         .target="x86_64-linux",.launch_profile="linux_nix_direct_main_v1",
         .inputs=undefined,.modern_materials=.{.package_selection=role,
@@ -451,7 +451,7 @@ test "actual declaration parser binds distinct package output input and canonica
             .protocol_schema_files=&.{},.native_acquisition_artifact_files=&.{},
             .authority_receipts=.{.source=.{.outer=role,.evidence=role,.members=&members},
                 .sdk=group,.plan=group,.query=group,.compiler=group}}};
-    inline for (std.meta.fields(@TypeOf(value.inputs))) |field| {
+    inline for (@typeInfo(@TypeOf(value.inputs)).@"struct".fields) |field| {
         @field(value.inputs,field.name)=.{.path=try std.fmt.allocPrint(allocator,"selected/{s}.json",.{field.name}),.sha256=digest,.bytes=1};
     }
     const accepted_raw = try std.json.Stringify.valueAlloc(allocator,value,.{});
