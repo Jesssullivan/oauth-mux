@@ -16,6 +16,30 @@ import yoga_installed_controller_support as support
 LABEL = '//delivery:yoga_installed_selection'
 COORD = Path('/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005')
 CONTROLLER = support.TOOLS
+_PHASES = frozenset({'request', 'deadline', 'assembly-context', 'origin-receipt', 'retained-launcher',
+    'retained-manifest', 'browser-inventory', 'controller-inventory', 'inventory-roots',
+    'native-manifest', 'retained-runfiles', 'independent-inputs', 'controller-package',
+    'controller-files', 'controller-support', 'selection-schema', 'prepublication-recheck',
+    'publication', 'postpublication-recheck'})
+
+
+class _AssemblyDiagnostic:
+    """Closed non-authoritative phase only; never disclose an input or exception."""
+    def __init__(self):
+        self.phase = 'request'
+
+    def enter(self, phase):
+        workspace.require(type(phase) is str and phase in _PHASES)
+        self.phase = phase
+
+    def refusal(self):
+        workspace.require(self.phase in _PHASES)
+        return workspace.canonical({'schemaVersion': 1,
+            'scope': 'yoga-installed-selection-refusal-v1', 'phase': self.phase,
+            'executionAuthority': False, 'toolbarConsentProved': False,
+            'browserInvoked': False, 'providerInvoked': False})
+
+
 NATIVE_SHA = 'b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0'
 INPUT_SHA = {
     'bundle': workspace.ARTIFACTS['bundle'][0],
@@ -80,8 +104,12 @@ INVENTORY_REPOS = {'browserInventory': '+cached_site_repository+omux_cached_site
                   'controllerInventory': '+cached_nar_repository+omux_yoga_controller_nars'}
 
 
-def output_base(path):
+def output_base(path, *, selected_base=None):
     path = workspace.source_path(str(path))
+    if selected_base is not None:
+        base = workspace.assembly_base(selected_base)
+        workspace.require(path != base and path.is_relative_to(base))
+        return base
     suffix = path.relative_to(COORD)
     parts = suffix.parts
     workspace.require(len(parts) > 2 and (re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', parts[0])
@@ -89,9 +117,9 @@ def output_base(path):
     return COORD / parts[0] / 'output-base'
 
 
-def declared_inventory(alias, name):
+def declared_inventory(alias, name, *, selected_base=None):
     alias = workspace.source_path(str(alias))
-    base = output_base(alias)
+    base = output_base(alias, selected_base=selected_base)
     repository = INVENTORY_REPOS[name]
     expected = base / 'external' / repository / 'inventory.json'
     workspace.require(alias == expected or str(alias).endswith('.runfiles/' + repository + '/inventory.json'))
@@ -100,19 +128,19 @@ def declared_inventory(alias, name):
     return physical
 
 
-def declared_controller(alias, name):
+def declared_controller(alias, name, *, selected_base=None):
     alias = workspace.source_path(str(alias))
     expected = CONTROLLER / name
-    workspace.require(alias == expected or (output_base(alias) and
+    workspace.require(alias == expected or (output_base(alias, selected_base=selected_base) and
         str(alias).endswith('.runfiles/_main/tools/' + name)))
     physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
     workspace.require(physical == expected)
     return physical
 
 
-def output_parent(path):
+def output_parent(path, *, selected_base=None):
     path = workspace.source_path(str(path))
-    base = output_base(path)
+    base = output_base(path, selected_base=selected_base)
     relative = path.relative_to(base).as_posix()
     # TestRunnerAction emits an execroot-relative output; test-setup.sh makes
     # it absolute before changing cwd. Both declared sandbox runners use their own execroot.
@@ -126,9 +154,9 @@ def directory_identity(info):
     return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode)
 
 
-def publish(parent_path, files, until):
+def publish(parent_path, files, until, *, selected_base=None):
     workspace.require(set(files) == {'selection.json', 'browser-inventory.json', 'controller-inventory.json'})
-    parent_path = output_parent(parent_path)
+    parent_path = output_parent(parent_path, selected_base=selected_base)
     root = parent_path / 'installed-toolbar-selection'
     with ExitStack() as stack:
         parent = workspace.payload.parent(root)
@@ -175,11 +203,21 @@ def publish(parent_path, files, until):
     return root
 
 
-def assemble(browser_alias, controller_alias, controller_files, output, deadline_ns, *, controller_support):
+def assemble(browser_alias, controller_alias, controller_files, output, deadline_ns, *, controller_support,
+             _diagnostic=None):
+    def phase(name):
+        if _diagnostic is not None:
+            _diagnostic.enter(name)
+    phase('deadline')
     workspace.require(type(deadline_ns) is int and 30 * 10**9 < deadline_ns - time.monotonic_ns() <= 1200 * 10**9)
     until = (deadline_ns - 30 * 10**9) / 10**9
     launch = workspace.OUTPUT_BASE + '/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh'
     with ExitStack() as stack:
+        phase('assembly-context')
+        selected_base = workspace.assembly_base(output, child=True)
+        output_parent(output, selected_base=selected_base)
+        context = workspace.AssemblyContext(selected_base, until)
+        stack.callback(context.close)
         captures, aliases = [], {}
         def capture(path, digest, maximum, **options):
             held = workspace.PhysicalCapture(path, digest, maximum, until, **options)
@@ -189,31 +227,39 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
             held = workspace.PhysicalCapture.measure(path, maximum, until, **options)
             stack.callback(held.close); captures.append(held)
             return held
+        phase('origin-receipt')
         receipt = capture(workspace.BUILD_RECEIPT, workspace.BUILD_SHA, workspace.payload.MAX_METADATA)
         workspace.origin(workspace.decode(receipt.bytes(workspace.payload.MAX_METADATA)))
+        phase('retained-launcher')
         launcher = capture(launch, workspace.LAUNCHER_SHA, 1024 * 1024)
         workspace.require(launcher.size == 5339)
+        phase('retained-manifest')
         manifest = capture(launch + '.runfiles_manifest', workspace.MANIFEST_SHA, workspace.MAX_MANIFEST)
         mapping = workspace.manifest(manifest.bytes(workspace.MAX_MANIFEST))
         workspace.require(set(BOOTSTRAP_SHA).issubset(mapping))
         inventories, roots = {}, set()
         for name, alias in (('browserInventory', browser_alias), ('controllerInventory', controller_alias)):
-            physical = declared_inventory(alias, name)
-            held = capture(physical, workspace.INVENTORY_SHA[name], workspace.payload.MAX_METADATA, declared_inventory=name)
+            phase('browser-inventory' if name == 'browserInventory' else 'controller-inventory')
+            physical = declared_inventory(alias, name, selected_base=selected_base)
+            held = capture(physical, workspace.INVENTORY_SHA[name], workspace.payload.MAX_METADATA,
+                           declared_inventory=name, _assembly_context=context)
             content = held.bytes(workspace.payload.MAX_METADATA)
             value = workspace.decode(content)
             workspace.require(type(value) is dict and type(value.get('paths')) is list and 0 < len(value['paths']) <= 4096)
             roots.update(row['path'] for row in value['paths'])
             inventories['browser-inventory.json' if name == 'browserInventory' else 'controller-inventory.json'] = content
             aliases[str(alias)] = (physical, (workspace.source_path(str(alias)), physical))
+        phase('inventory-roots')
         workspace.require(all(re.fullmatch(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+', root) for root in roots))
         roots = frozenset(roots)
         input_paths = {name: mapping[key] for name, key in INPUT_KEYS.items()}
         native = workspace.OUTPUT_BASE + '/external/+omux_nix_repository+omux_nix/native.json'
+        phase('native-manifest')
         capture(native, NATIVE_SHA, workspace.payload.MAX_METADATA)
         pins = {}
         copied_bytes = receipt.size + launcher.size + manifest.size + sum(map(len, inventories.values()))
         workspace.require(copied_bytes <= workspace.MAX_COPIED)
+        phase('retained-runfiles')
         for key, target in sorted(mapping.items()):
             workspace.payload.budget(until)
             physical = workspace.safe_resolve(target, roots)
@@ -234,12 +280,14 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
                 workspace.require(held.sha == NATIVE_SHA)
         # Independent eleven-input byte pins include actual Nix executables;
         # their public store bytes are read, never executed.
+        phase('independent-inputs')
         for name, target in input_paths.items():
             physical = workspace.safe_resolve(target, roots)
             held = capture(physical, INPUT_SHA[name], workspace.payload.MAX_FILE,
                            store_roots=roots if str(physical).startswith('/nix/store/') else None)
             if name in workspace.ARTIFACTS:
                 workspace.require(held.size == workspace.ARTIFACTS[name][1])
+        phase('controller-package')
         names = [Path(path).name for path in controller_files]
         workspace.require(len(names) == len(set(names)) and 0 < len(names) <= 512
                           and all(re.fullmatch(r'[A-Za-z0-9_-]+\.py', name) for name in names))
@@ -258,16 +306,19 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
             finally: os.close(named)
         package_check()
         package = {}
+        phase('controller-files')
         for alias in controller_files:
             name = Path(alias).name
-            physical = declared_controller(alias, name)
+            physical = declared_controller(alias, name, selected_base=selected_base)
             held = measure(physical, 1024 * 1024, controller_root=CONTROLLER)
             workspace.require(0 < held.size <= 1024 * 1024)
             copied_bytes += held.size
             workspace.require(copied_bytes <= workspace.MAX_COPIED)
             package[name] = {'sha256': held.sha, 'bytes': held.size}
             aliases[str(alias)] = (physical, (workspace.source_path(str(alias)), physical))
-        alias, expected = support.declared(controller_support, output_base)
+        phase('controller-support')
+        alias, expected = support.declared(controller_support,
+            lambda path: output_base(path, selected_base=selected_base))
         physical = workspace.safe_resolve(str(alias), frozenset(), declared_paths=(alias, expected))
         workspace.require(physical == expected)
         aliases[str(alias)] = (physical, (alias, expected))
@@ -277,6 +328,7 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
         support_pin = {'root': str(support.DELIVERY), 'files': {
             expected.name: {'sha256': held_support.sha, 'bytes': held_support.size}}}
         support.support(support_pin)
+        phase('selection-schema')
         selection = workspace.selected({'schemaVersion': support.SCHEMA, 'scope': support.SELECTION_SCOPE,
             'buildReceipt': {'path': workspace.BUILD_RECEIPT, 'sha256': workspace.BUILD_SHA},
             'launcher': {'path': launch, 'sha256': workspace.LAUNCHER_SHA},
@@ -289,12 +341,16 @@ def assemble(browser_alias, controller_alias, controller_files, output, deadline
             'controllerDelivery': support_pin})
         files = dict(inventories, **{'selection.json': workspace.canonical(selection) + b'\n'})
         def recheck():
+            context.recheck()
             for held in captures: held.check()
             package_check()
             for target, (physical, declared) in aliases.items():
                 workspace.require(workspace.safe_resolve(target, roots, declared_paths=declared) == physical)
+        phase('prepublication-recheck')
         recheck()
-        result = publish(output, files, until)
+        phase('publication')
+        result = publish(output, files, until, selected_base=selected_base)
+        phase('postpublication-recheck')
         recheck()
         return result, hashlib.sha256(files['selection.json']).hexdigest()
 
@@ -306,16 +362,18 @@ def main():
     parser.add_argument('--controller-file', action='append', required=True)
     parser.add_argument('--controller-support-file', required=True)
     args = parser.parse_args()
+    diagnostic = _AssemblyDiagnostic()
     try:
         raw = os.environ.get('OMUX_INSTALLED_SELECTION_DEADLINE_NS', '')
         workspace.require(re.fullmatch(r'[1-9][0-9]{1,19}', raw))
         _, digest = assemble(args.browser_inventory, args.controller_inventory, args.controller_file,
                              os.environ['TEST_UNDECLARED_OUTPUTS_DIR'], int(raw),
-                             controller_support=args.controller_support_file)
+                             controller_support=args.controller_support_file, _diagnostic=diagnostic)
         print(workspace.canonical({'schemaVersion': 1, 'scope': 'yoga-installed-selection-assembly-v1',
             'selectionSha256': digest, 'executionAuthority': False, 'toolbarConsentProved': False}).decode())
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
-        parser.exit(125, 'installed-toolbar-selection-assembly-refused\n')
+        parser.exit(125, 'installed-toolbar-selection-assembly-refused\n'
+            + diagnostic.refusal().decode('ascii') + '\n')
 
 
 if __name__ == '__main__': main()

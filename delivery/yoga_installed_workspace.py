@@ -98,19 +98,88 @@ def decode(data):
 
 _MEASURED_PUBLIC_INPUT = object()
 _ASSEMBLY_COORD = '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005'
+_ASSEMBLY_COORDS = (Path(_ASSEMBLY_COORD), Path('/home/jess/.local/state/omux-execution-20261005'))
+_ASSEMBLY_UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
 _ASSEMBLY_REPOS = {'browserInventory': '+cached_site_repository+omux_cached_site',
                    'controllerInventory': '+cached_nar_repository+omux_yoga_controller_nars'}
+
+
+def assembly_base(path, *, child=False):
+    """Only a fresh epoch in one of the guard's two already-admitted roots."""
+    require(type(child) is bool)
+    path = source_path(str(path))
+    matches = [root for root in _ASSEMBLY_COORDS if path.is_relative_to(root)]
+    require(len(matches) == 1)
+    parts = path.relative_to(matches[0]).parts
+    require(len(parts) > 2 if child else len(parts) == 2)
+    require(_ASSEMBLY_UUID.fullmatch(parts[0]) is not None and parts[1] == 'output-base')
+    return matches[0] / parts[0] / 'output-base'
+
+
+class AssemblyContext:
+    """Hold private root/epoch and their exact no-follow output-base identity."""
+    def __init__(self, base, until):
+        self.base = assembly_base(base)
+        self.until, self.directories = until, []
+        try:
+            for path, private in ((self.base.parent.parent, True), (self.base.parent, True), (self.base, False)):
+                payload.budget(until)
+                descriptor = payload.parent(path / 'placeholder')
+                self.directories.append((path, descriptor, None, private))
+                info = os.fstat(descriptor)
+                self.owned(info, private)
+                self.directories[-1] = (path, descriptor, self.identity(info), private)
+            self.recheck()
+        except BaseException:
+            self.close(); raise
+
+    @staticmethod
+    def identity(info):
+        return info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode
+
+    @staticmethod
+    def owned(info, private):
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            and (stat.S_IMODE(info.st_mode) == 0o700 if private else not info.st_mode & 0o022))
+
+    def recheck(self):
+        require(len(self.directories) == 3)
+        require(assembly_base(self.base) == self.base
+            and tuple(path for path, _, _, _ in self.directories)
+                == (self.base.parent.parent, self.base.parent, self.base))
+        for path, descriptor, saved, private in self.directories:
+            payload.budget(self.until)
+            current = payload.parent(path / 'placeholder')
+            try:
+                held, named = os.fstat(descriptor), os.fstat(current)
+                self.owned(held, private); self.owned(named, private)
+                require(saved == self.identity(held) == self.identity(named))
+            finally:
+                os.close(current)
+
+    def close(self):
+        directories, self.directories = self.directories, []
+        for _, descriptor, _, _ in reversed(directories):
+            os.close(descriptor)
 
 
 class PhysicalCapture:
     """No alias resolution between authorization and the held no-follow open."""
     def __init__(self, path, expected, maximum, until, *, controller_root=None,
-                 declared_inventory=None, store_roots=None):
+                 declared_inventory=None, store_roots=None, _assembly_context=None):
         self.path = source_path(str(path))
+        require(_assembly_context is None or (declared_inventory is not None
+            and type(_assembly_context) is AssemblyContext))
+        self.assembly_context = _assembly_context
         if declared_inventory is not None:
-            require(declared_inventory in _ASSEMBLY_REPOS and expected == INVENTORY_SHA[declared_inventory]
-                and re.fullmatch(re.escape(_ASSEMBLY_COORD) + r'/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|cache-v2-[0-9a-f]{64})/output-base/external/'
+            require(declared_inventory in _ASSEMBLY_REPOS and expected == INVENTORY_SHA[declared_inventory])
+            if _assembly_context is None:
+                # Preserve historical standard capture authorization unchanged.
+                require(re.fullmatch(re.escape(_ASSEMBLY_COORD) + r'/(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|cache-v2-[0-9a-f]{64})/output-base/external/'
                     + re.escape(_ASSEMBLY_REPOS[declared_inventory]) + r'/inventory\.json', str(self.path)))
+            else:
+                require(self.path == _assembly_context.base / 'external' / _ASSEMBLY_REPOS[declared_inventory] / 'inventory.json')
+                _assembly_context.recheck()
         elif store_roots is not None:
             require(type(store_roots) is frozenset and expected is not _MEASURED_PUBLIC_INPUT
                     and str(self.path).startswith('/nix/store/')
@@ -140,6 +209,8 @@ class PhysicalCapture:
 
     def check(self):
         payload.budget(self.until)
+        if self.assembly_context is not None:
+            self.assembly_context.recheck()
         named = payload.parent(self.path)
         try:
             require(payload.identity(os.fstat(self.fd)) == self.identity

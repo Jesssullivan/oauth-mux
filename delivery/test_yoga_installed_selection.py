@@ -1,10 +1,13 @@
 """Synthetic metadata/custody models only; no c106 or host execution proof."""
 import hashlib
+import io
+import json
 import os
 from pathlib import Path
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 import yoga_installed_selection as assembly
@@ -12,6 +15,185 @@ import yoga_installed_workspace as workspace
 
 
 class SelectionTests(unittest.TestCase):
+    def test_bound_output_base_supports_only_two_existing_roots_and_fresh_uuid(self):
+        epoch = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        for root in workspace._ASSEMBLY_COORDS:
+            base = root / epoch / 'output-base'
+            self.assertEqual(workspace.assembly_base(base), base)
+            for suffix in ('execroot/_main/test.runfiles/_main/tools/source.py',
+                    'sandbox/processwrapper-sandbox/7/execroot/_main/bazel-out/k8-fastbuild/testlogs/delivery/yoga_installed_selection/test.outputs'):
+                path = base / suffix
+                self.assertEqual(workspace.assembly_base(path, child=True), base)
+                self.assertEqual(assembly.output_base(path, selected_base=base), base)
+
+    def test_arbitrary_nearby_private_and_cache_roots_refuse_before_metadata(self):
+        epoch = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        invalid = [Path('/home/private') / epoch / 'output-base']
+        for root in workspace._ASSEMBLY_COORDS:
+            invalid += [Path(str(root) + '-other') / epoch / 'output-base',
+                root / ('cache-v2-' + 'a' * 64) / 'output-base',
+                root / 'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA' / 'output-base',
+                root / epoch / 'output-base' / 'foreign']
+        for path in invalid:
+            with self.subTest(path=path), patch.object(workspace.os, 'open') as opened, \
+                    patch.object(workspace.os, 'lstat') as inspected, self.assertRaises(ValueError):
+                workspace.AssemblyContext(path, time.monotonic() + 30)
+            opened.assert_not_called(); inspected.assert_not_called()
+
+    def test_cross_epoch_and_cross_root_aliases_refuse_before_resolution(self):
+        selected = workspace._ASSEMBLY_COORDS[0] / 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' / 'output-base'
+        foreign = [workspace._ASSEMBLY_COORDS[1] / selected.parent.name / 'output-base',
+            workspace._ASSEMBLY_COORDS[0] / 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' / 'output-base']
+        suffix = 'execroot/_main/test.runfiles/'
+        for base in foreign:
+            with patch.object(workspace, 'safe_resolve') as resolved:
+                with self.assertRaises(ValueError):
+                    assembly.declared_inventory(base / suffix / assembly.INVENTORY_REPOS['browserInventory'] / 'inventory.json',
+                        'browserInventory', selected_base=selected)
+                with self.assertRaises(ValueError):
+                    assembly.declared_controller(base / suffix / '_main/tools/source.py', 'source.py', selected_base=selected)
+                with self.assertRaises(ValueError):
+                    assembly.support.declared(base / suffix / '_main/delivery/codex_device_acquisition_component.py',
+                        lambda path: assembly.output_base(path, selected_base=selected))
+                with self.assertRaises(ValueError):
+                    assembly.output_parent(base / 'execroot/_main/bazel-out/k8-fastbuild/testlogs/delivery/yoga_installed_selection/test.outputs',
+                        selected_base=selected)
+                resolved.assert_not_called()
+
+    def test_home_inventory_without_held_context_retains_historical_refusal(self):
+        base = workspace._ASSEMBLY_COORDS[1] / 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' / 'output-base'
+        path = base / 'external' / assembly.INVENTORY_REPOS['browserInventory'] / 'inventory.json'
+        with patch.object(workspace.os, 'open') as opened, self.assertRaises(ValueError):
+            workspace.PhysicalCapture(path, workspace.INVENTORY_SHA['browserInventory'], 1024,
+                time.monotonic() + 30, declared_inventory='browserInventory')
+        opened.assert_not_called()
+
+    def context_fixture(self, temporary):
+        root = Path(temporary) / 'execution-root'; root.mkdir(mode=0o700)
+        epoch = root / 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'; epoch.mkdir(mode=0o700)
+        base = epoch / 'output-base'; base.mkdir(mode=0o755)
+        def parent(path):
+            # Fixture-only sticky /tmp allowance; production uses the actual
+            # strict no-follow walker through every ancestor.
+            directory = Path(path).parent
+            self.assertTrue(directory == root or directory.is_relative_to(root))
+            return os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        return root, base, parent
+
+    def test_actual_context_holds_owner_private_modes_and_directory_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent = self.context_fixture(temporary)
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    context.recheck()
+                    root.chmod(0o755)
+                    with self.assertRaises(ValueError): context.recheck()
+                    root.chmod(0o700)
+                    base.rename(base.with_name('held-original'))
+                    base.mkdir(mode=0o755)
+                    with self.assertRaises(ValueError): context.recheck()
+                finally: context.close()
+
+    def test_actual_context_refuses_foreign_owner_and_unprivate_epoch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent = self.context_fixture(temporary)
+            uid = os.getuid()
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                with patch.object(workspace.os, 'getuid', return_value=uid + 1), self.assertRaises(ValueError):
+                    workspace.AssemblyContext(base, time.monotonic() + 30)
+                base.parent.chmod(0o755)
+                with self.assertRaises(ValueError): workspace.AssemblyContext(base, time.monotonic() + 30)
+
+    def test_bound_capture_rejects_other_epoch_before_open(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent = self.context_fixture(temporary)
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    other = root / 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' / 'output-base'
+                    path = other / 'external' / assembly.INVENTORY_REPOS['browserInventory'] / 'inventory.json'
+                    with patch.object(workspace.os, 'open') as opened, self.assertRaises(ValueError):
+                        workspace.PhysicalCapture(path, workspace.INVENTORY_SHA['browserInventory'], 1024,
+                            time.monotonic() + 30, declared_inventory='browserInventory', _assembly_context=context)
+                    opened.assert_not_called()
+                finally: context.close()
+
+    def test_bound_capture_reads_actual_pinned_file_and_rechecks_changed_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base, parent = self.context_fixture(temporary)
+            directory = base / 'external' / assembly.INVENTORY_REPOS['browserInventory']
+            directory.mkdir(parents=True, mode=0o700)
+            path = directory / 'inventory.json'; content = b'{"public":true}\n'
+            path.write_bytes(content); path.chmod(0o600)
+            digest = hashlib.sha256(content).hexdigest()
+            with patch.object(workspace, '_ASSEMBLY_COORDS', (root,)), \
+                    patch.object(workspace.payload, 'parent', side_effect=parent), \
+                    patch.dict(workspace.INVENTORY_SHA, {'browserInventory': digest}):
+                context = workspace.AssemblyContext(base, time.monotonic() + 30)
+                try:
+                    held = workspace.PhysicalCapture(path, digest, 1024, time.monotonic() + 30,
+                        declared_inventory='browserInventory', _assembly_context=context)
+                    try:
+                        self.assertEqual(held.bytes(1024), content)
+                        path.write_bytes(b'{"changed":true}\n')
+                        with self.assertRaises(ValueError): held.check()
+                    finally: held.close()
+                finally: context.close()
+
+    def test_refusal_phase_is_closed_and_has_no_execution_authority(self):
+        diagnostic = assembly._AssemblyDiagnostic()
+        for phase in assembly._PHASES:
+            diagnostic.enter(phase)
+            self.assertEqual(json.loads(diagnostic.refusal()), {'schemaVersion': 1,
+                'scope': 'yoga-installed-selection-refusal-v1', 'phase': phase,
+                'executionAuthority': False, 'toolbarConsentProved': False,
+                'browserInvoked': False, 'providerInvoked': False})
+        diagnostic.enter('request')
+        for invalid in ('/home/private/input', 'exception-canary', None, [], {}):
+            with self.assertRaises(ValueError): diagnostic.enter(invalid)
+            self.assertEqual(diagnostic.phase, 'request')
+
+    def test_main_refusal_reports_phase_without_exception_or_input_text(self):
+        def refuse(*args, **kwargs):
+            kwargs['_diagnostic'].enter('controller-package')
+            raise ValueError('exception-canary /home/private/input')
+        argv = ['selector', '--browser-inventory', '/private/browser-canary',
+            '--controller-inventory', '/private/controller-canary', '--controller-file',
+            '/private/source-canary', '--controller-support-file', '/private/support-canary']
+        stderr = io.StringIO()
+        with patch.object(assembly.sys, 'argv', argv), \
+                patch.dict(os.environ, {'OMUX_INSTALLED_SELECTION_DEADLINE_NS': '999999999999999',
+                    'TEST_UNDECLARED_OUTPUTS_DIR': '/private/output-canary'}), \
+                patch.object(assembly, 'assemble', side_effect=refuse) as selected, \
+                redirect_stderr(stderr), self.assertRaises(SystemExit) as refused:
+            assembly.main()
+        self.assertEqual(refused.exception.code, 125)
+        selected.assert_called_once()
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(lines[0], 'installed-toolbar-selection-assembly-refused')
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(json.loads(lines[1])['phase'], 'controller-package')
+        self.assertNotIn('canary', stderr.getvalue())
+        self.assertNotIn('/private/', stderr.getvalue())
+        self.assertNotIn('/home/', stderr.getvalue())
+
+    def test_bad_deadline_refusal_stays_before_assembly(self):
+        argv = ['selector', '--browser-inventory', 'browser', '--controller-inventory',
+            'controller', '--controller-file', 'source', '--controller-support-file', 'support']
+        stderr = io.StringIO()
+        with patch.object(assembly.sys, 'argv', argv), \
+                patch.dict(os.environ, {'OMUX_INSTALLED_SELECTION_DEADLINE_NS': 'invalid'}), \
+                patch.object(assembly, 'assemble') as selected, redirect_stderr(stderr), \
+                self.assertRaises(SystemExit) as refused:
+            assembly.main()
+        self.assertEqual(refused.exception.code, 125)
+        selected.assert_not_called()
+        self.assertEqual(json.loads(stderr.getvalue().splitlines()[1])['phase'], 'request')
+
     def test_declared_inventory_only_uses_exact_public_repository_file(self):
         base = assembly.COORD / ('a' * 8 + '-aaaa-aaaa-aaaa-' + 'a' * 12) / 'output-base'
         for name, repository in assembly.INVENTORY_REPOS.items():
