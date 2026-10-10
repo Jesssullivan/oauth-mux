@@ -157,10 +157,30 @@ def isolated_context(root):
         stream.write(payload);stream.flush();os.fchmod(stream.fileno(),0o600);os.fsync(stream.fileno())
     return key,payload,capability
 
-def registration():
-    require(NATIVE_PRIMARY_IMAGE_REGISTRATION is not None)
-    # No implementation is silently selected by a string/path/boolean document.
-    raise ValueError('native-acquisition-runtime-registration-unimplemented')
+def registration(document=None,selection=None,package=None,deadline=None):
+    # Configuration is deliberately unset; a typed genuine package/compiler
+    # selection is required. The implementation never discovers HOME inputs.
+    require(document is not None and selection is not None and package is not None
+        and type(deadline) is float)
+    import codex_native_acquisition_process as process
+    return process.register(document,selection,package,deadline)
+
+def capture_owned_peer(child,bridge,connection,document,selection,deadline):
+    """Actual direct child kernel identity joins the native authenticated peer."""
+    require(deadline==child.registered.deadline)
+    peer,inputs=capture_selected_peer(bridge,connection,child.registered.image,
+        document,selection,deadline)
+    try:
+        child.fence(peer)
+        return peer,inputs
+    except BaseException:peer.close();raise
+
+def receive_owned_acquisition(child,peer,connection,request,key,expected_payload,deadline):
+    require(deadline==child.registered.deadline)
+    child.fence(peer)
+    result=receive_authenticated_acquisition(peer,connection,request,key,expected_payload,deadline)
+    child.fence(peer)
+    return result
 
 def capture_selected_peer(bridge,connection,held_image,document,selection,deadline):
     """Register genuine compiled image custody; no ordinary-resume promotion.

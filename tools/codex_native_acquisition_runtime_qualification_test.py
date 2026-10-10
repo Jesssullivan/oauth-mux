@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 import codex_native_acquisition_runtime_qualification as runtime
 from codex_native_acquisition_peer_test import PeerTests
+from codex_native_acquisition_process_test import ProcessTests
 
 class RuntimeTests(unittest.TestCase):
     def setUp(self):

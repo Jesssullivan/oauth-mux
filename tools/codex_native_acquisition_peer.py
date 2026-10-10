@@ -40,6 +40,7 @@ class Bridge:
             'omux_runtime_enable':(ctypes.c_int,[ctypes.c_int]),
             'omux_runtime_capture':(ctypes.c_int,[ctypes.c_int,ctypes.c_uint,ctypes.c_int,ctypes.POINTER(ctypes.c_void_p)]),
             'omux_runtime_recheck':(ctypes.c_int,[ctypes.c_void_p]),
+            'omux_runtime_child':(ctypes.c_int,[ctypes.c_void_p,ctypes.c_int]),
             'omux_runtime_receive':(ctypes.c_int,[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,
                 ctypes.POINTER(ctypes.c_size_t),ctypes.POINTER(ctypes.c_int)]),
             'omux_runtime_close':(None,[ctypes.c_void_p]),
@@ -75,6 +76,12 @@ class Peer:
 
     def receive(self,connection,maximum=65536):
         with self.lock:return self._receive(connection,maximum)
+
+    def fence_child(self,original_pidfd):
+        with self.lock:
+            self.recheck()
+            require(self.bridge.library.omux_runtime_child(self.handle,original_pidfd)==0)
+            self.recheck()
 
     def _receive(self,connection,maximum):
         require(type(maximum) is int and 0<maximum<=65536)

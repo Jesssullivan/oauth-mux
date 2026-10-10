@@ -10,6 +10,8 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         "codex_native_acquisition_runtime_qualification.py", "guard_cache.py",
         "codex_native_acquisition_peer.py",
         "codex_native_acquisition_peer_test.py",
+        "codex_native_acquisition_process.py", "codex_native_acquisition_process_test.py",
+        "nar_descriptor.py",
     ]).to_list()
     data = depset(parent_data + sdk_data + [
         "//integrations/codex-upstream:native_source_context_patch",

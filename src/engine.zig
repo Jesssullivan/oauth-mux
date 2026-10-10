@@ -7727,7 +7727,7 @@ test "external source removal counts terminal completion once and skips telemetr
             // when only the new derived window is unavailable.
             const recorded_at = current.?.lifecycle_measurements.?.last_recorded_at;
             current.?.lifecycle_measurements.?.last_recorded_at = current.?.now() + 86_400;
-            var diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", .{});
+            var diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", null);
             defer diagnostic.deinit();
             const exported = control.get(diagnostic.value, "result").?;
             try std.testing.expect(control.get(exported, "phase_outcomes").? == .null);
@@ -7740,7 +7740,7 @@ test "external source removal counts terminal completion once and skips telemetr
             // writer call. The poisoned endpoint must not call it durable.
             try current.?.lifecycle_measurements.?.record(current.?.now(), .{ .operation_correlation = 99, .phase = .enroll, .outcome = .success });
             current.?.poisoned = true;
-            var poisoned_diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", .{});
+            var poisoned_diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", null);
             defer poisoned_diagnostic.deinit();
             const unavailable = control.get(poisoned_diagnostic.value, "result").?;
             try std.testing.expect(control.get(unavailable, "phase_outcomes").? == .null);

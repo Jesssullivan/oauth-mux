@@ -53,6 +53,18 @@ int omux_runtime_recheck(struct omux_runtime_peer *peer) {
     return same_image(&peer->original_image, &after) ? OMUX_PEER_OK : OMUX_PEER_IMAGE_MISMATCH;
 }
 
+/* Original parent-owned child pidfd must be the same kernel process object as
+ * the authenticated socket peer. A PID, basename or mapped image is insufficient. */
+int omux_runtime_child(struct omux_runtime_peer *peer, int original_pidfd) {
+    if (!peer || original_pidfd < 0) return OMUX_PEER_INVALID;
+    struct stat original, authenticated;
+    if (fstat(original_pidfd, &original) || fstat(peer->context.pidfd, &authenticated))
+        return OMUX_PEER_SYSTEM;
+    if (original.st_dev != authenticated.st_dev || original.st_ino != authenticated.st_ino)
+        return OMUX_PEER_CHANGED;
+    return omux_runtime_recheck(peer);
+}
+
 int omux_runtime_receive(struct omux_runtime_peer *peer, unsigned char *buffer,
                          size_t capacity, size_t *received, int *descriptor) {
     if (!received || !descriptor) return OMUX_PEER_INVALID;
