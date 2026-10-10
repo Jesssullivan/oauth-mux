@@ -9,8 +9,10 @@ FORMAT_PROFILE = "resident-custody-runtime-format-reserved"
 INSTALLED_MODEL_PROFILE = "resident-installed-custody-models-reserved"
 DEFAULT_MODEL_PROFILE = "resident-default-source-models-reserved"
 ACQUISITION_UNIT_PROFILE = "resident-native-acquisition-units-reserved"
-PROFILES = (MODEL_PROFILE, PROFILE, LINUX_PROFILE, FORMAT_PROFILE, INSTALLED_MODEL_PROFILE, DEFAULT_MODEL_PROFILE, ACQUISITION_UNIT_PROFILE)
+DEPLOYMENT_WIRING_PROFILE = "resident-native-deployment-wiring-units-reserved"
+PROFILES = (MODEL_PROFILE, PROFILE, LINUX_PROFILE, FORMAT_PROFILE, INSTALLED_MODEL_PROFILE, DEFAULT_MODEL_PROFILE, ACQUISITION_UNIT_PROFILE, DEPLOYMENT_WIRING_PROFILE)
 COHORTS = {
+    DEPLOYMENT_WIRING_PROFILE: ["test", "//:daemon_test", "//:nix_module_evaluation_test", "//:docs_check"],
     ACQUISITION_UNIT_PROFILE: ["test", "//tools:guard_resident_custody_runtime_reserved_test",
         "//:native_source_acquisition_test", "//:native_source_consent_test",
         "//:qualified_runtime_delivery_test", "//:native_deployment_arguments_test",
@@ -93,7 +95,7 @@ def projection(entry, deadline, verified, resident, profile=PROFILE):
     require(profile in PROFILES)
     kernel.envelope(entry, deadline)
     require(verified is None or type(verified) is bool)
-    return {"scope": "fixed-resident-custody-runtime-reserved-v1", "mode": "isolated-production-acquisition-units" if profile == ACQUISITION_UNIT_PROFILE else "bounded-source-formatting" if profile == FORMAT_PROFILE else "isolated-installed-custody-models" if profile == INSTALLED_MODEL_PROFILE else "isolated-default-source-models" if profile == DEFAULT_MODEL_PROFILE else "isolated-runtime-units",
+    return {"scope": "fixed-resident-custody-runtime-reserved-v1", "mode": "isolated-deployment-wiring-units" if profile == DEPLOYMENT_WIRING_PROFILE else "isolated-production-acquisition-units" if profile == ACQUISITION_UNIT_PROFILE else "bounded-source-formatting" if profile == FORMAT_PROFILE else "isolated-installed-custody-models" if profile == INSTALLED_MODEL_PROFILE else "isolated-default-source-models" if profile == DEFAULT_MODEL_PROFILE else "isolated-runtime-units",
         "original_entry_monotonic_ns": entry, "original_deadline_monotonic_ns": deadline,
         "verified_after_cleanup": verified, "resident": resident,
         "isolated_unit_scope": profile != FORMAT_PROFILE,

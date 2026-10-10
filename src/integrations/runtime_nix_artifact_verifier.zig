@@ -252,7 +252,7 @@ pub fn recheckIdentity(budget: artifact.Budget,a: std.mem.Allocator,record: clos
         try budget.check();
         const parent_path=std.fs.path.dirname(alias.path) orelse return error.InvalidNixRuntimeProvenance;
         const parent=try closure.openSelectedDirectory(budget.io,a,budget.deadline,parent_path); defer _=c.close(parent);
-        const name=try a.dupeZ(u8,std.fs.path.basename(alias.path)); defer a.free(name);
+        const name=try a.dupeSentinel(u8,std.fs.path.basename(alias.path),0); defer a.free(name);
         const before=try metadata.statAt(parent,name.ptr,c.AT.SYMLINK_NOFOLLOW);
         if(!std.meta.eql(before,alias.status) or before.mode & c.S.IFMT!=c.S.IFLNK) return error.RuntimeSelectionDrift;
         var target: [4097]u8=undefined;

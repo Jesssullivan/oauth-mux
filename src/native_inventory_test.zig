@@ -315,8 +315,8 @@ fn contextDocument(fixture: *Fixture, context_id: []const u8) ![]u8 {
     const endpoint = try fixture.endpointPath(first);
     defer allocator.free(endpoint);
     return std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1,
-        .contextId = context_id, .contextGeneration = "1", .ownerId = "11" ** 32,
-        .processNonce = "22" ** 32, .endpointGeneration = "1", .ownerEndpoint = endpoint[0..endpoint.len] }, .{});
+        .contextId = context_id, .contextGeneration = "1", .ownerId = "1111111111111111111111111111111111111111111111111111111111111111",
+        .processNonce = "2222222222222222222222222222222222222222222222222222222222222222", .endpointGeneration = "1", .ownerEndpoint = endpoint[0..endpoint.len] }, .{});
 }
 fn writeContext(registry: c.fd_t, name: []const u8, document: []const u8) !void {
     const terminated = try allocator.dupeSentinel(u8, name, 0);

@@ -202,7 +202,7 @@ fn parseDeclaration(allocator: std.mem.Allocator, raw: []const u8) !std.json.Par
     for ([_]AuthorityGroup{modern.authority_receipts.source,modern.authority_receipts.sdk,
         modern.authority_receipts.plan,modern.authority_receipts.query,modern.authority_receipts.compiler,
         modern.package_authority},0..) |group,group_index| {
-        if (group.members.len != (if (group_index == 0) 6 else 2)) return error.InvalidDeploymentSelection;
+        if (group.members.len != @as(usize, if (group_index == 0) 6 else 2)) return error.InvalidDeploymentSelection;
         for ([_]Role{group.outer,group.evidence}) |role| {
             _ = try roleDigest(role);
             if (role.bytes > producer.maximum_metadata_bytes) return error.InvalidDeploymentSelection;
