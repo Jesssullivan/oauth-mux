@@ -84,13 +84,17 @@ class PeerReservationModels(unittest.TestCase):
             raise AdmissionObserved()
         with patch.object(peer, "request", side_effect=observe) as request, \
                 patch.object(guard, "immutable", side_effect=AssertionError("tool read")) as tool, \
-                patch.object(guard, "call", side_effect=AssertionError("launch")) as launch, \
+                patch.object(guard, "controller_run", side_effect=AssertionError("controller launch")) as controller, \
+                patch.object(guard, "worker", side_effect=AssertionError("worker dispatch")) as worker, \
+                patch.object(guard.subprocess, "Popen", side_effect=AssertionError("worker launch")) as launch, \
                 patch.object(peer, "Witness", side_effect=AssertionError("resident read")) as witness:
             with self.assertRaises(AdmissionObserved):
                 guard.main(["--profile", peer.PROFILE, "--manager", "system", "--source-commit",
                     "a" * 40, "--source-dirty", "false", "--", *peer.ARGUMENTS])
             request.assert_called_once()
             tool.assert_not_called()
+            controller.assert_not_called()
+            worker.assert_not_called()
             launch.assert_not_called()
             witness.assert_not_called()
 
