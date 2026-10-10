@@ -71,8 +71,9 @@ def qualify(selected_raw, selection_sha256, bundle_raw, mapping_sha256, bundle_p
     bundle = inputs.decode(bundle_raw, inputs.MAX_MAPPING)
     inputs.require(bundle["selection_sha256"] == selection_sha256)
     opener = inputs.bundle_opener(bundle, bundle_path)
-    phase("producer-success")
+    phase("declared-metadata")
     metadata = inputs.declared_metadata(bundle, bundle_path, selected, deadline)
+    phase("producer-success")
     receipt = inputs.producer_success(selected, metadata)
     phase("locked-source-proof")
     source_report = sources.verify(project["flake.lock"], source_raw, Path(source_path).parent,
@@ -105,7 +106,9 @@ def qualify(selected_raw, selection_sha256, bundle_raw, mapping_sha256, bundle_p
     phase("selected-input-readback")
     again = inputs.declared_metadata(bundle, bundle_path, selected, deadline)
     inputs.require(again == metadata)
+    phase("producer-success-readback")
     inputs.producer_success(selected, again)
+    phase("locked-source-readback")
     inputs.require(sources.verify(project["flake.lock"], source_raw, Path(source_path).parent,
         metadata_alias_roots(source_path), deadline=deadline) == source_report)
     if implementation is None:
@@ -209,6 +212,9 @@ if __name__ == "__main__":
             signal.signal(signum, interrupted)
         main()
     except (ValueError, OSError, KeyError, TypeError, UnicodeError, ET.ParseError,
-            subprocess.SubprocessError, KeyboardInterrupt):
+            subprocess.SubprocessError, KeyboardInterrupt) as error:
+        diagnostic = inputs.metadata_failure(error)
+        if diagnostic is not None:
+            print("declared metadata refused; role="+diagnostic["role"]+"; reason="+diagnostic["reason"], file=sys.stderr)
         print("native flake seed plan refused at "+PHASE, file=sys.stderr)
         raise SystemExit(1) from None

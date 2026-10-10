@@ -479,22 +479,44 @@ def bundle_opener(bundle, bundle_path):
     return opener
 
 
+METADATA_ROLES = frozenset(("receipt", "evidence", "log", "xml", "obligations",
+    "candidate_registration", "candidate_paths"))
+METADATA_REASONS = frozenset(("undeclared-label-alias", "declared-label-not-regular",
+    "declared-label-hop-bound", "declared-regular-metadata-changed", "metadata-predicate", "metadata-os-error"))
+
+
+def metadata_failure(error):
+    if not isinstance(error, (ValueError, OSError)):
+        return None
+    role, reason = getattr(error, "metadata_role", None), getattr(error, "metadata_reason", None)
+    if type(role) is str and role in METADATA_ROLES and type(reason) is str and reason in METADATA_REASONS:
+        return {"role": role, "reason": reason}
+    return None
+
+
 def declared_metadata(bundle, bundle_path, selected, deadline):
     expected = metadata_roles(selected)
     require(type(bundle["metadata"]) is dict and set(bundle["metadata"]) == set(expected))
     roots = metadata_alias_roots(bundle_path)
     result = {}
     for index, name in enumerate(sorted(expected)):
-        item = bundle["metadata"][name]
-        require(type(item) is dict and set(item) == {"alias", "pin"}
-            and item["pin"] == expected[name] and item["alias"] == "metadata/"+str(index).zfill(8))
-        proof.tick(deadline)
-        path = Path(bundle_path).parent/item["alias"]
-        node = {"size": item["pin"]["bytes"], "executable": False}
-        with open_declared(path, [Path(root)/item["alias"] for root in roots], item["pin"]["path"], node) as stream:
-            raw = stream.read(item["pin"]["bytes"]+1)
-        require(len(raw) == item["pin"]["bytes"] and seed.sha(raw) == item["pin"]["sha256"])
-        result[name] = raw
+        try:
+            item = bundle["metadata"][name]
+            require(type(item) is dict and set(item) == {"alias", "pin"}
+                and item["pin"] == expected[name] and item["alias"] == "metadata/"+str(index).zfill(8))
+            proof.tick(deadline)
+            path = Path(bundle_path).parent/item["alias"]
+            node = {"size": item["pin"]["bytes"], "executable": False}
+            with open_declared(path, [Path(root)/item["alias"] for root in roots], item["pin"]["path"], node) as stream:
+                raw = stream.read(item["pin"]["bytes"]+1)
+            require(len(raw) == item["pin"]["bytes"] and seed.sha(raw) == item["pin"]["sha256"])
+            result[name] = raw
+        except (ValueError, OSError) as error:
+            error.metadata_role = name if name in METADATA_ROLES else None
+            reason = error.args[0] if len(error.args) == 1 and type(error.args[0]) is str else None
+            error.metadata_reason = (reason if reason in METADATA_REASONS else
+                "metadata-os-error" if isinstance(error, OSError) else "metadata-predicate")
+            raise
     return result
 
 

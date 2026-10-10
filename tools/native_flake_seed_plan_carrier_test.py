@@ -373,6 +373,46 @@ class CarrierModels(unittest.TestCase):
             self.assertEqual(len({deadline for _, deadline in fixture.model.calls}), 1)
             self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
 
+    def test_actual_declared_metadata_extent_refusal_is_distinct_from_producer_truth(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            bundle = inputs.decode(fixture.bundle_raw, inputs.MAX_MAPPING)
+            item = bundle["metadata"][sorted(bundle["metadata"])[0]]
+            metadata_file = fixture.repository/item["alias"]
+            mode = metadata_file.stat().st_mode & 0o777
+            os.chmod(metadata_file, 0o644)
+            metadata_file.write_bytes(b"x")
+            os.chmod(metadata_file, mode)
+            carrier.phase("admission")
+            with self.assertRaises(ValueError) as caught:
+                fixture.qualify()
+            self.assertEqual(carrier.PHASE, "declared-metadata")
+            self.assertEqual(inputs.metadata_failure(caught.exception),
+                {"role": sorted(bundle["metadata"])[0], "reason": "declared-regular-metadata-changed"})
+            self.assertEqual(fixture.model.calls, [])
+            self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+
+    def test_actual_metadata_alias_refusal_identifies_closed_role_without_target_io(self):
+        for role in ("receipt", "xml"):
+            with self.subTest(role=role), tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+                fixture.generate()
+                bundle = inputs.decode(fixture.bundle_raw, inputs.MAX_MAPPING)
+                alias = fixture.repository/bundle["metadata"][role]["alias"]
+                alias.unlink()
+                alias.symlink_to(fixture.root/"unselected-never-created")
+                with self.assertRaises(ValueError) as caught:
+                    fixture.qualify()
+                self.assertEqual(carrier.PHASE, "declared-metadata")
+                self.assertEqual(inputs.metadata_failure(caught.exception),
+                    {"role": role, "reason": "undeclared-label-alias"})
+                self.assertEqual(fixture.model.calls, [])
+                self.assertNotIn(str(fixture.root), inputs.encode(inputs.metadata_failure(caught.exception)).decode())
+
+    def test_metadata_projection_refuses_unbounded_attributes_and_unrelated_errors(self):
+        error = ValueError("private arbitrary exception text")
+        error.metadata_role, error.metadata_reason = "/private/role", "private arbitrary exception text"
+        self.assertIsNone(inputs.metadata_failure(error))
+
     def test_partial_or_poisoned_roles_refuse_before_referenced_io(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
             for name in ("receipt", "obligations", "candidate", "partial"):
