@@ -4,6 +4,7 @@ The declared owner must supply pinned producer success and exact regular-label
 openers. This primitive never discovers host roots or queries a shared DB.
 """
 from contextlib import ExitStack, contextmanager
+import errno
 import json
 import os
 from pathlib import Path
@@ -26,12 +27,34 @@ MAX_NAR_BYTES = seed.MAX_BYTES
 RESTORE_OPERATIONS = frozenset((
     "join", "held-tools", "original-byte-proof", "private-allocation", "copy",
     "registration-load", "registration-readback", "derivation-graph", "missing-query",
-    "preservation-readback", "cleanup", "cleanup-readback"))
+    "preservation-readback", "cleanup", "cleanup-readback",
+    "original-byte-readback", "copied-metadata-readback", "copied-byte-readback",
+    "byte-readback-join", "held-tool-readback", "private-root-readback", "result-assembly"))
 
 
 def restore_failure(error):
     operation = getattr(error, "native_plan_operation", None)
     return operation if type(operation) is str and operation in RESTORE_OPERATIONS else None
+
+
+def restore_failure_reason(error):
+    if isinstance(error, OSError):
+        codes = {errno.ENOENT: "os-missing", errno.EACCES: "os-access",
+            errno.EPERM: "os-permission", errno.ELOOP: "os-link-loop",
+            errno.ENOTDIR: "os-not-directory", errno.ENOSPC: "os-no-space",
+            errno.EDQUOT: "os-quota", errno.EIO: "os-io",
+            errno.EMFILE: "os-process-fd-limit", errno.ENFILE: "os-system-fd-limit",
+            errno.EINTR: "os-interrupted"}
+        return codes.get(error.errno, "os-other") if type(error.errno) is int else "os-other"
+    if isinstance(error, ValueError):
+        messages = {"nar-output-or-deadline-bound": "nar-bound-or-deadline",
+            "nar-input-truncated": "nar-truncated", "nar-input-grew": "nar-grew",
+            "descriptor-input-metadata-changed": "input-metadata-changed",
+            "private-store seed contract": "contract-predicate"}
+        if type(error.args) is tuple and len(error.args) == 1 and type(error.args[0]) is str:
+            return messages.get(error.args[0], "value-predicate")
+        return "value-predicate"
+    return "other"
 
 
 @contextmanager
@@ -49,9 +72,22 @@ def require(value):
 
 def object_hash(descriptor, row, opener, deadline, *, retained_transport=False):
     require(type(retained_transport) is bool)
-    nodes, _ = nar.validate_descriptor(descriptor)
-    require(descriptor["root"] == row["record"][0])
+    # The pinned serializer validates completely before invoking this opener.
+    # Keep original malformed/wrong-root refusal ordering without a second full
+    # validation/children index on every ordinary hash/readback.
+    try:
+        matching_root = descriptor["root"] == row["record"][0]
+    except (KeyError, TypeError, IndexError):
+        nar.validate_descriptor(descriptor)
+        raise
+    if not matching_root:
+        nar.validate_descriptor(descriptor)
+    require(matching_root)
+    nodes = None
     def checked(root, relative):
+        nonlocal nodes
+        if nodes is None:
+            nodes = {node["path"]: node for node in descriptor["nodes"]}
         require(root == descriptor["root"] and relative in nodes and nodes[relative]["type"] == "regular")
         stream = opener(root, relative)
         try:
@@ -327,20 +363,26 @@ def restore_plan(obligations, runtime, producer_records, selected_candidates,
                 plan = missing.query(runtime["tools"], private, root.path, obligations["target"]["drvPath"],
                     frozenset(graph), deadline, tool_fd=tools["nix_store"].fileno())
                 checks = readiness(obligations, plan, merged)
-            with _restore_operation("preservation-readback"):
-                for logical in sorted(merged):
+            for logical in sorted(merged):
+                with _restore_operation("original-byte-readback"):
                     original = object_hash(descriptors[logical], merged[logical], pinned, deadline,
                                            retained_transport=logical in retained_roots)
+                with _restore_operation("copied-metadata-readback"):
                     physical = store/logical.rsplit("/",1)[1]
                     actual = proof.describe_root(logical, physical)
                     require(seed.encoded(actual) == seed.encoded(descriptors[logical]))
+                with _restore_operation("copied-byte-readback"):
                     copied = object_hash(actual, merged[logical],
                         lambda root, relative: nar.open_regular(str(store/root.rsplit("/",1)[1]), relative), deadline)
+                with _restore_operation("byte-readback-join"):
                     require(original == copied)
+            with _restore_operation("held-tool-readback"):
                 for name, path in canonical.items():
                     with opener(*split(path)) as current:
                         require(witness(tools[name]) == before[name] == witness(current))
+            with _restore_operation("private-root-readback"):
                 root.recheck()
+            with _restore_operation("result-assembly"):
                 result = {"schema_version": 1, "kind": KIND, "plan": checks,
                     "restored_registration_sha256": seed.sha(registration.encode("ascii")),
                     "verified_roots": len(merged), "verified_nar_bytes": total,

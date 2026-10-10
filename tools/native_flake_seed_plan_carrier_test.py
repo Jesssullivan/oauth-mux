@@ -5,6 +5,7 @@ tests establish neither a successful real producer nor a native build seed.
 """
 from contextlib import ExitStack
 import copy
+import errno
 import os
 import re
 from pathlib import Path
@@ -492,6 +493,153 @@ class CarrierModels(unittest.TestCase):
             self.assertEqual(fixture.model.calls, [])
             self.assertEqual({name: fixture.physical[name].read_bytes() for name in before}, before)
             self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+
+    def test_final_readback_refusals_identify_actual_region_and_preserve_primary_cleanup(self):
+        cases = (("original", "original-byte-readback"),
+            ("metadata", "copied-metadata-readback"), ("copied", "copied-byte-readback"))
+        for fault, operation in cases:
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+                fixture.generate()
+                original_hash = carrier.plan.object_hash
+                original_describe = carrier.plan.proof.describe_root
+                before = {name: path.read_bytes() for name, path in fixture.physical.items() if path.is_file()}
+                refused = (OSError(errno.EIO, "private metadata bait", "/private/untrusted")
+                    if fault == "metadata" else ValueError("nar-output-or-deadline-bound"))
+                readbacks = []
+                def queried():
+                    return any("--dry-run" in command for command, _ in fixture.model.calls)
+                def hashed(*args, **kwargs):
+                    if queried():
+                        readbacks.append(args[3])
+                        if (fault == "original" and len(readbacks) == 1
+                                or fault == "copied" and len(readbacks) == 2):
+                            raise refused
+                    return original_hash(*args, **kwargs)
+                def described(*args, **kwargs):
+                    if queried() and fault == "metadata":
+                        raise refused
+                    return original_describe(*args, **kwargs)
+                with patch.object(carrier.plan, "object_hash", side_effect=hashed), \
+                        patch.object(carrier.plan.proof, "describe_root", side_effect=described):
+                    with self.assertRaises((ValueError, OSError)) as caught:
+                        fixture.qualify()
+                self.assertIs(caught.exception, refused)
+                self.assertEqual(carrier.PHASE, "fresh-private-missing-plan")
+                self.assertEqual(carrier.plan.restore_failure(refused), operation)
+                self.assertEqual(carrier.plan.restore_failure_reason(refused),
+                    "os-io" if fault == "metadata" else "nar-bound-or-deadline")
+                self.assertTrue(queried())
+                self.assertEqual({deadline for deadline in readbacks},
+                    {deadline for _, deadline in fixture.model.calls})
+                self.assertEqual({name: fixture.physical[name].read_bytes() for name in before}, before)
+                self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+
+    def test_restore_reasons_never_echo_raw_message_paths_or_untyped_errno(self):
+        expected = ((ValueError("nar-input-truncated"), "nar-truncated"),
+            (ValueError("nar-input-grew"), "nar-grew"),
+            (ValueError("descriptor-input-metadata-changed"), "input-metadata-changed"),
+            (ValueError("private-store seed contract"), "contract-predicate"),
+            (ValueError("private bait"), "value-predicate"),
+            (OSError(errno.ENOSPC, "private bait", "/private/bait"), "os-no-space"),
+            (OSError(errno.EACCES, "private bait", "/private/bait"), "os-access"),
+            (TypeError("private bait"), "other"))
+        for error, reason in expected:
+            self.assertEqual(carrier.plan.restore_failure_reason(error), reason)
+        class Poisoned(str):
+            pass
+        self.assertEqual(carrier.plan.restore_failure_reason(ValueError(Poisoned("nar-input-grew"))),
+            "value-predicate")
+        for code in (None, True, "private bait", 999999):
+            error = OSError("private bait")
+            error.errno = code
+            self.assertEqual(carrier.plan.restore_failure_reason(error), "os-other")
+
+    def test_real_restore_hashes_validate_once_before_leaf_io_and_keep_all_readbacks(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            original_hash = carrier.plan.object_hash
+            original_validate = nar.validate_descriptor
+            counts = []
+            before = {name: path.read_bytes() for name, path in fixture.physical.items() if path.is_file()}
+            def hashed(*args, **kwargs):
+                count = []
+                original_open = nar.open_regular
+                def validate(*values, **options):
+                    result = original_validate(*values, **options)
+                    count.append(True)
+                    return result
+                def opened(*values, **options):
+                    self.assertEqual(len(count), 1)
+                    return original_open(*values, **options)
+                with patch.object(nar, "validate_descriptor", side_effect=validate), \
+                        patch.object(nar, "open_regular", side_effect=opened):
+                    result = original_hash(*args, **kwargs)
+                self.assertEqual(len(count), 1)
+                counts.append(args[3])
+                return result
+            with patch.object(carrier.plan, "object_hash", side_effect=hashed):
+                result = fixture.qualify()
+            self.assertEqual(len(counts), result["verified_roots"]*3)
+            self.assertEqual(set(counts), {deadline for _, deadline in fixture.model.calls})
+            self.assertTrue(result["original_and_copied_bytes_rechecked"])
+            self.assertTrue(result["input_metadata_rechecked"])
+            self.assertTrue(result["graph_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+            self.assertEqual({name: fixture.physical[name].read_bytes() for name in before}, before)
+            self.assertEqual(list(fixture.model.model.root.glob("nix-private-build-*")), [])
+            self.assertTrue(all(result[name] is False for name in
+                ("realized", "complete_build_seed_verified", "native_runtime_qualified", "sdk_qualified", "execution_authority")))
+
+    def test_lazy_hash_schema_and_wrong_root_refuse_before_any_source_opener(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)/"payload"
+            source.write_bytes(b"synthetic declared hash bytes")
+            source.chmod(0o444)
+            descriptor = nar.describe(source)
+            proof = nar.hash_descriptor(descriptor)
+            row = {"record": [str(source), proof["narHash"], str(proof["narSize"])]}
+            cases = []
+            bad = copy.deepcopy(descriptor); bad["unknown"] = True
+            cases.append((bad, row, "descriptor-schema"))
+            bad = copy.deepcopy(descriptor); bad["nodes"].append(copy.deepcopy(bad["nodes"][0]))
+            cases.append((bad, row, "descriptor-duplicate"))
+            bad = copy.deepcopy(descriptor); bad["nodes"].append({"path": "child", "type": "regular", "size": 1, "executable": False})
+            cases.append((bad, row, "descriptor-parent-not-directory"))
+            bad = copy.deepcopy(descriptor); bad["nodes"][0]["executable"] = "private bait"
+            cases.append((bad, row, "descriptor-regular"))
+            bad = copy.deepcopy(descriptor); bad["root"] = str(source.with_name("foreign-never-created"))
+            cases.append((bad, row, "private-store seed contract"))
+            bad = copy.deepcopy(descriptor); bad["unknown"] = True
+            cases.append((bad, {}, "descriptor-schema"))
+            for selected, record, message in cases:
+                with self.subTest(message=message):
+                    with self.assertRaises(ValueError) as caught:
+                        carrier.plan.object_hash(selected, record,
+                            lambda *_: self.fail("source opened before full schema/root admission"), float(time.monotonic()+30))
+                    self.assertEqual(caught.exception.args, (message,))
+
+    def test_lazy_hash_keeps_real_byte_mode_refusal_and_nonregular_root_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)/"payload"
+            source.write_bytes(b"synthetic bytes"); source.chmod(0o444)
+            descriptor = nar.describe(source)
+            proof = nar.hash_descriptor(descriptor)
+            row = {"record": [str(source), proof["narHash"], str(proof["narSize"])]}
+            for fault in ("mode", "bytes"):
+                with self.subTest(fault=fault):
+                    source.chmod(0o644); source.write_bytes(b"synthetic bytes"); source.chmod(0o444)
+                    if fault == "mode": source.chmod(0o555)
+                    else:
+                        source.chmod(0o644); source.write_bytes(b"different bytes"); source.chmod(0o444)
+                    with self.assertRaises(ValueError):
+                        carrier.plan.object_hash(descriptor, row, nar.open_regular, float(time.monotonic()+30))
+            for node in ({"path": "", "type": "directory"},
+                    {"path": "", "type": "symlink", "target": "/unfollowed/synthetic"}):
+                value = {"schemaVersion": 1, "root": str(source), "nodes": [node]}
+                hashed = nar.hash_descriptor(value)
+                record = {"record": [str(source), hashed["narHash"], str(hashed["narSize"])]}
+                self.assertEqual(carrier.plan.object_hash(value, record,
+                    lambda *_: self.fail("inert metadata root opened"), float(time.monotonic()+30)), hashed["narSize"])
 
     def test_joined_generator_declared_aliases_actual_restore_and_readback(self):
         with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
