@@ -9,12 +9,12 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         "codex_native_acquisition_compilation.py", "codex_native_acquisition_preflight.py",
         "codex_native_acquisition_runtime_qualification.py",
     ]).to_list()
-    data = parent_data + sdk_data + [
+    data = depset(parent_data + sdk_data + [
         "//integrations/codex-upstream:native_acquisition_input_configuration",
         "//integrations/codex-upstream:native_acquisition_n9_binding",
         "@omux_native_acquisition_metadata_inputs//:inputs",
         "@omux_protocol_history_query_tools//:inputs",
-    ]
+    ]).to_list()
     for name, main in [
         ("codex_native_acquisition_binding_producer", "codex_native_acquisition_binding.py"),
         ("codex_native_acquisition_metadata_producer", "codex_native_acquisition_metadata.py"),
