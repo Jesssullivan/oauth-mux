@@ -11,7 +11,7 @@ class AdmissionTest(unittest.TestCase):
         with self.assertRaises(ValueError): guard.selected('standard',guard.VECTORS[guard.PROFILE])
 
     def test_original_clock_transport_and_offline(self):
-        for profile in (guard.PROFILE,guard.EVALUATE):
+        for profile in (guard.PROFILE,guard.EVALUATE,guard.PAIR):
             def builder(*args,**kwargs): return ['bazel']+guard.VECTORS[profile]
             with patch.object(guard,'remaining'), patch('guard_resident_enrollment_profile.repository_inputs'), \
                     patch('execution_guard.graph_digest',return_value=('b'*64,None)):

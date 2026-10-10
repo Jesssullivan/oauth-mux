@@ -28,8 +28,24 @@
 #include <QUuid>
 #include <QVariant>
 #include <QVBoxLayout>
+#include <cmath>
 
 namespace {
+bool reopenedCustody(const QJsonObject &result) {
+    const QStringList fields {"reopened", "custody_available", "metadata_loaded", "account_count",
+        "provider_request_initiated", "live_handoff_proven"};
+    if (result.size() != fields.size()) return false;
+    for (const auto &field : fields) if (!result.contains(field)) return false;
+    const auto count = result.value("account_count");
+    return result.value("reopened").isBool()
+        && result.value("custody_available").isBool() && result.value("custody_available").toBool()
+        && result.value("metadata_loaded").isBool() && result.value("metadata_loaded").toBool()
+        && count.isDouble() && std::isfinite(count.toDouble())
+        && std::floor(count.toDouble()) == count.toDouble() && count.toInteger(-1) >= 0
+        && result.value("provider_request_initiated").isBool() && !result.value("provider_request_initiated").toBool()
+        && result.value("live_handoff_proven").isBool() && !result.value("live_handoff_proven").toBool();
+}
+
 QString text(const QJsonObject &object, const QString &field) {
     QJsonValue value = object;
     for (const auto &part : field.split('.')) value = value.toObject().value(part);
@@ -230,8 +246,28 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
         if (!client_.ready()) { setupNotice_->setText("Connect to the service first."); return; }
         if (!client_.supportsCustodyReopen()) { setupNotice_->setText("This installed service requires an update before it can resume custody without restarting."); return; }
         if (client_.hasUncertainOperations()) { setupNotice_->setText(client_.uncertaintyMessage()); return; }
-        client_.request("custody.reopen", {}, [this](const QJsonObject &, const QString &error) {
-            setupNotice_->setText(!error.isEmpty() ? error : "Custody is ready. Connect an authorized source to enroll accounts.");
+        client_.request("custody.reopen", {}, [this](const QJsonObject &result, const QString &error) {
+            if (!error.isEmpty()) {
+                custodyAvailable_ = false;
+                updateMutationControls();
+                if (error == "Locked" || error == "VaultLocked" || error == "CustodyLocked")
+                    setupNotice_->setText("Custody could not be reopened. Check the normal OS Secret Service vault and unlock it through your desktop if needed, then choose Resume after vault unlock. Existing encrypted account data remains preserved; enrollment is still unavailable. This refusal does not establish the current OS vault lock state.");
+                else if (error == "Missing" || error == "InvalidKey")
+                    setupNotice_->setText("The existing vault key is missing or invalid. Existing encrypted account data remains preserved; enrollment is unavailable. Repair access to the original key before resuming custody. A replacement key cannot open these accounts.");
+                else
+                    setupNotice_->setText("Custody could not be verified. Existing encrypted account data remains preserved; enrollment is unavailable. Restore access to the normal platform vault or service, then explicitly resume custody. The current OS vault lock state is unverified.");
+                setupNotice_->setProperty("custodyFeedback", setupNotice_->text());
+                return;
+            }
+            if (!reopenedCustody(result)) {
+                custodyAvailable_ = false;
+                updateMutationControls();
+                setupNotice_->setText("The service returned an unverified custody result. Account enrollment remains unavailable until compatible custody and loaded-metadata evidence is available. Existing encrypted account data remains preserved.");
+                setupNotice_->setProperty("custodyFeedback", setupNotice_->text());
+                return;
+            }
+            setupNotice_->setProperty("custodyFeedback", QVariant());
+            setupNotice_->setText("Custody is ready. Source connection, verified identity and usable authority are separate enrollment steps.");
             refresh();
             refreshReadiness();
         });
@@ -490,8 +526,10 @@ void OmuxTray::refreshReadiness() {
         return;
     }
     client_.request("setup.readiness", {}, [this](const QJsonObject &result, const QString &error) {
+        const auto custodyFeedback = setupNotice_->property("custodyFeedback").toString();
         if (!error.isEmpty()) {
             setupNotice_->setText("Shared setup readiness unavailable. No installation or continuity claim can be inferred from this connection. " + error);
+            if (!custodyFeedback.isEmpty()) setupNotice_->setText(setupNotice_->text() + "\n" + custodyFeedback);
             return;
         }
         QJsonArray rows;
@@ -514,7 +552,12 @@ void OmuxTray::refreshReadiness() {
         if (!valid || result.value("schema_version").toInt() != 1 || rows.size() != 7
             || !result.value("ready").isBool() || result.value("seamless_handoff_proven").toBool(true)) {
             setupNotice_->setText("The daemon returned an unsupported readiness report. Requirements remain unknown until a compatible report is available.");
+            if (!custodyFeedback.isEmpty()) setupNotice_->setText(setupNotice_->text() + "\n" + custodyFeedback);
             readiness_->setRowCount(0);
+            return;
+        }
+        if (!custodyFeedback.isEmpty()) {
+            setupNotice_->setText(custodyFeedback);
             return;
         }
         setupNotice_->setText(result.value("ready").toBool(false)
@@ -525,7 +568,8 @@ void OmuxTray::refreshReadiness() {
 
 void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
     snapshot_ = snapshot;
-    custodyAvailable_ = snapshot.value("custody_available").toBool(false);
+    custodyAvailable_ = snapshot.value("custody_available").toBool(false)
+        && setupNotice_->property("custodyFeedback").toString().isEmpty();
     acquisition_->observe(snapshot);
     updateMutationControls();
     connection_->setText(custodyAvailable_ ? "Connected" : "Connected; credential custody unavailable");

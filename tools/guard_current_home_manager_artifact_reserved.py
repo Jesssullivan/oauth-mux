@@ -5,11 +5,12 @@ import guard_native_seed_plan_reserved as kernel
 PROFILE = 'current-home-manager-artifact-reserved'
 MODELS = 'current-home-manager-artifact-models-reserved'
 EVALUATE = 'current-home-manager-evaluation-reserved'
-PROFILES = (PROFILE, MODELS, EVALUATE)
-VECTORS = {EVALUATE: ['test','//tools:home_manager_current_evaluation'], PROFILE: ['test', '//delivery:current_home_manager_artifact'], MODELS: ['test',
+PAIR = 'current-home-manager-pair-reconstruction-reserved'
+PROFILES = (PROFILE, MODELS, EVALUATE, PAIR)
+VECTORS = {PAIR: ['test','//tools:home_manager_current_pair_reconstruction_producer'], EVALUATE: ['test','//tools:home_manager_current_evaluation'], PROFILE: ['test', '//delivery:current_home_manager_artifact'], MODELS: ['test',
     '//tools:guard_current_home_manager_artifact_reserved_test',
     '//delivery:current_home_manager_artifact_test', '//tools:home_manager_current_artifact_test',
-    '//tools:home_manager_bundle_test', '//delivery:home_manager_service_test', '//:docs_check']}
+    '//tools:home_manager_bundle_test', '//tools:home_manager_current_pair_bundle_test', '//delivery:home_manager_service_test', '//:docs_check']}
 MEMORY, TASKS, CPU = kernel.MEMORY, kernel.TASKS, kernel.CPU
 Witness, WorkloadWitness = kernel.Witness, kernel.WorkloadWitness
 monitor, cleanup_retained = kernel.monitor, kernel.cleanup_retained
@@ -51,7 +52,7 @@ def command(builder,bazel,run,arguments,profile,entry,deadline,**kwargs):
     result = builder(bazel,run,arguments,profile='standard',**kwargs)
     index = result.index('test') + 1
     result[index:index] = ['--repository_disable_download','--repo_contents_cache=']
-    if profile in (PROFILE,EVALUATE):
+    if profile in (PROFILE,EVALUATE,PAIR):
         from execution_guard import graph_digest
         from pathlib import Path
         values = {'MODE': profile, 'SOURCE_COMMIT': kwargs['source_commit'],

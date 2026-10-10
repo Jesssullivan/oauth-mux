@@ -2651,7 +2651,7 @@ python_test(name='guard_current_home_manager_artifact_reserved_test',main='guard
     target_compatible_with=['@platforms//os:linux'])
 
 exports_files(["home_manager_current_repository.bzl", "home_manager_current_selection.json"])
-_CURRENT_HM_CONSUMER_SOURCES = ["//:nix/home_manager_current_artifact.py", "//:nix/home_manager_current_evaluation.py",
+_CURRENT_HM_CONSUMER_SOURCES = ["//:nix/home_manager_current_pair_bundle.py", "//:nix/home_manager_current_artifact.py", "//:nix/home_manager_current_evaluation.py",
     "//:nix/home_manager_bundle.py", "//:nix/home_manager_acquired_evaluation.py", "//:nix/home_manager_artifact.py",
     "//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquisition.py", "//:nix/home_manager_inputs.py",
     "//:nix/home_manager_evaluation_runner.py", "//:nix/evaluation_runner.py", "//:nix/home_manager_io.py",
@@ -2662,14 +2662,15 @@ python_test(name="home_manager_current_artifact_test",main="//:nix/home_manager_
 python_test(name="home_manager_current_evaluation",main="//:nix/home_manager_current_evaluation.py",
     srcs=depset(_CURRENT_HM_CONSUMER_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     data=["@omux_hm_current//:selection.json","@omux_hm_current//:selected_inputs",
-          "@omux_hm_bundle//:bundle","@omux_hm_bundle//:receipt.json","@omux_hm_bundle//:selection.json",
+          "@omux_current_hm_pair_bundle//:bundle","@omux_current_hm_pair_bundle//:receipt.json","@omux_current_hm_pair_bundle//:selection.json",
+          "@omux_current_hm_pair_bundle//:selected_inputs",
           "@omux_eval_host//:executables/nix","@omux_eval_host//:all_tools",
           "@omux_lab_home_manager_inputs//:lab-lock.json",
           "//:nix/home-manager-qualified-evaluation.nix","//:nix/consume-bazel-artifact.nix",
           "//:nix/home-manager.nix","//:nix/ownership-witness.nix","//:nix/service-witness.nix"],
     args=["--selection","$(location @omux_hm_current//:selection.json)",
-          "--bundle","$(location @omux_hm_bundle//:bundle)","--bundle-selection","$(location @omux_hm_bundle//:selection.json)",
-          "--bundle-receipt","$(location @omux_hm_bundle//:receipt.json)",
+          "--bundle","$(location @omux_current_hm_pair_bundle//:bundle)","--bundle-selection","$(location @omux_current_hm_pair_bundle//:selection.json)",
+          "--bundle-receipt","$(location @omux_current_hm_pair_bundle//:receipt.json)",
           "--lock","$(location @omux_lab_home_manager_inputs//:lab-lock.json)",
           "--nix","$(location @omux_eval_host//:executables/nix)",
           "--module","home-manager-qualified-evaluation.nix=$(location //:nix/home-manager-qualified-evaluation.nix)",
@@ -2678,4 +2679,21 @@ python_test(name="home_manager_current_evaluation",main="//:nix/home_manager_cur
           "--module","ownership-witness.nix=$(location //:nix/ownership-witness.nix)",
           "--module","service-witness.nix=$(location //:nix/service-witness.nix)"],
     tags=["manual","no-remote","no-cache"],timeout="long",
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])
+
+exports_files(["home_manager_current_pair_repository.bzl", "home_manager_current_pair_bundle_repository.bzl",
+               "home_manager_current_pair_inputs.json"])
+python_test(name="home_manager_current_pair_reconstruction_producer",
+    main="//:nix/home_manager_current_pair_bundle.py",
+    srcs=depset(_CURRENT_HM_CONSUMER_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    data=["@omux_current_hm_pair//:pair_inputs","@omux_current_hm_pair//:layout.json",
+          "@omux_lab_home_manager_inputs//:lab-lock.json"],
+    args=["--layout","$(location @omux_current_hm_pair//:layout.json)",
+          "--lock","$(location @omux_lab_home_manager_inputs//:lab-lock.json)"],
+    env_inherit=["OMUX_EXECUTION_GUARD"],tags=["manual","no-remote","no-cache"],timeout="long",
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])
+python_test(name="home_manager_current_pair_bundle_test",main="//:nix/home_manager_current_pair_bundle_test.py",
+    srcs=depset(_CURRENT_HM_CONSUMER_SOURCES+_RESIDENT_GUARD_SOURCES+
+        ["//:nix/home_manager_bundle_test.py","//:nix/home_manager_current_artifact_test.py","//:nix/home_manager_acquired_inputs_test.py",
+         "//:nix/home_manager_artifact_test.py","//delivery:test_portable.py"]).to_list(),
     target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])

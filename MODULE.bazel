@@ -275,3 +275,9 @@ ordinary_direct_native_inputs(name="omux_codex_ordinary_direct_runtime",
 # Independently selected current Omux artifact; null until genuine production.
 hm_current = use_repo_rule("//tools:home_manager_current_repository.bzl", "home_manager_current_repository")
 hm_current(name = "omux_hm_current")
+
+# Source-pair-only current HM transport; no legacy artifact declaration edge.
+current_hm_pair = use_repo_rule("//tools:home_manager_current_pair_repository.bzl", "current_home_manager_pair_repository")
+current_hm_pair(name="omux_current_hm_pair")
+current_hm_pair_bundle = use_repo_rule("//tools:home_manager_current_pair_bundle_repository.bzl", "current_home_manager_pair_bundle_repository")
+current_hm_pair_bundle(name="omux_current_hm_pair_bundle")

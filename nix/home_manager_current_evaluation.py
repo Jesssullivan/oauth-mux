@@ -8,6 +8,7 @@ import sys
 import time
 import home_manager_bundle as bundle
 import home_manager_current_artifact as current
+import home_manager_current_pair_bundle as pair_bundle
 
 
 def original_clock(environment):
@@ -29,10 +30,10 @@ def evaluate(args, environment):
     selection=current.selected_document(raw)
     # The null gate precedes selected roots, tool qualification and materialization.
     current.verify_selected(selection,work)
-    bundle_raw,bundle_capture=bundle.evaluator.read_declared(args.bundle_selection,16384,work)
-    selected_bundle=bundle.selected_bundle(bundle.acquired.decode(bundle_raw,16384))
-    current.require(str(Path(args.bundle).resolve(strict=True))==selected_bundle['root']+'/bundle'
-        and str(Path(args.bundle_receipt).resolve(strict=True))==selected_bundle['root']+'/receipt.json',
+    bundle_raw,bundle_capture=bundle.evaluator.read_declared(args.bundle_selection,65536,work)
+    selected_pair=pair_bundle.selected_document(bundle_raw)
+    current.require(str(Path(args.bundle).resolve(strict=True))==selected_pair['root']+'/bundle'
+        and str(Path(args.bundle_receipt).resolve(strict=True))==selected_pair['root']+'/receipt.json',
         'current-hm-paired-bundle-alias')
     # Existing HM action 900-second local cap and 60-second private cleanup
     # are intersected with the original coordinator work cutoff, never reset.
@@ -43,11 +44,11 @@ def evaluate(args, environment):
         current.require(name not in modules,'current-hm-duplicate-module')
         modules[name]=path
     bundle.acquired.fields(modules,bundle.evaluator.MODULES)
-    result=bundle.evaluate_bundle(args.bundle,selected_bundle['bundle_sha256'],args.bundle_receipt,selected_bundle['receipt_sha256'],
-        args.lock,args.nix,modules,environment['TEST_TMPDIR'],deadline=end,current_selection=selection,original_clock=clock)
+    result=pair_bundle.evaluate_selected(selected_pair,args.lock,args.nix,modules,environment['TEST_TMPDIR'],
+        selection,clock,end)
     current.require(bundle.evaluator.read_declared(args.selection,65536,work)==(raw,capture),
                     'current-hm-selected-document-changed')
-    current.require(bundle.evaluator.read_declared(args.bundle_selection,16384,work)==(bundle_raw,bundle_capture),
+    current.require(bundle.evaluator.read_declared(args.bundle_selection,65536,work)==(bundle_raw,bundle_capture),
                     'current-hm-paired-bundle-selection-changed')
     current.verify_selected(selection,work)
     result.update({'selectionSha256':current.sha(raw),'artifactFamily':'current-coordinator-artifact-v1',

@@ -84,6 +84,7 @@ int main(int argc, char **argv) {
     int readinessRequests = 0;
     bool strictReopen = true;
     bool custodyReady = true;
+    QString reopenResultMode = "ready";
     QJsonValue reopenCapability(QJsonValue::Undefined); // Absent capability is the installed-old-service case.
     QObject::connect(&server, &QLocalServer::newConnection, &server, [&] {
         ++connections;
@@ -114,8 +115,10 @@ int main(int argc, char **argv) {
                     result = report(duplicate);
                     if (!custodyReady && !duplicate) {
                         auto findings = result.value("findings").toArray();
-                        findings[2] = QJsonObject{{"phase", "vault"}, {"reason", "locked"},
-                            {"action", "unlock_platform_vault_then_reopen_custody"}};
+                        // Match engine.setupSnapshot: retained Locked custody
+                        // is stale, not a fresh OS-vault observation.
+                        findings[2] = QJsonObject{{"phase", "vault"}, {"reason", "observation_stale"},
+                            {"action", "refresh_observation"}};
                         result.insert("findings", findings);
                     }
                 }
@@ -124,9 +127,27 @@ int main(int argc, char **argv) {
                     strictReopen = strictReopen && request.value("params").isObject()
                         && request.value("params").toObject().isEmpty()
                         && reopenCapability.isBool() && reopenCapability.toBool();
-                    custodyReady = true;
-                    result = {{"reopened", true}, {"custody_available", true}, {"account_count", 0},
+                    if (reopenResultMode == "locked-refusal" || reopenResultMode == "missing-key-refusal") {
+                        socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
+                            {"error", QJsonObject{{"code", -32000},
+                                {"message", reopenResultMode == "locked-refusal" ? "Locked" : "Missing"}}}}).toJson(QJsonDocument::Compact) + '\n');
+                        continue;
+                    }
+                    custodyReady = reopenResultMode == "ready" || reopenResultMode == "ready-idempotent";
+                    result = {{"reopened", true}, {"custody_available", true}, {"metadata_loaded", true}, {"account_count", 0},
                         {"provider_request_initiated", false}, {"live_handoff_proven", false}};
+                    if (reopenResultMode == "missing-loaded") result.remove("metadata_loaded");
+                    else if (reopenResultMode == "ready-idempotent") result.insert("reopened", false);
+                    else if (reopenResultMode == "false-loaded") result.insert("metadata_loaded", false);
+                    else if (reopenResultMode == "false-custody") result.insert("custody_available", false);
+                    else if (reopenResultMode == "string-custody") result.insert("custody_available", "true");
+                    else if (reopenResultMode == "null-count") result.insert("account_count", QJsonValue());
+                    else if (reopenResultMode == "negative-count") result.insert("account_count", -1);
+                    else if (reopenResultMode == "fraction-count") result.insert("account_count", 0.5);
+                    else if (reopenResultMode == "string-reopened") result.insert("reopened", "true");
+                    else if (reopenResultMode == "provider-access") result.insert("provider_request_initiated", true);
+                    else if (reopenResultMode == "handoff-claim") result.insert("live_handoff_proven", true);
+                    else if (reopenResultMode == "extra-field") result.insert("extra", true);
                 }
                 else if (method == "integrations.status") result = {{"integrations", QJsonArray{}}};
                 else ++mutations;
@@ -177,7 +198,7 @@ int main(int argc, char **argv) {
         auto *table = window.findChild<QTableWidget *>("setupReadiness");
         auto *notice = window.findChild<QLabel *>("setupNotice");
         if (!table || !notice || !until([&] {
-                return table->rowCount() == 7 && table->item(2, 1)->text() == "locked";
+                return table->rowCount() == 7 && table->item(2, 1)->text() == "observation_stale";
             }) || reopenRequests != 0) return 13;
         const int beforeReadiness = readinessRequests;
         const int beforeConnections = connections;
@@ -199,7 +220,99 @@ int main(int argc, char **argv) {
         }
         window.close();
     }
+    int expectedReopenRequests = 1;
+    // Actual private Qt request/reply handling must preserve a Locked refusal
+    // and reject unsupported success shapes without claiming ready or retrying.
+    for (const auto *mode : {"locked-refusal", "missing-key-refusal", "missing-loaded", "false-loaded", "false-custody",
+            "string-custody", "null-count", "negative-count", "fraction-count", "string-reopened",
+            "provider-access", "handoff-claim", "extra-field"}) {
+        reopenResultMode = mode;
+        reopenCapability = true;
+        custodyReady = false;
+        OmuxTray window(socketPath, false, true);
+        window.show();
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Reconnect") button->click();
+        auto *table = window.findChild<QTableWidget *>("setupReadiness");
+        auto *notice = window.findChild<QLabel *>("setupNotice");
+        if (!table || !notice || !until([&] {
+                return table->rowCount() == 7 && table->item(2, 1)->text() == "observation_stale";
+            }) || reopenRequests != expectedReopenRequests) return 17;
+        const int beforeReadiness = readinessRequests;
+        const int beforeConnections = connections;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Resume after vault unlock") button->click();
+        ++expectedReopenRequests;
+        const bool refused = reopenResultMode == "locked-refusal";
+        const bool missing = reopenResultMode == "missing-key-refusal";
+        if (!until([&] {
+                return reopenRequests == expectedReopenRequests
+                    && notice->text().contains(refused ? "normal OS Secret Service vault"
+                        : missing ? "vault key is missing or invalid" : "unverified custody result");
+            }) || !notice->text().contains("preserved") || !notice->text().contains("unavailable")
+            || notice->text().contains("Custody is ready") || custodyReady || !strictReopen
+            || mutations != 0 || connections != beforeConnections
+            || readinessRequests != beforeReadiness || table->item(2, 1)->text() != "observation_stale") return 18;
+        if (refused && !notice->text().contains("does not establish the current OS vault lock state")) return 19;
+        if (missing && (!notice->text().contains("original key")
+                || notice->text().contains("unlock it through your desktop"))) return 24;
+        auto *signIn = window.findChild<QPushButton *>("codexAccountSignIn");
+        if (!signIn || signIn->isEnabled()) return 21;
+        // A later event turn must not erase refusal guidance or replay reopening.
+        QApplication::processEvents();
+        if (reopenRequests != expectedReopenRequests || readinessRequests != beforeReadiness) return 20;
+        const auto retainedFeedback = notice->property("custodyFeedback").toString();
+        if (retainedFeedback.isEmpty()) return 25;
+        // Exercise the same real snapshot/readiness path as the periodic refresh.
+        // It must not erase the retained refusal or reopen automatically.
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] {
+                return readinessRequests > beforeReadiness && notice->text().contains(retainedFeedback);
+            }) || reopenRequests != expectedReopenRequests || signIn->isEnabled()) return 26;
+        if (refused || missing) {
+            // Failed and unsupported readiness replies cannot erase the earlier
+            // custody refusal. Each path uses actual private Qt RPC handling.
+            decline = true;
+            for (auto *button : window.findChildren<QPushButton *>())
+                if (button->text() == "Check setup") button->click();
+            if (!until([&] {
+                    return notice->text().contains("Shared setup readiness unavailable")
+                        && notice->text().contains(retainedFeedback);
+                }) || reopenRequests != expectedReopenRequests || signIn->isEnabled()) return 27;
+            decline = false;
+            duplicate = true;
+            for (auto *button : window.findChildren<QPushButton *>())
+                if (button->text() == "Check setup") button->click();
+            if (!until([&] {
+                    return notice->text().contains("unsupported readiness report")
+                        && notice->text().contains(retainedFeedback) && table->rowCount() == 0;
+                }) || reopenRequests != expectedReopenRequests || signIn->isEnabled()) return 28;
+            duplicate = false;
+            for (auto *button : window.findChildren<QPushButton *>())
+                if (button->text() == "Refresh") button->click();
+            if (!until([&] {
+                    return table->rowCount() == 7 && table->item(2, 1)->text() == "observation_stale"
+                        && notice->text().contains(retainedFeedback);
+                }) || reopenRequests != expectedReopenRequests || signIn->isEnabled()) return 29;
+        }
+        if (QString(mode) == "extra-field") {
+            // Recovery uses this same failed UI/peer. The daemon can already be
+            // ready, so reopened:false with genuine loaded custody is valid.
+            reopenResultMode = "ready-idempotent";
+            const int beforeRecoveryReadiness = readinessRequests;
+            for (auto *button : window.findChildren<QPushButton *>())
+                if (button->text() == "Resume after vault unlock") button->click();
+            ++expectedReopenRequests;
+            if (!until([&] {
+                    return reopenRequests == expectedReopenRequests && readinessRequests > beforeRecoveryReadiness
+                        && table->rowCount() == 7 && table->item(2, 1)->text() == "ready";
+                }) || !strictReopen || mutations != 0 || connections != beforeConnections
+                    || !notice->property("custodyFeedback").toString().isEmpty()) return 23;
+        }
+        window.close();
+    }
     // UI close/destruction sends no shutdown, mutation, or removal request.
     QApplication::processEvents();
-    return server.isListening() && mutations == 0 && reopenRequests == 1 && strictReopen ? 0 : 5;
+    return server.isListening() && mutations == 0 && reopenRequests == expectedReopenRequests && strictReopen ? 0 : 5;
 }

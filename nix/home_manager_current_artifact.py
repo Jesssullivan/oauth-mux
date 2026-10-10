@@ -66,10 +66,15 @@ def read(path, maximum, deadline, expected=None, *, readonly=True):
 
 
 def policy(outer):
+    return producer_policy(outer,admission.PROFILE)
+
+
+def producer_policy(outer,profile):
+    require(profile in (admission.PROFILE,admission.PAIR),'current-hm-producer-policy-profile')
     reservation=outer['current_home_manager_artifact_reservation']
-    expected=admission.projection(admission.PROFILE,reservation['original_entry_monotonic_ns'],
+    expected=admission.projection(profile,reservation['original_entry_monotonic_ns'],
         reservation['original_deadline_monotonic_ns'],True,reservation['resident'])
-    require(reservation==expected and outer['profile']==admission.PROFILE
+    require(reservation==expected and outer['profile']==profile
         and outer['cache_reuse_requested'] is False and outer['cache_policy'] is None
         and outer['cache_key'] is None,'current-hm-producer-reservation')
     properties=outer['observed_properties']
