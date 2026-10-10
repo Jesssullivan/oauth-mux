@@ -1555,12 +1555,17 @@ class GuardTest(unittest.TestCase):
     def test_batch_and_owned_output_base(self):
         command = bazel_command('/nix/store/example/bin/bazel', Path('/private/uuid'), ['test', '//:docs_check'])
         self.assertEqual(command[1], '--batch')
+        private_root = '--output_user_root=/private/uuid/bazel-user-root'
+        self.assertEqual([flag for flag in command if flag.startswith('--output_user_root=')], [private_root])
+        self.assertIn(private_root, command[:command.index('test')])
         self.assertIn('--output_base=/private/uuid/output-base', command)
         self.assertIn('--noworkspace_rc', command)
         self.assertIn('--remote_executor=', command)
         self.assertIn('--host_jvm_args=-Xmx1536m', command[:command.index('test')])
         self.assertIn('--host_jvm_args=-XX:ActiveProcessorCount=2', command[:command.index('test')])
         for args in ([], ['--batch', 'test'], ['test', '--output_base=/shared'],
+                     ['--output_user_root=/shared', 'test', '//:docs_check'],
+                     ['test', '//:docs_check', '--output_user_root=/shared'],
                      ['test', '--config=remote'], ['run', '//:delegate']):
             with self.assertRaises(ValueError):
                 bazel_command('/store/bazel', Path('/private/uuid'), args)

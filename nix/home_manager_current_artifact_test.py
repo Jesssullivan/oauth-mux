@@ -91,19 +91,23 @@ class CurrentAuthorityTest(unittest.TestCase):
     def test_real_inventory_and_late_byte_corruption(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); file=root/'leaf'; file.write_bytes(b'original'); file.chmod(0o444)
-            files,nodes,facts,nar,size=current.artifact.tree_bytes(root,time.monotonic()+30)
-            self.assertEqual(files,{'leaf':b'original'})
-            receipt={'narHash':nar,'narSize':size}
-            inventory={'schemaVersion':1,'nodes':nodes}
-            current.inventory_binding(inventory,nodes,nar,size,receipt)
-            changed=copy.deepcopy(inventory)
-            next(row for row in changed['nodes'] if row['type']=='regular')['sha256']='0'*64
-            with self.assertRaises(ValueError): current.inventory_binding(changed,nodes,nar,size,receipt)
-            with self.assertRaises(ValueError): current.inventory_binding(inventory,nodes,nar,size+1,receipt)
-            file.chmod(0o600); file.write_bytes(b'corrupted'); file.chmod(0o444)
-            after=current.artifact.tree_bytes(root,time.monotonic()+30)
-            self.assertNotEqual(after[2],facts); self.assertNotEqual(after[3],nar)
-            with self.assertRaises(ValueError): current.inventory_binding(inventory,after[1],after[3],after[4],receipt)
+            root.chmod(0o555)
+            try:
+                files,nodes,facts,nar,size=current.artifact.tree_bytes(root,time.monotonic()+30)
+                self.assertEqual(files,{'leaf':b'original'})
+                receipt={'narHash':nar,'narSize':size}
+                inventory={'schemaVersion':1,'nodes':nodes}
+                current.inventory_binding(inventory,nodes,nar,size,receipt)
+                changed=copy.deepcopy(inventory)
+                next(row for row in changed['nodes'] if row['type']=='regular')['sha256']='0'*64
+                with self.assertRaises(ValueError): current.inventory_binding(changed,nodes,nar,size,receipt)
+                with self.assertRaises(ValueError): current.inventory_binding(inventory,nodes,nar,size+1,receipt)
+                file.chmod(0o600); file.write_bytes(b'corrupted'); file.chmod(0o444)
+                after=current.artifact.tree_bytes(root,time.monotonic()+30)
+                self.assertNotEqual(after[2],facts); self.assertNotEqual(after[3],nar)
+                with self.assertRaises(ValueError): current.inventory_binding(inventory,after[1],after[3],after[4],receipt)
+            finally:
+                root.chmod(0o700)
 
     def test_selection_schema_refuses_foreign_original_receipt(self):
         epoch='00000000-0000-0000-0000-000000000001'

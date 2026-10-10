@@ -1163,7 +1163,8 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
     run_args = ['--run_env=OMUX_SDK_EXPORT_EPOCH='+str(run),
                 '--run_env=OMUX_EXECUTION_GUARD='+str(run)] if sdk_export_run else []
     # Exactly one finite writer; no caller argv or other RUN labels admitted.
-    return [bazel, '--batch', '--nosystem_rc', '--nohome_rc',
+    return [bazel, '--batch', '--output_user_root=' + str(Path(run) / 'bazel-user-root'),
+            '--nosystem_rc', '--nohome_rc',
             '--host_jvm_args=-Xmx1536m', '--host_jvm_args=-XX:ActiveProcessorCount=2',
             '--noworkspace_rc', '--output_base=' + str(output_base or run / 'output-base')] + arguments[:1] + [
             '--jobs=2', '--legacy_globbing_threads=' + str(threads['legacy_globbing_threads']),
