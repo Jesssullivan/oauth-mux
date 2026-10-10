@@ -2041,7 +2041,7 @@ python_test(
         "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
         "site_coordinator_qualification.py", "cached_nix_inventory.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
-        + _YOGA_DELIVERY_GUARD_SOURCES,
+        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES,
 )
 
 # Pinned missing-plan grammar and held-FD stream models; no Nix execution.
@@ -2168,7 +2168,7 @@ python_test(
         "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
         "site_coordinator_qualification.py", "cached_nix_inventory.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
-        + _YOGA_DELIVERY_GUARD_SOURCES,
+        + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES,
 )
 
 # Existing installed setup closure, independent of native compiler selectors.

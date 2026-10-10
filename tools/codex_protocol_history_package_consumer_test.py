@@ -173,7 +173,7 @@ class ProtocolHistoryPackageModels(unittest.TestCase):
             parent_source_inventory_sha256=history.PARENT_INVENTORY_SHA,
             patch_sha256=history.PARENT_PATCHES+[history.PATCH_SHA],
             sdk_metadata_qualified=False,native_support=False,native_compile_passed=False,provider_evaluation=False)
-        document={'patch_sha256':report['patch_sha256']}
+        document={'kind':subject.KIND,'patch_sha256':report['patch_sha256']}
         for change in ('kind','extra','patch','claim'):
             value=copy.deepcopy(report)
             if change=='kind':value['kind']='omux-native-source-v1'
