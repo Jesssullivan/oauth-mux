@@ -211,7 +211,9 @@ class PrerequisiteModels(unittest.TestCase):
             with patch.object(http,'SOURCE_ROOT',source),patch.object(http,'CACHE',cache), \
                     patch.object(http,'MODULE_SHA256',hashlib.sha256(module).hexdigest()), \
                     patch.object(http,'LOCK_SHA256',hashlib.sha256(lock).hexdigest()), \
-                    patch.object(http,'DECLARED',tuple(rows)),patch.object(http.kernel.time,'monotonic_ns',return_value=entry):
+                    patch.object(http,'DECLARED',tuple(rows)), \
+                    patch.object(http,'CANONICAL_IDS',((rows[1][0],'https://fixture.example/first https://fixture.example/second'),)), \
+                    patch.object(http.kernel.time,'monotonic_ns',return_value=entry):
                 yield http,root,run,source,payloads,rows,entry,deadline
 
     def test_http_snapshot_copies_only_pinned_bytes_and_actual_derived_command(self):
@@ -288,5 +290,56 @@ class PrerequisiteModels(unittest.TestCase):
                 with patch.object(http.kernel.time,'monotonic_ns',return_value=deadline):
                     with self.assertRaises(ValueError):snapshot.recheck(content=True,cleanup=True)
             finally:snapshot.close()
+
+    def test_real_canonical_id_marker_binds_exact_url_order_and_pinned_payload(self):
+        with self.http_fixture() as (http,root,run,source,payloads,rows,entry,deadline):
+            sha=rows[0][0]
+            first='https://fixture.example/first https://fixture.example/second'
+            second='https://fixture.example/second https://fixture.example/first'
+            source_marker=payloads/sha/http.canonical_marker(first)
+            self.assertFalse(source_marker.exists())  # Legacy CAS file alone is not a canonical-ID hit.
+            snapshots=[]
+            try:
+                for index,canonical in enumerate((first,second)):
+                    epoch=root/('canonical-epoch-'+str(index));epoch.mkdir(mode=0o700)
+                    with patch.object(http,'CANONICAL_IDS',((sha,canonical),)):
+                        snapshot=http.Snapshot(epoch,entry,deadline);snapshots.append(snapshot)
+                    marker=snapshot.path/'content_addressable'/'sha256'/sha/http.canonical_marker(canonical)
+                    self.assertTrue(marker.is_file());self.assertEqual(marker.read_bytes(),b'')
+                    self.assertEqual(marker.stat().st_mode&0o777,0o444)
+                    self.assertEqual(marker.stat().st_nlink,1)
+                    expected='id-'+hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+                    self.assertEqual(marker.name,expected)
+                    self.assertFalse(marker.with_name(http.canonical_marker(second if index==0 else first)).exists())
+                    snapshot.recheck(content=True,cleanup=True)
+                    self.assertEqual(http.digest_file(snapshot.rows[0][2],snapshot.budget,http.MAX_FILE)[0],sha)
+                self.assertNotEqual(snapshots[0].facts()['snapshot_sha256'],snapshots[1].facts()['snapshot_sha256'])
+                self.assertEqual(snapshots[0].facts()['copied_bytes'],snapshots[1].facts()['copied_bytes'])
+                self.assertFalse(snapshots[0].facts()['complete_dependency_closure_proved'])
+            finally:
+                for snapshot in snapshots:snapshot.close()
+            self.assertTrue(all(snapshot.facts()['custody_released'] for snapshot in snapshots))
+
+    def test_real_canonical_id_marker_custody_refuses_missing_extra_or_changed_leaves(self):
+        for mutation in ('missing','extra','nonempty','symlink','hardlink','rebound'):
+            with self.subTest(mutation=mutation),self.http_fixture() as fixture:
+                http,root,run,source,payloads,rows,entry,deadline=fixture
+                snapshot=http.Snapshot(run,entry,deadline)
+                try:
+                    sha,_,name,_,_=snapshot.marker_rows[0]
+                    parent=snapshot.path/'content_addressable'/'sha256'/sha
+                    target=parent/name;parent.chmod(0o755)
+                    if mutation=='missing':target.unlink()
+                    elif mutation=='extra':target.with_name('id-'+'0'*64).write_bytes(b'')
+                    elif mutation=='nonempty':
+                        target.chmod(0o644);target.write_bytes(b'x');target.chmod(0o444)
+                    elif mutation=='symlink':
+                        target.unlink();target.symlink_to(parent/'file')
+                    elif mutation=='hardlink':os.link(target,root/'extra-marker-link')
+                    else:
+                        target.rename(root/'retained-marker');target.write_bytes(b'');target.chmod(0o444)
+                    parent.chmod(0o555)
+                    with self.assertRaises((ValueError,OSError)):snapshot.recheck(content=True,cleanup=True)
+                finally:snapshot.close()
 
 if __name__=='__main__':unittest.main()

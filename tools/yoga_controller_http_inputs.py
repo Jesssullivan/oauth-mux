@@ -336,6 +336,67 @@ DECLARED=(
     ('fda8a652ab3c7d8fee214de05e7a9916d8b28082234e8d2c0094505c5268ed3c',True),
 )
 
+# Default HTTP canonical IDs derive from exact ordered URL inputs, not cache markers.
+# BCR registry mirrors are pinned empty; custom repository downloads without a
+# declared HTTP canonical ID remain outside this finite marker declaration.
+CANONICAL_IDS=(
+    ('01b2e0ef893383a50dbeb13970fe7fa3be36ca3e83259e01649945b09d736985','https://github.com/pinterest/ktlint/releases/download/1.3.0/ktlint'),
+    ('05d1933f0a5ba7d8d6296bb6d5018e7c94fa473ceb10cf198a92ccea19c27b53','https://files.pythonhosted.org/packages/e5/ca/1172b6638d52f2d6caa2dd262ec4c811ba59eee96d54a7701930726bce18/installer-0.7.0-py3-none-any.whl'),
+    ('06367c5178e365ff9d9df48ab28e6b080c344a06f52cb01157df881739d2cb14','https://github.com/bazelbuild/apple_support/releases/download/2.5.4/apple_support.2.5.4.tar.gz'),
+    ('0e1ed4a98f26e718776bd64d053d02bb34d98572ccd03d6ba355112a1205706b','https://github.com/bazelbuild/stardoc/releases/download/0.7.2/stardoc-0.7.2.tar.gz'),
+    ('0e89367f1cb6d93a5a1afea4b55b11ea6b28f63f653b47154153677ca7d4afea','https://github.com/bazel-contrib/supply-chain/releases/download/v0.0.3/supply-chain-v0.0.3.tar.gz'),
+    ('14a225870ab4e91869652cfd69ef2028277fc1dc4910d65d353b62d6e0ae21f4','https://github.com/bazelbuild/rules_proto/releases/download/7.1.0/rules_proto-7.1.0.tar.gz'),
+    ('1692f77d1739bacf3f94337188b78583cf09bab7e420d2dc6c5605a4f86785a1','https://github.com/abseil/abseil-cpp/releases/download/20250814.1/abseil-cpp-20250814.1.tar.gz'),
+    ('1de5b47721fce0af0dd453b3071228fdfc44bd18199826b3f0b03b423aae9f65','https://github.com/bazelbuild/rules_cc/releases/download/0.2.18/rules_cc-0.2.18.tar.gz'),
+    ('20152b14d9a420afc15ace905c02fd6425ddceb084630f3f043b287adf0fcdbd','https://github.com/bazelbuild/rules_apple/releases/download/4.1.0/rules_apple.4.1.0.tar.gz'),
+    ('26d4021f6898e23b82ef953078389dd49ac2b5618ac564ade4ef87cced147b38','https://github.com/bazelbuild/rules_license/releases/download/1.0.0/rules_license-1.0.0.tar.gz'),
+    ('2ddfb553fdf02fb784c234c7ba6ccc288296ceabec964ad2eae3777778130bc5','https://files.pythonhosted.org/packages/49/df/1fceb2f8900f8639e278b056416d49134fb8d84c5942ffaa01ad34782422/packaging-24.0-py3-none-any.whl'),
+    ('30962b96c0c223483ed6cc7280e7f0199feb01a0e40cfae4d4450fc6fab1f570','https://files.pythonhosted.org/packages/2d/0a/679461c511447ffaf176567d5c496d1de27cbe34a87df6677d7171b2fbd4/importlib_metadata-7.1.0-py3-none-any.whl'),
+    ('31b206f67165b3536dd577c5c3f1518e8fbaf38cbc57efff8369a392feff1721','https://files.pythonhosted.org/packages/25/6e/ca4a5434eb0e502210f591b97537d322546e4833dcb4d470a48c375c5540/pep517-0.13.1-py3-none-any.whl'),
+    ('3b5b49006181f5f8ff626ef8ddceaa95e9bb8ad294f7b5d7b11ea9f7ddaf8c59','https://github.com/bazelbuild/bazel-skylib/releases/download/1.9.0/bazel-skylib-1.9.0.tar.gz'),
+    ('3b772976fec7bdcda1d84b9d39b176589424c047eb2175bed09aac630e50af43','https://github.com/bazelbuild/rules_kotlin/releases/download/v1.9.6/rules_kotlin-v1.9.6.tar.gz'),
+    ('42f5ac4d1fb7c55ad4073dc462b02d485ace4da6d7fc29b35acfa99e28f2cb7d','https://codeberg.org/ziglang/arocc/archive/d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz'),
+    ('465ec33805d3b964abe5fc58a0cb0da2da5bbeefe881ea155940df542ae38c39','https://codeberg.org/ziglang/translate-c/archive/0da7a16c3235b935b82421646076e0657cda21f6.tar.gz'),
+    ('4c690e5fbae2f21e87843e89c26191f0d9454f362d8acdbd695716493ec8b3a9','https://files.pythonhosted.org/packages/0d/dc/38f4ce065e92c66f058ea7a368a9c5de4e702272b479c0992059f7693941/pip_tools-7.4.1-py3-none-any.whl'),
+    ('4d964f874b251abc280ee28f0f187de3c13a6122a9561524f66a10768ca2d837','https://github.com/apple/swift-argument-parser/archive/refs/tags/1.3.1.tar.gz'),
+    ('4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6','https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl'),
+    ('55c570405f142630c6b9f72fe09d9b67cf1477fcf543ae5b8dcb1f5b7377da81','https://files.pythonhosted.org/packages/7d/cd/d7460c9a869b16c3dd4e1e403cce337df165368c71d6af229a74699622ce/wheel-0.43.0-py3-none-any.whl'),
+    ('5eff717c18bb513285b499add68f2331509cd4e411ff085e96a86b3342c1e5aa','https://github.com/bazelbuild/rules_swift/releases/download/3.1.2/rules_swift.3.1.2.tar.gz'),
+    ('6461c1c5744442b394f46645957d6bd3420eb1b421908fe63caa03091b1b3655','https://github.com/bazelbuild/rules_android/archive/refs/tags/v0.1.1.tar.gz'),
+    ('65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c','https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz'),
+    ('686b06abe565edfab151cb8fd385a05651e1fdf8f0a14191e4439283421f8684','https://files.pythonhosted.org/packages/50/e2/8e10e465ee3987bb7c9ab69efb91d867d93959095f4807db102d07995d94/more_itertools-10.2.0-py3-none-any.whl'),
+    ('687e98a471973b5c5fd711750c40b8b82c0ade33f649db65e00b290f29345a2b','https://github.com/protocolbuffers/protobuf/releases/download/v33.4/protobuf-33.4.bazel.tar.gz'),
+    ('69cc88207ce91347ea530b227ff0776db82dcb8de6704e1a3d74f4841bc651cf','https://github.com/nlohmann/json/releases/download/v3.6.1/include.zip'),
+    ('6fd3b1e1a38ca744f9664be4627ced80895c7d2ee353891c172f1ab61309c933','https://github.com/bazel-contrib/bazel-lib/releases/download/v3.0.0/bazel-lib-v3.0.0.tar.gz'),
+    ('75e10f767a433d9a86e50d83f418e83efc18ede923ee5ff7df93b6cb0306c5d4','https://files.pythonhosted.org/packages/e2/03/f3c8ba0a6b6e30d7d18c40faab90807c9bb5e9a1e3b2fe2008af624a9c97/build-1.2.1-py3-none-any.whl'),
+    ('7b63435aa19cc6a0cfd1a82fbdf2c7a2f0a94db1a79ff7a4469ffa94286261ab','https://github.com/bazel-contrib/jq.bzl/releases/download/v0.1.0/jq.bzl-v0.1.0.tar.gz'),
+    ('7ceeefe9aec63a1064c18d939bdc3adf2d8aa1988a510afec15151578b232aa2','https://files.pythonhosted.org/packages/ae/f3/431b9d5fe7d14af7a32340792ef43b8a714e7726f1d7b69cc4e8e7a3f1d7/pyproject_hooks-1.1.0-py3-none-any.whl'),
+    ('865b3d334bd0f769587737447410d8042d6a95134cc45be5380805fdbacd7152','https://github.com/bazelbuild/rules_java/releases/download/9.0.3/rules_java-9.0.3.tar.gz'),
+    ('939de3e7a6161af0c887ef91b7d41a53e7c5a1ca976325f429cb46ea9bc30ecc','https://files.pythonhosted.org/packages/97/75/10a9ebee3fd790d20926a90a2547f0bf78f371b2f13aa822c759680ca7b9/tomli-2.0.1-py3-none-any.whl'),
+    ('94e192033ca8027f26de71c9000a67ef9c73695c2b88e2c559045170917ead0c','https://github.com/bazel-contrib/bazel-lib/releases/download/v2.22.5/bazel-lib-v2.22.5.tar.gz'),
+    ('9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23','https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz'),
+    ('a1e351607f04fed296ba33c4977d3fe2a615ed50df7896676b67aac993c53c18','https://github.com/bazel-contrib/rules_jvm_external/releases/download/6.7/rules_jvm_external-6.7.tar.gz'),
+    ('a58c25c5fe063a70057fa20cb8e15f3bda19b1030305bcb533af1e45f36a4a55','https://github.com/pybind/pybind11_bazel/releases/download/v2.12.0/pybind11_bazel-2.12.0.zip'),
+    ('a835fe55fbdcd8e80f38584ab22d0840662c67f2feb36bd679402da9641dc71e','https://github.com/google/re2/releases/download/2024-07-02/re2-2024-07-02.zip'),
+    ('ae74fb96c20a0277a1d615f1e4d73c8414f5a98db8b799a7931d1582f3390c28','https://files.pythonhosted.org/packages/00/2e/d53fa4befbf2cfa713304affc7ca780ce4fc1fd8710527771b58311a3229/click-8.1.7-py3-none-any.whl'),
+    ('b47e3c83a0c1440ce335aa1ae18753da6eb7cd551d4946fa303de2abde07e20b','https://github.com/bazel-contrib/tar.bzl/releases/download/v0.5.1/tar.bzl-v0.5.1.tar.gz'),
+    ('b51d82b561a78ab21d265107b0edbf98d68a390b4103992d0b03258bb3819601','https://github.com/bazel-contrib/yq.bzl/releases/download/v0.1.1/yq.bzl-v0.1.1.tar.gz'),
+    ('ba0d021a166865d2265246961bec0152ff124de910c5cc39f1156ce3fa7c69dc','https://files.pythonhosted.org/packages/8a/6a/19e9fe04fca059ccf770861c7d5721ab4c2aebc539889e97c7977528a53b/pip-24.0-py3-none-any.whl'),
+    ('bd0786e0f8b6aed8c35898b4c06f64ba853d61d7c8361edb5a8d43c6ea37f5c6','https://github.com/fmeum/buildozer/releases/download/v8.5.1/buildozer-v8.5.1.tar.gz'),
+    ('c26b4e69cf02fea24511a108d158188b9d8174426311aac59ce803a78d107648','https://github.com/bazel-contrib/bazel_features/releases/download/v1.43.0/bazel_features-v1.43.0.tar.gz'),
+    ('c3a9c4211ff4c309edb8b8c4f1cbfa7ae324c4ba9f91ff254e3d305b9fd54561','https://files.pythonhosted.org/packages/90/99/158ad0609729111163fc1f674a5a42f2605371a4cf036d0441070e2f7455/setuptools-78.1.1-py3-none-any.whl'),
+    ('cd06d15dd8bb59926e4d65f9003bfc20f9da4b2519985c27e190cddc8b7a7806','https://github.com/bazelbuild/rules_android/archive/v0.1.1.zip'),
+    ('d20c951960ed77cb7b341c2a59488534e494d5ad1d30c4818c736d57772a9fef','https://github.com/bazelbuild/rules_pkg/releases/download/1.0.1/rules_pkg-1.0.1.tar.gz'),
+    ('dbad4a23abcca6171e47b79edc53bd6a41067a3b75f9e8b104656b459ff25046','https://github.com/bazelbuild/platforms/releases/download/1.1.0/platforms-1.1.0.tar.gz'),
+    ('dce197b859eb796242b0622af1b8beb0a722d52aa2f57133ead08edd5bf5374e','https://files.pythonhosted.org/packages/da/55/a03fd7240714916507e1fcf7ae355bd9d9ed2e6db492595f1a67f61681be/zipp-3.18.2-py3-none-any.whl'),
+    ('e6b87c89bd0b27039e3af2c5da01147452f240f75d505f5b6880874f31036307','https://github.com/bazelbuild/rules_shell/releases/download/v0.6.1/rules_shell-v0.6.1.tar.gz'),
+    ('f609f341d6e9090b981b3f45324d05a819fd7a5a56434f849c761971ce2c47da','https://github.com/bazel-contrib/rules_python/releases/download/1.7.0/rules_python-1.7.0.tar.gz'),
+    ('f8c3486509de705192138b00ef2c00bbbdd0e84c30d5c07d23fc73a9dc4cc9cc','https://ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz'),
+    ('f93b6dd7ce796b13d02c108bc9f79812245a82e577581c4c9aabe57075c90ea2','https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/1.9.6.tar.gz'),
+    ('fca665e2431e02de2b0c7aeb21f9f566a3833f9687f31e0fe986c486bacc9647','https://github.com/hermeticbuild/rules_zig/archive/c81e777fe398186c9f0251ba1332a1d56f30d094.tar.gz'),
+)
+MAX_CANONICAL_IDS=256
+
 def require(value):
     if not value:raise ValueError('fixed-yoga-controller-http-inputs-refused')
 
@@ -391,14 +452,32 @@ def digest_file(descriptor,budget,maximum,output=None):
     require(size==before.st_size and identity(before)==identity(os.fstat(descriptor)))
     return value.hexdigest(),size
 
+def canonical_marker(canonical_id):
+    require(type(canonical_id) is str and 0<len(canonical_id)<=32768 and '\x00' not in canonical_id)
+    return 'id-'+hashlib.sha256(canonical_id.encode('utf-8')).hexdigest()
+
+def zero_marker(descriptor,budget):
+    budget();before=os.fstat(descriptor)
+    require(stat.S_ISREG(before.st_mode) and before.st_uid==os.getuid()
+        and before.st_nlink==1 and stat.S_IMODE(before.st_mode)==0o444 and before.st_size==0)
+    os.lseek(descriptor,0,os.SEEK_SET)
+    require(os.read(descriptor,1)==b'' and identity(before)==identity(os.fstat(descriptor)))
+
 class Snapshot:
     def __init__(self,run,entry,deadline):
         self.entry,self.deadline=entry,deadline
         self.path=cache_path(run);self.held=[];self.parents=[];self.names=[]
-        self.rows=[];self.links=[];self.missing=0;self.total=0;self.verified_after_cleanup=False;self.custody_released=False
+        self.rows=[];self.marker_rows=[];self.marker_names={};self.links=[];self.missing=0;self.total=0;self.verified_after_cleanup=False;self.custody_released=False
         try:
             self.budget()
             require(len(DECLARED)<=512 and len({sha for sha,_ in DECLARED})==len(DECLARED))
+            require(len(CANONICAL_IDS)<=MAX_CANONICAL_IDS)
+            declared={sha for sha,_ in DECLARED}
+            for sha,canonical_id in CANONICAL_IDS:
+                require(sha in declared)
+                marker=canonical_marker(canonical_id)
+                names=self.marker_names.setdefault(sha,[])
+                require(marker not in names);names.append(marker)
             # Bind copied bytes to the exact locked source family.
             source,names=directories(SOURCE_ROOT)
             try:
@@ -448,6 +527,19 @@ class Snapshot:
                             os.fchmod(output,0o444)
                             os.fsync(output)
                         finally:os.close(output)
+                        # Publish only declared URL bindings after the payload digest matched.
+                        # These zero-byte entries are derived, never copied/discovered from origin cache.
+                        for marker in self.marker_names.get(expected,()):
+                            self.budget()
+                            output_marker=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,
+                                0o600,dir_fd=destination)
+                            try:
+                                os.fchmod(output_marker,0o444);os.fsync(output_marker)
+                            finally:os.close(output_marker)
+                            marker_capture=os.open(marker,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=destination)
+                            self.held.append(marker_capture)
+                            zero_marker(marker_capture,self.budget)
+                            self.marker_rows.append((expected,destination,marker,marker_capture,identity(os.fstat(marker_capture))))
                         os.fchmod(destination,0o555)
                         capture=os.open('file',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=destination)
                         self.held.append(capture)
@@ -489,12 +581,17 @@ class Snapshot:
         members(root,('content_addressable',),budget);members(content_root,('sha256',),budget)
         members(hashes,{sha for sha,_,_,_ in self.rows},budget)
         for sha,directory,descriptor,before in self.rows:
-            members(directory,('file',),budget)
+            members(directory,{'file',*self.marker_names.get(sha,())},budget)
             self.budget(cleanup)
             require(identity(os.fstat(descriptor))==before==
                 identity(os.stat('file',dir_fd=directory,follow_symlinks=False)))
             if content:
                 require(digest_file(descriptor,lambda:self.budget(cleanup),MAX_FILE)[0]==sha)
+        for sha,directory,marker,descriptor,before in self.marker_rows:
+            self.budget(cleanup)
+            require(identity(os.fstat(descriptor))==before==
+                identity(os.stat(marker,dir_fd=directory,follow_symlinks=False)))
+            zero_marker(descriptor,lambda:self.budget(cleanup))
         if cleanup and content:self.verified_after_cleanup=True
 
     def binding(self):
@@ -510,7 +607,8 @@ class Snapshot:
             'module_sha256':MODULE_SHA256,'lock_sha256':LOCK_SHA256,
             'declared_inputs':len(DECLARED),'copied_files':len(self.rows),'copied_bytes':self.total,
             'missing_optional_inputs':self.missing,'verified_after_cleanup':self.verified_after_cleanup,
-            'snapshot_sha256':hashlib.sha256(json.dumps([(sha,before[5]) for sha,_,_,before in self.rows],
+            'snapshot_sha256':hashlib.sha256(json.dumps([(sha,before[5]) for sha,_,_,before in self.rows]+
+                [('canonical-id',sha,marker,0) for sha,_,marker,_,_ in self.marker_rows],
                 separators=(',',':')).encode()).hexdigest(),'custody_released':self.custody_released,
             'downloads_allowed':False,'complete_dependency_closure_proved':False}
 
