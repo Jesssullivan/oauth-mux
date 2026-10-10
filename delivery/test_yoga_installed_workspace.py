@@ -308,6 +308,23 @@ class InstalledWorkspaceTests(unittest.TestCase):
         self.assertEqual(reserved['delivery/BUILD.bazel'],original['delivery/BUILD.bazel'])
         self.assertEqual(installed.SOURCE_COMMIT,'c106a52523d2161063a6a58d6d29a8f86039f827')
 
+    def test_constructor_target_preserves_native_origin_and_exact_copied_asset_index(self):
+        mapping = {'_main/tools/yoga_installed_console_prepare.py': '/srv/model/tools/yoga_installed_console_prepare.py',
+                   '_main/tools/yoga_installed_console_selection.py': '/srv/model/tools/yoga_installed_console_selection.py',
+                   '_main/tools/yoga_local_parent_envelope.py': '/srv/model/tools/yoga_local_parent_envelope.py'}
+        copied = {'f%06d' % index: 'tools/'+key.rsplit('/',1)[1] for index,key in enumerate(sorted(mapping))}
+        before = installed.build_files(mapping, copied, {}, reserved=True, console=True)
+        after = installed.build_files(mapping, copied, {}, reserved=True, console=True, prepare=True)
+        self.assertEqual(after['delivery/BUILD.bazel'], before['delivery/BUILD.bazel'])
+        self.assertEqual(after['installed-store-files.json'], before['installed-store-files.json'])
+        self.assertEqual(after['MODULE.bazel'], before['MODULE.bazel'])
+        self.assertIn(b'yoga_installed_console_prepare.sh', after['BUILD.bazel'])
+        self.assertIn(b"name = 'yoga_installed_console_prepare'", after['tools/BUILD.bazel'])
+        for key in mapping:
+            self.assertIn(key.encode(), after['tools/BUILD.bazel'])
+        with self.assertRaises(ValueError):
+            installed.build_files(mapping, copied, {}, reserved=True, prepare=True)
+
     def test_console_fourth_target_requires_reserved_and_preserves_origin(self):
         mapping={'_main/tools/yoga_local_console_qualification.py':'/srv/root/tools/yoga_local_console_qualification.py'}
         copied={'f000000':'tools/yoga_local_console_qualification.py'}

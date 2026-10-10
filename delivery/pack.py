@@ -77,7 +77,8 @@ def make_bundle(binary: Path, daemon: Path, reference: Path, systemd_template: P
                 runtime_files: list[Path] | None = None, patchelf: Path | None = None,
                 ca_bundle: Path | None = None, control: Path | None = None,
                 qt_plugins: list[Path] | None = None, resolution_witness: dict | None = None,
-                qt_runtime_files: list[Path] | None = None, channel: str | None = None) -> bytes:
+                qt_runtime_files: list[Path] | None = None, channel: str | None = None,
+                action_deadline: float | None = None) -> bytes:
     if channel is not None and channel not in {"development", "release"}:
         raise ValueError("unsupported artifact channel")
     if channel is not None and runtime_files is None:
@@ -128,7 +129,7 @@ def make_bundle(binary: Path, daemon: Path, reference: Path, systemd_template: P
         runtime_payload, runtime = assemble_linux(binary, daemon, runtime_files, patchelf, target, ca_bundle,
                                                   control=control, qt_plugins=qt_plugins,
                                                   resolution_witness=resolution_witness, qt_runtime_files=qt_runtime_files,
-                                                  channel=channel)
+                                                  channel=channel, action_deadline=action_deadline)
         files.update(runtime_payload)
         distribution = "portable-linux"
     manifest = {

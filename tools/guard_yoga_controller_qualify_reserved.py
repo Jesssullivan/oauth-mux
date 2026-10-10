@@ -9,10 +9,13 @@ PROFILE='yoga-controller-qualify-reserved'
 STATE_PROFILE='yoga-controller-delivery'
 INSPECT_PROFILE='yoga-controller-inspect-reserved'
 VERIFY_PROFILE='yoga-controller-verify-reserved'
+COMPANION_PROFILE='yoga-wrapper-companion-reserved'
 READONLY_PROFILES=(INSPECT_PROFILE,VERIFY_PROFILE)
+PRIOR_PROFILES=(*READONLY_PROFILES,COMPANION_PROFILE)
 ROLES={PROFILE:'//tools:yoga_controller_qualify',
     INSPECT_PROFILE:'//tools:yoga_controller_inspect',
-    VERIFY_PROFILE:'//tools:yoga_controller_verify'}
+    VERIFY_PROFILE:'//tools:yoga_controller_verify',
+    COMPANION_PROFILE:'//tools:yoga_wrapper_companion'}
 PROFILES=tuple(ROLES)
 ARGUMENTS=['run',ROLES[PROFILE]]
 STATE,COORDINATION=readonly.profile.STATE,readonly.profile.COORDINATION
@@ -28,8 +31,9 @@ remaining=kernel.remaining
 SCOPE='fixed-yoga-controller-qualify-reservation-v1'
 
 def selected(profile,arguments):
-    kernel.require(profile in PROFILES and arguments==['run',ROLES[profile]])
-    return {'PrivateNetwork':'no'}
+    kernel.require(profile in PROFILES and arguments==[
+        'test' if profile==COMPANION_PROFILE else 'run',ROLES[profile]])
+    return {'PrivateNetwork':'yes' if profile==COMPANION_PROFILE else 'no'}
 
 def request(args,arguments):
     if args.profile not in PROFILES:return False
@@ -37,10 +41,14 @@ def request(args,arguments):
     allowed={'profile','manager','arguments','python','systemd_run','systemctl','bazel','closure',
         'bootstrap_closure','zig_sdk','java_home','source_commit','source_dirty','state_dir',
         'coordination_dir','become_file','initialize_state_dir'}
-    if args.profile in READONLY_PROFILES:
+    if args.profile in PRIOR_PROFILES:
         allowed.add('yoga_delivery_epoch')
         kernel.require(type(getattr(args,'yoga_delivery_epoch',None)) is str
             and readonly.UUID.fullmatch(args.yoga_delivery_epoch) is not None)
+    if args.profile==COMPANION_PROFILE:
+        allowed.update(('yoga_wrapper_request','yoga_wrapper_request_sha256'))
+        from yoga_wrapper_companion_inputs import selection
+        selection(args.yoga_wrapper_request,args.yoga_wrapper_request_sha256)
     kernel.require(args.manager=='system'
         and not any(value for name,value in vars(args).items() if name not in allowed)
         and type(args.source_commit) is str and re.fullmatch('[a-f0-9]{40}',args.source_commit) is not None
@@ -48,7 +56,8 @@ def request(args,arguments):
         and Path(args.state_dir)==STATE and Path(args.coordination_dir)==COORDINATION)
     return True
 
-def command(builder,bazel,run,arguments,profile,entry,deadline,*,prior=None,**kwargs):
+def command(builder,bazel,run,arguments,profile,entry,deadline,*,prior=None,
+            wrapper_request=None,graph=None,lock=None,**kwargs):
     selected(profile,arguments);remaining(entry,deadline)
     kernel.require(kwargs.get('repository_cache') is None and kwargs.get('nixpkgs_source') is None
         and kwargs.get('output_base') is None)
@@ -65,6 +74,27 @@ def command(builder,bazel,run,arguments,profile,entry,deadline,*,prior=None,**kw
             and prior['path']==str(STATE/prior['producer_epoch']/'qualification.json')
             and all(type(prior[key]) is str and re.fullmatch('[a-f0-9]{64}',prior[key]) is not None
                 for key in ('sha256','producer_receipt_sha256')))
+    if profile==COMPANION_PROFILE:
+        import json
+        kernel.require(wrapper_request is not None and type(graph) is str
+            and re.fullmatch('[a-f0-9]{64}',graph) is not None and type(lock) is dict)
+        wrapper_request.recheck()
+        facts=wrapper_request.facts()
+        result=builder(bazel,run,arguments,profile='standard',**kwargs)
+        values={'OMUX_YOGA_WRAPPER_REQUEST':str(wrapper_request.path),
+            'OMUX_YOGA_WRAPPER_REQUEST_SHA256':facts['request_sha256'],
+            'OMUX_YOGA_WRAPPER_PRIOR':json.dumps(prior,sort_keys=True,separators=(',',':')),
+            'OMUX_YOGA_WRAPPER_SOURCE_COMMIT':kwargs['source_commit'],
+            'OMUX_YOGA_WRAPPER_GRAPH_SHA256':graph,
+            'OMUX_YOGA_WRAPPER_LOCK_WITNESS':json.dumps(lock,sort_keys=True,separators=(',',':')),
+            kernel.ENTRY:str(entry),kernel.DEADLINE:str(deadline)}
+        index=result.index('test')+1
+        result[index:index]=['--repository_disable_download','--repo_contents_cache=',
+            '--repository_cache='+str(http_inputs.cache_path(run)),
+            '--sandbox_default_allow_network=false',
+            *['--test_env='+key+'='+value for key,value in sorted(values.items())]]
+        return result
+    kernel.require(wrapper_request is None and graph is None and lock is None)
     from execution_guard import yoga_delivery_command
     result,_=yoga_delivery_command(bazel,run,arguments,deadline,prior,**kwargs)
     index=result.index('run')+1
@@ -139,11 +169,28 @@ def prior_receipt(receipt,epoch,graph,base_limits,lock,*,source_commit):
     return readonly.prior_receipt(common,epoch,graph,base_limits,lock)
 
 # Persisted receipt, graph, role, source, limits and epoch remain untouched.
-finite=readonly.finite
+def finite(arguments,manager,epoch,unrelated):
+    if arguments==['test',ROLES[COMPANION_PROFILE]]:
+        kernel.require(manager=='system' and not any(unrelated)
+            and type(epoch) is str and readonly.UUID.fullmatch(epoch) is not None)
+    else:
+        readonly.finite(arguments,manager,epoch,unrelated)
 tools=readonly.tools
 budget=readonly.budget
 lock_witness=readonly.lock_witness
-finish=readonly.finish
+def finish(run,arguments,workload_exit,empty,source_verified,deadline,lock):
+    if arguments!=['test',ROLES[COMPANION_PROFILE]]:
+        return readonly.finish(run,arguments,workload_exit,empty,source_verified,deadline,lock)
+    readonly.budget(deadline)
+    return {'mode':'wrapper-companion-metadata','controller_tools':readonly.TOOLS,
+        'source_verified_after_cleanup':source_verified,'qualification':None,
+        'coordination_lock_witness':lock,'copy_performed':False,
+        'remote_owned_containment_verified':False,'remote_cleanup':'unknown'}
+
+def companion_projection(entry,deadline,verified,resident):
+    return dict(projection(entry,deadline,verified,resident),
+        scope='fixed-yoga-wrapper-companion-reservation-v1',metadata_only=True,
+        remote_mutation=False,provider_identity_proved=False)
 
 def runtime_seconds(deadline):
     return int(remaining(deadline-1200*10**9,deadline))

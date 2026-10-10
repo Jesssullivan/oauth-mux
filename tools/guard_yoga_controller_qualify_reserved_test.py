@@ -14,6 +14,64 @@ import guard_yoga_controller_qualify_reserved as route
 import yoga_delivery_settings as readonly
 
 class PrerequisiteModels(unittest.TestCase):
+    def test_companion_is_exact_test_with_request_and_current_q_epoch(self):
+        profile=route.COMPANION_PROFILE
+        arguments=['test','//tools:yoga_wrapper_companion']
+        args=self.args();args.profile=profile
+        args.yoga_delivery_epoch='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        args.yoga_wrapper_request=Path('/home/jess/.local/state/omux-execution-20261005/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/wrapper-request.json')
+        args.yoga_wrapper_request_sha256='c'*64
+        self.assertTrue(route.request(args,arguments))
+        self.assertEqual(route.selected(profile,arguments),{'PrivateNetwork':'yes'})
+        for name,value in (('yoga_delivery_epoch',None),('yoga_wrapper_request_sha256','x'),
+                ('yoga_wrapper_request',Path('/tmp/request.json')),('reuse_owned_cache',True)):
+            bad=SimpleNamespace(**vars(args));setattr(bad,name,value)
+            with self.assertRaises(ValueError):route.request(bad,arguments)
+        with patch.object(guard,'immutable',side_effect=AssertionError('tool read')) as tool:
+            for wrong in (['run',arguments[1]],arguments+['//:docs_check'],arguments[:-1],
+                    arguments+['--test_env=UNTRUSTED=1']):
+                with self.assertRaises(ValueError):
+                    guard.main(['--profile',profile,'--manager','system','--source-commit','a'*40,
+                        '--source-dirty','false','--',*wrong])
+            tool.assert_not_called()
+
+    def test_companion_real_builder_transports_only_original_bound_guard_authority(self):
+        import json
+        from unittest.mock import Mock
+        entry=time.monotonic_ns();deadline=entry+1200*10**9
+        prior={'path':str(route.STATE/'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'/'qualification.json'),
+            'sha256':'c'*64,'producer_epoch':'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+            'producer_receipt_sha256':'d'*64,'directory_identity':[], 'receipt_identity':[],
+            'qualification_identity':[], 'ancestor_identities':[]}
+        request=Mock(path=Path('/model/public/request.json'))
+        request.facts.return_value={'request_sha256':'e'*64}
+        command=route.command(guard.bazel_command,'bazel',Path('/model/run'),
+            ['test',route.ROLES[route.COMPANION_PROFILE]],route.COMPANION_PROFILE,entry,deadline,
+            prior=prior,wrapper_request=request,graph='f'*64,lock={'fixture':True},
+            source_commit='a'*40,source_dirty='false')
+        request.recheck.assert_called_once_with()
+        env=dict(value.removeprefix('--test_env=').split('=',1) for value in command if value.startswith('--test_env='))
+        self.assertEqual(set(env),{'OMUX_YOGA_WRAPPER_REQUEST','OMUX_YOGA_WRAPPER_REQUEST_SHA256',
+            'OMUX_YOGA_WRAPPER_PRIOR','OMUX_YOGA_WRAPPER_SOURCE_COMMIT','OMUX_YOGA_WRAPPER_GRAPH_SHA256',
+            'OMUX_YOGA_WRAPPER_LOCK_WITNESS',route.kernel.ENTRY,route.kernel.DEADLINE})
+        self.assertEqual(json.loads(env['OMUX_YOGA_WRAPPER_PRIOR']),prior)
+        self.assertEqual(env[route.kernel.ENTRY],str(entry))
+        self.assertEqual(env[route.kernel.DEADLINE],str(deadline))
+        for value in ('--repository_disable_download','--repo_contents_cache=',
+                '--sandbox_default_allow_network=false','--remote_executor=','--remote_cache=','--nocache_test_results'):
+            self.assertIn(value,command)
+        self.assertEqual(command[-1],route.ROLES[route.COMPANION_PROFILE])
+        self.assertEqual(guard.workload_pids_observation(None,route.COMPANION_PROFILE).expected_limit,480)
+        row=route.companion_projection(entry,deadline,False,{})
+        self.assertIs(row['metadata_only'],True)
+        for key in ('copy_performed','installation_qualified','seat_qualified','toolbar_consent_proved',
+                'credential_acquisition','remote_mutation','provider_identity_proved'):
+            self.assertIs(row[key],False)
+        with self.assertRaises(ValueError):
+            route.command(Mock(),'bazel',Path('/model/run'),['test',route.ROLES[route.COMPANION_PROFILE]],
+                route.COMPANION_PROFILE,entry,deadline+1,prior=prior,wrapper_request=request,
+                graph='f'*64,lock={},source_commit='a'*40,source_dirty='false')
+
     def args(self):
         return SimpleNamespace(profile=route.PROFILE,manager='system',source_commit='a'*40,
             source_dirty='false',state_dir=route.STATE,coordination_dir=route.COORDINATION)
@@ -588,5 +646,7 @@ class PrerequisiteModels(unittest.TestCase):
                     parent.chmod(0o555)
                     with self.assertRaises((ValueError,OSError)):snapshot.recheck(content=True,cleanup=True)
                 finally:snapshot.close()
+
+from yoga_wrapper_companion_test import Models as WrapperCompanionModels
 
 if __name__=='__main__':unittest.main()

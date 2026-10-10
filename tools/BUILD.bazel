@@ -55,7 +55,7 @@ _CODEX_GIT_INPUT_SOURCES = _CODEX_SDK_SOURCES + [
     "codex_dependency_bundle.py", "codex_dependency_union.py", "codex_repository_inputs.py",
 ]
 
-_YOGA_DELIVERY_GUARD_SOURCES = ['yoga_controller_http_inputs.py', 'guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
+_YOGA_DELIVERY_GUARD_SOURCES = ['yoga_wrapper_companion_inputs.py', 'yoga_controller_http_inputs.py', 'guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
     'yoga_executable_qualification.py','guard_yoga_install_inputs_profile.py',
     'yoga_install_inputs_receiver.py','yoga_install_inputs_stage.py',
     'guard_yoga_controller_qualify_reserved.py','guard_yoga_sealed_transfer_profile.py','guard_yoga_sealed_transfer_models_reserved.py','yoga_sealed_transfer_schema.py',
@@ -68,7 +68,7 @@ _YOGA_GUARD_SOURCES = [
     "guard_yoga_toolbar_reserved.py",
     "guard_yoga_installed_workspace.py", "guard_yoga_installed_producer.py",
     "guard_yoga_installed_reserved.py", "yoga_installed_controller_support.py",
-    "guard_yoga_profile.py", "yoga_display_binding.py", "yoga_proof_inputs.py",
+    "guard_yoga_profile.py", "yoga_python_role_alias.py", "yoga_wrapper_companion_capture.py", "yoga_display_binding.py", "yoga_proof_inputs.py",
     "yoga_operator_coordinator.py", "yoga_operator_launch.py",
     "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py",
 ]
@@ -297,7 +297,7 @@ python_test(
             "guard_yoga_toolbar_reserved.py", "guard_native_seed_plan_reserved.py",
             "guard_resident_observation.py", "guard_resident_enrollment_profile.py",
             "guard_yoga_installed_workspace.py", "yoga_installed_controller_support.py",
-            "yoga_display_binding.py", "yoga_proof_inputs.py", "guard_yoga_profile.py", "system_mask_policy.py",
+            "yoga_display_binding.py", "yoga_proof_inputs.py", "guard_yoga_profile.py", "yoga_python_role_alias.py", "yoga_wrapper_companion_capture.py", "system_mask_policy.py",
             "//delivery:yoga_wrapper_authority.py", "//delivery:yoga_wrapper_custody.py"],
     target_compatible_with = ["@platforms//os:linux"],
 )
@@ -312,7 +312,7 @@ python_test(
 python_binary(
     name = "yoga_session_qualification",
     main = "yoga_session_qualification.py",
-    srcs = ["guard_yoga_profile.py", "system_mask_policy.py", "yoga_display_binding.py",
+    srcs = ["guard_yoga_profile.py", "yoga_python_role_alias.py", "yoga_wrapper_companion_capture.py", "system_mask_policy.py", "yoga_display_binding.py",
             "guard_yoga_toolbar_reserved.py", "guard_native_seed_plan_reserved.py",
             "guard_resident_observation.py", "guard_resident_enrollment_profile.py",
             "guard_yoga_installed_workspace.py", "yoga_installed_controller_support.py",
@@ -324,7 +324,7 @@ python_binary(
 python_test(
     name = "yoga_session_qualification_test",
     main = "yoga_session_qualification_test.py",
-    srcs = ["yoga_session_qualification.py", "guard_yoga_profile.py", "system_mask_policy.py",
+    srcs = ["yoga_session_qualification.py", "guard_yoga_profile.py", "yoga_python_role_alias.py", "yoga_wrapper_companion_capture.py", "system_mask_policy.py",
             "guard_yoga_toolbar_reserved.py", "guard_native_seed_plan_reserved.py",
             "guard_resident_observation.py", "guard_resident_enrollment_profile.py",
             "guard_yoga_installed_workspace.py", "yoga_installed_controller_support.py",
@@ -1186,7 +1186,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_home_manager_bundle_reserved.py','guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_current_home_manager_artifact_reserved.py','guard_home_manager_bundle_reserved.py','guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -2429,7 +2429,25 @@ python_binary(name = "yoga_local_console_qualification", main = "yoga_local_cons
     srcs = _YOGA_LOCAL_CONSOLE_SOURCES,
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
 python_test(name = "yoga_local_console_scope_test", main = "yoga_local_console_scope_test.py",
-    srcs = _YOGA_LOCAL_CONSOLE_SOURCES + ["yoga_local_console_qualification.py"],
+    srcs = _YOGA_LOCAL_CONSOLE_SOURCES + ["yoga_local_console_qualification.py",
+        "yoga_installed_console_selection.py", "yoga_installed_console_prepare.py",
+        "yoga_installed_console_selection_test.py", "yoga_local_parent_envelope.py",
+        "yoga_local_parent_envelope_test.py"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
+
+# Fresh attended local-console preparation; no browser/profile/credential reads.
+_YOGA_INSTALLED_CONSOLE_PREPARE_SOURCES = _YOGA_LOCAL_CONSOLE_SOURCES + [
+    "yoga_installed_console_selection.py", "yoga_local_parent_envelope.py",
+]
+python_binary(name = "yoga_installed_console_prepare", main = "yoga_installed_console_prepare.py",
+    srcs = _YOGA_INSTALLED_CONSOLE_PREPARE_SOURCES,
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
+python_test(name = "yoga_installed_console_selection_test", main = "yoga_installed_console_selection_test.py",
+    srcs = _YOGA_INSTALLED_CONSOLE_PREPARE_SOURCES + ["yoga_installed_console_prepare.py"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
+python_test(name = "yoga_local_parent_envelope_test", main = "yoga_local_parent_envelope_test.py",
+    srcs = _YOGA_LOCAL_CONSOLE_SOURCES + ["yoga_local_parent_envelope.py"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
 
 # Seventh source-only lineage; no SDK/compiler/schema/native admission.
@@ -2507,10 +2525,32 @@ python_test(
     tags=['manual','no-remote','no-cache'],target_compatible_with=['@platforms//os:linux'],
 )
 
+# Complete companion producer closure is frozen before source inventory/seal.
+_YOGA_WRAPPER_COMPANION_SOURCES = depset(_NATIVE_ACQUISITION_MODEL_SOURCES + [
+    'yoga_wrapper_companion.py','yoga_wrapper_companion_inputs.py',
+    'yoga_python_role_alias.py','yoga_wrapper_companion_capture.py',
+    'guard_owner_runtime_input.py','codex_owner_runtime_input.py','cached_nix_inventory.py',
+    '//delivery:yoga_installed_workspace.py','//delivery:yoga_payload.py',
+    '//delivery:browser_runtime_authority.py']).to_list()
+
+python_test(name='yoga_wrapper_companion',main='yoga_wrapper_companion.py',
+    srcs=_YOGA_WRAPPER_COMPANION_SOURCES,
+    env_inherit=['OMUX_YOGA_WRAPPER_REQUEST','OMUX_YOGA_WRAPPER_REQUEST_SHA256',
+        'OMUX_YOGA_WRAPPER_PRIOR','OMUX_YOGA_WRAPPER_SOURCE_COMMIT',
+        'OMUX_YOGA_WRAPPER_GRAPH_SHA256','OMUX_YOGA_WRAPPER_LOCK_WITNESS',
+        'OMUX_NATIVE_SEED_ROOT_ENTRY_NS','OMUX_NATIVE_SEED_ROOT_DEADLINE_NS'],
+    tags=['manual','no-remote','no-cache'],timeout='long',
+    target_compatible_with=['@platforms//os:linux','@platforms//cpu:x86_64'])
+
+python_test(name='yoga_wrapper_companion_test',main='yoga_wrapper_companion_test.py',
+    srcs=_YOGA_WRAPPER_COMPANION_SOURCES,
+    tags=['manual','no-remote','no-cache'],
+    target_compatible_with=['@platforms//os:linux','@platforms//cpu:x86_64'])
+
 python_test(
     name='guard_yoga_controller_qualify_reserved_test',main='guard_yoga_controller_qualify_reserved_test.py',
-    srcs=depset(_YOGA_SEALED_TRANSFER_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES
-        + ['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
+    srcs=depset(_YOGA_WRAPPER_COMPANION_SOURCES + _YOGA_SEALED_TRANSFER_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES
+        + ['yoga_wrapper_companion_test.py','execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
         'site_coordinator_qualification.py','cached_nix_inventory.py']).to_list(),
     tags=['manual','no-remote','no-cache'],target_compatible_with=['@platforms//os:linux'],
@@ -2601,3 +2641,41 @@ python_test(name = "guard_home_manager_bundle_reserved_test", main = "guard_home
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list())
 
 exports_files(["direct_native_tui_inputs.bzl"])
+
+python_test(name='guard_current_home_manager_artifact_reserved_test',main='guard_current_home_manager_artifact_reserved_test.py',
+    srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
+        'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
+        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
+        +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    target_compatible_with=['@platforms//os:linux'])
+
+exports_files(["home_manager_current_repository.bzl", "home_manager_current_selection.json"])
+_CURRENT_HM_CONSUMER_SOURCES = ["//:nix/home_manager_current_artifact.py", "//:nix/home_manager_current_evaluation.py",
+    "//:nix/home_manager_bundle.py", "//:nix/home_manager_acquired_evaluation.py", "//:nix/home_manager_artifact.py",
+    "//:nix/home_manager_acquired_inputs.py", "//:nix/home_manager_acquisition.py", "//:nix/home_manager_inputs.py",
+    "//:nix/home_manager_evaluation_runner.py", "//:nix/evaluation_runner.py", "//:nix/home_manager_io.py",
+    "nar_descriptor.py", "//delivery:pack.py", "//delivery:portable.py"]
+python_test(name="home_manager_current_artifact_test",main="//:nix/home_manager_current_artifact_test.py",
+    srcs=depset(_CURRENT_HM_CONSUMER_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])
+python_test(name="home_manager_current_evaluation",main="//:nix/home_manager_current_evaluation.py",
+    srcs=depset(_CURRENT_HM_CONSUMER_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    data=["@omux_hm_current//:selection.json","@omux_hm_current//:selected_inputs",
+          "@omux_hm_bundle//:bundle","@omux_hm_bundle//:receipt.json","@omux_hm_bundle//:selection.json",
+          "@omux_eval_host//:executables/nix","@omux_eval_host//:all_tools",
+          "@omux_lab_home_manager_inputs//:lab-lock.json",
+          "//:nix/home-manager-qualified-evaluation.nix","//:nix/consume-bazel-artifact.nix",
+          "//:nix/home-manager.nix","//:nix/ownership-witness.nix","//:nix/service-witness.nix"],
+    args=["--selection","$(location @omux_hm_current//:selection.json)",
+          "--bundle","$(location @omux_hm_bundle//:bundle)","--bundle-selection","$(location @omux_hm_bundle//:selection.json)",
+          "--bundle-receipt","$(location @omux_hm_bundle//:receipt.json)",
+          "--lock","$(location @omux_lab_home_manager_inputs//:lab-lock.json)",
+          "--nix","$(location @omux_eval_host//:executables/nix)",
+          "--module","home-manager-qualified-evaluation.nix=$(location //:nix/home-manager-qualified-evaluation.nix)",
+          "--module","consume-bazel-artifact.nix=$(location //:nix/consume-bazel-artifact.nix)",
+          "--module","home-manager.nix=$(location //:nix/home-manager.nix)",
+          "--module","ownership-witness.nix=$(location //:nix/ownership-witness.nix)",
+          "--module","service-witness.nix=$(location //:nix/service-witness.nix)"],
+    tags=["manual","no-remote","no-cache"],timeout="long",
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])

@@ -28,9 +28,51 @@ MEMORY, TASKS, CPU = 4026531840, 480, 190
 
 
 class Refusal(ValueError):
-    def __init__(self, projection):
+    def __init__(self, projection, custody=None):
         super().__init__('local-console-qualification-refused')
         self.projection = projection
+        self.custody = custody
+
+
+class ConsoleUnsettledCustody:
+    """Unsettled direct child and original resources, in the live owner only.
+
+    This object is neither a guardian transfer nor durable custody after exit.
+    Its poll is one nonblocking observation, never a renewed cleanup deadline.
+    """
+    def __init__(self, child, pidfd, owner_image, terminal_descriptor, terminal,
+                 resources, descriptors, project, entry, deadline):
+        self.child, self.pidfd, self.owner_image = child, pidfd, owner_image
+        self.owner = os.getpid()
+        self.terminal_descriptor, self.terminal = terminal_descriptor, terminal
+        self.resources, self.descriptors, self.project = resources, descriptors, project
+        self.entry, self.deadline = entry, deadline
+        self.reaped, self.status, self.closed = False, None, False
+
+    def poll_terminal(self):
+        require(not self.closed and os.getpid() == self.owner
+            and kernel.process(self.owner) == self.owner_image
+            and signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL)
+        recheck_terminal(self.terminal_descriptor, self.terminal)
+        fd = os.open('/proc/self/cgroup', os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            raw = os.read(fd,4097)
+        finally:
+            os.close(fd)
+        require(raw.decode('ascii').splitlines() == ['0::'+self.project.group])
+        if not self.reaped:
+            pid,status = os.waitpid(self.child,os.WNOHANG)
+            require(pid in (0,self.child))
+            if pid == self.child: self.reaped,self.status = True,status
+        return self.reaped
+
+    def close_reaped(self):
+        require(self.reaped and not self.closed)
+        for value in self.resources:
+            if value is not None: value.close()
+        for descriptor in self.descriptors:
+            if descriptor is not None: os.close(descriptor)
+        self.closed = True
 
 
 def require(condition):
@@ -62,16 +104,35 @@ def settle_reaped(scope, already_cleaned):
     return True
 
 
-def terminate_child(child, pidfd, scope, waited, scope_cleaned, entry, deadline, mark_reaped):
+def terminate_child(child, pidfd, scope, waited, scope_cleaned, entry, deadline, mark_reaped, *, wait_timeout=None, no_go=False):
     """Reap the original child once, then settle its frozen owned scope."""
     if child is None:
         return scope_cleaned
     if waited:
         return settle_reaped(scope, scope_cleaned) if scope is not None else scope_cleaned
+    timeout = min(15, kernel.remaining(entry, deadline, cleanup=True))
+    if wait_timeout is not None:
+        timeout = min(timeout, wait_timeout())
+        require(timeout > 0)
+    cutoff = min(deadline, time.monotonic_ns() + int(timeout * 10**9))
     stopped = False
     if pidfd is None:
-        # This owned child is unreaped and has not received Go.
-        os.kill(child, signal.SIGKILL)
+        # WNOHANG confirms a direct waitable child. Default SIGCHLD means an
+        # exiting child stays unreaped and its PID cannot be silently reused.
+        require(no_go is True and scope is None and signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL)
+        pid, status = os.waitpid(child, os.WNOHANG)
+        require(pid in (0, child))
+        if pid == 0:
+            os.kill(child, signal.SIGKILL)
+            while pid == 0:
+                left = min(kernel.remaining(entry, deadline, cleanup=True),
+                    (cutoff - time.monotonic_ns()) / 10**9)
+                if wait_timeout is not None:
+                    left = min(left, wait_timeout())
+                require(left > 0)
+                select.select([], [], [], min(0.01, left))
+                pid, status = os.waitpid(child, os.WNOHANG)
+                require(pid in (0, child))
     elif not select.select([pidfd], [], [], 0)[0]:
         if scope is not None:
             scope.stop_owned()
@@ -79,8 +140,13 @@ def terminate_child(child, pidfd, scope, waited, scope_cleaned, entry, deadline,
         else:
             signal.pidfd_send_signal(pidfd, signal.SIGKILL)
     if pidfd is not None:
-        require(select.select([pidfd], [], [], min(15, kernel.remaining(entry, deadline, cleanup=True)))[0])
-    pid, status = os.waitpid(child, 0)
+        timeout = min(kernel.remaining(entry, deadline, cleanup=True),
+            (cutoff - time.monotonic_ns()) / 10**9)
+        if wait_timeout is not None:
+            timeout = min(timeout, wait_timeout())
+        require(timeout > 0)
+        require(select.select([pidfd], [], [], timeout)[0])
+        pid, status = os.waitpid(child, os.WNOHANG)
     require(pid == child)
     mark_reaped()
     if scope is not None:
@@ -188,6 +254,130 @@ class Manager:
         facts = self.show(cleanup=True)
         require(facts['LoadState'] == 'loaded' and facts['InvocationID'] == invocation)
         call(self.tools['systemctl'], ['--system', 'stop', self.unit], self.entry, self.deadline, cleanup=True)
+
+
+class DirectManager(Manager):
+    """Fixed original-guardian scope policy, with bounded same-cutoff calls."""
+    KEYS = Manager.KEYS + ('KillMode', 'SendSIGKILL', 'Delegate', 'TimeoutStopUSec')
+
+    def __init__(self, tools, unit, entry, deadline, project_slice):
+        super().__init__(tools, unit, entry, deadline, project_slice)
+        self.cutoff = deadline
+        self.policy_verified = False
+
+    def verify_kernel_policy(self, scope):
+        require(scope.anchored())
+        for name in ('cgroup.procs', 'cgroup.threads', 'cgroup.subtree_control'):
+            info = os.stat(name, dir_fd=scope.chain[-1][1], follow_symlinks=False)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022)
+        require(scope.anchored())
+
+    def cleaning(self, cutoff):
+        require(type(cutoff) is int and cutoff <= self.deadline)
+        self.cutoff = cutoff
+
+    def phase(self, cleanup=False):
+        left = min(kernel.remaining(self.entry, self.deadline, cleanup=cleanup),
+            (self.cutoff - time.monotonic_ns()) / 10**9)
+        require(left > 0)
+        return min(15, left)
+
+    @staticmethod
+    def policy(facts):
+        require(facts['KillMode'] == 'control-group' and facts['SendSIGKILL'] == 'yes'
+            and facts['Delegate'] == 'no')
+        toolbar.verify_runtime(facts['TimeoutStopUSec'], 10)
+        return {key: facts[key] for key in ('KillMode', 'SendSIGKILL', 'Delegate', 'TimeoutStopUSec')}
+
+    def show(self, *, cleanup=False):
+        self.phase(cleanup)
+        result = subprocess.run([self.tools['systemctl'], '--system', 'show',
+            '--property=' + ','.join(self.KEYS), self.unit], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=self.phase(cleanup), check=False)
+        self.phase(cleanup)
+        require(result.returncode in (0, 4) and len(result.stdout) <= 8192)
+        pairs = [line.split('=', 1) for line in result.stdout.decode('ascii').splitlines()]
+        require(all(len(pair) == 2 for pair in pairs) and len(pairs) == len({pair[0] for pair in pairs}))
+        facts = dict(pairs)
+        require(set(facts) == set(self.KEYS) and facts['Id'] == self.unit)
+        if facts['LoadState'] == 'loaded':
+            self.policy(facts); self.policy_verified = True
+        return facts
+
+    def create(self, pid, seconds):
+        """Use the registered systemd library, not an undeclared busctl executable.
+
+        sd_bus_call_method's public typed varargs encode exactly one scope and
+        nine fixed properties. Its method-call timeout has the original bound.
+        """
+        root = Path(*Path(self.tools['systemctl']).parts[:4])
+        library = root / 'lib/libsystemd.so.0'
+        require(library.is_relative_to(root))
+        api = ctypes.CDLL(str(library))
+        api.sd_bus_open_system.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        api.sd_bus_set_method_call_timeout.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        api.sd_bus_unref.argtypes = [ctypes.c_void_p]
+        api.sd_bus_message_unref.argtypes = [ctypes.c_void_p]
+        # Fixed prefix only; remaining arguments follow the explicit signature.
+        api.sd_bus_call_method.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p]
+        bus, reply = ctypes.c_void_p(), ctypes.c_void_p()
+        try:
+            require(api.sd_bus_open_system(ctypes.byref(bus)) >= 0)
+            require(api.sd_bus_set_method_call_timeout(bus,
+                ctypes.c_uint64(int(min(15, kernel.remaining(self.entry, self.deadline))*10**6))) >= 0)
+            require(api.sd_bus_call_method(bus, b'org.freedesktop.systemd1', b'/org/freedesktop/systemd1',
+                b'org.freedesktop.systemd1.Manager', b'StartTransientUnit', None, ctypes.byref(reply),
+                b'ssa(sv)a(sa(sv))', self.unit.encode(), b'fail', ctypes.c_int(13),
+                b'PIDs', b'au', ctypes.c_int(1), ctypes.c_uint32(pid),
+                b'MemoryMax', b't', ctypes.c_uint64(MEMORY),
+                b'MemorySwapMax', b't', ctypes.c_uint64(0),
+                b'MemoryOOMGroup', b'b', ctypes.c_int(1),
+                b'TasksMax', b't', ctypes.c_uint64(TASKS),
+                b'CPUQuotaPerSecUSec', b't', ctypes.c_uint64(1900000),
+                b'RuntimeMaxUSec', b't', ctypes.c_uint64(seconds*10**6),
+                b'Slice', b's', self.project_slice.encode(),
+                b'KillMode', b's', b'control-group',
+                b'SendSIGKILL', b'b', ctypes.c_int(1),
+                b'Delegate', b'b', ctypes.c_int(0),
+                b'TimeoutStopUSec', b't', ctypes.c_uint64(10000000),
+                b'Description', b's', b'Omux exact local-console qualification', ctypes.c_int(0)) >= 0)
+        finally:
+            if reply.value: api.sd_bus_message_unref(reply)
+            if bus.value: api.sd_bus_unref(bus)
+
+    def stop(self, invocation):
+        facts = self.show(cleanup=True)
+        require(facts['LoadState'] == 'loaded' and facts['InvocationID'] == invocation)
+        self.policy(facts)
+        result = subprocess.run([self.tools['systemctl'], '--system', 'stop', self.unit],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=self.phase(True), check=False)
+        self.phase(True); require(result.returncode == 0)
+
+
+class DirectProject:
+    """Borrow exact retained aggregate from the original guardian, no move."""
+    def __init__(self, parent, aggregate):
+        import yoga_local_parent_envelope as envelope
+        require(type(parent) is envelope.Parent and type(aggregate) is envelope.Slice)
+        parent.observe(); aggregate.observe()
+        self.parent, self.aggregate = parent, aggregate
+        self.project_slice = aggregate.manager.unit
+        self.unit, self.invocation = self.project_slice, aggregate.invocation
+        rows = parent.group.decode('ascii').splitlines()
+        require(len(rows) == 1 and rows[0].startswith('0::/'))
+        self.group = rows[0][3:]
+
+    def observe(self, *, cleanup=False):
+        self.parent.observe(cleanup=cleanup)
+        self.aggregate.observe(cleanup=cleanup)
+        require(not self.group.startswith(self.aggregate.group + '/') and self.group != self.aggregate.group)
+
+    def close(self):
+        # Lifetime belongs to the outer original guardian, never this borrower.
+        pass
 
 
 class Scope:
@@ -374,7 +564,7 @@ def command(selection, source, output_base, arguments):
         '--noremote_accept_cached', '--noremote_upload_local_results', LABEL, '--', *arguments[2:]]
 
 
-def run(arguments, *, terminal_descriptor=0):
+def run(arguments, *, terminal_descriptor=0, original_project=None, operation=None):
     selection_path, digest, output, deadline = request(arguments)
     uid, home = os.getuid(), Path(pwd.getpwuid(os.getuid()).pw_dir)
     selection = toolbar.selection(qualification.read_selection(selection_path, digest, deadline), deadline, uid, home)
@@ -386,8 +576,19 @@ def run(arguments, *, terminal_descriptor=0):
     log, read_go = None, None
     result, waited, scope_cleaned, creation_requested, go_released = 125, False, False, False, False
     refusal = None
+    owner_image = terminal = None
+    cleanup_cutoff = None
     try:
-        project = ProjectEnvelope(selection['controllerTools'],entry,deadline)
+        if original_project is None:
+            require(operation is None)
+            project = ProjectEnvelope(selection['controllerTools'],entry,deadline)
+        else:
+            import yoga_local_parent_envelope as envelope
+            require(type(original_project) is DirectProject and type(operation) is envelope.OwnedOperation
+                and operation.entry == entry and operation.deadline == deadline
+                and operation.selection_sha256 == digest and operation.graph_sha256 == selection['sourceGraphSha256'])
+            project = original_project
+            project.observe()
         qualification.identity_capture(selection, deadline, uid, terminal_descriptor)
         require(qualification.graph_capture(source, deadline) == selection['sourceGraphSha256'])
         # Registered immutable tools are qualified before any external tool or
@@ -416,15 +617,22 @@ def run(arguments, *, terminal_descriptor=0):
         reservation = kernel.Witness(entry, deadline)
         seconds = math.floor(kernel.remaining(entry, deadline))
         require(1 <= seconds <= 1170)
-        manager = Manager(selection['controllerTools'], 'omux-yoga-console-'+str(uuid.uuid4())+'.scope', entry, deadline, project.project_slice)
+        manager = (DirectManager if original_project is not None else Manager)(selection['controllerTools'], 'omux-yoga-console-'+str(uuid.uuid4())+'.scope', entry, deadline, project.project_slice)
         absent = manager.show()
         require(absent['LoadState'] == 'not-found' and absent['ActiveState'] == 'inactive'
             and not absent['InvocationID'] and not absent['ControlGroup'])
+        require(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL)
+        owner_image = kernel.process(os.getpid())
+        if operation is not None: operation.before_fork(manager)
         child = os.fork()
         if child == 0:
             try:
                 os.close(write_go)
-                # The sole child-side pre-Go operation is a bounded pipe wait.
+                # Restrict only this blocked original child before Go.
+                # No tool, unit, session, TTY allocation or callback executes.
+                if original_project is not None:
+                    libc = ctypes.CDLL(None)
+                    require(os.getuid() != 0 and libc.prctl(38, 1, 0, 0, 0) == 0)
                 until = min(15, kernel.remaining(entry, deadline))
                 require(select.select([read_go], [], [], until)[0] and os.read(read_go, 2) == b'G')
                 os.close(read_go)
@@ -447,6 +655,7 @@ def run(arguments, *, terminal_descriptor=0):
                 os._exit(125)
         os.close(read_go); read_go = None
         os.close(log); log = None
+        if operation is not None: operation.after_fork(child)
         pidfd = os.pidfd_open(child, 0)
         creation_requested = True
         manager.create(child, seconds)
@@ -457,8 +666,19 @@ def run(arguments, *, terminal_descriptor=0):
         recheck_terminal(terminal_descriptor, terminal)
         capture.qualify(selection, selection['sourceGraphSha256'])
         require(resident.stable(os.fstat(parent)) == parent_identity)
-        project.observe();release_go(write_go, scope, reservation)
+        project.observe()
+        if operation is not None:
+            security = yoga.file_bytes('/proc/' + str(child) + '/status', 16384, deadline)
+            rows = dict(line.split(':', 1) for line in security.decode('ascii').splitlines() if ':' in line)
+            require(rows.get('NoNewPrivs', '').strip() == '1'
+                and all(rows.get(key, '').strip() == '0000000000000000' for key in ('CapEff', 'CapPrm', 'CapAmb'))
+                and rows.get('Uid', '').split() == [str(uid)] * 4)
+            manager.verify_kernel_policy(scope)
+            operation.before_go(scope)
+            operation.go()
+        release_go(write_go, scope, reservation)
         go_released = True
+        if operation is not None: operation.released()
         os.close(write_go); channel = None
         while True:
             left = kernel.remaining(entry, deadline)
@@ -468,9 +688,13 @@ def run(arguments, *, terminal_descriptor=0):
             require(qualification.read_selection(selection_path, digest, deadline) == selection)
             capture.qualify(selection, selection['sourceGraphSha256'])
             project.observe();reservation.observe(); scope.observe()
-        pid, status = os.waitpid(child, 0)
+        pid, status = os.waitpid(child, os.WNOHANG)
         require(pid == child); waited = True
         result = scope.terminal(status)
+        if operation is not None:
+            cleanup_cutoff = min(deadline, time.monotonic_ns() + 30 * 10**9)
+            operation.cleanup_cutoff = cleanup_cutoff
+            manager.cleaning(cleanup_cutoff)
         empty = scope.cleanup();scope_cleaned = True
         capture.qualify(selection, selection['sourceGraphSha256'])
         qualification.identity_capture(selection, deadline, uid, terminal_descriptor)
@@ -508,6 +732,10 @@ def run(arguments, *, terminal_descriptor=0):
     finally:
         # Refusal never opens Go. An unexecuted child receives EOF and exits125.
         failures = []
+        cutoff = cleanup_cutoff if cleanup_cutoff is not None else min(deadline, time.monotonic_ns() + 30 * 10**9)
+        if operation is not None:
+            operation.cleanup_cutoff = cutoff
+        if type(manager) is DirectManager: manager.cleaning(cutoff)
         def finish(operation):
             try: operation()
             except BaseException as error: failures.append(error)
@@ -516,9 +744,21 @@ def run(arguments, *, terminal_descriptor=0):
             def mark_reaped():
                 nonlocal waited
                 waited=True
-            scope_cleaned=terminate_child(child,pidfd,scope,waited,scope_cleaned,entry,deadline,mark_reaped)
-        if channel is not None: finish(lambda: os.close(channel))
+            scope_cleaned=terminate_child(child,pidfd,scope,waited,scope_cleaned,entry,deadline,mark_reaped,
+                no_go=not go_released,
+                wait_timeout=(lambda: (cutoff - time.monotonic_ns()) / 10**9) if operation is not None else None)
+        def close_channel():
+            nonlocal channel
+            os.close(channel);channel=None
+        if channel is not None: finish(close_channel)
         finish(terminate)
+        if child is not None and not waited:
+            custody = ConsoleUnsettledCustody(child,pidfd,owner_image,terminal_descriptor,terminal,
+                (scope,reservation,project,capture),
+                (pidfd,read_go,log,run_fd,parent,channel),project,entry,deadline)
+            projection=refusal_projection(manager,scope,creation_requested,go_released,waited,scope_cleaned)
+            projection.update(custodyRetainedInLiveParent=True,custodyTransferred=False,durableCustody=False)
+            raise Refusal(projection,custody) from None
         if scope is not None: finish(scope.close)
         if pidfd is not None: finish(lambda: os.close(pidfd))
         if reservation is not None: finish(reservation.close)
@@ -538,6 +778,7 @@ def refusal_projection(manager,scope,creation_requested,go_released,waited,scope
         'scopeInvocationId':None if scope is None else scope.invocation,
         'initialScopeOwnershipVerified':scope is not None,'creationRequested':creation_requested,
         'goReleased':go_released,'originalChildReaped':waited,
+        'hostScopePolicyVerified': manager.policy_verified if type(manager) is DirectManager else None,
         'ownedCleanupEmpty':scope_cleaned,'consoleEnvelopeCleanupQualified':False,
         'qualificationProduced':False,'executionAuthority':False,'toolbarConsentProved':False,
         'nativeQualified':False,'sdkQualified':False,'schemaQualified':False,

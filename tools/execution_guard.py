@@ -336,7 +336,7 @@ def workload_pids_observation(settings, profile):
         return PidsObservation(480)
     if profile == 'native-peer-qualification-reserved':
         return PidsObservation(480)
-    if profile in ('yoga-install-inputs','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-sealed-workspace-stage','yoga-sealed-workspace-models-reserved','native-seed-plan-reserved','native-seed-plan-reserved-models','default-archive-reserved','query-registration-reserved','resident-models-reserved','resident-owner-status-source-reserved','resident-owner-status-binding-reserved','resident-owner-status-persistence-source-reserved','resident-native-source-context-source-reserved','resident-native-source-context-refresh-source-reserved','resident-native-source-acquisition-source-reserved','native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-acquisition-package-models-reserved','resident-native-source-context-metadata-reserved','resident-owner-status-persistence-binding-reserved','native-metadata-sdk-models-reserved','native-query-descriptor-reserved','native-persistence-metadata-reserved','native-persistence-sdk-reserved','native-persistence-package-models-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved','yoga-installed-selection-reserved','yoga-installed-workspace-reserved','yoga-installed-models-reserved','yoga-toolbar-reserved','yoga-toolbar-reserved-models'):
+    if profile in ('yoga-install-inputs','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved','yoga-sealed-workspace-stage','yoga-sealed-workspace-models-reserved','native-seed-plan-reserved','native-seed-plan-reserved-models','default-archive-reserved','query-registration-reserved','resident-models-reserved','resident-owner-status-source-reserved','resident-owner-status-binding-reserved','resident-owner-status-persistence-source-reserved','resident-native-source-context-source-reserved','resident-native-source-context-refresh-source-reserved','resident-native-source-acquisition-source-reserved','native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-acquisition-package-models-reserved','resident-native-source-context-metadata-reserved','current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved','resident-owner-status-persistence-binding-reserved','native-metadata-sdk-models-reserved','native-query-descriptor-reserved','native-persistence-metadata-reserved','native-persistence-sdk-reserved','native-persistence-package-models-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved','yoga-installed-selection-reserved','yoga-installed-workspace-reserved','yoga-installed-models-reserved','yoga-toolbar-reserved','yoga-toolbar-reserved-models'):
         return PidsObservation(480)
     return PidsObservation(settings.PROOF_TASKS
         if profile in ('resident-enrollment','resident-sources','codex-device-component-reserved') else 512)
@@ -913,6 +913,8 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         import guard_home_manager_bundle_reserved as seed_reserved
     elif profile == 'native-peer-qualification-reserved':
         import guard_native_peer_qualification_reserved as seed_reserved
+    elif profile in ('current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved'):
+        import guard_current_home_manager_artifact_reserved as seed_reserved
     elif profile == 'resident-native-source-context-metadata-reserved':
         import guard_resident_native_source_context_metadata_reserved as seed_reserved
     elif profile == 'resident-owner-status-persistence-binding-reserved':
@@ -925,7 +927,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         import guard_yoga_installed_reserved as seed_reserved
     elif profile in ('yoga-toolbar-reserved','yoga-toolbar-reserved-models'):
         import guard_yoga_toolbar_reserved as seed_reserved
-    elif profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved'):
+    elif profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
         import guard_yoga_controller_qualify_reserved as seed_reserved
     elif profile == 'yoga-sealed-workspace-models-reserved':
         import guard_yoga_sealed_transfer_models_reserved as seed_reserved
@@ -946,7 +948,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             import yoga_delivery_settings as delivery_settings
             if profile == 'yoga-sealed-workspace-stage':
                 staging.effective_runtime(actual.get(key),runtime_seconds)
-            elif profile in ('yoga-toolbar-reserved','yoga-toolbar-reserved-models','yoga-sealed-workspace-models-reserved','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved'):
+            elif profile in ('yoga-toolbar-reserved','yoga-toolbar-reserved-models','yoga-sealed-workspace-models-reserved','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
                 seed_reserved.verify_runtime(actual.get(key),runtime_seconds)
             elif profile == 'codex-native' and native_phase2 is True:
                 from codex_native_profile import phase2_effective_runtime
@@ -1212,7 +1214,7 @@ def yoga_controller_readonly_go(settings, profile, run, source_root, source_comm
     resident witnesses have just rechecked independently in guard main.
     """
     import guard_yoga_controller_qualify_reserved as reserved
-    if settings is not reserved or profile not in reserved.READONLY_PROFILES:
+    if settings is not reserved or profile not in reserved.PRIOR_PROFILES:
         raise ValueError('exact-reserved-yoga-readonly-go-required')
     reserved.remaining(entry_ns, deadline_ns)
     current_graph = graph_digest(source_root)[0]
@@ -1332,7 +1334,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('home-manager-reconstruction-reserved','home-manager-evaluation-reserved','home-manager-bundle-models-reserved','standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-sealed-workspace-stage','yoga-sealed-workspace-models-reserved', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved', 'resident-owner-status-source-reserved', 'resident-owner-status-binding-reserved', 'resident-owner-status-persistence-source-reserved','resident-native-source-context-source-reserved','resident-native-source-context-refresh-source-reserved','resident-native-source-acquisition-source-reserved','native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-acquisition-package-models-reserved','resident-native-source-context-metadata-reserved','native-peer-qualification-reserved', 'resident-owner-status-persistence-binding-reserved','native-metadata-sdk-models-reserved','native-query-descriptor-reserved','native-persistence-metadata-reserved','native-persistence-sdk-reserved','native-persistence-package-models-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved', 'yoga-installed-selection-reserved', 'yoga-installed-workspace-reserved', 'yoga-installed-models-reserved', 'yoga-toolbar-reserved', 'yoga-toolbar-reserved-models'), default='standard')
+    parser.add_argument('--profile', choices=('home-manager-reconstruction-reserved','home-manager-evaluation-reserved','home-manager-bundle-models-reserved','standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved','yoga-sealed-workspace-stage','yoga-sealed-workspace-models-reserved', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved', 'resident-owner-status-source-reserved', 'resident-owner-status-binding-reserved', 'resident-owner-status-persistence-source-reserved','resident-native-source-context-source-reserved','resident-native-source-context-refresh-source-reserved','resident-native-source-acquisition-source-reserved','native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-acquisition-package-models-reserved','resident-native-source-context-metadata-reserved','current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved','native-peer-qualification-reserved', 'resident-owner-status-persistence-binding-reserved','native-metadata-sdk-models-reserved','native-query-descriptor-reserved','native-persistence-metadata-reserved','native-persistence-sdk-reserved','native-persistence-package-models-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved', 'yoga-installed-selection-reserved', 'yoga-installed-workspace-reserved', 'yoga-installed-models-reserved', 'yoga-toolbar-reserved', 'yoga-toolbar-reserved-models'), default='standard')
     parser.add_argument('--yoga-installed-producer-selection-sha256')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
@@ -1362,6 +1364,8 @@ def _main(argv, admission_resources):
     parser.add_argument('--yoga-sealed-transfer-input-sha256')
     parser.add_argument('--yoga-qualification', type=Path)
     parser.add_argument('--yoga-qualification-sha256')
+    parser.add_argument('--yoga-wrapper-request', type=Path)
+    parser.add_argument('--yoga-wrapper-request-sha256')
     parser.add_argument('--yoga-deadline-monotonic-ns', type=int)
     parser.add_argument('--sdk-lane', choices=('core', 'app-server', 'protocol'))
     parser.add_argument('--sdk-source-root', type=Path)
@@ -1407,6 +1411,9 @@ def _main(argv, admission_resources):
     parser.add_argument('--reuse-owned-cache', action='store_true')
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.profile != 'yoga-wrapper-companion-reserved' and (
+            args.yoga_wrapper_request is not None or args.yoga_wrapper_request_sha256 is not None):
+        raise ValueError('wrapper request is exclusive to exact companion profile')
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
     import guard_resident_dispatch as resident_dispatch
     resident_settings = resident_dispatch.select(args, arguments)
@@ -1435,6 +1442,8 @@ def _main(argv, admission_resources):
         import guard_home_manager_bundle_reserved as seed_reserved
     elif args.profile == 'native-peer-qualification-reserved':
         import guard_native_peer_qualification_reserved as seed_reserved
+    elif args.profile in ('current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved'):
+        import guard_current_home_manager_artifact_reserved as seed_reserved
     elif args.profile == 'resident-native-source-context-metadata-reserved':
         import guard_resident_native_source_context_metadata_reserved as seed_reserved
     elif args.profile == 'resident-owner-status-persistence-binding-reserved':
@@ -1447,7 +1456,7 @@ def _main(argv, admission_resources):
         import guard_yoga_installed_reserved as seed_reserved
     elif args.profile == 'yoga-toolbar-reserved-models':
         import guard_yoga_toolbar_reserved as seed_reserved
-    elif args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved'):
+    elif args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
         import guard_yoga_controller_qualify_reserved as seed_reserved
     elif args.profile == 'yoga-sealed-workspace-models-reserved':
         import guard_yoga_sealed_transfer_models_reserved as seed_reserved
@@ -1573,6 +1582,8 @@ def _main(argv, admission_resources):
         raise ValueError('sealed-transfer-input-exclusive-to-exact-stage-profile')
     delivery_settings = None
     delivery_http = None
+    wrapper_request = None
+    wrapper_request_facts = None
     delivery_prior = None
     delivery_summary = None
     delivery_verified_after = None
@@ -1621,8 +1632,8 @@ def _main(argv, admission_resources):
             args.sdk_settings_root, args.sdk_settings_receipt_sha256,
             args.sdk_bundle, args.sdk_bundle_receipt_sha256, args.yoga_delivery_epoch,
             args.yoga_qualification, args.yoga_qualification_sha256, args.yoga_deadline_monotonic_ns))
-    if args.profile in ('yoga-controller-delivery','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-install-inputs','yoga-sealed-workspace-stage'):
-        if args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved'):
+    if args.profile in ('yoga-controller-delivery','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved','yoga-install-inputs','yoga-sealed-workspace-stage'):
+        if args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
             import guard_yoga_controller_qualify_reserved as delivery_settings
         elif args.profile == 'yoga-sealed-workspace-stage':
             import guard_yoga_sealed_transfer_profile as delivery_settings
@@ -1786,8 +1797,9 @@ def _main(argv, admission_resources):
             Path.cwd(),delivery_entry_deadline_ns)
         admission_resources.callback(yoga_installed_input.close)
         yoga_installed_before = yoga_installed_input.facts()
-    coordination = prepare_state(args.state_dir, 'yoga-toolbar' if yoga_toolbar_reserved else seed_reserved.STATE_PROFILE if args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved') else 'standard' if seed_selected or resident_settings else 'codex-sdk' if site else args.profile,
-                                 args.coordination_dir, args.initialize_state_dir, arguments=arguments)
+    coordination = prepare_state(args.state_dir, 'yoga-toolbar' if yoga_toolbar_reserved else seed_reserved.STATE_PROFILE if args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved') else 'standard' if seed_selected or resident_settings else 'codex-sdk' if site else args.profile,
+                                 args.coordination_dir, args.initialize_state_dir,
+                                 arguments=seed_reserved.ARGUMENTS if args.profile == 'yoga-wrapper-companion-reserved' else arguments)
     DIAGNOSTIC_STAGE = 'operatorinputs'
     if args.codex_owner_runtime_directory is not None:
         from guard_owner_runtime_input import Admission as RetainedAdmission
@@ -1862,7 +1874,13 @@ def _main(argv, admission_resources):
             delivery_prior = delivery_settings.select_prior(args.yoga_delivery_epoch, delivery_initial_graph,
                 PROPERTIES, delivery_entry_deadline_ns, delivery_lock,
                 **({'source_commit':args.source_commit} if args.profile in
-                    ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved') else {})) if args.yoga_delivery_epoch else None
+                    ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved') else {})) if args.yoga_delivery_epoch else None
+            if args.profile == 'yoga-wrapper-companion-reserved':
+                from yoga_wrapper_companion_inputs import HeldRequest
+                wrapper_request = HeldRequest(args.yoga_wrapper_request,
+                    args.yoga_wrapper_request_sha256,delivery_entry_deadline_ns)
+                resources.callback(wrapper_request.close)
+                wrapper_request_facts = wrapper_request.facts()
         identifier = args.resident_epoch if args.profile in resident_dispatch.PROFILES else yoga_admission['receipt']['proofId'] if yoga else str(uuid.uuid4())
         run = args.state_dir / identifier
         run.mkdir(mode=0o700)
@@ -1893,7 +1911,7 @@ def _main(argv, admission_resources):
             finally:
                 os.close(operator_read)
         DIAGNOSTIC_STAGE = 'private-epoch'
-        if args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved'):
+        if args.profile in ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
             delivery_http = delivery_settings.http_snapshot(run,delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
             resources.callback(delivery_http.close)
         if args.profile == resident_dispatch.SETUP_PROFILE:
@@ -1906,8 +1924,10 @@ def _main(argv, admission_resources):
                 repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
         elif seed_selected:
             seed_command_options = ({'admission':yoga_installed_input} if yoga_reserved else
+                {'prior':delivery_prior,'wrapper_request':wrapper_request,
+                 'graph':delivery_initial_graph,'lock':delivery_lock} if args.profile == 'yoga-wrapper-companion-reserved' else
                 {'prior':delivery_prior} if args.profile in
-                    ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved') else {})
+                    ('yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved') else {})
             command = seed_reserved.command(bazel_command,bazel,run,arguments,args.profile,
                 delivery_entry_monotonic_ns,delivery_entry_deadline_ns,
                 repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source,
@@ -2109,12 +2129,14 @@ def _main(argv, admission_resources):
                 if not require_delivery_graph: raise ValueError('delivery graph changed before dispatch')
                 if delivery_settings.lock_witness(lock.fileno(), delivery_entry_deadline_ns) != delivery_lock:
                     raise ValueError('original-home-lock-changed-before-launch')
+                if wrapper_request is not None:
+                    wrapper_request.recheck()
                 if delivery_http is not None:
                     delivery_http.recheck()
                 if delivery_prior:
                     delivery_settings.recheck(delivery_prior, graph_sha256, PROPERTIES, delivery_entry_deadline_ns, delivery_lock,
                         **({'source_commit':args.source_commit} if args.profile in
-                            ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved') else {}))
+                            ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved') else {}))
             if yoga:
                 yoga.refresh(yoga_admission, Path(pwd.getpwuid(os.getuid()).pw_dir), graph_sha256)
                 environment['OMUX_YOGA_WORKER_PLAN_SHA256'] = yoga_launch.prepare_worker(yoga_support, command,
@@ -2434,9 +2456,11 @@ def _main(argv, admission_resources):
                     seed_reservation.observe()
                 if yoga_installed_input is not None:
                     yoga_installed_input.recheck()
+                if wrapper_request is not None:
+                    wrapper_request.recheck()
                 if delivery_http is not None:
                     delivery_http.recheck()
-                if args.profile in ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved'):
+                if args.profile in ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
                     yoga_controller_readonly_go(delivery_settings,args.profile,run,Path.cwd(),args.source_commit,
                         delivery_prior,delivery_initial_graph,delivery_lock,lock.fileno(),
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
@@ -2451,6 +2475,8 @@ def _main(argv, admission_resources):
             elif reservation_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
+                if wrapper_request is not None:
+                    wrapper_request.recheck()
                 if delivery_http is not None:
                     delivery_http.recheck()
                 if yoga_installed_input is not None:
@@ -2548,6 +2574,9 @@ def _main(argv, admission_resources):
                     delivery_settings.budget(delivery_entry_deadline_ns)
                     if delivery_settings.lock_witness(lock.fileno(), delivery_entry_deadline_ns) != delivery_lock:
                         raise ValueError('original-home-lock-changed-after-cleanup')
+                    if wrapper_request is not None:
+                        wrapper_request.recheck(cleanup=True)
+                        wrapper_request_facts = wrapper_request.facts(cleanup=True)
                     if delivery_http is not None:
                         delivery_http.recheck(content=True,cleanup=True)
                         delivery_http.close()
@@ -2926,9 +2955,14 @@ def _main(argv, admission_resources):
                 elif args.profile == 'yoga-controller-qualify-reserved':
                     receipt['yoga_controller_qualify_reservation'] = seed_reserved.projection(
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
-                elif args.profile in ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved'):
-                    receipt['yoga_controller_readonly_reservation'] = seed_reserved.readonly_projection(args.profile,
-                        delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                elif args.profile in ('yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
+                    if args.profile == 'yoga-wrapper-companion-reserved':
+                        receipt['yoga_wrapper_companion_reservation'] = seed_reserved.companion_projection(
+                            delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                        receipt['yoga_wrapper_request'] = wrapper_request_facts
+                    else:
+                        receipt['yoga_controller_readonly_reservation'] = seed_reserved.readonly_projection(args.profile,
+                            delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
                 elif args.profile == 'yoga-sealed-workspace-models-reserved':
                     receipt['yoga_sealed_transfer_models_reservation'] = seed_reserved.projection(
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
@@ -2965,6 +2999,9 @@ def _main(argv, admission_resources):
                 elif args.profile == 'native-peer-qualification-reserved':
                     receipt['native_peer_qualification_reservation'] = seed_reserved.projection(
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                elif args.profile in ('current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved'):
+                    receipt['current_home_manager_artifact_reservation'] = seed_reserved.projection(
+                        args.profile,delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
                 elif args.profile == 'resident-native-source-context-metadata-reserved':
                     receipt['resident_native_source_context_metadata_reservation'] = seed_reserved.projection(
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)

@@ -424,8 +424,9 @@ installed_store_files = repository_rule(implementation = _impl,
 '''
 
 
-def build_files(mapping, copied, store, *, reserved=False, console=False):
+def build_files(mapping, copied, store, *, reserved=False, console=False, prepare=False):
     require(not console or reserved)
+    require(not prepare or console)
     assets, entries, positions = [], {}, {}
     for index, key in enumerate(sorted(mapping)):
         alias = 'f%06d' % index
@@ -445,7 +446,8 @@ def build_files(mapping, copied, store, *, reserved=False, console=False):
     root = 'exports_files(' + repr(sorted(root_paths | {'installed-launcher.sh', 'installed-store-files.json',
         'yoga_session_qualification.sh', 'execution_guard.sh'} |
         ({'yoga_reserved_session_qualification.sh'} if reserved else set()) |
-        ({'yoga_local_console_qualification.sh'} if console else set()))) + ')\n'
+        ({'yoga_local_console_qualification.sh'} if console else set()) |
+        ({'yoga_installed_console_prepare.sh'} if prepare else set()))) + ')\n'
     delivery = 'load("//tools:installed_toolbar.bzl", "installed_toolbar")\n'
     delivery += 'exports_files(' + repr(sorted({name[len('delivery/'):] for name in copied.values()
                                                if name.startswith('delivery/')})) + ')\n'
@@ -454,7 +456,7 @@ def build_files(mapping, copied, store, *, reserved=False, console=False):
     tools = 'load(":installed_toolbar.bzl", "installed_toolbar")\n'
     tools += 'exports_files(' + repr(sorted({'installed_toolbar.bzl','installed_store_files.bzl'} |
         {name[len('tools/'):] for name in copied.values() if name.startswith('tools/')})) + ')\n'
-    targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ()) + (('yoga_local_console_qualification',) if console else ())
+    targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ()) + (('yoga_local_console_qualification',) if console else ()) + (('yoga_installed_console_prepare',) if prepare else ())
     for target in targets:
         tools += 'installed_toolbar(name = ' + repr(target) + ', launcher = "//:' + target + '.sh", assets = ' + repr(assets) + ', entries = ' + repr(entries) + ')\n'
     return {'MODULE.bazel': module.encode(), 'BUILD.bazel': root.encode(),
@@ -742,11 +744,17 @@ def produce(selection_path, selection_sha256, output, deadline_ns):
         require(not present_console or present_console == console_files)
         console = bool(present_console)
         require(not console or reserved)
-        targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ()) + (('yoga_local_console_qualification',) if console else ())
+        prepare_files = {'yoga_installed_console_selection.py', 'yoga_installed_console_prepare.py',
+                         'yoga_local_parent_envelope.py'}
+        present_prepare = prepare_files.intersection(package['files'])
+        require(not present_prepare or present_prepare == prepare_files)
+        prepare = bool(present_prepare)
+        require(not prepare or console)
+        targets = ('yoga_session_qualification', 'execution_guard') + (('yoga_reserved_session_qualification',) if reserved else ()) + (('yoga_local_console_qualification',) if console else ()) + (('yoga_installed_console_prepare',) if prepare else ())
         for target in targets:
             files[target + '.sh'] = files['installed-launcher.sh'].replace(old_main, ('_main/tools/' + target + '.py').encode())
             modes[target + '.sh'] = 0o555
-        files.update(build_files(mapping, copied, store, reserved=reserved, console=console))
+        files.update(build_files(mapping, copied, store, reserved=reserved, console=console, prepare=prepare))
         fixed = {'BUILD', 'BUILD.bazel', 'MODULE.bazel', 'MODULE.bazel.lock', 'WORKSPACE', 'WORKSPACE.bazel',
                  'flake.nix', 'flake.lock', '.bazelrc', '.bazelversion'}
         graph_content = [content for name, content in files.items() if PurePosixPath(name).name in fixed

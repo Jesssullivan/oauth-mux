@@ -271,3 +271,7 @@ use_repo(native_acquisition_package_inputs, "omux_native_acquisition_package_dat
 ordinary_direct_native_inputs = use_repo_rule("//tools:direct_native_tui_inputs.bzl", "ordinary_direct_native_inputs")
 ordinary_direct_native_inputs(name="omux_codex_ordinary_direct_runtime",
     manifest="//integrations/codex-upstream:native-acquisition-ordinary-inputs.json")
+
+# Independently selected current Omux artifact; null until genuine production.
+hm_current = use_repo_rule("//tools:home_manager_current_repository.bzl", "home_manager_current_repository")
+hm_current(name = "omux_hm_current")

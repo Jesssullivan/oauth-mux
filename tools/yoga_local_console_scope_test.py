@@ -5,10 +5,14 @@ from pathlib import Path
 import select
 import io
 import tempfile
+import time
 import unittest
 from unittest import mock
 import yoga_local_console_scope as route
 import yoga_local_console_qualification as launcher
+# Declared successor models run through this existing closed Yoga test target.
+from yoga_installed_console_selection_test import Models as InstalledConsoleSelectionModels
+from yoga_local_parent_envelope_test import DirectGuardianModels as LocalParentEnvelopeModels
 
 
 class Models(unittest.TestCase):
@@ -217,11 +221,12 @@ class Models(unittest.TestCase):
             scope.pidfd=os.pidfd_open(child);marked=[]
             try:
                 self.assertTrue(select.select([scope.pidfd],[],[],5)[0])
+                entry=time.monotonic_ns();deadline=entry+1200*10**9
                 with mock.patch.object(route.kernel,'remaining',return_value=10), \
                         mock.patch.object(route.os,'waitpid',wraps=os.waitpid) as reaper:
                     self.assertTrue(route.terminate_child(child,scope.pidfd,scope,False,False,
-                        100,1200000000100,lambda:marked.append(True)))
-                    reaper.assert_called_once_with(child,0)
+                        entry,deadline,lambda:marked.append(True)))
+                    reaper.assert_called_once_with(child,os.WNOHANG)
                 self.assertEqual(marked,[True]);self.assertEqual(scope.exit_status,7)
                 scope.manager.stop.assert_called_once_with(scope.invocation)
                 with mock.patch.object(route.kernel,'remaining',return_value=10):
@@ -247,9 +252,10 @@ class Models(unittest.TestCase):
         marked=[]
         try:
             self.assertFalse(select.select([scope.pidfd],[],[],0)[0])
+            entry=time.monotonic_ns();deadline=entry+1200*10**9
             with mock.patch.object(route.kernel,'remaining',return_value=10):
                 self.assertTrue(route.terminate_child(child,scope.pidfd,scope,False,False,
-                    100,1200000000100,lambda:marked.append(True)))
+                    entry,deadline,lambda:marked.append(True)))
             scope.stop_owned.assert_called_once_with()
             self.assertEqual(scope.manager.show.call_count,2)
             self.assertEqual(marked,[True]);self.assertEqual(scope.exit_status,-route.signal.SIGKILL)

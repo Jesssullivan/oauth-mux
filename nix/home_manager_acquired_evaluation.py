@@ -183,12 +183,30 @@ def copy_modules(modules, home, deadline):
 
 def evaluate_acquired_pair(nix, modules, lock_bytes, pair_root, pair_receipt_sha256,
                            artifact_root, artifact_receipt_bytes, artifact_receipt_sha256,
-                           private_home, *, system="x86_64-linux", deadline=None):
+                           private_home, *, system="x86_64-linux", deadline=None, current_selection=None, original_clock=None):
     require(system == "x86_64-linux", "hm-evaluation-platform-unqualified")
     started = time.monotonic()
     deadline = started + MAX_SECONDS if deadline is None else deadline
-    require(type(deadline) in (int, float) and started < deadline <= started + MAX_SECONDS,
-            "hm-evaluation-enclosing-deadline")
+    if current_selection is None:
+        require(original_clock is None and type(deadline) in (int, float) and started < deadline <= started + MAX_SECONDS,
+                "hm-evaluation-enclosing-deadline")
+    else:
+        import home_manager_current_artifact as current
+        require(type(original_clock) is tuple and len(original_clock)==2,"current-hm-original-clock-required")
+        current.kernel.remaining(*original_clock)
+        require(type(deadline) in (int,float) and started<deadline<=started+MAX_SECONDS
+            and deadline<=current.kernel.envelope(*original_clock)/1e9,"current-hm-original-work-cutoff")
+        require(artifact_root==str(Path(current_selection['root'])/'artifact')
+            and artifact_receipt_sha256==current_selection['receiptSha256'],"current-hm-selected-artifact-arguments")
+    def verify_selected_artifact():
+        if current_selection is None:
+            return artifact.verify_artifact(artifact_root,artifact_receipt_bytes,artifact_receipt_sha256,
+                                            deadline_seconds=remaining(deadline), deadline=deadline)
+        require(artifact.sha(artifact_receipt_bytes)==artifact_receipt_sha256,"current-hm-selected-receipt-argument")
+        value=current.verify_selected(current_selection,deadline)
+        require(current.read(Path(current_selection['root'])/'receipt.json',65536,deadline,
+                             artifact_receipt_sha256)[0]==artifact_receipt_bytes,"current-hm-receipt-argument-changed")
+        return value
     with acquisition.HeldDirectory(acquired.physical_path(pair_root)) as pair, \
             acquisition.held(private_home) as home, ExitStack() as custody:
         receipt, inventory = pair_metadata(pair, deadline)
@@ -197,8 +215,7 @@ def evaluate_acquired_pair(nix, modules, lock_bytes, pair_root, pair_receipt_sha
         before_commitment = pair_commitment(pair, deadline)
         before_pair = acquired.verify_acquired_pair(lock_bytes, receipt[0], pair_receipt_sha256,
             inventory[0], roots, deadline_seconds=remaining(deadline), deadline=deadline)
-        before_artifact = artifact.verify_artifact(artifact_root, artifact_receipt_bytes,
-            artifact_receipt_sha256, deadline_seconds=remaining(deadline), deadline=deadline)
+        before_artifact = verify_selected_artifact()
         require(before_artifact["system"] == system, "hm-evaluation-artifact-platform")
         expression, module_captures, copied_captures, directory_capture = copy_modules(modules, home, deadline)
         copied = custody.enter_context(acquisition.HeldDirectory(home.path / "modules", parent_anchor=home))
@@ -235,8 +252,7 @@ def evaluate_acquired_pair(nix, modules, lock_bytes, pair_root, pair_receipt_sha
             inventory[0], roots, deadline_seconds=remaining(deadline), deadline=deadline)
         require(before_pair == after_pair and pair_commitment(pair, deadline) == before_commitment,
                 "hm-evaluation-pair-changed-through-evaluator")
-        after_artifact = artifact.verify_artifact(artifact_root, artifact_receipt_bytes,
-            artifact_receipt_sha256, deadline_seconds=remaining(deadline), deadline=deadline)
+        after_artifact = verify_selected_artifact()
         require(before_artifact == after_artifact, "hm-evaluation-artifact-changed-through-evaluator")
         for name in MODULES:
             require(read_declared(modules[name], MAX_MODULE_BYTES, deadline) == module_captures[name],
@@ -263,7 +279,9 @@ def evaluate_acquired_pair(nix, modules, lock_bytes, pair_root, pair_receipt_sha
                 "channel", "fullQt", "sourceQualification")},
             "artifactCustodyBeforeAfterMatched": True,
             "moduleSha256": {name: hashlib.sha256(module_captures[name][0]).hexdigest() for name in MODULES},
-            "compiledSourceBindingProved": False, "releaseProvenance": "unproved"}
+            "compiledSourceBindingProved": False, "releaseProvenance": "unproved",
+            **({"artifactFamily":"current-coordinator-artifact-v1","currentArtifactAuthoritySha256":
+                before_artifact['selectedAuthoritySha256']} if current_selection is not None else {})}
 
 
 def main(arguments=None):

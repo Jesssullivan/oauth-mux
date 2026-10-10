@@ -675,8 +675,16 @@ def materialize(stream, check, worker, lock, compact, work, *, disk_account=None
     return pair, roots["artifact"], raw_artifact
 
 def evaluate_bundle(bundle, frozen_bundle_sha, receipt_path, frozen_receipt_sha,
-                    lock_path, nix, modules, scratch, *, deadline=None):
-    work, end = bounds(deadline)
+                    lock_path, nix, modules, scratch, *, deadline=None, current_selection=None, original_clock=None):
+    if current_selection is None:
+        require(original_clock is None,"bundle-legacy-clock-arguments")
+        work,end=bounds(deadline)
+    else:
+        import home_manager_current_artifact as current
+        require(type(original_clock) is tuple and len(original_clock)==2,"current-hm-bundle-clock")
+        current.kernel.remaining(*original_clock)
+        work,end=bounds(deadline)
+        require(end<=current.kernel.envelope(*original_clock)/1e9,"current-hm-bundle-original-cutoff")
     for digest in (frozen_bundle_sha, frozen_receipt_sha):
         require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest), "bundle-selected-digest")
     raw, receipt_facts = evaluator.read_declared(receipt_path, 65536, work, readonly=True)
@@ -710,8 +718,17 @@ def evaluate_bundle(bundle, frozen_bundle_sha, receipt_path, frozen_receipt_sha,
         with private_tree(scratch, end, admission_deadline=work) as worker:
             pair, retained_artifact, artifact_bytes = materialize(stream, check, worker, lock, compact, work)
             tick(work, worker)
-            result = evaluator.evaluate_acquired_pair(nix, modules, lock, str(pair), PAIR_SHA,
-                str(retained_artifact), artifact_bytes, ARTIFACT_SHA, str(worker.path / "home"), deadline=work)
+            if current_selection is None:
+                result=evaluator.evaluate_acquired_pair(nix,modules,lock,str(pair),PAIR_SHA,
+                    str(retained_artifact),artifact_bytes,ARTIFACT_SHA,str(worker.path/"home"),deadline=work)
+            else:
+                # Only the qualified pair source is reused. Historical artifact is
+                # validated as finite transport material and never selected for HM.
+                current_receipt,_=current.read(Path(current_selection['root'])/'receipt.json',65536,work,
+                                              current_selection['receiptSha256'])
+                result=evaluator.evaluate_acquired_pair(nix,modules,lock,str(pair),PAIR_SHA,
+                    str(Path(current_selection['root'])/'artifact'),current_receipt,current_selection['receiptSha256'],
+                    str(worker.path/"home"),deadline=work,current_selection=current_selection,original_clock=original_clock)
             hash_input()
             require(evaluator.read_declared(lock_path, acquired.MAX_LOCK_BYTES, work) == (lock, lock_facts)
                     and evaluator.read_declared(receipt_path, 65536, work, readonly=True) == (raw, receipt_facts),

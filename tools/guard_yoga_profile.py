@@ -270,6 +270,13 @@ def wrapper_capture(value, deadline_ns, *, wrapper_paths=None, native_manifest_p
     selected = wrapper_envelope_schema(value)
     paths = {name: value['inputPaths'][name] for name in ('dbus_session', 'dbus_daemon', 'keyring')}
     shas = {name: value['inputSha256'][name] for name in paths}
+    # Only the current declared generation's physical Python has this alias.
+    # Historical logical-role callers keep their original validator route.
+    import yoga_python_role_alias as python_alias
+    if selected['controllerTools']['python'] == python_alias.PHYSICAL:
+        from yoga_wrapper_companion_capture import Capture
+        return Capture(selected, paths if wrapper_paths is None else wrapper_paths, shas,
+            deadline_ns, validator=validator, custody=custody, native_manifest_path=native_manifest_path)
     return custody.AuthorityCapture(selected, paths if wrapper_paths is None else wrapper_paths, shas,
         deadline_ns, validator=validator, native_manifest_path=native_manifest_path)
 
