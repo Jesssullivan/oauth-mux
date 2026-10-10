@@ -408,6 +408,62 @@ class CarrierModels(unittest.TestCase):
                 self.assertEqual(fixture.model.calls, [])
                 self.assertNotIn(str(fixture.root), inputs.encode(inputs.metadata_failure(caught.exception)).decode())
 
+    def test_declared_repository_directory_alias_uses_exact_canonical_metadata_siblings(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            bundle = inputs.decode(fixture.bundle_raw, inputs.MAX_MAPPING)
+            actual = fixture.repository.with_name("canonical-repository")
+            fixture.repository.rename(actual)
+            fixture.repository.symlink_to(actual, target_is_directory=True)
+            item = bundle["metadata"]["evidence"]
+            label = fixture.repository/item["alias"]
+            roots = declared.metadata_alias_roots(fixture.bundle_path)
+            canonical = fixture.bundle_path.resolve(strict=True).parent
+            self.assertEqual(canonical, actual)
+            self.assertTrue(label.is_file())
+            with self.assertRaises(OSError):
+                declared.open_declared(label, [root/item["alias"] for root in roots], item["pin"]["path"],
+                    {"size": item["pin"]["bytes"], "executable": False})
+            result = fixture.qualify()
+            self.assertTrue(result["input_metadata_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+            self.assertFalse(result["execution_authority"])
+
+    def test_canonical_metadata_sibling_selection_keeps_undeclared_leaf_and_directory_hops_denied(self):
+        for fault in ("leaf", "directory"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+                fixture.generate()
+                bundle = inputs.decode(fixture.bundle_raw, inputs.MAX_MAPPING)
+                alias = fixture.repository/bundle["metadata"]["evidence"]["alias"]
+                if fault == "leaf":
+                    alias.unlink()
+                    alias.symlink_to(fixture.root/"unselected-never-created")
+                else:
+                    held = alias.parent.with_name("unselected-metadata")
+                    alias.parent.rename(held)
+                    alias.parent.symlink_to(held, target_is_directory=True)
+                with self.assertRaises(ValueError if fault == "leaf" else OSError):
+                    fixture.qualify()
+                self.assertEqual(carrier.PHASE, "declared-metadata")
+                self.assertEqual(fixture.model.calls, [])
+
+    def test_mapping_retarget_between_authorized_roots_and_canonical_selection_refuses(self):
+        with tempfile.TemporaryDirectory() as directory, JoinedFixture(directory) as fixture:
+            fixture.generate()
+            unselected = fixture.root/"unselected"
+            unselected.mkdir()
+            replacement = unselected/"inputs.json"
+            replacement.write_bytes(fixture.bundle_raw)
+            original = inputs.metadata_alias_roots
+            def retarget(path):
+                roots = original(path)
+                fixture.bundle_path.unlink()
+                fixture.bundle_path.symlink_to(replacement)
+                return roots
+            with patch.object(inputs, "metadata_alias_roots", side_effect=retarget), self.assertRaises(ValueError):
+                fixture.qualify()
+            self.assertEqual(fixture.model.calls, [])
+
     def test_metadata_projection_refuses_unbounded_attributes_and_unrelated_errors(self):
         error = ValueError("private arbitrary exception text")
         error.metadata_role, error.metadata_reason = "/private/role", "private arbitrary exception text"

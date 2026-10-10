@@ -498,6 +498,10 @@ def declared_metadata(bundle, bundle_path, selected, deadline):
     expected = metadata_roles(selected)
     require(type(bundle["metadata"]) is dict and set(bundle["metadata"]) == set(expected))
     roots = metadata_alias_roots(bundle_path)
+    proof.tick(deadline)
+    canonical = Path(bundle_path).resolve(strict=True).parent
+    proof.tick(deadline)
+    require(canonical in roots)
     result = {}
     for index, name in enumerate(sorted(expected)):
         try:
@@ -505,7 +509,7 @@ def declared_metadata(bundle, bundle_path, selected, deadline):
             require(type(item) is dict and set(item) == {"alias", "pin"}
                 and item["pin"] == expected[name] and item["alias"] == "metadata/"+str(index).zfill(8))
             proof.tick(deadline)
-            path = Path(bundle_path).parent/item["alias"]
+            path = canonical/item["alias"]
             node = {"size": item["pin"]["bytes"], "executable": False}
             with open_declared(path, [Path(root)/item["alias"] for root in roots], item["pin"]["path"], node) as stream:
                 raw = stream.read(item["pin"]["bytes"]+1)
