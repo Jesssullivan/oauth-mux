@@ -1580,5 +1580,5 @@ python_test(
     timeout = "long", target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 python_test(name = "current_home_manager_artifact_test", main = "current_home_manager_artifact_test.py",
-    srcs = ["current_home_manager_artifact.py"] + _CURRENT_HM_SOURCES,
+    srcs = ["current_home_manager_artifact.py", "test_portable.py"] + _CURRENT_HM_SOURCES,
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])

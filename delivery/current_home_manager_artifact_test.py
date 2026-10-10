@@ -97,4 +97,67 @@ class CurrentArtifactTest(unittest.TestCase):
             path.write_bytes(b'changed')
             with self.assertRaises(ValueError): artifact.recheck_metadata(path,b'original')
 
+    def test_closed_diagnostic_predicates_redact_arbitrary_error_data(self):
+        import json
+        marker='/private/secret-input-example'
+        for error in (ValueError(marker),OSError(marker),KeyError(marker),TypeError(marker),artifact.dev_stage.StageError(marker)):
+            value=artifact.diagnostic(error,{'phase':'portable-pack'})
+            self.assertEqual(value['phase'],'portable-pack')
+            self.assertEqual(value['predicate'],'unclassified')
+            self.assertNotIn(marker,json.dumps(value))
+            self.assertTrue(all(value[key] is False for key in ('shipped','artifactQualified','activationQualified',
+                'browserQualified','custodyQualified','continuityQualified','liveQualified')))
+        self.assertEqual(artifact.diagnostic(ValueError('archive inputs exceed bounded payload size'),{})['predicate'],'pack-input-size')
+        self.assertEqual(artifact.diagnostic(ValueError('unknown'),{'phase':marker})['phase'],'entry')
+        with self.assertRaises(ValueError): artifact.phase({},marker)
+
+    def test_real_provenance_refusal_records_phase_before_component_read(self):
+        progress={};environment=self.environment();environment[artifact.ENV+'MODE']='wrong'
+        with patch.object(artifact.pack,'read_bundle',side_effect=AssertionError('unexpected IO')):
+            with self.assertRaises(ValueError) as error: artifact.produce(None,environment,progress)
+        self.assertEqual(artifact.diagnostic(error.exception,progress)['phase'],'provenance')
+        self.assertEqual(artifact.diagnostic(error.exception,progress)['predicate'],'provenance')
+
+    def test_main_retains_generic_refusal_with_closed_diagnostic(self):
+        import contextlib
+        import io
+        import json
+        def fail(args,environment,progress):
+            artifact.phase(progress,'archive-validation')
+            raise ValueError('/private/secret-input-example')
+        output,error=io.StringIO(),io.StringIO()
+        with patch('argparse.ArgumentParser.parse_args',return_value=object()),patch.object(artifact,'produce',side_effect=fail), \
+                contextlib.redirect_stdout(output),contextlib.redirect_stderr(error):
+            self.assertEqual(artifact.main(),125)
+        value=json.loads(output.getvalue())
+        self.assertEqual(value['phase'],'archive-validation')
+        self.assertEqual(value['predicate'],'unclassified')
+        self.assertEqual(error.getvalue(),'current-home-manager-artifact-refused\n')
+        self.assertNotIn('secret-input-example',output.getvalue()+error.getvalue())
+
+    def test_declared_soname_alias_survives_real_portable_closure_selection(self):
+        import argparse
+        import portable
+        import test_portable as fixtures
+        case=fixtures.AssemblyTest()
+        case.setUp()
+        try:
+            physical=case.sqlite.with_name('libsqlite3.so.0.1')
+            case.sqlite.rename(physical)
+            case.sqlite.symlink_to(physical.name)
+            args=argparse.Namespace(core=case.cli,runtime_file=case.runtime,qt_runtime_file=[],qt_plugin=[])
+            old=[path.resolve(strict=True) for path in case.runtime]
+            with patch.object(portable,'_patch',side_effect=case.patch_fixture):
+                with self.assertRaisesRegex(ValueError,'declared runtime closure is missing libsqlite3.so.0'):
+                    portable.assemble_linux(case.cli,case.daemon,old,case.patchelf,'x86_64-linux',case.ca_bundle)
+                artifact.component_paths(args)
+                files,metadata=portable.assemble_linux(args.core,case.daemon,args.runtime_file,
+                    case.patchelf,'x86_64-linux',case.ca_bundle)
+            self.assertIs(args.runtime_file,case.runtime)
+            self.assertEqual(args.runtime_file[-1].name,'libsqlite3.so.0')
+            self.assertIn('lib/omux/lib/libsqlite3.so.0',files)
+            portable.verify_linux_runtime(files,{'target':'x86_64-linux','runtime':metadata})
+        finally:
+            case.doCleanups()
+
 if __name__=='__main__': unittest.main()

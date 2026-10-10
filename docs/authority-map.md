@@ -5,7 +5,9 @@ Ratification records existing user decisions and reviewed implementation choices
 it does not mean shipped, supported or proven live.
 
 The [October 5 integrated delivery sprint](plans/omux-integrated-delivery-sprint-2026-10-05.md)
-is the current implementation sequence. Its original fifteen-hour window ran
+preserves the original implementation sequence and full acceptance scope.
+The [October 10 implementation checkpoint](agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
+is the dated operational pointer. The original fifteen-hour window ran
 from `2026-10-05T04:03:36Z` to `2026-10-05T19:03:36Z`; resumed work preserves
 that clock and all historical results. The October 6 user-ratified five-hour
 continuation ran from **20:13:12 UTC October 6** to **01:13:12 UTC October 7**.
