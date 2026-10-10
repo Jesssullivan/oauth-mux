@@ -117,7 +117,8 @@
     "docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md",
     "docs/agent-notes/2026-10-07-sdk-alias-and-controller-import.md",
     "docs/agent-notes/2026-10-08-installed-runtime-continuation.md",
-    "docs/agent-notes/2026-10-10-native-peer-lifecycle-implementation.md"
+    "docs/agent-notes/2026-10-10-native-peer-lifecycle-implementation.md",
+    "docs/agent-notes/2026-10-10-acquisition-and-application-corrections.md"
   ],
   "historical_inventory": "docs/history/retired-design-inventory.md",
   "historical_extra": [

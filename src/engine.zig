@@ -8449,7 +8449,7 @@ test "actual acquisition refuses exhausted route generation before request or le
         defer allocator.free(after);
         try std.testing.expectEqualStrings(before, after);
         try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
-        try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().count);
+        try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
         try std.testing.expectEqual(std.math.maxInt(u64), current.state.binding(&binding_id).?.route_generation);
         var stored = try current.db.?.readSnapshot();
         defer stored.deinit();
