@@ -67,3 +67,6 @@ python_binary(
     data = ["codex-0.157-auth-broker.patch", "upstream-base.tar.gz", "binary-overlay.tar.gz", "manifest.json"],
     args = ["--artifact-dir", "$(location manifest.json)"],
 )
+
+filegroup(name = "native_source_context_patch", srcs = ["native-source-context-v1.patch"])
+filegroup(name = "native_source_context_preimages", srcs = glob(["source-context-preimages/**/*.rs"]))
