@@ -101,7 +101,7 @@ def carrier_purpose(label,action,selected_archive=False):
     require(type(selected_archive) is bool and label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL,PREPARE_LABEL)
         and ((label == PREPARE_LABEL and action == "prepare-owned" and not selected_archive)
             or (label == EXISTING_ENROLLMENT_LABEL and action == "enroll-existing" and selected_archive)
-            or (not selected_archive and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"))
+            or (not selected_archive and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing"))
             or (label == LABEL and action in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing"))))))
 
 def canonical(value):
@@ -141,13 +141,13 @@ def manifest_schema(value,home):
         return prepare.schema(value,home)
     existing_enrollment = type(value) is dict and "existing_archive" in value
     updating = type(value) is dict and value.get("action") == "update-existing"
-    starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","observe-inactive","stop-idle-owned")
+    starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing")
     stopping = type(value) is dict and value.get("action") == "stop-idle-owned"
     require(type(value) is dict and set(value) == {"schema_version","ownership","action","instance",
         "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else {"start"} if starting else set()) | ({"existing_archive"} if existing_enrollment else set())
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
-        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned")
+        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing")
         and value["instance"] == "default")
     expected = fixed_paths(home)
     for key in ("records","runtime_state"):
@@ -638,10 +638,10 @@ class Admission:
                 self.diagnostic_phase = "owned-update"
                 import guard_resident_owned_update as update
                 self.installation_update = update.InstallationUpdate(self.selected,home,deadline_ns)
-            if self.selected["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"):
+            if self.selected["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing"):
                 self.diagnostic_phase = "owned-first-start"
                 import guard_resident_owned_update as update
-                witness = update.OwnedInactiveObservation if self.selected["action"] == "observe-inactive" else update.OwnedFirstStart
+                witness = update.OwnedCustodyReopen if self.selected["action"] == "reopen-existing" else update.OwnedInactiveObservation if self.selected["action"] == "observe-inactive" else update.OwnedFirstStart
                 self.owned_start = witness(self.selected,home,self.deadline_ns)
             if "existing_archive" in self.selected:
                 self.diagnostic_phase = "existing-enrollment"
@@ -766,11 +766,11 @@ class Admission:
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
         preparing = self.selected["action"] == "prepare-owned"
-        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") or (preparing and not starting)
+        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing") or (preparing and not starting)
         properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
         if recovering_action:
             properties += ",UnitFileState"
-        if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") or (preparing and not starting):
+        if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing") or (preparing and not starting):
             import guard_resident_owned_update as update
             properties = ",".join(sorted(update.IDLE_PROPERTIES))
         result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
@@ -785,7 +785,7 @@ class Admission:
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
             "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set())
-            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned") or (preparing and not starting) else set()))
+            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing") or (preparing and not starting) else set()))
         if preparing:
             import guard_resident_owned_prepare as prepare
             require(self.installation_prepare is not None)
@@ -802,7 +802,7 @@ class Admission:
                 "installation_prepared":not starting,"enabled_for_future_login":not starting,
                 "future_login_activation_possible":not starting,"service_started":False,
                 "source_connected":False,"custody_verified":False,"bounded":True,**population}
-        if self.selected["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"):
+        if self.selected["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing"):
             self.diagnostic_phase = "owned-custody-recheck"
             require(self.owned_start is not None)
             self.owned_start.recheck()
@@ -851,7 +851,7 @@ class Admission:
             self.diagnostic_phase = "control-peer"
             peer = socket_witness(path)
             update.start_control_peer(peer,pid)
-            if action in ("observe-existing","stop-idle-owned"):
+            if action in ("observe-existing","stop-idle-owned","reopen-existing"):
                 self.owned_start.pristine()
                 current=(identity,cgroup)
                 if starting:

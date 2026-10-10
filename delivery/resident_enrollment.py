@@ -135,7 +135,7 @@ def absolute(value):
 
 
 def validate_manifest(value):
-    if isinstance(value,dict) and value.get("action") in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned"):
+    if isinstance(value,dict) and value.get("action") in ("update-existing","start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing"):
         return resident_guard.manifest_schema(value,Path(os.environ["HOME"]))
     require(isinstance(value, dict) and set(value) == {"schema_version", "ownership", "action", "instance",
             "prefix", "records", "runtime_state", "service_path", "native_context", "permissions"}

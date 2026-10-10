@@ -1335,7 +1335,7 @@ cc_binary(
 python_binary(
     name = "resident_owned_lifecycle",
     main = "resident_owned_lifecycle.py",
-    srcs = ["resident_enrollment.py","resident_owned_start.py","install.py","pack.py","portable.py",
+    srcs = ["resident_custody_reopen.py","resident_enrollment.py","resident_owned_start.py","install.py","pack.py","portable.py",
         "//tools:guard_resident_enrollment_profile.py","//tools:resident_owned_update_sources"],
     data = ["@omux_nix//:systemctl"],
     args = ["$(location @omux_nix//:systemctl)"],
@@ -1346,7 +1346,7 @@ python_binary(
 python_test(
     name = "resident_owned_lifecycle_contract_test",
     main = "test_resident_owned_lifecycle.py",
-    srcs = ["resident_owned_lifecycle.py","resident_owned_start.py","resident_enrollment.py","install.py","pack.py","portable.py",
+    srcs = ["resident_custody_reopen.py","resident_owned_lifecycle.py","resident_owned_start.py","resident_enrollment.py","install.py","pack.py","portable.py",
         "//tools:guard_resident_enrollment_profile.py","//tools:resident_owned_update_sources"],
     target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
 )
@@ -1499,4 +1499,12 @@ python_test(
     srcs = ["native_login_enrollment_selector.py", "install.py", "pack.py", "portable.py",
         "//tools:guard_resident_enrollment_profile.py", "//tools:resident_owned_update_sources"],
     target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "resident_custody_reopen_contract_test",
+    main = "test_resident_custody_reopen.py",
+    srcs = ["resident_custody_reopen.py","resident_owned_lifecycle.py","resident_owned_start.py","resident_enrollment.py","install.py","pack.py","portable.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:resident_owned_update_sources"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
 )

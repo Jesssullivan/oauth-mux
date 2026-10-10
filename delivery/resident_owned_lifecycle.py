@@ -20,7 +20,10 @@ def phase(name):
 
 def execute_existing(systemctl,manifest,environment,bounded,remaining,deadline_ns):
     guard.manifest_schema(manifest,environment["HOME"])
-    guard.require(manifest["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned"))
+    guard.require(manifest["action"] in ("start-existing","observe-existing","observe-inactive","stop-idle-owned","reopen-existing"))
+    if manifest["action"] == "reopen-existing":
+        import resident_custody_reopen
+        return resident_custody_reopen.execute(systemctl,manifest,environment,bounded,remaining,deadline_ns)
     if manifest["action"] == "start-existing":
         phase("start")
         import resident_owned_start

@@ -6,8 +6,12 @@ PROFILE = "resident-custody-runtime-reserved"
 MODEL_PROFILE = "resident-custody-runtime-models-reserved"
 LINUX_PROFILE = "resident-custody-runtime-linux-reserved"
 FORMAT_PROFILE = "resident-custody-runtime-format-reserved"
-PROFILES = (MODEL_PROFILE, PROFILE, LINUX_PROFILE, FORMAT_PROFILE)
+INSTALLED_MODEL_PROFILE = "resident-installed-custody-models-reserved"
+PROFILES = (MODEL_PROFILE, PROFILE, LINUX_PROFILE, FORMAT_PROFILE, INSTALLED_MODEL_PROFILE)
 COHORTS = {
+    INSTALLED_MODEL_PROFILE: ["test", "//tools:guard_resident_custody_runtime_reserved_test",
+        "//delivery:resident_custody_reopen_contract_test", "//delivery:resident_owned_lifecycle_contract_test",
+        "//:format_test", "//:docs_check"],
     FORMAT_PROFILE: ["run", "//:format", "--", "src/engine.zig", "src/vault.zig", "src/control.zig"],
     MODEL_PROFILE: ["test", "//tools:guard_resident_custody_runtime_reserved_test",
         "//tools:guard_resident_namespace_profile_test", "//tools:guard_resident_owned_update_test",
@@ -79,7 +83,7 @@ def projection(entry, deadline, verified, resident, profile=PROFILE):
     require(profile in PROFILES)
     kernel.envelope(entry, deadline)
     require(verified is None or type(verified) is bool)
-    return {"scope": "fixed-resident-custody-runtime-reserved-v1", "mode": "bounded-source-formatting" if profile == FORMAT_PROFILE else "isolated-runtime-units",
+    return {"scope": "fixed-resident-custody-runtime-reserved-v1", "mode": "bounded-source-formatting" if profile == FORMAT_PROFILE else "isolated-installed-custody-models" if profile == INSTALLED_MODEL_PROFILE else "isolated-runtime-units",
         "original_entry_monotonic_ns": entry, "original_deadline_monotonic_ns": deadline,
         "verified_after_cleanup": verified, "resident": resident,
         "isolated_unit_scope": profile != FORMAT_PROFILE,

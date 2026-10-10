@@ -430,6 +430,141 @@ class QualifiedExistingEnrollment:
         if failure is not None:
             raise failure
 
+def portable_process_images(exe_name,exe_identity,maps,loader,backend):
+    """Public mapping identities of exact archive-bound held portable images."""
+    resident.require(exe_name == str(loader.path) and exe_identity == loader.identity[:2]
+        and type(maps) is bytes and len(maps) <= 1024*1024)
+    expected = {str(image.path):image.identity[:2] for image in (loader,backend)}
+    seen = {name:[] for name in expected}
+    for line in maps.decode("ascii").splitlines():
+        fields = line.split(None,5)
+        resident.require(len(fields) in (5,6))
+        if len(fields) == 6:
+            name = fields[5]
+            for wanted in expected:
+                if name == wanted or name == wanted+" (deleted)":
+                    resident.require(name == wanted)
+                    device = fields[3].split(":")
+                    resident.require(len(device) == 2 and fields[4].isdigit()
+                        and (os.makedev(int(device[0],16),int(device[1],16)),int(fields[4])) == expected[wanted]
+                        and re.fullmatch(r"[0-9a-f]+-[0-9a-f]+",fields[0])
+                        and re.fullmatch(r"[r-][w-][x-][ps]",fields[1])
+                        and re.fullmatch(r"[0-9a-f]+",fields[2]))
+                    seen[wanted].append((int(fields[2],16),fields[1]))
+    for rows in seen.values():
+        resident.require(rows and any(offset == 0 for offset,permission in rows)
+            and any("x" in permission for offset,permission in rows))
+    return loader.identity[:2],backend.identity[:2]
+
+class OwnedCustodyReopen:
+    """Qualified installed software and stable singleton; private bytes unread."""
+    def __init__(self,selected,home,deadline):
+        self.software = None
+        self.directory = self.lock = None
+        self.deadline = deadline
+        self.state = Path(selected["runtime_state"])
+        try:
+            self.software = QualifiedExistingEnrollment({**selected,"existing_archive":selected["start"]},home,deadline)
+            self.files = self.software.files
+            archive_files,_ = pack.archive_contents(self.files[1].raw)
+            manifest = json.loads(archive_files["release-manifest.json"],object_pairs_hook=resident.unique)
+            resident.require(type(manifest.get("runtime")) is dict
+                and type(manifest["runtime"].get("loader")) is str
+                and re.fullmatch(r"lib/omux/lib/[A-Za-z0-9+._-]+",manifest["runtime"]["loader"]))
+            loader_path = Path(selected["prefix"])/manifest["runtime"]["loader"]
+            backend_path = Path(selected["prefix"])/"lib/omux/libexec/omuxd.bin"
+            self.loader = next(public for public in self.files if public.path == loader_path)
+            self.backend = next(public for public in self.files if public.path == backend_path)
+            # Software reference and every installed byte are already archive-bound.
+            reference = next(public for public in self.files if public.path == Path(selected["prefix"])/"share/omux/reference.json")
+            value = json.loads(reference.raw,object_pairs_hook=resident.unique)
+            resident.require(value["api"]["version"] == 2 and type(value["api"]["version"]) is int
+                and sum(row.get("name") == "custody.reopen" for row in value["api"]["methods"]) == 1)
+            self.directory = resident.open_directory(self.state,private=True)
+            self.root_identity = resident.stable(os.fstat(self.directory))
+            self.lock = os.open("daemon.lock",os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.directory)
+            self.lock_identity = resident.stable(os.fstat(self.lock))
+            self.pristine()
+        except BaseException:
+            self.close()
+            raise
+    def recheck(self):
+        tick(self.deadline)
+        self.software.recheck()
+        resident.require(resident.stable(os.fstat(self.directory)) == self.root_identity
+            == resident.stable(self.state.stat(follow_symlinks=False)))
+        info = os.fstat(self.lock)
+        resident.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and info.st_size == 0
+            and resident.stable(info) == self.lock_identity
+            == resident.stable(os.stat("daemon.lock",dir_fd=self.directory,follow_symlinks=False)))
+        names = os.listdir(self.directory)
+        resident.require(0 < len(names) <= 4096)
+        for name in names:
+            row = os.stat(name,dir_fd=self.directory,follow_symlinks=False)
+            resident.require(stat.S_ISREG(row.st_mode) and row.st_uid == os.getuid()
+                and stat.S_IMODE(row.st_mode) == 0o600 and row.st_nlink == 1)
+    def pristine(self):
+        # Unlike zero-DB startup, authentic reopen may create/update encrypted DB.
+        self.recheck()
+    def owner(self,pid,prefix):
+        self.recheck()
+        info = os.fstat(self.lock)
+        fd = os.open("/proc/locks",os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        try:
+            chunks,total = [],0
+            while True:
+                tick(self.deadline)
+                chunk = os.read(fd,min(65536,4*1024*1024-total+1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                resident.require(total <= 4*1024*1024)
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            resident.require(len(raw) <= 4*1024*1024)
+        finally:
+            os.close(fd)
+        owners = []
+        for line in raw.decode("ascii").splitlines():
+            fields = line.split()
+            if len(fields) == 8 and fields[1:4] == ["FLOCK","ADVISORY","WRITE"]:
+                parts = fields[5].split(":")
+                resident.require(len(parts) == 3)
+                key = (int(parts[0],16),int(parts[1],16),int(parts[2]))
+                if key == (os.major(info.st_dev),os.minor(info.st_dev),info.st_ino):
+                    resident.require(fields[4].isdigit() and fields[6:] == ["0","EOF"])
+                    owners.append(int(fields[4]))
+        resident.require(owners == [pid])
+        # The static launcher execs the qualified bundled loader and maps backend.
+        actual = os.stat(Path("/proc")/str(pid)/"exe")
+        name = os.readlink(Path("/proc")/str(pid)/"exe")
+        fd = os.open(Path("/proc")/str(pid)/"maps",os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        try:
+            chunks,total = [],0
+            while True:
+                tick(self.deadline)
+                chunk = os.read(fd,min(65536,1024*1024-total+1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                resident.require(total <= 1024*1024)
+                chunks.append(chunk)
+            images = portable_process_images(name,(actual.st_dev,actual.st_ino),b"".join(chunks),self.loader,self.backend)
+        finally:
+            os.close(fd)
+        self.recheck()
+        return self.lock_identity,images
+    def close(self):
+        for name in ("lock","directory"):
+            fd = getattr(self,name,None)
+            if fd is not None:
+                os.close(fd)
+                setattr(self,name,None)
+        if self.software is not None:
+            self.software.close()
+            self.software = None
+
 class RuntimeFence:
     """Hold existing singleton lock and exact named/held metadata; read no private bytes."""
     def __init__(self,state,deadline,*,acquire_lock=True):
@@ -503,6 +638,15 @@ class OwnedInactiveObservation:
                 {**selected,"existing_archive":selected["start"]},home,deadline)
             self.runtime = RuntimeFence(selected["runtime_state"],deadline,acquire_lock=False)
             self.files = self.software.files
+            archive_files,_ = pack.archive_contents(self.files[1].raw)
+            manifest = json.loads(archive_files["release-manifest.json"],object_pairs_hook=resident.unique)
+            resident.require(type(manifest.get("runtime")) is dict
+                and type(manifest["runtime"].get("loader")) is str
+                and re.fullmatch(r"lib/omux/lib/[A-Za-z0-9+._-]+",manifest["runtime"]["loader"]))
+            loader_path = Path(selected["prefix"])/manifest["runtime"]["loader"]
+            backend_path = Path(selected["prefix"])/"lib/omux/libexec/omuxd.bin"
+            self.loader = next(public for public in self.files if public.path == loader_path)
+            self.backend = next(public for public in self.files if public.path == backend_path)
             self.recheck()
         except BaseException:
             self.close()

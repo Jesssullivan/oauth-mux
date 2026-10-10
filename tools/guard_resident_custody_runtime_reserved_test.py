@@ -19,6 +19,32 @@ class SourceReservationModels(unittest.TestCase):
         return SimpleNamespace(profile=source.PROFILE, manager="system", reuse_owned_cache=False,
             source_commit="a" * 40, source_dirty="false", repository_cache=None, nixpkgs_source=None)
 
+    def test_installed_custody_models_have_distinct_exact_offline_vector(self):
+        self.assertEqual(source.COHORTS[source.MODEL_PROFILE], ["test",
+            "//tools:guard_resident_custody_runtime_reserved_test", "//tools:guard_resident_namespace_profile_test",
+            "//tools:guard_resident_owned_update_test", "//:format_test", "//:docs_check"])
+        expected=["test", "//tools:guard_resident_custody_runtime_reserved_test",
+            "//delivery:resident_custody_reopen_contract_test", "//delivery:resident_owned_lifecycle_contract_test",
+            "//:format_test", "//:docs_check"]
+        self.assertEqual(source.COHORTS[source.INSTALLED_MODEL_PROFILE],expected)
+        args=self.args()
+        args.profile=source.INSTALLED_MODEL_PROFILE
+        self.assertTrue(source.request(args,expected))
+        for name,value in (("resident_manifest",Path("/model/private")),("reuse_owned_cache",True),
+                ("native_mode","schema"),("manager","user")):
+            bad=SimpleNamespace(**vars(args))
+            setattr(bad,name,value)
+            with self.assertRaises(ValueError): source.request(bad,expected)
+        for bad in (expected[:-1],expected+["//:engine_test"],expected+["--test_arg=untrusted"],
+                source.COHORTS[source.MODEL_PROFILE],["build",*expected[1:]]):
+            with self.assertRaises(ValueError): source.selected(source.INSTALLED_MODEL_PROFILE,bad)
+        row=source.projection(100*10**9,1300*10**9,True,{},source.INSTALLED_MODEL_PROFILE)
+        self.assertEqual(row["mode"],"isolated-installed-custody-models")
+        self.assertIs(row["source_mutation_requested"],False)
+        self.assertIs(row["normal_vault_observed"],False)
+        self.assertIs(row["daemon_transition_performed"],False)
+        self.assertIs(row["compiler_qualified"],False)
+
     def test_exact_cohorts_refuse_before_tools_or_resident_reads(self):
         for profile, expected in source.COHORTS.items():
             args = self.args()
