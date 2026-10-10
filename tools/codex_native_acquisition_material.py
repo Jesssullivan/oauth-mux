@@ -468,7 +468,7 @@ def producer_success(selection, target, output_name, deadline):
     prefix=str(output)+'/execroot/_main/bazel-out/'
     suffix='/testlogs/tools/'+target.split(':')[1]+'/test.outputs'+('/'+output_name if output_name else '')
     require(str(root).startswith(prefix) and str(root).endswith(suffix)
-        and re.fullmatch(r'[A-Za-z0-9_.-]+',str(root)[len(prefix):-len(suffix)]),
+        and re.fullmatch(r'[A-Za-z0-9_.-]+',str(root)[len(prefix):-len(suffix)]) is not None,
         'selected output is not the actual producer test namespace')
     evidence=read_json(Path(value['receipt']).parent/'test-evidence.json',
         receipt['test_evidence']['sha256'],deadline)
@@ -490,7 +490,7 @@ def producer_success(selection, target, output_name, deadline):
         entries=[entry for entry in item['files'] if entry['source']==member]
         require(len(entries)==1 and entries[0]['state']=='copied', 'producer evidence not copied')
         entry=entries[0]
-        require(re.fullmatch(r'[0-9a-f]{64}\.evidence',entry['file']), 'producer evidence name refused')
+        require(re.fullmatch(r'[0-9a-f]{64}\.evidence',entry['file']) is not None, 'producer evidence name refused')
         fd=trusted_parent(Path(value['receipt']).parent/'test-evidence')
         try:
             digest,count,raw=hash_regular(fd,entry['file'],64*1024*1024,True,
