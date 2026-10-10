@@ -89,6 +89,9 @@ class SelectionTests(unittest.TestCase):
             root, base, parent, alias, canonical, expected = self.hop_fixture(temporary)
             repository = assembly.INVENTORY_REPOS['browserInventory']
             execroot_inventory = base / 'execroot/_main/external' / repository / 'inventory.json'
+            repository_alias = execroot_inventory.parent
+            repository_alias.parent.mkdir(parents=True, mode=0o755)
+            repository_alias.symlink_to(expected.parent, target_is_directory=True)
             sandbox_runfiles = alias.parent.parent
             sandbox_runfiles.unlink(); sandbox_runfiles.mkdir(mode=0o755)
             alias.parent.mkdir(mode=0o755)
