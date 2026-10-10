@@ -455,13 +455,26 @@ class CarrierModels(unittest.TestCase):
             replacement = unselected/"inputs.json"
             replacement.write_bytes(fixture.bundle_raw)
             original = inputs.metadata_alias_roots
+            captured = []
             def retarget(path):
                 roots = original(path)
-                fixture.bundle_path.unlink()
-                fixture.bundle_path.symlink_to(replacement)
+                captured.append(roots)
+                # First capture belongs to bundle_opener; second is the
+                # declared_metadata capture immediately before sibling selection.
+                if len(captured) == 2:
+                    self.assertNotIn(unselected, roots)
+                    fixture.bundle_path.unlink()
+                    fixture.bundle_path.symlink_to(replacement)
                 return roots
-            with patch.object(inputs, "metadata_alias_roots", side_effect=retarget), self.assertRaises(ValueError):
-                fixture.qualify()
+            carrier.phase("admission")
+            with patch.object(inputs, "metadata_alias_roots", side_effect=retarget), \
+                    patch.object(inputs, "open_declared", side_effect=AssertionError("external sibling read")) as opened:
+                with self.assertRaises(ValueError) as refused:
+                    fixture.qualify()
+                self.assertEqual(refused.exception.args, ("private-store seed contract",))
+                opened.assert_not_called()
+            self.assertEqual(len(captured), 2)
+            self.assertEqual(carrier.PHASE, "declared-metadata")
             self.assertEqual(fixture.model.calls, [])
 
     def test_metadata_projection_refuses_unbounded_attributes_and_unrelated_errors(self):
