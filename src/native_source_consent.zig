@@ -85,10 +85,7 @@ pub fn admit(current: Current, now_wall: i64, now_monotonic: u64, cutoff: u64) !
     const consent = try authorized(current, now_wall);
     if (!current.store_present) return error.NativeSourceUnavailable;
     if (now_monotonic >= cutoff) return error.NativeSourceDeadline;
-    return .{ .source_id = current.source_id, .source_generation = current.source_generation,
-        .consent_id = consent.id, .consent_generation = consent.generation,
-        .owner = current.owner, .context = current.context, .forget_epoch = current.forget_epoch,
-        .allow_reenrollment = consent.allow_reenrollment, .cutoff = cutoff };
+    return .{ .source_id = current.source_id, .source_generation = current.source_generation, .consent_id = consent.id, .consent_generation = consent.generation, .owner = current.owner, .context = current.context, .forget_epoch = current.forget_epoch, .allow_reenrollment = consent.allow_reenrollment, .cutoff = cutoff };
 }
 // Called before materialization, after descriptor receipt, and immediately
 // before adopting a verified identity/credential. Current must be fresh evidence
@@ -111,16 +108,14 @@ pub fn check(admission: Admission, current: Current, now_wall: i64, now_monotoni
 // actual authenticated FD response, not from JSON metadata or client parameters.
 // Matching it proves tuple equality only, not descriptor/content authenticity.
 pub const MaterializedBinding = struct { owner: Owner, context: Context };
-pub fn checkMaterialized(admission: Admission, current: Current, received: MaterializedBinding,
-    now_wall: i64, now_monotonic: u64) !void {
+pub fn checkMaterialized(admission: Admission, current: Current, received: MaterializedBinding, now_wall: i64, now_monotonic: u64) !void {
     try check(admission, current, now_wall, now_monotonic);
     if (!admission.owner.same(received.owner)) return error.NativeSourceOwnerChanged;
     if (!admission.context.same(received.context)) return error.NativeSourceContextChanged;
 }
 // Provider identity verification and domain tombstone checks remain mandatory.
 // This check fences explicit re-enrollment against forget after admission.
-pub fn checkEnrollment(admission: Admission, current: Current, tombstoned: bool,
-    now_wall: i64, now_monotonic: u64) !void {
+pub fn checkEnrollment(admission: Admission, current: Current, tombstoned: bool, now_wall: i64, now_monotonic: u64) !void {
     try check(admission, current, now_wall, now_monotonic);
     if (tombstoned and !admission.allow_reenrollment) return error.NativeSourceTombstoned;
 }
@@ -137,4 +132,6 @@ fn authorized(current: Current, now_wall: i64) !Consent {
 fn validHandle(value: Handle) !void {
     if (std.mem.allEqual(u8, &value, 0)) return error.InvalidNativeSourceAuthority;
 }
-fn equal(a: Handle, b: Handle) bool { return std.mem.eql(u8, &a, &b); }
+fn equal(a: Handle, b: Handle) bool {
+    return std.mem.eql(u8, &a, &b);
+}

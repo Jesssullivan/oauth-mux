@@ -339,7 +339,7 @@ fn openRuntimeRole(budget: Budget, directory: c.fd_t, installation: RuntimeInsta
         try budget.check();
         try runtimeDirectory(try statFile(parent), installation.uid, installation.gid);
         var name: [64:0]u8 = @splat(0);
-        if (part.len == 0 or part.len >= name.len or std.mem.eql(u8,part,".") or std.mem.eql(u8,part,"..")) return error.InvalidRuntimeSelection;
+        if (part.len == 0 or part.len >= name.len or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return error.InvalidRuntimeSelection;
         @memcpy(name[0..part.len], part);
         if (parts.peek() != null) {
             const next = c.openat(parent, &name, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
@@ -404,7 +404,7 @@ fn validateRuntimeInstallation(io: std.Io, allocator: std.mem.Allocator, options
             // while keeping acquisition unsupported. Receipt presence never
             // upgrades that contract; the genuine constructor owns the join.
             const deployment = record.deployment orelse return error.InvalidRuntimeSelection;
-            try runtime_deployment.recheckWitness(io,allocator,options.deadline orelse return error.InvalidDeadline,deployment.root,deployment.declaration);
+            try runtime_deployment.recheckWitness(io, allocator, options.deadline orelse return error.InvalidDeadline, deployment.root, deployment.declaration);
         },
     }
     if (std.mem.allEqual(u8, &record.upstream_commit, '0')) return error.InvalidRuntimeSelection;
@@ -443,7 +443,7 @@ fn recheckInstalledManifest(budget: Budget, allocator: std.mem.Allocator, direct
     defer close(fd);
     const before = try statFile(fd);
     const maximum_manifest: usize = if (record.launch_profile == .linux_nix_direct_main_v1) 64 * 1024 else 16 * 1024 * 1024;
-    if (!std.meta.eql(before, expected_status) or before.size <= 0 or before.size > @as(i64,@intCast(maximum_manifest)) or
+    if (!std.meta.eql(before, expected_status) or before.size <= 0 or before.size > @as(i64, @intCast(maximum_manifest)) or
         before.mode & c.S.IFMT != c.S.IFREG or before.mode & 0o7777 != 0o644 or before.nlink != 1) return error.RuntimeSelectionDrift;
     const bytes = try allocator.alloc(u8, @intCast(before.size));
     defer allocator.free(bytes);
@@ -458,8 +458,7 @@ fn recheckInstalledManifest(budget: Budget, allocator: std.mem.Allocator, direct
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     if (!std.meta.eql(digest, record.manifest_sha256) or !std.meta.eql(before, try statFile(fd))) return error.RuntimeSelectionDrift;
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .duplicate_field_behavior = .@"error", .ignore_unknown_fields = false,
-        .max_value_len = if (record.launch_profile == .linux_nix_direct_main_v1) 4096 else 16 * 1024 * 1024 });
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .duplicate_field_behavior = .@"error", .ignore_unknown_fields = false, .max_value_len = if (record.launch_profile == .linux_nix_direct_main_v1) 4096 else 16 * 1024 * 1024 });
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidRuntimeSelection;
     const files = parsed.value.object.get("files") orelse return error.InvalidRuntimeSelection;
@@ -2193,33 +2192,28 @@ test "authenticated installed manifest rechecks non-role library after retained 
     const allocator = std.testing.allocator;
     const library = "lib/codex/lib/extra.so";
     const contents = "first library";
-    const path = try std.fmt.allocPrint(allocator,"{s}/runtime/{s}",.{fixture.fixture.base,library});
+    const path = try std.fmt.allocPrint(allocator, "{s}/runtime/{s}", .{ fixture.fixture.base, library });
     defer allocator.free(path);
-    try fixture.fixture.write(path,contents,0o755);
+    try fixture.fixture.write(path, contents, 0o755);
     var library_digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(contents,&library_digest,.{});
-    const manifest = try std.fmt.allocPrint(allocator,
-        "{{\"files\":{{\"bin/codex\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"lib/codex/libexec/codex.bin\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"lib/codex/lib/ld-linux-x86-64.so.2\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"{s}\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}}}}}}",
-        .{std.fmt.bytesToHex(fixture.record.launcher.sha256,.lower),fixture.record.launcher.bytes,
-          std.fmt.bytesToHex(fixture.record.backend.sha256,.lower),fixture.record.backend.bytes,
-          std.fmt.bytesToHex(fixture.record.loader.sha256,.lower),fixture.record.loader.bytes,
-          library,std.fmt.bytesToHex(library_digest,.lower),contents.len});
+    std.crypto.hash.sha2.Sha256.hash(contents, &library_digest, .{});
+    const manifest = try std.fmt.allocPrint(allocator, "{{\"files\":{{\"bin/codex\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"lib/codex/libexec/codex.bin\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"lib/codex/lib/ld-linux-x86-64.so.2\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}},\"{s}\":{{\"sha256\":\"{s}\",\"bytes\":{d},\"mode\":493}}}}}}", .{ std.fmt.bytesToHex(fixture.record.launcher.sha256, .lower), fixture.record.launcher.bytes, std.fmt.bytesToHex(fixture.record.backend.sha256, .lower), fixture.record.backend.bytes, std.fmt.bytesToHex(fixture.record.loader.sha256, .lower), fixture.record.loader.bytes, library, std.fmt.bytesToHex(library_digest, .lower), contents.len });
     defer allocator.free(manifest);
-    const manifest_path = try std.fmt.allocPrint(allocator,"{s}/runtime/runtime-manifest.json",.{fixture.fixture.base});
+    const manifest_path = try std.fmt.allocPrint(allocator, "{s}/runtime/runtime-manifest.json", .{fixture.fixture.base});
     defer allocator.free(manifest_path);
-    try fixture.fixture.write(manifest_path,manifest,0o644);
-    const fd = c.openat(fixture.directory,"runtime-manifest.json",.{ .NOFOLLOW=true,.CLOEXEC=true });
+    try fixture.fixture.write(manifest_path, manifest, 0o644);
+    const fd = c.openat(fixture.directory, "runtime-manifest.json", .{ .NOFOLLOW = true, .CLOEXEC = true });
     if (fd < 0) return error.FixtureSetupFailed;
     defer close(fd);
     fixture.record.installed_manifest_status = try statFile(fd);
-    std.crypto.hash.sha2.Sha256.hash(manifest,&fixture.record.manifest_sha256,.{});
+    std.crypto.hash.sha2.Sha256.hash(manifest, &fixture.record.manifest_sha256, .{});
     const replacement_evidence = try fixture.sealRecord();
     allocator.free(fixture.evidence);
     fixture.evidence = replacement_evidence;
     const verified = try fixture.verify();
     defer verified.deinit(allocator);
-    var roles = try verified.recheckAndOpenRoles(std.testing.io,allocator,fixture.fixture.options,fixture.expected);
+    var roles = try verified.recheckAndOpenRoles(std.testing.io, allocator, fixture.fixture.options, fixture.expected);
     defer roles.deinit();
-    try fixture.fixture.write(path,"altered library",0o755);
-    try std.testing.expectError(error.RuntimeSelectionDrift,verified.recheckAndOpenRoles(std.testing.io,allocator,fixture.fixture.options,fixture.expected));
+    try fixture.fixture.write(path, "altered library", 0o755);
+    try std.testing.expectError(error.RuntimeSelectionDrift, verified.recheckAndOpenRoles(std.testing.io, allocator, fixture.fixture.options, fixture.expected));
 }

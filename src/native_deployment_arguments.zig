@@ -75,7 +75,7 @@ test "partial duplicate missing and unsafe locators refuse" {
     const invalid = [_][]const []const u8{
         &.{ "--native-package-root", "/package" },
         &.{ "--native-installation-root", "/install" },
-        &.{ "--native-package-root" },
+        &.{"--native-package-root"},
         &.{ "--native-package-root", "/package", "--native-package-root", "/other", "--native-installation-root", "/install" },
         &.{ "--native-package-root", "/package", "--native-installation-root", "/install", "--native-installation-root", "/other" },
         &.{ "--native-package-root", "relative", "--native-installation-root", "/install" },

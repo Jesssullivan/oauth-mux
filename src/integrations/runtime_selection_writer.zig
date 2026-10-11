@@ -19,13 +19,18 @@ const Retained = struct {
 };
 
 pub const Prepared = opaque {
-    fn held(self: *const Prepared) *const Retained { return @ptrCast(@alignCast(self)); }
-    pub fn evidence(self: *const Prepared) []const u8 { return self.held().evidence; }
-    pub fn recordDigest(self: *const Prepared) [32]u8 { return self.held().record_sha256; }
+    fn held(self: *const Prepared) *const Retained {
+        return @ptrCast(@alignCast(self));
+    }
+    pub fn evidence(self: *const Prepared) []const u8 {
+        return self.held().evidence;
+    }
+    pub fn recordDigest(self: *const Prepared) [32]u8 {
+        return self.held().record_sha256;
+    }
     pub fn expectation(self: *const Prepared) setup.RuntimeSelectionExpectation {
         const retained = self.held();
-        return .{ .record_sha256 = retained.record_sha256, .directory = retained.directory,
-            .channel = retained.channel, .target = retained.target };
+        return .{ .record_sha256 = retained.record_sha256, .directory = retained.directory, .channel = retained.channel, .target = retained.target };
     }
     pub fn recheck(self: *const Prepared, io: std.Io, context: producer.ActorContext) !void {
         const retained = self.held();
@@ -36,10 +41,10 @@ pub const Prepared = opaque {
     }
     pub fn recheckIdentity(self: *const Prepared, io: std.Io, context: producer.ActorContext) !void {
         const retained = self.held();
-        if (!std.meta.eql(context.deadline,retained.deadline)) return error.RuntimeSelectionDrift;
-        try retained.selected.recheckIdentity(io,context);
-        if (!std.meta.eql(retained.directory_status,try metadata.statFd(retained.directory))) return error.RuntimeSelectionDrift;
-        try retained.selected.recheckIdentity(io,context);
+        if (!std.meta.eql(context.deadline, retained.deadline)) return error.RuntimeSelectionDrift;
+        try retained.selected.recheckIdentity(io, context);
+        if (!std.meta.eql(retained.directory_status, try metadata.statFd(retained.directory))) return error.RuntimeSelectionDrift;
+        try retained.selected.recheckIdentity(io, context);
     }
     pub fn deinit(self: *Prepared, allocator: std.mem.Allocator) void {
         const retained: *Retained = @ptrCast(@alignCast(self));
@@ -64,8 +69,10 @@ pub fn prepare(io: std.Io, allocator: std.mem.Allocator, context: producer.Actor
     const directory = try selected.duplicateInstallationDirectory();
     errdefer _ = c.close(directory);
     const expected: setup.RuntimeSelectionExpectation = .{
-        .record_sha256 = digest, .channel = record.channel,
-        .target = record.target, .directory = directory,
+        .record_sha256 = digest,
+        .channel = record.channel,
+        .target = record.target,
+        .directory = directory,
     };
     var options = context.options;
     options.deadline = context.deadline;
@@ -79,7 +86,6 @@ pub fn prepare(io: std.Io, allocator: std.mem.Allocator, context: producer.Actor
     try selected.recheck(io, context);
     const directory_status = try metadata.statFd(directory);
     const retained = try allocator.create(Retained);
-    retained.* = .{ .evidence = evidence, .record_sha256 = digest, .directory = directory, .directory_status=directory_status,
-        .channel = record.channel, .target = record.target, .selected = selected, .deadline = context.deadline };
+    retained.* = .{ .evidence = evidence, .record_sha256 = digest, .directory = directory, .directory_status = directory_status, .channel = record.channel, .target = record.target, .selected = selected, .deadline = context.deadline };
     return @ptrCast(retained);
 }

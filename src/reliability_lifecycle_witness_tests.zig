@@ -171,7 +171,6 @@ test "existing ledger prepays witness restore requires authenticated revision an
     try std.testing.expectEqual(retained - (try witness.maximumSerializedBytes() - "null".len), ledger.reservedSnapshotBytes());
 }
 
-
 test "owned daemon request producer captures real clock subinterval and preserves unknown external waits" {
     var ledger = try mutation.Ledger.init(allocator, 1);
     defer ledger.deinit();
@@ -198,7 +197,6 @@ test "owned daemon request producer captures real clock subinterval and preserve
     invalid.user_provider_wait = .{ .ns = 0, .missing = null };
     try std.testing.expectError(error.InvalidLifecycleWitness, invalid.validate());
 }
-
 
 test "historical raw schema1 preserves absent request timing and schema2 requires it" {
     var ledger = try mutation.Ledger.init(allocator, 1);

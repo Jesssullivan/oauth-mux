@@ -19,9 +19,7 @@ fn requestFor(identity: probe.OwnerIdentity, operation: native_owner.OperationId
 }
 
 fn sourceSelector(fixture: *fixture_mod.Fixture) probe.SourceContextSelector {
-    return .{ .owner_id = fixture.owner_id, .native_nonce = fixture.native_nonce,
-        .endpoint_generation = fixture.options.endpoint_generation,
-        .context = .{ .id = @splat(0xaa), .generation = 1 } };
+    return .{ .owner_id = fixture.owner_id, .native_nonce = fixture.native_nonce, .endpoint_generation = fixture.options.endpoint_generation, .context = .{ .id = @splat(0xaa), .generation = 1 } };
 }
 
 test "actual source context packets preserve captured peer and never grant acquisition" {
@@ -376,7 +374,6 @@ test "owner read-only thread discovery refuses invalid or oversized rows before 
         try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
     }
 }
-
 
 test "maintained current context metadata rotates both fields while explicit selectors stay exact" {
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;

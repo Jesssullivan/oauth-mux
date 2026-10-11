@@ -342,7 +342,6 @@ test "collector timeout is immutable safe refusal without phase or completion la
     try std.testing.expectError(error.InvalidSetupVerificationResult, validate(forged));
 }
 
-
 test "daemon timed refusal retains its distinct population and original result bound" {
     var ledger = try mutation.Ledger.init(std.testing.allocator, 2);
     defer ledger.deinit();

@@ -23,8 +23,7 @@ pub fn controlSelection(params: std.json.Value) !ControlSelection {
     if (params != .object) return error.InvalidParams;
     for (params.object.keys()) |name| {
         var admitted = false;
-        inline for (.{ "kind", "provider", "operation_id", "expected_revision", "label", "selected_native_context",
-            "native_access_copy", "custody_seconds", "consent_seconds", "allow_reenrollment" }) |allowed| {
+        inline for (.{ "kind", "provider", "operation_id", "expected_revision", "label", "selected_native_context", "native_access_copy", "custody_seconds", "consent_seconds", "allow_reenrollment" }) |allowed| {
             if (std.mem.eql(u8, name, allowed)) admitted = true;
         }
         if (!admitted) return error.InvalidParams;
@@ -40,14 +39,7 @@ pub fn controlSelection(params: std.json.Value) !ControlSelection {
         if (value != .bool) return error.InvalidParams;
         allow_reenrollment = value.bool;
     }
-    return .{ .owner_id = try decodeHandle(try string(selected, "owner_id")),
-        .nonce = try decodeHandle(try string(selected, "process_nonce")),
-        .endpoint_generation = try canonicalGeneration(try string(selected, "endpoint_generation")),
-        .context = .{ .id = try decodeHandle(try string(selected, "source_context_id")),
-            .generation = try canonicalGeneration(try string(selected, "source_context_generation")) },
-        .custody_seconds = try controlSeconds(params, "custody_seconds"),
-        .consent_seconds = try controlSeconds(params, "consent_seconds"),
-        .allow_reenrollment = allow_reenrollment };
+    return .{ .owner_id = try decodeHandle(try string(selected, "owner_id")), .nonce = try decodeHandle(try string(selected, "process_nonce")), .endpoint_generation = try canonicalGeneration(try string(selected, "endpoint_generation")), .context = .{ .id = try decodeHandle(try string(selected, "source_context_id")), .generation = try canonicalGeneration(try string(selected, "source_context_generation")) }, .custody_seconds = try controlSeconds(params, "custody_seconds"), .consent_seconds = try controlSeconds(params, "consent_seconds"), .allow_reenrollment = allow_reenrollment };
 }
 fn controlSeconds(value: std.json.Value, name: []const u8) !u32 {
     const seconds = value.object.get(name) orelse return error.InvalidParams;
@@ -96,9 +88,7 @@ pub const Fields = struct {
     forgetEpoch: []const u8,
     custodySeconds: []const u8,
     pub fn ordered(self: Fields) [15][]const u8 {
-        return .{ "2", self.ownerId, self.processNonce, self.endpointGeneration, self.sourceOriginId,
-            self.sourceContextId, self.sourceContextGeneration, self.operationId, self.consentId,
-            self.consentGeneration, self.consentExpiresAt, self.sourceId, self.sourceGeneration, self.forgetEpoch, self.custodySeconds };
+        return .{ "2", self.ownerId, self.processNonce, self.endpointGeneration, self.sourceOriginId, self.sourceContextId, self.sourceContextGeneration, self.operationId, self.consentId, self.consentGeneration, self.consentExpiresAt, self.sourceId, self.sourceGeneration, self.forgetEpoch, self.custodySeconds };
     }
 };
 fn handle(a: std.mem.Allocator, value: [32]u8) ![]const u8 {
@@ -108,16 +98,7 @@ fn handle(a: std.mem.Allocator, value: [32]u8) ![]const u8 {
 // Scratch field allocations belong to the caller's bounded request arena.
 pub fn fields(a: std.mem.Allocator, request: Request) !Fields {
     try request.validate();
-    return .{ .ownerId = try handle(a, request.admission.owner.id), .processNonce = try handle(a, request.admission.owner.nonce),
-        .endpointGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.owner.endpoint_generation}),
-        .sourceOriginId = try handle(a, request.origin), .sourceContextId = try handle(a, request.admission.context.id),
-        .sourceContextGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.context.generation}),
-        .operationId = try a.dupe(u8, &request.operation), .consentId = try handle(a, request.admission.consent_id),
-        .consentGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.consent_generation}),
-        .consentExpiresAt = try std.fmt.allocPrint(a, "{d}", .{request.consent_expires_at}),
-        .sourceId = try handle(a, request.admission.source_id), .sourceGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.source_generation}),
-        .forgetEpoch = try std.fmt.allocPrint(a, "{d}", .{request.admission.forget_epoch}),
-        .custodySeconds = try std.fmt.allocPrint(a, "{d}", .{request.custody_seconds}) };
+    return .{ .ownerId = try handle(a, request.admission.owner.id), .processNonce = try handle(a, request.admission.owner.nonce), .endpointGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.owner.endpoint_generation}), .sourceOriginId = try handle(a, request.origin), .sourceContextId = try handle(a, request.admission.context.id), .sourceContextGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.context.generation}), .operationId = try a.dupe(u8, &request.operation), .consentId = try handle(a, request.admission.consent_id), .consentGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.consent_generation}), .consentExpiresAt = try std.fmt.allocPrint(a, "{d}", .{request.consent_expires_at}), .sourceId = try handle(a, request.admission.source_id), .sourceGeneration = try std.fmt.allocPrint(a, "{d}", .{request.admission.source_generation}), .forgetEpoch = try std.fmt.allocPrint(a, "{d}", .{request.admission.forget_epoch}), .custodySeconds = try std.fmt.allocPrint(a, "{d}", .{request.custody_seconds}) };
 }
 fn canonical(a: std.mem.Allocator, domain: []const u8, ordered: []const []const u8) ![]u8 {
     var result: std.ArrayList(u8) = .empty;
@@ -155,11 +136,12 @@ pub fn encodeRequest(a: std.mem.Allocator, request: Request, key: [32]u8) ![]u8 
     var params: std.json.ObjectMap = .empty;
     inline for (@typeInfo(Fields).@"struct".field_names) |field| {
         try params.put(a, field, if (comptime std.mem.eql(u8, field, "protocolVersion"))
-            .{ .integer = 2 } else .{ .string = @field(value, field) });
+            .{ .integer = 2 }
+        else
+            .{ .string = @field(value, field) });
     }
     try params.put(a, "proof", .{ .string = try a.dupe(u8, &proof) });
-    return std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = request.operation[0..],
-        .method = "owner/source/acquire", .params = std.json.Value{ .object = params } }, .{});
+    return std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = request.operation[0..], .method = "owner/source/acquire", .params = std.json.Value{ .object = params } }, .{});
 }
 fn requireKeys(value: std.json.Value, names: []const []const u8) !void {
     if (value != .object or value.object.count() != names.len) return error.InvalidNativeSourcePayload;
@@ -184,8 +166,7 @@ fn decodeHandle(value: []const u8) ![32]u8 {
 pub fn verifyOrigin(a: std.mem.Allocator, result: std.json.Value, owner: consent.Owner, context: consent.Context, key: [32]u8) !consent.Handle {
     try owner.validate();
     try context.validate();
-    try requireKeys(result, &.{ "protocolVersion", "ownerId", "processNonce", "endpointGeneration", "sourceContextId",
-        "sourceContextGeneration", "sourceOriginId", "status", "credentialAcquisitionAuthorized", "originProof" });
+    try requireKeys(result, &.{ "protocolVersion", "ownerId", "processNonce", "endpointGeneration", "sourceContextId", "sourceContextGeneration", "sourceOriginId", "status", "credentialAcquisitionAuthorized", "originProof" });
     const version = result.object.get("protocolVersion").?;
     const acquisition = result.object.get("credentialAcquisitionAuthorized").?;
     if (version != .integer or version.integer != 2 or acquisition != .bool or acquisition.bool) return error.InvalidNativeSourcePayload;
@@ -218,9 +199,7 @@ pub fn verifyOrigin(a: std.mem.Allocator, result: std.json.Value, owner: consent
 pub fn verifyReply(a: std.mem.Allocator, value: std.json.Value, request: Request, key: [32]u8, payload: []const u8) !void {
     try request.validate();
     if (payload.len == 0 or payload.len > maximum_payload) return error.InvalidNativeSourcePayload;
-    try requireKeys(value, &.{ "protocolVersion", "ownerId", "processNonce", "endpointGeneration", "sourceOriginId", "sourceContextId",
-        "sourceContextGeneration", "operationId", "consentId", "consentGeneration", "consentExpiresAt", "sourceId", "sourceGeneration", "forgetEpoch", "custodySeconds",
-        "payloadFormat", "payloadBytes", "renewalOwner", "credentialAcquisitionAuthorized", "payloadSha256", "replyProof" });
+    try requireKeys(value, &.{ "protocolVersion", "ownerId", "processNonce", "endpointGeneration", "sourceOriginId", "sourceContextId", "sourceContextGeneration", "operationId", "consentId", "consentGeneration", "consentExpiresAt", "sourceId", "sourceGeneration", "forgetEpoch", "custodySeconds", "payloadFormat", "payloadBytes", "renewalOwner", "credentialAcquisitionAuthorized", "payloadSha256", "replyProof" });
     const version = value.object.get("protocolVersion").?;
     if (version != .integer or version.integer != 2) return error.InvalidNativeSourcePayload;
     const expected = try fields(a, request);
@@ -253,7 +232,9 @@ pub fn fixtureReply(a: std.mem.Allocator, request: Request, key: [32]u8, payload
     var result: std.json.ObjectMap = .empty;
     inline for (@typeInfo(Fields).@"struct".field_names) |field| {
         try result.put(a, field, if (comptime std.mem.eql(u8, field, "protocolVersion"))
-            .{ .integer = 2 } else .{ .string = @field(expected, field) });
+            .{ .integer = 2 }
+        else
+            .{ .string = @field(expected, field) });
     }
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(payload, &digest, .{});
@@ -280,14 +261,20 @@ pub fn readDescriptor(io: std.Io, a: std.mem.Allocator, fd: c.fd_t, until: std.I
     const status = try metadata.statFd(fd);
     if (status.size <= 0 or status.size > maximum_payload) return error.InvalidNativeSourcePayload;
     const bytes = try a.alloc(u8, @intCast(status.size));
-    errdefer { std.crypto.secureZero(u8, bytes); a.free(bytes); }
+    errdefer {
+        std.crypto.secureZero(u8, bytes);
+        a.free(bytes);
+    }
     var offset: usize = 0;
     var interruptions: usize = 0;
     while (offset < bytes.len) {
         try deadline(io, until);
         const count = c.pread(fd, bytes[offset..].ptr, bytes.len - offset, @intCast(offset));
         if (count < 0) {
-            if (c.errno(count) == .INTR and interruptions < 16) { interruptions += 1; continue; }
+            if (c.errno(count) == .INTR and interruptions < 16) {
+                interruptions += 1;
+                continue;
+            }
             return error.NativeSourceDescriptorRead;
         }
         if (count == 0) return error.NativeSourceDescriptorRead;
@@ -309,7 +296,7 @@ pub fn parsePayload(a: std.mem.Allocator, source_id: []const u8, payload: []cons
     defer parsed.deinit();
     try requireKeys(parsed.value, &.{ "tokens", "expires_at" });
     const tokens = parsed.value.object.get("tokens").?;
-    try requireKeys(tokens, &.{ "access_token" });
+    try requireKeys(tokens, &.{"access_token"});
     _ = try string(tokens, "access_token");
     const expiry = parsed.value.object.get("expires_at").?;
     if (expiry != .null and expiry != .integer) return error.InvalidNativeSourcePayload;

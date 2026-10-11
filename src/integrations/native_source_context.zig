@@ -134,7 +134,10 @@ fn readHint(io: std.Io, allocator: std.mem.Allocator, registry: c.fd_t, name: []
         try budget.check(io);
         const received = c.read(descriptor, buffer[count..].ptr, buffer.len - count);
         if (received < 0) {
-            if (c.errno(received) == .INTR and interrupts < 16) { interrupts += 1; continue; }
+            if (c.errno(received) == .INTR and interrupts < 16) {
+                interrupts += 1;
+                continue;
+            }
             return error.NativeSourceContextReadFailed;
         }
         if (received == 0) break;
@@ -158,9 +161,7 @@ fn readHint(io: std.Io, allocator: std.mem.Allocator, registry: c.fd_t, name: []
     if (endpoint.len <= suffix.len or !std.mem.endsWith(u8, endpoint, suffix)) return error.InvalidNativeSourceContext;
     const owned_endpoint = try allocator.dupe(u8, endpoint);
     errdefer allocator.free(owned_endpoint);
-    const result: Hint = .{ .context_id = context, .context_generation = try generation(value.contextGeneration),
-        .owner_id = owner, .native_nonce = try hex(value.processNonce), .endpoint_generation = try generation(value.endpointGeneration),
-        .endpoint_path = owned_endpoint, .name = terminated, .descriptor = descriptor, .original = original, .registry_fd = registry };
+    const result: Hint = .{ .context_id = context, .context_generation = try generation(value.contextGeneration), .owner_id = owner, .native_nonce = try hex(value.processNonce), .endpoint_generation = try generation(value.endpointGeneration), .endpoint_path = owned_endpoint, .name = terminated, .descriptor = descriptor, .original = original, .registry_fd = registry };
     try result.verify();
     try budget.check(io);
     return result;
@@ -178,16 +179,23 @@ pub fn collect(io: std.Io, allocator: std.mem.Allocator, runtime_path: []const u
     var transfer = false;
     defer if (!transfer) allocator.free(root);
     const runtime = try paths.openPrivateRoot(allocator, runtime_path, false);
-    defer { if (!transfer) _ = c.close(runtime); }
+    defer {
+        if (!transfer) _ = c.close(runtime);
+    }
     const runtime_original = try metadata.statFd(runtime);
     try private(runtime_original, c.S.IFDIR, 0o700);
     const registry = c.openat(runtime, registry_name, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
     if (registry < 0) return if (c.errno(registry) == .NOENT) null else error.UnsafeNativeSourceContext;
-    defer { if (!transfer) _ = c.close(registry); }
+    defer {
+        if (!transfer) _ = c.close(registry);
+    }
     const registry_original = try metadata.statFd(registry);
     try private(registry_original, c.S.IFDIR, 0o700);
     var hints: std.ArrayList(Hint) = .empty;
-    errdefer { for (hints.items) |hint| hint.deinit(allocator); hints.deinit(allocator); }
+    errdefer {
+        for (hints.items) |hint| hint.deinit(allocator);
+        hints.deinit(allocator);
+    }
     var iterator = (std.Io.Dir{ .handle = registry }).iterate();
     var scanned: usize = 0;
     while (true) {
@@ -205,9 +213,11 @@ pub fn collect(io: std.Io, allocator: std.mem.Allocator, runtime_path: []const u
         try hints.append(allocator, hint);
     }
     const owned = try hints.toOwnedSlice(allocator);
-    errdefer { for (owned) |hint| hint.deinit(allocator); allocator.free(owned); }
-    const result: Inventory = .{ .allocator = allocator, .runtime_path = root, .runtime_fd = runtime,
-        .registry_fd = registry, .runtime_original = runtime_original, .registry_original = registry_original, .hints = owned };
+    errdefer {
+        for (owned) |hint| hint.deinit(allocator);
+        allocator.free(owned);
+    }
+    const result: Inventory = .{ .allocator = allocator, .runtime_path = root, .runtime_fd = runtime, .registry_fd = registry, .runtime_original = runtime_original, .registry_original = registry_original, .hints = owned };
     try result.verify(io, budget);
     transfer = true;
     return result;

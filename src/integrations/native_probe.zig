@@ -561,13 +561,19 @@ pub const OwnerConnection = struct {
         var generation_buffer: [20]u8 = undefined;
         const generation = try std.fmt.bufPrint(&generation_buffer, "{d}", .{selector.endpoint_generation});
         const request = try std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = operation_id[0..], .method = "owner/source/context", .params = .{
-            .protocolVersion = owner_protocol_version, .ownerId = owner[0..], .processNonce = nonce[0..], .endpointGeneration = generation,
+            .protocolVersion = owner_protocol_version,
+            .ownerId = owner[0..],
+            .processNonce = nonce[0..],
+            .endpointGeneration = generation,
         } }, .{});
         defer wipeOwnerPacket(self.allocator, request);
         const response = try self.exchange(request);
         defer wipeOwnerPacket(self.allocator, response);
         var parsed = try parseOwnerEnvelope(self.allocator, response, operation_id);
-        defer { @import("../control.zig").wipeJson(parsed.value); parsed.deinit(); }
+        defer {
+            @import("../control.zig").wipeJson(parsed.value);
+            parsed.deinit();
+        }
         const result = try decodeSourceContext(parsed.value.object.get("result").?, selector, original);
         if (!peer.sameOriginal(original, try self.verifiedWitness())) return error.NativeOwnerPeerMismatch;
         try self.io.checkCancel();
@@ -663,17 +669,16 @@ pub const OwnerConnection = struct {
         const owner_id = std.fmt.bytesToHex(selector.owner_id, .lower);
         const nonce = std.fmt.bytesToHex(selector.native_nonce, .lower);
         const context_id = std.fmt.bytesToHex(expected.id, .lower);
-        const payload = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = operation[0..], .method = "owner/source/origin", .params = .{
-            .protocolVersion = owner_protocol_version, .ownerId = owner_id[0..], .processNonce = nonce[0..],
-            .endpointGeneration = try std.fmt.allocPrint(a, "{d}", .{selector.endpoint_generation}),
-            .sourceContextId = context_id[0..], .sourceContextGeneration = try std.fmt.allocPrint(a, "{d}", .{expected.generation}) } }, .{});
+        const payload = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = operation[0..], .method = "owner/source/origin", .params = .{ .protocolVersion = owner_protocol_version, .ownerId = owner_id[0..], .processNonce = nonce[0..], .endpointGeneration = try std.fmt.allocPrint(a, "{d}", .{selector.endpoint_generation}), .sourceContextId = context_id[0..], .sourceContextGeneration = try std.fmt.allocPrint(a, "{d}", .{expected.generation}) } }, .{});
         const response = try self.exchange(payload);
         defer wipeOwnerPacket(self.allocator, response);
         var parsed = try parseOwnerEnvelope(self.allocator, response, operation);
-        defer { @import("../control.zig").wipeJson(parsed.value); parsed.deinit(); }
+        defer {
+            @import("../control.zig").wipeJson(parsed.value);
+            parsed.deinit();
+        }
         const result = parsed.value.object.get("result") orelse return error.InvalidNativeSourcePayload;
-        const owner: source_consent.Owner = .{ .id = selector.owner_id, .nonce = selector.native_nonce,
-            .endpoint_generation = selector.endpoint_generation, .witness = before.witness };
+        const owner: source_consent.Owner = .{ .id = selector.owner_id, .nonce = selector.native_nonce, .endpoint_generation = selector.endpoint_generation, .witness = before.witness };
         const origin = try source_acquisition.verifyOrigin(a, result, owner, .{ .id = expected.id, .generation = expected.generation }, key);
         const after = try self.sourceContext(operation, selector);
         if (after.status != .available or !peer.sameOriginal(before.witness, after.witness)) return error.NativeSourceUnavailable;
@@ -686,16 +691,17 @@ pub const OwnerConnection = struct {
         candidate: @import("../discovery.zig").OwnedCandidate,
         binding: source_consent.MaterializedBinding,
         origin: source_consent.Handle,
-        pub fn deinit(self: *AccessCopy) void { self.candidate.deinit(); self.* = undefined; }
+        pub fn deinit(self: *AccessCopy) void {
+            self.candidate.deinit();
+            self.* = undefined;
+        }
     };
     pub fn acquireSource(self: *OwnerConnection, request: source_acquisition.Request, key: [32]u8, now: i64, image: SourceImage) !AccessCopy {
         errdefer self.failed = true;
         try image.verify(self);
         try request.validate();
         if (now >= request.consent_expires_at) return error.NativeSourceUnauthorized;
-        const selected: SourceContextSelector = .{ .owner_id = request.admission.owner.id, .native_nonce = request.admission.owner.nonce,
-            .endpoint_generation = request.admission.owner.endpoint_generation,
-            .context = .{ .id = request.admission.context.id, .generation = request.admission.context.generation } };
+        const selected: SourceContextSelector = .{ .owner_id = request.admission.owner.id, .native_nonce = request.admission.owner.nonce, .endpoint_generation = request.admission.owner.endpoint_generation, .context = .{ .id = request.admission.context.id, .generation = request.admission.context.generation } };
         if (!peer.sameOriginal(try self.verifiedWitness(), request.admission.owner.witness)) return error.NativeOwnerPeerMismatch;
         const initial = try self.sourceContext(request.operation, selected);
         if (initial.status != .available or initial.store_present != true) return error.NativeSourceUnavailable;
@@ -709,9 +715,15 @@ pub const OwnerConnection = struct {
         defer wipeOwnerPacket(self.allocator, packet.bytes);
         // readDescriptor consumes the transferred fd even on expiry/cancel/error.
         const bytes = try source_acquisition.readDescriptor(self.io, self.allocator, packet.descriptor, self.until);
-        defer { std.crypto.secureZero(u8, bytes); self.allocator.free(bytes); }
+        defer {
+            std.crypto.secureZero(u8, bytes);
+            self.allocator.free(bytes);
+        }
         var parsed = try parseOwnerEnvelope(self.allocator, packet.bytes, request.operation);
-        defer { @import("../control.zig").wipeJson(parsed.value); parsed.deinit(); }
+        defer {
+            @import("../control.zig").wipeJson(parsed.value);
+            parsed.deinit();
+        }
         try source_acquisition.verifyReply(a, parsed.value.object.get("result") orelse return error.InvalidNativeSourcePayload, request, key, bytes);
         const source_id = std.fmt.bytesToHex(request.admission.source_id, .lower);
         var candidate = try source_acquisition.parsePayload(self.allocator, &source_id, bytes, now, request.custody_seconds);
@@ -733,7 +745,10 @@ pub const OwnerConnection = struct {
             try waitOwnerReady(self.io, self.fd, posix.POLL.OUT, self.until);
             const sent = posix.send(self.fd, payload.ptr, payload.len, posix.MSG.NOSIGNAL);
             if (sent < 0) {
-                switch (posix.errno(sent)) { .INTR, .AGAIN => continue, else => return error.NativeDisconnected }
+                switch (posix.errno(sent)) {
+                    .INTR, .AGAIN => continue,
+                    else => return error.NativeDisconnected,
+                }
             }
             if (sent != payload.len) return error.NativeOwnerInvalidPacket;
             break;
@@ -743,7 +758,8 @@ pub const OwnerConnection = struct {
         while (true) {
             try waitOwnerReady(self.io, self.fd, posix.POLL.IN, self.until);
             const received = self.context.receivePacketDescriptor(&buffer) catch |err| switch (err) {
-                error.WouldBlock, error.Interrupted => continue, else => return err,
+                error.WouldBlock, error.Interrupted => continue,
+                else => return err,
             };
             errdefer _ = posix.close(received.descriptor);
             if (received.bytes == 0) return error.NativeDisconnected;

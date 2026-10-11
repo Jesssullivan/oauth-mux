@@ -116,6 +116,34 @@ class QueryToolsBindingModels(unittest.TestCase):
         stack.enter_context(patch.object(producer,'declared_query_tools',return_value=True))
         return runfiles,repository,aliases,data,digest,selected,rows
 
+    def test_input_invocation_accepts_valid_context_and_refuses_missing_or_extra_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root=Path(temporary)
+            _,_,_,_,digest,selected,_=self.input_alias_fixture(root,stack)
+            # The real strict require must accept ordinary nonempty string
+            # values, then the real mapper/readers/family parser must run.
+            self.assertEqual(producer.declared_selection(),(selected,digest))
+            actual_read=source.read
+            for argv in ([],['model','unexpected']):
+                with self.subTest(argv=argv),patch.object(producer.sys,'argv',argv), \
+                        patch.object(producer,'declared_query_tools',side_effect=AssertionError('invalid invocation reached query proof')), \
+                        patch.object(source,'read',side_effect=AssertionError('invalid invocation read metadata')):
+                    with self.assertRaises(ValueError):producer.declared_selection()
+            for name in ('TEST_SRCDIR','TEST_UNDECLARED_OUTPUTS_DIR','TEST_TIMEOUT'):
+                for absent in (True,False):
+                    environment=dict(os.environ)
+                    if absent:environment.pop(name,None)
+                    else:environment[name]=''
+                    with self.subTest(variable=name,absent=absent),patch.dict(os.environ,environment,clear=True), \
+                            patch.object(producer,'declared_query_tools',side_effect=AssertionError('invalid invocation reached query proof')), \
+                            patch.object(source,'read',side_effect=AssertionError('invalid invocation read metadata')):
+                        with self.assertRaises(ValueError):producer.declared_selection()
+            # Restoration is checked through real IO, not a mocked success.
+            with patch.object(source,'read',wraps=actual_read) as reads:
+                self.assertEqual(producer.declared_selection(),(selected,digest))
+                self.assertEqual([call.args[1] for call in reads.call_args_list],
+                    ['metadata-input.json','metadata-input.sha256'])
+
     def test_materialized_input_alias_pair_requires_one_exact_mapped_repository(self):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root=Path(temporary)

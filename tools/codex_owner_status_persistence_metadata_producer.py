@@ -112,8 +112,8 @@ def declared_query_tools(runfiles, rows):
 
 def declared_selection():
     # Resolve only the exact apparent data repository through Bazel's mapping.
-    require(len(sys.argv) == 1 and os.environ.get("TEST_SRCDIR")
-        and os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR") and os.environ.get("TEST_TIMEOUT"))
+    require(len(sys.argv) == 1 and all(os.environ.get(name) for name in
+        ("TEST_SRCDIR", "TEST_UNDECLARED_OUTPUTS_DIR", "TEST_TIMEOUT")))
     runfiles = Path(os.environ["TEST_SRCDIR"]).resolve(strict=True)
     require(runfiles.is_absolute())
     mapping_path = runfiles/"_repo_mapping"

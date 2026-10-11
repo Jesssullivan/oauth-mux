@@ -3,14 +3,8 @@ const std = @import("std");
 const acquisition = @import("native_source_acquisition.zig");
 const consent = @import("native_source_consent.zig");
 fn request() acquisition.Request {
-    const owner: consent.Owner = .{ .id = @splat(1), .nonce = @splat(2), .endpoint_generation = 1,
-        .witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(3), .pidfs_device = 4,
-            .pidfs_inode = 5, .user_namespace = .{ .device = 6, .inode = 7 },
-            .pid_namespace = .{ .device = 8, .inode = 9 }, .uid = 10, .gid = 10 } };
-    return .{ .admission = .{ .source_id = @splat(11), .source_generation = 1, .consent_id = @splat(13),
-        .consent_generation = 1, .owner = owner, .context = .{ .id = @splat(12), .generation = 1 },
-        .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 50 },
-        .origin = @splat(14), .operation = @splat('a'), .custody_seconds = 60, .consent_expires_at = 100 };
+    const owner: consent.Owner = .{ .id = @splat(1), .nonce = @splat(2), .endpoint_generation = 1, .witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(3), .pidfs_device = 4, .pidfs_inode = 5, .user_namespace = .{ .device = 6, .inode = 7 }, .pid_namespace = .{ .device = 8, .inode = 9 }, .uid = 10, .gid = 10 } };
+    return .{ .admission = .{ .source_id = @splat(11), .source_generation = 1, .consent_id = @splat(13), .consent_generation = 1, .owner = owner, .context = .{ .id = @splat(12), .generation = 1 }, .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 50 }, .origin = @splat(14), .operation = @splat('a'), .custody_seconds = 60, .consent_expires_at = 100 };
 }
 const payload = "{\"tokens\":{\"access_token\":\"fixture-access-placeholder\"},\"expires_at\":90}";
 test "selected context requires separate finite copy consent and never accepts a profile locator" {
@@ -21,11 +15,7 @@ test "selected context requires separate finite copy consent and never accepts a
     const nonce = std.fmt.bytesToHex(@as([32]u8, @splat(2)), .lower);
     const context = std.fmt.bytesToHex(@as([32]u8, @splat(12)), .lower);
     const operation: [64]u8 = @splat('a');
-    const encoded = try std.json.Stringify.valueAlloc(a, .{ .kind = "native_store", .provider = "codex",
-        .operation_id = operation[0..], .expected_revision = 1,
-        .native_access_copy = true, .custody_seconds = 60, .consent_seconds = 120,
-        .selected_native_context = .{ .owner_id = id[0..], .process_nonce = nonce[0..], .endpoint_generation = "1",
-            .source_context_id = context[0..], .source_context_generation = "2" } }, .{});
+    const encoded = try std.json.Stringify.valueAlloc(a, .{ .kind = "native_store", .provider = "codex", .operation_id = operation[0..], .expected_revision = 1, .native_access_copy = true, .custody_seconds = 60, .consent_seconds = 120, .selected_native_context = .{ .owner_id = id[0..], .process_nonce = nonce[0..], .endpoint_generation = "1", .source_context_id = context[0..], .source_context_generation = "2" } }, .{});
     var parsed = try std.json.parseFromSlice(std.json.Value, a, encoded, .{ .allocate = .alloc_always });
     defer parsed.deinit();
     const selected = try acquisition.controlSelection(parsed.value);
@@ -114,7 +104,10 @@ test "descriptor read consumes actual owned fd on success and expired original c
     if (current < 0) return error.FixtureDescriptorFailed;
     const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(1000) });
     const bytes = try acquisition.readDescriptor(io, std.testing.allocator, current, until);
-    defer { std.crypto.secureZero(u8, bytes); std.testing.allocator.free(bytes); }
+    defer {
+        std.crypto.secureZero(u8, bytes);
+        std.testing.allocator.free(bytes);
+    }
     try std.testing.expectEqualStrings(payload, bytes);
     try std.testing.expectEqual(@as(c_int, -1), std.c.fcntl(current, std.c.F.GETFD));
     const expired_fd = std.c.dup(file.handle);

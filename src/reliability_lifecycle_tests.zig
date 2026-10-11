@@ -88,7 +88,6 @@ test "full ring with maximum-width consistent counters fits prepaid checkpoint c
     try std.testing.expectError(error.CounterSaturated, restored.window(27 * 86_400));
 }
 
-
 test "durable phase projection preserves refusal latency and unknown readiness across restore" {
     const recorder = try reliability.LifecycleRecorder.create(std.testing.allocator, 0, .{ .evidence = .synthetic });
     defer std.testing.allocator.destroy(recorder);
@@ -114,7 +113,6 @@ test "durable phase projection preserves refusal latency and unknown readiness a
         try std.testing.expectEqual(@as(u128, 0), summary[@backingInt(phase)].recorded_outcomes);
     }
 }
-
 
 test "phase export failures preserve the durable recorder and report exact unavailable cause" {
     try std.testing.expectEqual(reliability.PhaseSummaryUnavailable.recorder_unavailable, reliability.lifecycleExport(null, 0).unavailable_reason.?);

@@ -104,21 +104,21 @@ pub fn openVerifiedFile(io: std.Io, allocator: std.mem.Allocator, until: std.Io.
     var selected_root = false;
     for (record.roots) |root| {
         try canonical(root.path);
-        if (file.path.len > root.path.len and std.mem.startsWith(u8,file.path,root.path) and file.path[root.path.len] == '/') selected_root = true;
-        const directory = try open(io,allocator,until,root.path,true);
+        if (file.path.len > root.path.len and std.mem.startsWith(u8, file.path, root.path) and file.path[root.path.len] == '/') selected_root = true;
+        const directory = try open(io, allocator, until, root.path, true);
         defer _ = c.close(directory);
-        if (!std.meta.eql(root.status,try metadata.statFd(directory))) return error.RuntimeSelectionDrift;
+        if (!std.meta.eql(root.status, try metadata.statFd(directory))) return error.RuntimeSelectionDrift;
     }
     if (!selected_root) return error.InvalidNixRuntimeClosure;
-    const fd = try open(io,allocator,until,file.path,false);
+    const fd = try open(io, allocator, until, file.path, false);
     errdefer _ = c.close(fd);
     const before = try metadata.statFd(fd);
-    try immutable(before,c.S.IFREG);
-    if (!std.meta.eql(before,file.status) or before.size < 0 or @as(u64,@intCast(before.size)) != file.bytes) return error.RuntimeSelectionDrift;
-    const named = try open(io,allocator,until,file.path,false);
+    try immutable(before, c.S.IFREG);
+    if (!std.meta.eql(before, file.status) or before.size < 0 or @as(u64, @intCast(before.size)) != file.bytes) return error.RuntimeSelectionDrift;
+    const named = try open(io, allocator, until, file.path, false);
     defer _ = c.close(named);
-    if (!std.meta.eql(before,try metadata.statFd(named))) return error.RuntimeSelectionDrift;
-    try check(io,until);
+    if (!std.meta.eql(before, try metadata.statFd(named))) return error.RuntimeSelectionDrift;
+    try check(io, until);
     return fd;
 }
 fn requireSorted(comptime T: type, rows: []const T) !void {
@@ -128,7 +128,7 @@ fn requireSorted(comptime T: type, rows: []const T) !void {
     }
 }
 fn insideRoots(path: []const u8, roots: []const Root) bool {
-    for (roots) |root| if (path.len > root.path.len and std.mem.startsWith(u8,path,root.path) and path[root.path.len] == '/') return true;
+    for (roots) |root| if (path.len > root.path.len and std.mem.startsWith(u8, path, root.path) and path[root.path.len] == '/') return true;
     return false;
 }
 
@@ -141,18 +141,18 @@ pub fn recheck(io: std.Io, allocator: std.mem.Allocator, until: ?std.Io.Clock.Ti
     try requireSorted(Root, record.roots);
     try requireSorted(File, record.files);
     try requireSorted(Alias, record.aliases);
-    for (record.roots) |root| if (std.mem.indexOfScalar(u8,root.path[11..],'/') != null) return error.InvalidNixRuntimeClosure;
-    if (!insideRoots(record.original_interpreter,record.roots)) return error.InvalidNixRuntimeClosure;
-    for (record.files) |file| if (!insideRoots(file.path,record.roots)) return error.InvalidNixRuntimeClosure;
+    for (record.roots) |root| if (std.mem.indexOfScalar(u8, root.path[11..], '/') != null) return error.InvalidNixRuntimeClosure;
+    if (!insideRoots(record.original_interpreter, record.roots)) return error.InvalidNixRuntimeClosure;
+    for (record.files) |file| if (!insideRoots(file.path, record.roots)) return error.InvalidNixRuntimeClosure;
     for (record.aliases) |alias| {
-        if (!insideRoots(alias.path,record.roots)) return error.InvalidNixRuntimeClosure;
-        for (record.files) |file| if (std.mem.eql(u8,file.path,alias.path)) return error.InvalidNixRuntimeClosure;
-        if (std.mem.startsWith(u8,alias.target,"/")) {
+        if (!insideRoots(alias.path, record.roots)) return error.InvalidNixRuntimeClosure;
+        for (record.files) |file| if (std.mem.eql(u8, file.path, alias.path)) return error.InvalidNixRuntimeClosure;
+        if (std.mem.startsWith(u8, alias.target, "/")) {
             try canonical(alias.target);
-            if (!insideRoots(alias.target,record.roots)) return error.InvalidNixRuntimeClosure;
+            if (!insideRoots(alias.target, record.roots)) return error.InvalidNixRuntimeClosure;
         } else {
-            var parts = std.mem.splitScalar(u8,alias.target,'/');
-            while (parts.next()) |part| if (part.len == 0 or std.mem.eql(u8,part,".") or std.mem.eql(u8,part,"..")) return error.InvalidNixRuntimeClosure;
+            var parts = std.mem.splitScalar(u8, alias.target, '/');
+            while (parts.next()) |part| if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return error.InvalidNixRuntimeClosure;
         }
     }
     for (record.roots) |root| {
@@ -216,7 +216,7 @@ pub fn recheck(io: std.Io, allocator: std.mem.Allocator, until: ?std.Io.Clock.Ti
 
 test "Nix closure canonical parser rejects escapes and foreign namespaces" {
     try canonical("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-glibc/lib/libc.so.6");
-    try std.testing.expectError(error.InvalidNixRuntimeClosure,canonical("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-glibc/../lib/libc.so.6"));
-    try std.testing.expectError(error.InvalidNixRuntimeClosure,canonical("/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-glibc/lib/libc.so.6"));
-    try std.testing.expectError(error.InvalidNixRuntimeClosure,canonical("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-glibc/lib/libc.so.6"));
+    try std.testing.expectError(error.InvalidNixRuntimeClosure, canonical("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-glibc/../lib/libc.so.6"));
+    try std.testing.expectError(error.InvalidNixRuntimeClosure, canonical("/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-glibc/lib/libc.so.6"));
+    try std.testing.expectError(error.InvalidNixRuntimeClosure, canonical("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-glibc/lib/libc.so.6"));
 }

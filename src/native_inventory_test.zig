@@ -314,9 +314,7 @@ const next_context_name = "55555555555555555555555555555555555555555555555555555
 fn contextDocument(fixture: *Fixture, context_id: []const u8) ![]u8 {
     const endpoint = try fixture.endpointPath(first);
     defer allocator.free(endpoint);
-    return std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1,
-        .contextId = context_id, .contextGeneration = "1", .ownerId = "1111111111111111111111111111111111111111111111111111111111111111",
-        .processNonce = "2222222222222222222222222222222222222222222222222222222222222222", .endpointGeneration = "1", .ownerEndpoint = endpoint[0..endpoint.len] }, .{});
+    return std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = context_id, .contextGeneration = "1", .ownerId = "1111111111111111111111111111111111111111111111111111111111111111", .processNonce = "2222222222222222222222222222222222222222222222222222222222222222", .endpointGeneration = "1", .ownerEndpoint = endpoint[0..endpoint.len] }, .{});
 }
 fn writeContext(registry: c.fd_t, name: []const u8, document: []const u8) !void {
     const terminated = try allocator.dupeSentinel(u8, name, 0);
@@ -381,7 +379,10 @@ test "native context registry refuses aliases unsafe modes oversized and malform
         budget = try inventory.Budget.init(io, null);
         const before = try openFdCount();
         if (source_context.collect(io, allocator, fixture.root, &budget)) |unexpected| {
-            if (unexpected) |value| { var owned = value; owned.deinit(); }
+            if (unexpected) |value| {
+                var owned = value;
+                owned.deinit();
+            }
             return error.FixtureExpectedRefusal;
         } else |_| {}
         try std.testing.expectEqual(before, try openFdCount());
