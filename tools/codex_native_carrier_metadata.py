@@ -517,12 +517,13 @@ def main():
         proof_inputs = declared_proofs(runfiles, rows, selected, deadline)
         output_parent = Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]).resolve(strict=True)
         temporary_parent = Path(os.environ["TEST_TMPDIR"]).resolve(strict=True)
-        produce(selected, source.sha(raw), root, aliases, declaration, proof_inputs,
+        result = produce(selected, source.sha(raw), root, aliases, declaration, proof_inputs,
             temporary_parent / "native-sdk-carrier-metadata-work",
             output_parent / "native-sdk-carrier-metadata", deadline, context)
         require(binding.ninth.parent.declared(CONFIG, 16384) == raw)
         tick(deadline)
     print("native-sdk-carrier-metadata-v2: regenerated hub; downstream qualifications false", flush=True)
+    print("omux-native-carrier-metadata-output-sha256=" + source.sha(source.encoded(result)), flush=True)
 
 
 if __name__ == "__main__":

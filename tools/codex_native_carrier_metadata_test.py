@@ -5,7 +5,8 @@ Receipt/evidence byte readers, XML success checks, aliases, query planning and
 restoration/refusal logic below are the actual consumer implementation.
 """
 import copy
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -567,6 +568,107 @@ class CarrierMetadataModels(unittest.TestCase):
             self.run_bounded_consumer(mutate_ready_proof=True)
         self.assertTrue((self.root / "result/metadata-receipt.json").exists())
         self.assertIsNone(consumer._SCOPE.get())
+
+    def run_publication_main(self, *, changed_selection=False, failed_publication=False,
+            expired_readback=False):
+        """Actual main/scope/encoding; only the expensive producer is a fixture.
+
+        This models publication admission, never genuine SDK/source qualification.
+        The fixture writes a real receipt before returning or refusing, allowing
+        a retained partial output to be distinguished from an admitted marker.
+        """
+        runfiles = self.root / "marker-runfiles"
+        output = self.root / "marker-output"
+        temporary = self.root / "marker-tmp"
+        for path in (runfiles, output, temporary):
+            path.mkdir()
+        (runfiles / "_repo_mapping").write_bytes(b"_main,fixture,fixture\n")
+        raw = self.encoded_selection()
+        result = {"kind": consumer.OUTPUT_KIND, "model_only": True}
+        published = output / "native-sdk-carrier-metadata" / "metadata-receipt.json"
+        events = []
+
+        def declaration(name, maximum):
+            self.assertEqual((name, maximum), (consumer.CONFIG, 16384))
+            events.append("selection")
+            if changed_selection and events.count("selection") == 2:
+                return raw + b"changed"
+            return raw
+
+        def publication(*args):
+            self.assertEqual(args[-2], 601.0)
+            self.assertEqual(consumer._SCOPE.get(), 601.0)
+            events.append("publication")
+            published.parent.mkdir()
+            published.write_bytes(consumer.source.encoded(result))
+            if failed_publication:
+                raise ValueError("model: final publication custody refused")
+            return result
+
+        actual_tick = consumer.tick
+
+        def final_tick(deadline):
+            if expired_readback and events.count("selection") == 2:
+                raise ValueError("model: original cutoff expired after readback")
+            actual_tick(deadline)
+
+        class Captured(io.StringIO):
+            def write(stream, value):
+                if value.startswith("omux-native-carrier-metadata-output-sha256="):
+                    self.assertIsNone(consumer._SCOPE.get())
+                    self.assertEqual(events, ["selection", "publication", "selection"])
+                return super().write(value)
+
+        stream = Captured()
+        saved = (consumer.source.DEADLINE, consumer.legacy.DEADLINE,
+            consumer.legacy.INPUT_CONTROL, consumer.legacy.BINDING_SHA,
+            consumer.legacy.QUERY_REPOSITORY)
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"TEST_SRCDIR": str(runfiles),
+                "TEST_UNDECLARED_OUTPUTS_DIR": str(output), "TEST_TMPDIR": str(temporary),
+                "TEST_TIMEOUT": "1200"}))
+            stack.enter_context(patch.object(consumer.sys, "argv", ["metadata-model"]))
+            stack.enter_context(patch.object(consumer.os, "umask", return_value=0o077))
+            stack.enter_context(patch.object(consumer, "envelope", return_value=(10**9, 1201 * 10**9, {})))
+            stack.enter_context(patch.object(consumer.legacy, "configure_selection"))
+            stack.enter_context(patch.object(consumer.binding.ninth.parent, "declared", side_effect=declaration))
+            stack.enter_context(patch.object(consumer.legacy, "declared_query_tools", return_value=True))
+            stack.enter_context(patch.object(consumer, "declared_carrier", return_value=(self.root, (), {})))
+            stack.enter_context(patch.object(consumer, "declared_proofs", return_value=object()))
+            stack.enter_context(patch.object(consumer, "produce", side_effect=publication))
+            stack.enter_context(patch.object(consumer, "tick", side_effect=final_tick))
+            stack.enter_context(redirect_stdout(stream))
+            try:
+                consumer.main()
+            except ValueError:
+                if not (changed_selection or failed_publication or expired_readback):
+                    raise
+            else:
+                self.assertFalse(changed_selection or failed_publication or expired_readback)
+        self.assertIsNone(consumer._SCOPE.get())
+        self.assertEqual(saved, (consumer.source.DEADLINE, consumer.legacy.DEADLINE,
+            consumer.legacy.INPUT_CONTROL, consumer.legacy.BINDING_SHA,
+            consumer.legacy.QUERY_REPOSITORY))
+        self.assertTrue(published.is_file())
+        return stream.getvalue(), published.read_bytes()
+
+    def test_actual_main_marker_binds_receipt_after_final_readback_and_scope_restore(self):
+        text, raw = self.run_publication_main()
+        markers = [line for line in text.splitlines()
+            if line.startswith("omux-native-carrier-metadata-output-sha256=")]
+        self.assertEqual(markers, ["omux-native-carrier-metadata-output-sha256=" + consumer.source.sha(raw)])
+
+    def test_partial_publication_refusal_has_no_output_marker(self):
+        text, _ = self.run_publication_main(failed_publication=True)
+        self.assertNotIn("omux-native-carrier-metadata-output-sha256=", text)
+
+    def test_changed_selector_after_publication_has_no_output_marker(self):
+        text, _ = self.run_publication_main(changed_selection=True)
+        self.assertNotIn("omux-native-carrier-metadata-output-sha256=", text)
+
+    def test_original_cutoff_after_publication_has_no_output_marker(self):
+        text, _ = self.run_publication_main(expired_readback=True)
+        self.assertNotIn("omux-native-carrier-metadata-output-sha256=", text)
 
 
 if __name__ == "__main__":
