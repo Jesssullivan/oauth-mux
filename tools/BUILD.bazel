@@ -5,6 +5,7 @@ load("@rules_zig//zig/translate-c:toolchain.bzl", "translate_c_toolchain")
 load(":zig_tools.bzl", "zig_format", "zig_format_test")
 load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
 load(":codex_native_source_context_refresh_targets.bzl", "native_context_refresh_targets")
+load(":codex_native_source_file_writer_targets.bzl", "native_file_writer_source_targets")
 load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
 load(":yoga_selection_inputs.bzl", "yoga_selection_declaration_test")
 load(":home_manager_bundle_selection_test.bzl", "home_manager_bundle_selection_test")
@@ -2956,3 +2957,12 @@ filegroup(
 )
 
 exports_files(["direct_native_runtime_closure_inputs.py"])
+
+# N10 appends to genuine N9; all old producer/consumer targets stay unchanged.
+native_file_writer_source_targets(
+    source_sources = _NATIVE_SOURCE_ACQUISITION_SOURCES,
+    sdk_sources = _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
+    parent_data = _NATIVE_SOURCE_ACQUISITION_DATA + _NATIVE_SOURCE_CONTEXT_PARENT_DATA + [
+        "@omux_codex_native_source_context_refresh_inputs//:inputs",
+    ],
+)

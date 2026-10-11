@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "kind": "omux-native-file-writer-storage-code-proposal-v3",
+  "status": "FROZEN_UNREVIEWED_UNAPPLIED_UNRUN",
+  "authority": "root explicit first storage implementation; root sole adopter/executor; R-N13",
+  "base": {
+    "selected_source_receipt_sha256": "9e18ed5731a4474d0e9981cfb08da6e3f3e130014615a2dd9a8e26f06246e344",
+    "inventory_sha256": "8542cbe124d74046f20c92df2e304661cd2a9bd9bc5b2df1bc700ce7bf867762",
+    "official_ancestral_commit": "00c972ed5d6ff6499317fd41b7f23605b8e6850d",
+    "schema_manifest_sha256": "91d83d3f61873bd5849cba67f013efdfc644e9a0711f3abba9bb0dedca08cf9b",
+    "contract_agreement_sha256": "e83b18a82365ed7cf08be887cc2883ff662088596ea9c68502722d47b574cef6"
+  },
+  "proposal_patch": {
+    "sha256": "2d66433c887a40bb9a76b854e5c6b3f148dd96f9831231025cf60baa591d4706",
+    "bytes": 76428
+  },
+  "image_pins": {
+    "sha256": "90389fb2380c15fe3fcef1638dfb07a42fc80ba5e54ed70b3b0633e665353d06",
+    "bytes": 1939
+  },
+  "paths": [
+    {
+      "path": "codex-rs/Cargo.lock",
+      "logical_mode": "100644",
+      "before": {
+        "sha256": "546f8829d56d2a7d412ecdb1327d6baea90b78825011e6b9bd6ad07f42a396d0",
+        "bytes": 404798
+      },
+      "after": {
+        "sha256": "fe2cc6139542e372704ad4e1d768494c8ffa47124296adb18e390678eced3e54",
+        "bytes": 404835
+      }
+    },
+    {
+      "path": "codex-rs/login/Cargo.toml",
+      "logical_mode": "100644",
+      "before": {
+        "sha256": "0c762d109c77508556e0d61badaba96a9e9a43ddd5dc1273113d2a8684e76593",
+        "bytes": 1640
+      },
+      "after": {
+        "sha256": "eac796ff363ed2173f1fe8d0280a5d001182d57f10cfce4d6bebe8f92639568f",
+        "bytes": 1727
+      }
+    },
+    {
+      "path": "codex-rs/login/src/auth/managed_file_writer.rs",
+      "logical_mode": "100644",
+      "before": null,
+      "after": {
+        "sha256": "4cce7348b604cd29a776667a4300e73c03f33085d06f528e1dc38d90dda86d79",
+        "bytes": 45896
+      }
+    },
+    {
+      "path": "codex-rs/login/src/auth/mod.rs",
+      "logical_mode": "100644",
+      "before": {
+        "sha256": "5d72ae39f74e2ed944b13bab4dbaab03d5e0ae1a5ec908d14cf4513606fe7b83",
+        "bytes": 723
+      },
+      "after": {
+        "sha256": "84af619e1d4c7b7f0e6afc6b428f8646dd0c1b10645b2ce8e69200a69bea08a6",
+        "bytes": 748
+      }
+    },
+    {
+      "path": "codex-rs/login/src/auth/storage.rs",
+      "logical_mode": "100644",
+      "before": {
+        "sha256": "2e95a8998687e926675d41b5d941c3c3546a652c03d9680e6c7385e59bf459af",
+        "bytes": 18076
+      },
+      "after": {
+        "sha256": "fea383ce6060cd223738c7c53d3675eb3a55d4a6499ab42acfd497f1a9af2f70",
+        "bytes": 20198
+      }
+    },
+    {
+      "path": "codex-rs/login/src/auth/storage_tests.rs",
+      "logical_mode": "100644",
+      "before": {
+        "sha256": "7d7eb901f15bbcd53e2c94c6b81059308625028e5aa473da614f6dfc6eec9911",
+        "bytes": 27172
+      },
+      "after": {
+        "sha256": "2fbe27567c917d4753fa3c83d9451f8a61bc44d0665036247f3a9088423f3555",
+        "bytes": 49334
+      }
+    }
+  ],
+  "durable_receipt": {
+    "path": "/home/jess/.local/state/omux-proposals-20261010/estate_renewal_resources/docs/agent-notes/2026-10-11-native-file-writer-storage-v3-code-proposal.SOURCE-ONLY.md",
+    "sha256": "b714bb5f925580afe0da45872e6ceb5af5058bcc5792751c0f82861c3f58333f",
+    "bytes": 11061
+  },
+  "source_composition": "Native patch applies only after exact selected N9. Root declares new explicit source family/config/producer/compiler/model/package closure; none changed/qualified in this packet. Preserve old9 and their evidence.",
+  "execution": {
+    "production_constructor": false,
+    "capability": false,
+    "issuer": false,
+    "scheduler": false,
+    "project_execution": false,
+    "provider_issuance": false,
+    "shared_mutation": false
+  },
+  "review_required": "Native author and existing independent source reviewer; no selfapproval; literal code not covered by prior schema agreement",
+  "v1_to_v2_review_delta": {
+    "sha256": "5b1b414fe9564778da3a1379600ca415c1a095aa22f751775b8f0755318a058e",
+    "bytes": 17013,
+    "path": "/home/jess/.local/state/omux-proposals-20261010/estate_renewal_resources/native-file-writer-storage-v2/v1-to-v2-review.patch"
+  },
+  "prior_blocked_v1": {
+    "patch_sha256": "f8754372e549f02db5823c1fa89f6cbb13a71541f7a4b4c0327e13ba88ac7ba7",
+    "manifest_sha256": "c66b30848dcaacadf6b36abe4f8309dc1de2ae57572b3d6693d17d50795ecba5",
+    "native_block_receipt_sha256": "aae62af7021f1bdeaac78d9b88dcaa02fbac6c2b7ec43bc6ed2f7844082f7fd5",
+    "lifecycle_block_receipt_sha256": "97d8b5626e50c70ce9e12a8fb96f7e3602c1635117ff0703cdb4aa6da5c63386"
+  },
+  "models": {
+    "added_existing_target_methods": 19,
+    "execution": "UNRUN",
+    "original_methods_unchanged": true
+  },
+  "v2_to_v3_review_delta": {
+    "sha256": "6008ef41e9841be322f2380298c3fa0e25dbee1cb773a2ecb2e1e83b2475725f",
+    "bytes": 7227
+  },
+  "prior_blocked_v2": {
+    "patch_sha256": "6e265eb5290b3b3cc907e3374dff11c358935041c823c418538e8f8b43486bd8",
+    "manifest_sha256": "f75a8008e4f8f8028b210abc0a90581a286d4dc67337d1c89ebfffa24a9d7824",
+    "review_receipts": [
+      {
+        "path": "/home/jess/.local/state/omux-proposals-20261010/estate_codex_native/docs/agent-notes/2026-10-11-native-file-writer-storage-v2-independent-review.SOURCE-BLOCK.md",
+        "sha256": "f860b09e0e79c16952da12b26205131be3ddd73bffc4ffb53b517d24c9d4b0b5"
+      },
+      {
+        "path": "/home/jess/.local/state/omux-proposals-20261010/estate_account_lifecycle/docs/agent-notes/2026-10-11-native-file-writer-storage-v2-independent-review.BLOCK.md",
+        "sha256": "8a466cfab57c8545d4aad68a5b5d9ddff3beebf7d0d327a1aa335cddec7830d6"
+      }
+    ]
+  }
+}
