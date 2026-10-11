@@ -28,7 +28,7 @@ fn controlCall(actor: *engine.Engine, method: []const u8, params: anytype) !Repl
 }
 fn browserMessage(method: []const u8, id: []const u8, extension: []const u8, changed: bool) ![]u8 {
     const provenance = .{ .browser = "chromium", .extensionId = extension, .channel = "release" };
-    if (std.mem.eql(u8, method, "browser.connect") or std.mem.eql(u8, method, "browser.disconnect")) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .method = method, .params = .{ .sourceId = "opaque-browser-source", .adapter = "codex", .origin = "https://chatgpt.com", .provenance = provenance } }, .{});
+    if (std.mem.eql(u8, method, "browser.connect") or std.mem.eql(u8, method, "browser.disconnect") or std.mem.eql(u8, method, "browser.reconcile")) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .method = method, .params = .{ .sourceId = "opaque-browser-source", .adapter = "codex", .origin = "https://chatgpt.com", .provenance = provenance } }, .{});
     return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .method = method, .params = .{ .sourceId = "opaque-browser-source", .adapter = "codex", .origin = "https://chatgpt.com", .provenance = provenance, .capsule = .{ .changed = changed } } }, .{});
 }
 fn counts(actor: *engine.Engine) ![3]u64 {
@@ -171,6 +171,55 @@ test "explicit browser disconnect fences a retained import attempt across restar
     try std.testing.expectEqual(generation, actor.import_sources.items[0].generation);
     try std.testing.expectEqual(@import("domain.zig").SourceStatus.disconnected, actor.state.sources.items[0].status);
     try std.testing.expectEqual(@import("domain.zig").SourceStatus.connected, actor.state.sources.items[1].status);
+}
+
+test "browser reconciliation observes current source authority without reconnecting or mutation" {
+    const transitions = [_][]const u8{ "disconnect", "detach", "expire", "future" };
+    for (transitions) |transition| {
+        var fixture = try Fixture.init();
+        defer fixture.deinit();
+        try fixture.connect();
+        const reconcile = try browserMessage("browser.reconcile", "reconcile-current", "extension-a", false);
+        defer allocator.free(reconcile);
+        {
+            var accepted = try dispatch(fixture.actor.?, .browser, reconcile);
+            defer accepted.deinit();
+            try std.testing.expect(try control.boolean(control.get(accepted.parsed.value, "result").?, "accepted", false));
+        }
+        if (std.mem.eql(u8, transition, "disconnect")) {
+            const payload = try browserMessage("browser.disconnect", "disconnect-current", "extension-a", false);
+            defer allocator.free(payload);
+            var disconnected = try dispatch(fixture.actor.?, .browser, payload);
+            defer disconnected.deinit();
+            try std.testing.expect(try control.boolean(control.get(disconnected.parsed.value, "result").?, "accepted", false));
+        } else {
+            const capability = try fixture.actor.?.capabilityForTest("enrollment");
+            const payload = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1,
+                .method = "fixture.importSource", .params = .{ .application = "enrollment", .capability = capability[0..],
+                    .source_id = "opaque-browser-source", .transition = transition } }, .{});
+            defer allocator.free(payload);
+            var changed = try dispatch(fixture.actor.?, .adapter, payload);
+            defer changed.deinit();
+            try std.testing.expect(try control.boolean(control.get(changed.parsed.value, "result").?, "updated", false));
+        }
+        const snapshot = try std.json.Stringify.valueAlloc(allocator, fixture.actor.?.state.snapshot(), .{});
+        defer allocator.free(snapshot);
+        const revision = fixture.actor.?.revision;
+        const generation = fixture.actor.?.import_sources.items[0].generation;
+        const checkpoint = fixture.actor.?.db.?.checkpoint;
+        for (0..2) |attempt| {
+            if (attempt == 1) try fixture.restart();
+            var refused = try dispatch(fixture.actor.?, .browser, reconcile);
+            defer refused.deinit();
+            try std.testing.expectEqualStrings("SourceUnauthorized", try refused.code());
+            const unchanged = try std.json.Stringify.valueAlloc(allocator, fixture.actor.?.state.snapshot(), .{});
+            defer allocator.free(unchanged);
+            try std.testing.expectEqualStrings(snapshot, unchanged);
+            try std.testing.expectEqual(revision, fixture.actor.?.revision);
+            try std.testing.expectEqual(generation, fixture.actor.?.import_sources.items[0].generation);
+            try std.testing.expectEqualDeep(checkpoint, fixture.actor.?.db.?.checkpoint);
+        }
+    }
 }
 
 test "refusal storage failure cannot retain a counter without durable refusal authority" {

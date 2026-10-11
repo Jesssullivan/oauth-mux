@@ -3863,6 +3863,12 @@ pub const Engine = struct {
                         item.authorized_at = self.now() - 60;
                         item.authorized_until = self.now();
                     };
+                } else if (eql(transition, "future")) {
+                    const timestamp = self.now();
+                    for (self.state.sources.items) |*item| if (eql(item.id, source_id)) {
+                        item.authorized_at = timestamp + 3600;
+                        item.authorized_until = timestamp + 7200;
+                    };
                 } else return error.InvalidParams;
                 try self.persist(&.{});
                 return control.success(allocator, request.id, .{ .updated = true });
@@ -4467,8 +4473,13 @@ pub const Engine = struct {
                 }
             },
             .reconcile => {
+                const timestamp = self.now();
                 var found = false;
                 for (self.state.sources.items) |source| if (eql(source.id, input.source_id)) {
+                    // Reconciliation observes current acquisition authority; it
+                    // cannot reconnect or extend a previous source authorization.
+                    if (source.status != .connected or source.authorized_at > timestamp or
+                        (source.authorized_until != null and source.authorized_until.? <= timestamp)) return error.SourceUnauthorized;
                     found = true;
                     break;
                 };
