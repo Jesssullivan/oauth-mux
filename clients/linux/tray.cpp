@@ -288,7 +288,8 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     button(actions, "Resume after vault unlock", this, [this] {
         if (!client_.ready()) { setupNotice_->setText("Connect to the service first."); return; }
         if (!client_.supportsCustodyReopen()) { setupNotice_->setText("This installed service requires an update before it can resume custody without restarting."); return; }
-        if (client_.hasUncertainOperations()) { setupNotice_->setText(client_.uncertaintyMessage()); return; }
+        // Explicit reopen restores custody needed to query retained outcomes.
+        // Ordinary mutations stay fenced by their original uncertain IDs.
         client_.request("custody.reopen", {}, [this](const QJsonObject &result, const QString &error) {
             if (!error.isEmpty()) {
                 custodyAvailable_ = false;
@@ -721,14 +722,22 @@ void OmuxTray::action(const QString &method, QJsonObject params) {
         params.insert("operation_id", (QUuid::createUuid().toString(QUuid::WithoutBraces)
             + QUuid::createUuid().toString(QUuid::WithoutBraces)).remove('-').toLower());
     }
-    client_.request(method, std::move(params), [this](const QJsonObject &result, const QString &error) {
+    client_.request(method, std::move(params), [this, method](const QJsonObject &result, const QString &error) {
         if (!error.isEmpty()) {
             message_->setText(client_.hasUncertainOperations() ? client_.uncertaintyMessage() : error);
             updateMutationControls();
             return;
         }
         const QString status = result.value("status").toString();
-        message_->setText(result.value("message").toString(
+        const bool pendingRemoval = method == "integrations.remove"
+            && result.value("pending_safe_detach").isBool() && result.value("pending_safe_detach").toBool()
+            && result.value("removed").isBool() && !result.value("removed").toBool()
+            && result.value("installed").isBool() && result.value("installed").toBool();
+        if (pendingRemoval)
+            message_->setText("Integration remains installed; removal is pending safe detachment. Reason: "
+                + result.value("reason").toString("Unreported")
+                + ". Native application history remains in place. Refresh status before requesting further removal.");
+        else message_->setText(result.value("message").toString(
             status == "verifying_identity" ? "Source verification is pending. Inspect Actions for its outcome."
             : status == "removal_pending" || status == "pending_removal" ? "Removal is pending while accepted work drains. Native application history remains in place; refresh status before repeating removal."
             : status == "reconciled" ? "Source reconciliation completed. Account state will refresh."

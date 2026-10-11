@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QLocalServer>
 #include <QPushButton>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QFile>
 #include <QFileInfo>
@@ -123,6 +124,17 @@ int main(int argc, char **argv) {
     bool omitCapture = false;
     bool integrationDecline = false;
     bool omitRuntime = false;
+    bool uncertainRecovery = false;
+    bool originalOutcomeCompleted = false;
+    QString originalOperation;
+    int originalMutationRequests = 0;
+    int originalOutcomeQueries = 0;
+    bool originalWireValid = true;
+    bool pendingRemovalFixture = false;
+    QString removalReason = "NativeRequestsPending";
+    int removalRequests = 0;
+    QSet<QString> removalOperations;
+    bool removalWireValid = true;
     QJsonObject runtimeSelection {{"qualification", "measured_installed_bytes_only"},
         {"native_support", false}, {"state", "unselected"}, {"reason", QJsonValue(QJsonValue::Null)}};
     int connections = 0;
@@ -145,6 +157,27 @@ int main(int argc, char **argv) {
                 const auto request = QJsonDocument::fromJson(buffer->left(end)).object();
                 buffer->remove(0, end + 1);
                 const auto method = request.value("method").toString();
+                if (uncertainRecovery && method == "policy.set") {
+                    ++originalMutationRequests;
+                    const auto params = request.value("params").toObject();
+                    originalOperation = params.value("operation_id").toString();
+                    originalWireValid = originalWireValid && !originalOperation.isEmpty()
+                        && params.value("expected_revision").toInteger(-1) == 1;
+                    custodyReady = false;
+                    snapshotDecline = true;
+                    snapshotRefusal = "CustodyLocked";
+                    socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
+                        {"error", QJsonObject{{"code", -32000}, {"message", "CustodyLocked"}}}}).toJson(QJsonDocument::Compact) + '\n');
+                    continue;
+                }
+                if (uncertainRecovery && method == "operation.status" && !custodyReady) {
+                    ++originalOutcomeQueries;
+                    originalWireValid = originalWireValid
+                        && request.value("params").toObject().value("operation_id").toString() == originalOperation;
+                    socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
+                        {"error", QJsonObject{{"code", -32000}, {"message", "CustodyLocked"}}}}).toJson(QJsonDocument::Compact) + '\n');
+                    continue;
+                }
                 if (method == "setup.readiness" && decline) {
                     socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
                         {"error", QJsonObject{{"code", -32000}, {"message", "CustodyLocked"}}}}).toJson(QJsonDocument::Compact) + '\n');
@@ -191,6 +224,7 @@ int main(int argc, char **argv) {
                         continue;
                     }
                     custodyReady = reopenResultMode == "ready" || reopenResultMode == "ready-idempotent";
+                    if (uncertainRecovery && custodyReady) snapshotDecline = false;
                     result = {{"reopened", true}, {"custody_available", true}, {"metadata_loaded", true}, {"account_count", 0},
                         {"provider_request_initiated", false}, {"live_handoff_proven", false}};
                     if (reopenResultMode == "missing-loaded") result.remove("metadata_loaded");
@@ -208,7 +242,30 @@ int main(int argc, char **argv) {
                 }
                 else if (method == "integrations.status") {
                     result = {{"adapters", QJsonArray{}}, {"installed", QJsonArray{}}};
+                    if (pendingRemovalFixture) {
+                        result.insert("adapters", QJsonArray{QJsonObject{{"id", "codex"}, {"capabilities", QJsonArray{}}}});
+                        result.insert("installed", QJsonArray{QString("codex")});
+                    }
                     if (!omitRuntime) result.insert("runtime_selection", runtimeSelection);
+                }
+                else if (uncertainRecovery && method == "operation.status") {
+                    ++originalOutcomeQueries;
+                    originalWireValid = originalWireValid
+                        && request.value("params").toObject().value("operation_id").toString() == originalOperation;
+                    result = {{"operation_id", originalOperation},
+                        {"status", originalOutcomeCompleted ? "completed" : "started"}, {"result", QJsonObject{}}};
+                }
+                else if (pendingRemovalFixture && method == "integrations.remove") {
+                    ++removalRequests;
+                    const auto params = request.value("params").toObject();
+                    const auto operation = params.value("operation_id").toString();
+                    removalWireValid = removalWireValid && params.value("adapter").toString() == "codex"
+                        && operation.size() == 64 && !removalOperations.contains(operation)
+                        && params.value("expected_revision").toInteger(-1) == 1;
+                    removalOperations.insert(operation);
+                    // Exact status-less Engine.completeNativeRemovalPending shape.
+                    result = {{"removed", false}, {"adapter", "codex"}, {"installed", true},
+                        {"pending_safe_detach", true}, {"reason", removalReason}};
                 }
                 else ++mutations;
                 if (method == "setup.readiness" && holdNextReadiness) {
@@ -507,7 +564,89 @@ int main(int argc, char **argv) {
         }
         window.close();
     }
-    // UI close/destruction sends no shutdown, mutation, or removal request.
+    // A locked actor cannot answer the original account operation outcome.
+    // Explicit custody recovery must remain accessible without replaying that
+    // operation or allowing other account mutations before it is reconciled.
+    uncertainRecovery = true;
+    custodyReady = true;
+    reopenCapability = true;
+    reopenResultMode = "locked-refusal";
+    {
+        OmuxTray window(socketPath, false, true);
+        window.show();
+        QPushButton *pausePreparation = nullptr;
+        QPushButton *resumeCustody = nullptr;
+        QPushButton *refresh = nullptr;
+        for (auto *button : window.findChildren<QPushButton *>()) {
+            if (button->text() == "Pause preparation") pausePreparation = button;
+            if (button->text() == "Resume after vault unlock") resumeCustody = button;
+            if (button->text() == "Refresh") refresh = button;
+            if (button->text() == "Reconnect") button->click();
+        }
+        const auto hasText = [&](const QString &needle) {
+            for (auto *label : window.findChildren<QLabel *>())
+                if (label->text().contains(needle)) return true;
+            return false;
+        };
+        if (!pausePreparation || !resumeCustody || !refresh
+            || !until([&] { return pausePreparation->isEnabled(); })) return 53;
+        auto *snapshotNotice = window.findChild<QLabel *>("snapshotNotice");
+        auto *readiness = window.findChild<QTableWidget *>("setupReadiness");
+        if (!snapshotNotice || !readiness) return 63;
+        const int recoveryConnections = connections;
+        pausePreparation->click();
+        if (!until([&] { return originalOutcomeQueries > 0 && !pausePreparation->isEnabled(); })
+            || originalMutationRequests != 1 || !originalWireValid || !hasText(originalOperation)) return 54;
+        refresh->click();
+        if (!until([&] { return hasText("Snapshot refresh failed (CustodyLocked)"); })) return 55;
+        resumeCustody->click();
+        ++expectedReopenRequests;
+        if (!until([&] { return hasText("Custody could not be reopened"); })
+            || reopenRequests != expectedReopenRequests || pausePreparation->isEnabled()
+            || originalMutationRequests != 1 || !hasText(originalOperation)) return 56;
+        reopenResultMode = "ready";
+        const int queriesBeforeReopen = originalOutcomeQueries;
+        resumeCustody->click();
+        ++expectedReopenRequests;
+        if (!until([&] {
+                return originalOutcomeQueries > queriesBeforeReopen
+                    && snapshotNotice->text().startsWith("Last daemon snapshot:")
+                    && readiness->rowCount() == 7 && readiness->item(2, 1)->text() == "ready";
+            }) || reopenRequests != expectedReopenRequests || pausePreparation->isEnabled()
+            || originalMutationRequests != 1 || !hasText(originalOperation)
+            || connections != recoveryConnections || !strictReopen || !originalWireValid) return 57;
+        // Even restored custody does not resolve a started original operation.
+        pausePreparation->click();
+        QApplication::processEvents();
+        if (originalMutationRequests != 1) return 58;
+        originalOutcomeCompleted = true;
+        refresh->click();
+        if (!until([&] { return pausePreparation->isEnabled(); })
+            || originalMutationRequests != 1 || !originalWireValid || reopenRequests != expectedReopenRequests) return 59;
+        // Read a retained installed catalog, then request removal once for each
+        // actual pending-safe-detach reason. Neither result means removed.
+        pendingRemovalFixture = true;
+        QTableWidget *catalog = nullptr;
+        for (auto *candidate : window.findChildren<QTableWidget *>())
+            if (candidate->columnCount() == 5 && candidate->horizontalHeaderItem(1)->text() == "Installed") catalog = candidate;
+        refresh->click();
+        if (!catalog || !until([&] { return catalog->rowCount() == 1; })) return 60;
+        catalog->selectRow(0);
+        for (const auto *reason : {"NativeRequestsPending", "NativeCustodyPending"}) {
+            removalReason = reason;
+            for (auto *button : window.findChildren<QPushButton *>())
+                if (button->text() == "Remove integration") button->click();
+            if (!until([&] { return hasText("Reason: " + removalReason); })
+                || !hasText("Integration remains installed; removal is pending safe detachment")
+                || hasText("Action accepted; account state will refresh.") || !removalWireValid) return 61;
+        }
+        if (!until([&] { return catalog->rowCount() == 1 && catalog->item(0, 1)->text() == "Yes"; })
+            || removalRequests != 2 || removalOperations.size() != 2 || originalMutationRequests != 1
+            || reopenRequests != expectedReopenRequests || connections != recoveryConnections) return 62;
+        window.close();
+    }
+    // UI close/destruction sends no unexpected shutdown, mutation, or removal request.
     QApplication::processEvents();
-    return server.isListening() && mutations == 0 && reopenRequests == expectedReopenRequests && strictReopen ? 0 : 5;
+    return server.isListening() && mutations == 0 && reopenRequests == expectedReopenRequests && strictReopen
+        && originalMutationRequests == 1 && originalWireValid && removalRequests == 2 && removalWireValid ? 0 : 5;
 }

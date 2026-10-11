@@ -354,6 +354,19 @@ final class DaemonStore: ObservableObject {
                     await refresh()
                     return
                 }
+                if method == "integrations.remove",
+                   result["removed"].boolean == false || result["pending_safe_detach"].boolean == true {
+                    let reason: String
+                    switch result["reason"].string {
+                    case "NativeRequestsPending": reason = "Accepted native work is still pending."
+                    case "NativeCustodyPending": reason = "Safe native detachment is still pending."
+                    default: reason = "Safe native detachment has not been verified."
+                    }
+                    message = "Integration removal did not complete. " + reason
+                        + " Native application history stays in place. Refresh status before explicitly requesting removal again."
+                    await refresh()
+                    return
+                }
                 message = result["message"].string ?? "Action accepted; account state will refresh."
                 if let link = result["authorization_url"].string,
                    let url = URL(string: link), url.scheme == "https", url.host != nil {

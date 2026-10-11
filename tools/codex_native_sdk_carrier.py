@@ -697,7 +697,7 @@ def seal(origin_root, pinned_origin_receipt_sha256, output_dir, absolute_deadlin
         custody = {role: {"root": str(root.path), "root_identity": root.chain[-1][2],
                          "ancestry_sha256": sha(encoded([item[2] for item in root.chain])),
                          "members_sha256": sha(encoded([[role_name, name, value]
-                            for (role_name, name), value in sorted(witnesses.items()) if role_name == role])}
+                            for (role_name, name), value in sorted(witnesses.items()) if role_name == role]))}
                    for role, root in roots.items()}
         report = {"kind": KIND, "producer_context": context, "origin": {"root": str(roots["sdk"].path),
                   "receipt_sha256": sha(raw), "receipt_bytes": len(raw),
