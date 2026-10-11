@@ -1423,7 +1423,6 @@ test "Codex absent usage remains unknown and malformed or duplicate windows fail
     }
 }
 
-
 test "trusted original awake cutoff remains fixed through real curl and rejects expired admission" {
     const a = std.testing.allocator;
     const io = std.testing.io;
