@@ -60,6 +60,8 @@ This is an ordered checkpoint under the existing incomplete objective. It starts
 
 The fileless native acquisition and production refresh gaps are product implementation, not merely operator tasks. The old SDK exporter/material route accepts v1 metadata and original SDK root; the new carrier consumer emits v2/fresh custody. A passing new metadata step cannot be dropped into that old slot or qualify compiler7/8.
 
+Source clarification at `1ee8908d5d700dbeceddd5ce30ea05c279786f76`: the maintained Codex candidate already obtains a fresh daemon lease and materializes request-scoped access authorization for each broker-bound native model request, without rewriting `auth.json`. The remaining fileless native-source implementation gap is reacquiring rotated credentials and advancing grants from the authorized supervised source; its current maintenance pass only verifies owner/context/origin. Refresh-writer adoption remains separate. These source paths do not establish a qualified installed executable, ordinary launch/resume or same-process live handoff. The original dated checkpoint and failed qualification receipts remain unchanged.
+
 Git HTTPS/GitHub remains the smallest planned non-LLM follow-on after the first Codex path. It needs real scoped repository permission and an ordinary helper/remote operation. REST core rate-limit observations do not prove repository access or upload capacity. Claude has configuration foundations without complete auth/request/renewal boundaries. OpenCode, cross-host federation, Windows, Safari and arbitrary providers remain deferred.
 
 ## Tracker, PR, goal and operations custody
