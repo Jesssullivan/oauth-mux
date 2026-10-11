@@ -144,16 +144,7 @@ const ObservationColumn = enum { text, blob, integer, optional_integer };
 // Capacity, deadlines and an already-open transaction remain ordinary refusals.
 fn observationIntegrityFailure(err: anyerror) bool {
     return switch (err) {
-        error.DatabaseCorrupt, error.RecordMissing, error.InvalidSnapshot,
-        error.SecretInSnapshot, error.SnapshotTooLarge, error.SnapshotAuthenticationFailed,
-        error.InvalidCustodyObservationSnapshot, error.UnsupportedSchema,
-        error.UnsupportedSnapshotSchema, error.WrongKeyIdentity,
-        error.WrongRecoveryInstallation, error.RecoveryRollbackDetected,
-        error.RecoveryCheckpointMismatch, error.InvalidRecoveryCheckpoint, error.RecoveryAuthorityPoisoned,
-        error.MissingRecoveryAuthority, error.RecoveryAuthorityUnavailable,
-        error.InvalidRecoveryAuthority, error.RecoveryReadFailed,
-        error.RecoveryMigrationRequired, error.RecoveryAuthenticationFailed,
-        error.UnsafeRecoveryFile => true,
+        error.DatabaseCorrupt, error.RecordMissing, error.InvalidSnapshot, error.SecretInSnapshot, error.SnapshotTooLarge, error.SnapshotAuthenticationFailed, error.InvalidCustodyObservationSnapshot, error.UnsupportedSchema, error.UnsupportedSnapshotSchema, error.WrongKeyIdentity, error.WrongRecoveryInstallation, error.RecoveryRollbackDetected, error.RecoveryCheckpointMismatch, error.InvalidRecoveryCheckpoint, error.RecoveryAuthorityPoisoned, error.MissingRecoveryAuthority, error.RecoveryAuthorityUnavailable, error.InvalidRecoveryAuthority, error.RecoveryReadFailed, error.RecoveryMigrationRequired, error.RecoveryAuthenticationFailed, error.UnsafeRecoveryFile => true,
         else => false,
     };
 }
