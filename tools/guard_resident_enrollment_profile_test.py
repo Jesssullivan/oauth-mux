@@ -842,26 +842,66 @@ class InactiveObservationModels(unittest.TestCase):
 
     def test_normal_encrypted_state_is_metadata_only_unlocked_and_replacement_refuses(self):
         import guard_resident_owned_update as owned
+        import io
+        import tarfile
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
-            state=Path(temporary)
-            state.chmod(0o700)
+            root=Path(temporary)
+            root.chmod(0o700)
+            state=root/"state"
+            state.mkdir(mode=0o700)
             for name,raw in (("daemon.lock",b""),("state.sqlite",b"synthetic opaque ciphertext"),
                              ("state.sqlite.authority",b"synthetic opaque authority")):
                 (state/name).write_bytes(raw)
                 (state/name).chmod(0o600)
-            selected={**self.selected(),"runtime_state":str(state)}
-            software=Mock(files=[])
+            prefix=root/"prefix"
+            loader_name="lib/omux/lib/ld-fixture.so"
+            backend_name="lib/omux/libexec/omuxd.bin"
+            # Model only the trusted qualifier's output. The real bounded archive
+            # decoder and held public-file identities remain in the tested path.
+            public_files={"release-manifest.json":json.dumps({"runtime":{"loader":loader_name}}).encode(),
+                loader_name:b"synthetic public loader",backend_name:b"synthetic public backend"}
+            payload=io.BytesIO()
+            with tarfile.open(fileobj=payload,mode="w:gz") as archive:
+                for name,raw in sorted(public_files.items()):
+                    member=tarfile.TarInfo(name)
+                    member.size,member.mode=len(raw),0o644
+                    archive.addfile(member,io.BytesIO(raw))
+            self.assertLess(len(payload.getvalue()),16*1024)
+            archive_path=root/"public-archive.tar.gz"
+            qualification_path=root/"public-qualification.json"
+            qualification_path.write_bytes(b"{}")
+            archive_path.write_bytes(payload.getvalue())
+            for name in (loader_name,backend_name):
+                path=prefix/name
+                path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+                path.write_bytes(public_files[name])
+                path.chmod(0o644)
+            qualification_path.chmod(0o644)
+            archive_path.chmod(0o644)
+            selected={**self.selected(),"runtime_state":str(state),"prefix":str(prefix),
+                "start":{"archive_path":str(archive_path)}}
+            deadline=time.monotonic_ns()+60*10**9
+            held=[]
+            self.addCleanup(lambda: [public.close() for public in reversed(held)])
+            for path in (qualification_path,archive_path,prefix/loader_name,prefix/backend_name):
+                held.append(owned.PublicFile(path,deadline,16*1024,owned=True))
+            software=Mock(files=held,
+                recheck=Mock(side_effect=lambda: [public.recheck() for public in held]),
+                close=Mock(side_effect=lambda: [public.close() for public in reversed(held)]))
             actual_open=os.open
             def metadata_only(path,flags,*args,**kwargs):
                 if str(path) in ("daemon.lock","state.sqlite","state.sqlite.authority"):
                     self.assertTrue(flags & os.O_PATH)
                 return actual_open(path,flags,*args,**kwargs)
-            with patch.object(owned,"QualifiedExistingEnrollment",return_value=software), \
+            with patch.object(owned,"QualifiedExistingEnrollment",return_value=software) as qualifier, \
                     patch.object(owned.os,"open",side_effect=metadata_only), \
                     patch.object(owned.fcntl,"flock",side_effect=AssertionError("no lock acquisition")):
-                witness=owned.OwnedInactiveObservation(selected,HOME,time.monotonic_ns()+60*10**9)
+                witness=owned.OwnedInactiveObservation(selected,HOME,deadline)
                 try:
+                    qualifier.assert_called_once_with({**selected,"existing_archive":selected["start"]},HOME,deadline)
+                    self.assertIs(witness.loader,held[2])
+                    self.assertIs(witness.backend,held[3])
                     witness.recheck()
                     original=state/"state.sqlite"
                     original.rename(state/"retired")
