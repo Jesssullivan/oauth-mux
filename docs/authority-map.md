@@ -84,8 +84,8 @@ Deleted text remains recoverable from baseline
 `f5f83c1ad99c2920de6759791b327a99a02a2ec5` and release history.
 
 Reviewed data under `docs/evidence/`, `test/evidence/` and `test/fixtures/` remains
-unchanged. The historical stable release is v0.1.15; this uncommitted reset does
-not replace its published artifacts. Removed Just, Zig-build, wrapper and GF
+unchanged. The historical stable release is v0.1.15; this committed but unshipped
+reset does not replace its published artifacts. Removed Just, Zig-build, wrapper and GF
 dispatch commands are not actionable. Every current execution uses locked Nix
 tools through Bazel/Bazelisk, locally by default.
 

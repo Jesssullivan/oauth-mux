@@ -47,6 +47,7 @@ support for this field requires qualification of the exact delivered bytes.
 | Public lifecycle and usage | `account.pause`, `account.resume`, `account.drain`, `account.forget`, source operations, `usage.summary`, `system.health`, `reliability.export` and `operation.status`; upstream revoke is not an implemented method |
 | Shared setup control | `setup.readiness`, `setup.plan`, `setup.evidence`, `setup.refresh` are implemented in source. Refresh starts one bounded background installation probe using immutable launch selectors; evidence reports cached observations and freshness. Plans do not rewrite managed files. Source presence does not prove installed readiness or successful filesystem collection. |
 | Current Codex owner V2 endpoint | `owner/capabilities`, `owner/threads`, `owner/identify`, `owner/register`, `owner/unregister`, `owner/announce`; private authenticated Unix packet transport with an explicit endpoint, bounded at 64 KiB |
+| Experimental Codex source-context extensions | `owner/source/context` supplies read-only owner-bound context metadata; `owner/source/origin` requires verified runtime/image authority; `owner/source/acquire` additionally requires explicit source-acquisition consent. Omux daemon and candidate source implement these boundaries; exact native compilation, packaging, installed enrollment and ordinary-launch qualification remain separate gates. |
 | Separate candidate read-only status extension | `owner/attachment/status` has two passing local Rust predicates in epoch `cd8c87d7-85f4-4c41-836c-18d8a6f7585c`; installed discovery and ordinary TUI/resume remain unproved. It must expose exact committed attachment attribution, never infer retirement from absence. The preserved164-change/installed4b pair does not supply this method's proof. |
 | Preserved Codex protocol-1 candidate extension | `omux/broker/capabilities`, `omux/broker/register`, `omux/broker/unregister`, `omux/broker/thread/status`; belongs to the preserved upstream patch candidate, absent from stock Codex; legacy WebSocket inspection confers no current owner custody |
 | Intent requiring later implementation | Explicit refresh adoption/renewal ownership transfer, upstream revocation and a general adapter observation publication interface; no method names or executable guarantee are declared here |
@@ -80,14 +81,21 @@ version 1; neither inherits control version 2.
 Daemon-default enrollment and verified active-application source context are
 separate. Omitted Codex `source_path` in [engine.zig](../../src/engine.zig)
 resolves from the daemon's `HOME`/`CODEX_HOME`; it does not identify the context
-used by an independently ordinary-started application. Selected-context discovery
-in [native_probe.zig](../../src/integrations/native_probe.zig) authenticates
-owner/thread incarnations but carries no credential-source context authority.
-Native conversational context reconstruction and session/history preservation
-are not credential-source discovery. This bridge is unimplemented and requires
-version-bound native/daemon qualification; no method or capability is introduced
-by this contract. The product requires discovery without asking users for raw
-profile locations, and ordinary launch without an Omux wrapper or alternate home.
+used by an independently ordinary-started application. Current experimental
+source in [native_probe.zig](../../src/integrations/native_probe.zig) and
+[engine.zig](../../src/engine.zig) implements authenticated owner-bound context
+declarations, supervised selected-context acquisition and opaque discovery
+metadata. Read-only context discovery does not authorize credential acquisition.
+The acquisition path separately requires explicit source consent, retained
+runtime/image authority and original owner/context checks before and after
+transfer. Native conversational context reconstruction and session/history
+preservation remain separate from credential-source discovery. These source
+implementations and candidate extensions require version-bound native/daemon
+compilation, package and installed qualification; ordinary launch/resume, retained
+normal custody and live handoff remain unproved. This contract records source
+behavior and adds no execution proof. The product requires discovery without
+asking users for raw profile locations, and ordinary launch without an Omux
+wrapper or alternate home.
 
 Acceptance requires:
 
@@ -314,6 +322,10 @@ before effects, with no pagination promised for this slice.
 
 Automatic discovery returns `owners`, with `owner_id`, `process_nonce`,
 `endpoint_generation`, `owner_endpoint`, `native_version`, `support` and `threads`.
+Experimental source-context discovery may also populate `source_context` with
+status and nullable opaque context ID/generation and store-presence metadata.
+Its `credential_acquisition_authorized` remains false. These read-only facts do
+not authorize acquisition or establish installed support.
 Each thread has `thread_id`, `thread_instance_generation`, diagnostic
 `attachment_generation` and nullable `native_ref`. Only an exact currently
 committed attachment matching the fresh observation can populate `native_ref`.
@@ -495,19 +507,28 @@ Git request.
 
 Selected-runtime authority and live executable attribution are separate
 requirements. The current Codex package already binds source/producer inputs,
-upstream commit and packaged executable/runtime digests. Its missing installed
-selection must derive from verified artifact/ownership evidence and bind
-channel/target, manifest/archive/source/producer digests, backend/loader
-identities, installation transaction and adapter epoch. It must refuse
-selection drift during mutation/recovery while preserving native custody and
-history. No selection wire method or registry migration is implemented here.
+upstream commit and packaged executable/runtime digests. Experimental source in
+[setup.zig](../../src/integrations/setup.zig) now implements retained internal
+runtime-selection records and verification, binding channel/target,
+manifest/archive/source/producer digests, backend/loader identities, installation
+transaction and adapter epoch to verified artifact/ownership evidence. The actor
+retains qualified evidence in its persisted state; verification and rechecks
+refuse selection drift while preserving native custody and history. These
+internal records are not a public selection wire method. Source presence does
+not qualify a genuine installed selection, complete native package, ordinary
+launch/resume or live handoff; those exact-artifact gates remain open.
 
 The portable Codex launcher explicitly executes a bundled loader. A hash of
 `/proc/PID/exe` alone cannot be presumed to attest its backend; the actual launch
-profile requires a version-bound proof. Existing fresh socket-derived peer
-evidence establishes process incarnation and message writer, not executable
-identity. Peer-claimed version/digest fields and a persisted selection do not
-close that gap. See the [delivery audit](../../integrations/codex-adapter-delivery/README.md)
+profile requires a version-bound proof. Current Linux source distinguishes that
+explicit-loader profile from a Nix direct-main profile with retained closure,
+deployment and executable-role checks. The source-acquisition image verifier
+requires the qualified direct-main profile and fresh peer/image rechecks; an
+evaluation-only selection cannot enable acquisition. Fresh socket-derived peer
+evidence alone establishes process incarnation and message writer, not executable
+identity. Peer-claimed version/digest fields or a persisted selection alone do
+not close that gap. These implemented checks still require genuine package and
+installed qualification. See the [delivery audit](../../integrations/codex-adapter-delivery/README.md)
 and its primary kernel reference. Experimental conformance may retain exact
 fixture-launched artifact provenance; it cannot silently become runtime delivery
 qualification or continuity support.
