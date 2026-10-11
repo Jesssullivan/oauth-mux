@@ -258,10 +258,10 @@ pub fn validateIngress(value: std.json.Value, allow_fixture: bool) Error!Validat
     if (adapter == .fixture and (!allow_fixture or !builtin.is_test)) return error.FixtureDisabled;
     const origin = try string(try member(params, "origin"));
     if (!std.mem.eql(u8, origin, policy(adapter).origin)) return error.OriginMismatch;
-    const operation_id = if (params.object.get("operationId")) |value| try identifier(value, 64) else null;
+    const operation_id = if (params.object.get("operationId")) |operation_value| try identifier(operation_value, 64) else null;
     if (operation_id) |operation| if (std.mem.eql(u8, operation, id)) return error.InvalidIdentifier;
-    const expected_revision = if (params.object.get("expectedRevision")) |value| try authorityNumber(value) else null;
-    const expected_generation = if (params.object.get("expectedGeneration")) |value| try authorityNumber(value) else null;
+    const expected_revision = if (params.object.get("expectedRevision")) |revision_value| try authorityNumber(revision_value) else null;
+    const expected_generation = if (params.object.get("expectedGeneration")) |generation_value| try authorityNumber(generation_value) else null;
     if ((method == .connect or method == .disconnect) and (operation_id == null) != (expected_revision == null)) return error.InvalidRequest;
     if (method == .disconnect and operation_id != null and expected_generation == null) return error.InvalidRequest;
     if (expected_generation != null and expected_generation.? == 0) return error.InvalidRequest;
