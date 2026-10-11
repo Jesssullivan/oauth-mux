@@ -166,3 +166,38 @@ Added receipts use the existing [root custody directory](#durable-receipt-custod
 | `2026-10-11-estate-fresh-tracker-and-web-readback.json` | `d2e901f6b100b3a42de145b3ffee4bd3789a477397d9ad130af0fef7196ae789` |
 
 Browser disposition remains `/home/jess/.local/state/omux-proposals-20261010/estate_browser_flow/docs/agent-notes/2026-10-11-browser-reconnect-no-change-authority-disposition.md`, SHA256 `1e8d91aee213eb92521e8fc007fc426e7c6e8bbb8d0a35a9c915be3c0afb52ab`. This author performed private source/receipt drafting only; no project execution/import, shared edit or service/provider/tracker action.
+
+## First-use dependencies and next actions — 2026-10-11
+
+Authority remains AGENTS.md, the active native account-lifecycle reset and R-N13. This appendix preserves the entire preceding checkpoint. Current source is clean `8a30838c9ac15cce494769f3e77aaaf71d4e5dee`, graph `4644ac7ea89597f03cb6c230589cfc27dc13d1f1b3f0da2991fb387781e947e9`. Omux owns application adapters; users continue launching ordinary terminal commands without an Omux launcher. The original 24 audits remain historical; adopted source supersessions above do not inherit live proof.
+
+HM3 at `8d536257` is now terminal **0/0**: actual Bazel mapper parse/load, 22 declaration models and docs PASS; generic cleanup stays empty/unproved/readbacks0. NM5 at that same source, epoch `aa375d55-0ff8-4d26-8b25-bb739be5f3d9`, failed **125/124** at its original deadline, with zero tests or qualified metadata output; exact owned stop/two cleanup readbacks verified. Six static repository markers improve diagnostic placement, not metadata qualification, speed or root-cause proof. Genuine metadata/SDK/compiler/package/runtime selectors remain unqualified and compiler7/8 remains HOLD.
+
+Three later changes are adopted source with affected gates **UNRUN**: `20cd6a68` adds read-only browser reconciliation refusal for disconnected/detached/expired/future authorization in `src/engine.zig`, without renewing or reactivating sources; `a412213e` delivers owned channel-specific Linux desktop entries through `delivery/portable.py`, `delivery/install.py` and `nix/home-manager.nix`; `8a30838c` rejects contradictory readiness/seamless-support claims in the real Darwin parser `clients/macos/SetupReadinessReport.swift`. They establish no installed browser/desktop, Home Manager activation, Darwin compilation/GUI or live proof. The rejected browser reconnect proposal remains unapplied; production browser exports remain disabled.
+
+| First-use dependency | Evidence available | Next acceptance / existing carrier |
+| --- | --- | --- |
+| **Install and activate** matching resident core/control client/integration. | VM2 Engine298 and isolated installed core-custody PASS; HM1 unsigned Firefox development XPI/host/CLI predicates PASS. Latest desktop/readiness changes are source only. | Qualify affected source gates, then genuine current package and Home Manager realization/activation/owned update-removal. TIN-2063; TIN-5338. |
+| **Connect, verify and enroll** two usable compatible accounts. | Scoped source consent, provider identity fences and encrypted storage exist. Historical C8 isolated access custody/restart remains scoped and removed. Latest normal-vault NV4 is Locked, metadata-only; current retained count is unobserved. | Obtain normal OS custody restoration, loaded-metadata readback and retained verified two-account custody/restart. Chromium needs attended installed consent and provider-field verification; imported renewal stays external, adopted renewal remains unimplemented. TIN-2063; TIN-2720; TIN-5442. |
+| **Launch normally and resume native accepted history.** | Experimental maintained Codex boundary exists; HM3 validates parser/models, while genuine NM5 metadata failed. Native configuration remains missing/unverified rather than ready. | Diagnose declaration from actual evidence; qualify genuine metadata→SDK→plan/query/compiler→package/installed candidate, then ordinary command/native history resume. Stock Codex support remains unproved. TIN-5338; TIN-5421. |
+| **Handoff compatible authority in the same process.** | Request/acceptance/no-replay predicates and scoped operator-drain composition exist. No ordinary-Codex live A/B handoff is proved. | Join retained usable accounts and ordinary resume; prove exact process/thread, A/B accepted turns, preserved native history and no repeated streams/tools. Provider-originated preacceptance rejection and accepted-work-safe removal remain separate gates. TIN-5338; TIN-2057. |
+
+The next five priorities are:
+
+1. Establish the normal-vault operator restoration prerequisite and same-actor loaded-custody readback, then retain verified usable accounts; neither an unloaded count nor the isolated fixture proves personal custody.
+2. Qualify the three newest source corrections through their declared affected gates. Preserve browser refusal and unsupported-native truth; Linux desktop and Darwin parser validation do not substitute for installed platform proof.
+3. Inspect NM5's retained declaration evidence and produce a narrow source diagnosis/correction or an explicit remaining blocker before another changed-input attempt. Preserve original deadlines and failures; no unchanged retry or unsupported RCA.
+4. Advance genuine native inputs in dependency order, then install the exact candidate and prove ordinary accepted-history resume. Keep compiler7/8 HOLD until actual prerequisites admit the remaining attempt.
+5. Attempt scoped same-process A/B handoff only after custody and resume are established. Keep adopted renewal, installed Chromium lifecycle, fleet update/removal, production Darwin, signing, deployed web delivery (TIN-734) and reliability as separate obligations.
+
+These priorities do not reset the original **2026-10-05T04:03:36Z–19:03:36Z fifteen-hour goal: ACTIVE, overdue and incomplete**. Later uncapped model-I/O authorization remains; no new cap or completion claim is requested. Existing seven Linear carriers retain separate scopes and no completedAt; PR541 remains an open draft within the eight-draft stack. This appendix author performed source/receipt inspection only, with no project execution, shared edits, provider or tracker actions.
+
+New artifact hashes below bind retained root files under `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/`, not repository JSON links. Original execution receipt hashes remain HM3 `347a14398eb2095aa453aa6f3a55a41f1204c5b90e4b048b2426c08895ffbce1` and NM5 `8b56826295b7fa47e45d530e6f96e99646bf8493a540a1ed9d5a3d2063082e4b`.
+
+| Root artifact filename | SHA256 |
+| --- | --- |
+| `2026-10-11-integrated-models-HM3-result.json` | `faa8ca482a976ee658c3b81a0ddb47b6535c6b9d81b386624c6340313054efa0` |
+| `2026-10-11-integrated-models-NM5-result.json` | `51e6ba1240184775dffbd35687ebb30ca63be71456bc4e3c2fe2d18c6b72db2b` |
+| `2026-10-11-browser-reconcile-current-authority-adoption-result.json` | `68da8ff3ae5148280e34f684f64fd877f270945b56d7ce09c7af1f9838590d19` |
+| `2026-10-11-linux-desktop-delivery-v3-adoption-result.json` | `4e23e9b53cffbaa35b903fd2fad0ed36e366bbe57ca5e455ab5b483aa0ae069d` |
+| `2026-10-11-darwin-setup-readiness-parity-adoption-result.json` | `8eca5a5b0a89db6341cde41d903abfb4f6d16a63a2309516b688ea831f0b8686` |
