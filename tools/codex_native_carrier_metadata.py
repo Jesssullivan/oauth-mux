@@ -445,9 +445,9 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
     qualified = qualify_producer(selected, deadline, proof_inputs)
     with ExitStack() as stack:
         carrier_hold = stack.enter_context(carrier.HeldCarrier(carrier_root, pin, deadline))
-        origin = report = files = parent = output_hold = source_hold = binding_hold = None
+        origin = report = files = parent = output_hold = temporary_hold = source_hold = binding_hold = None
         def accept_initial(candidate):
-            nonlocal origin, report, files, parent, output_hold, source_hold, binding_hold
+            nonlocal origin, report, files, parent, output_hold, temporary_hold, source_hold, binding_hold
             started_ns = time.monotonic_ns()
             def progress(phase):
                 # Static phase diagnostics only; this clock grants no allowance.
@@ -470,12 +470,15 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
                 progress("source-ready")
                 output.mkdir(mode=0o700)
                 output_hold = stack.enter_context(carrier.Root(output, carrier.Clock(deadline), sealed=False, owned=True))
+                temporary.mkdir(mode=0o700)
+                temporary_hold = stack.enter_context(carrier.Root(temporary, carrier.Clock(deadline), sealed=False, owned=True))
                 origin = candidate
                 progress("output-ready")
             except BaseException:
                 progress("refused")
                 raise
-        extracted = output / "extracted"
+        # SDK scratch is workload-local; only the regenerated hub/report are retained.
+        extracted = temporary / "extracted"
         extraction = carrier.extract(carrier_root, pin, extracted, deadline, on_bound=accept_initial,
             _held_carrier=carrier_hold)
         extraction_pin = carrier.sha(carrier.encoded(extraction))
@@ -487,7 +490,6 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
         exported = sdk.validate_export(sdk_root, legacy.EXPORT_SHA, source.BASE_INVENTORY,
             parent["baseline_graph_files"], on_read=lambda count: tick(deadline))
         previous_hub = legacy.read_hub(sdk_root / "repositories" / metadata.HUB)
-        temporary.mkdir(mode=0o700)
         fd = source.write_source(temporary / "workspace", files)
         os.close(fd)
         for name in ("home", "home/cargo", "home/cache", "home/config", "home/state"):
@@ -513,7 +515,7 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
             pinned_extraction_receipt_sha256=extraction_pin, _held_carrier=carrier_hold) == extraction)
         legacy.recheck_root(Path(selected["original_selection"]["source_root"]), source_hold)
         legacy.recheck_root(legacy.INPUT_CONTROL.parent, binding_hold)
-        for root in [output_hold, carrier_hold, *fresh.values()]:
+        for root in [output_hold, temporary_hold, carrier_hold, *fresh.values()]:
             root.check()
         recheck_aliases(aliases, deadline)
         source.verify_written(output / "hub/source", hub)
@@ -539,13 +541,14 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
         # Long final carrier content/NAR IO precedes the last fresh output proof.
         # A scoped report or completed copy can never replace this full read.
         carrier_hold.full_final()
+        temporary_hold.check()
         require(carrier.revalidate_extraction(carrier_root, pin, extracted, deadline,
             pinned_extraction_receipt_sha256=extraction_pin, _held_carrier=carrier_hold) == extraction)
         source.verify_written(temporary / "workspace/source", files)
         source.verify_written(output / "hub/source", hub)
         legacy.recheck_root(Path(selected["original_selection"]["source_root"]), source_hold)
         legacy.recheck_root(legacy.INPUT_CONTROL.parent, binding_hold)
-        for root in [output_hold, carrier_hold, *fresh.values()]:
+        for root in [output_hold, temporary_hold, carrier_hold, *fresh.values()]:
             root.check()
         recheck_aliases(aliases, deadline)
         proof_inputs.recheck(deadline)

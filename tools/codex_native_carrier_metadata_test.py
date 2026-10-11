@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -591,7 +592,8 @@ class CarrierMetadataModels(unittest.TestCase):
     def run_bounded_consumer(self, *, mutate_workspace=False, fail_final_custody=False,
             mutate_ready_workspace=False, fail_ready_custody=False, mutate_ready_proof=False,
             mutate_binding=False, bad_initial_context=False, fail_initial_declaration=False,
-            fail_initial_source=False, fail_final_full=False, mutate_during_final_full=False):
+            fail_initial_source=False, fail_final_full=False, mutate_during_final_full=False,
+            fail_partial_copy=False, mutate_final_temporary=None):
         """Actual workspace/output FD writes and root holds; explicit proof seams.
 
         A tiny source/SDK/carrier is a trusted model boundary, never qualification.
@@ -626,6 +628,14 @@ class CarrierMetadataModels(unittest.TestCase):
         extraction = {"kind": "bounded-extraction-model"}
         events = []
         scopes = []
+        temporary_roots = []
+        actual_root = consumer.carrier.Root
+
+        def held_root(path, *args, **kwargs):
+            root = actual_root(path, *args, **kwargs)
+            if path == work:
+                temporary_roots.append(root)
+            return root
 
         class ModelHeldCarrier:
             # Explicit carrier content seam. Core models exercise actual four
@@ -658,6 +668,15 @@ class CarrierMetadataModels(unittest.TestCase):
                     path.chmod(0o600)
                     path.write_bytes(b"workspace changed during full final carrier read\n")
                     path.chmod(0o555)
+                if mutate_final_temporary == "mode":
+                    work.chmod(0o555)
+                elif mutate_final_temporary in ("inode", "symlink"):
+                    moved = self.root / "work-aside"
+                    work.rename(moved)
+                    if mutate_final_temporary == "inode":
+                        shutil.copytree(moved, work, symlinks=True)
+                    else:
+                        work.symlink_to(moved, target_is_directory=True)
                 inner.final = True
 
             def __exit__(inner, exc_type, *unused):
@@ -681,14 +700,22 @@ class CarrierMetadataModels(unittest.TestCase):
             on_bound(origin)
             events.append("bound")
             self.assertTrue(output.is_dir())
+            self.assertEqual(destination, work / "extracted")
+            self.assertEqual(os.stat(work).st_mode & 0o777, 0o700)
+            self.assertEqual(len(temporary_roots), 1)
+            temporary_roots[0].check()
             destination.mkdir(mode=0o700)
             for role in ("sdk", "jdk"):
                 (destination / role).mkdir(mode=0o555)
+            if fail_partial_copy:
+                (destination / "sdk").chmod(0o700)
+                (destination / "sdk/partial").write_bytes(b"partial SDK model bytes")
+                raise ValueError("model: copy refused under original cutoff")
             destination.chmod(0o555)
             return extraction
 
         def validate_export(root, pin, inventory, graph, *, on_read):
-            self.assertEqual(root, output / "extracted/sdk")
+            self.assertEqual(root, work / "extracted/sdk")
             self.assertEqual((pin, inventory, graph), (consumer.legacy.EXPORT_SHA, consumer.source.BASE_INVENTORY, {}))
             on_read(0)
             events.append("sdk")
@@ -747,6 +774,7 @@ class CarrierMetadataModels(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.object(consumer.legacy, "configure_selection", side_effect=configure))
             stack.enter_context(patch.object(consumer.carrier, "HeldCarrier", ModelHeldCarrier))
+            stack.enter_context(patch.object(consumer.carrier, "Root", side_effect=held_root))
             final_binding = stack.enter_context(patch.object(consumer.carrier, "validate_binding", return_value=origin))
             declarations = stack.enter_context(patch.object(consumer, "recheck_declaration"))
             initial_join = stack.enter_context(patch.object(consumer, "_recheck_initial_declaration",
@@ -767,8 +795,14 @@ class CarrierMetadataModels(unittest.TestCase):
             hold = stack.enter_context(patch.object(consumer.legacy, "hold_root", wraps=consumer.legacy.hold_root))
             recheck = stack.enter_context(patch.object(consumer.legacy, "recheck_root", wraps=consumer.legacy.recheck_root))
             stack.enter_context(patch.object(consumer, "write_receipt", side_effect=write_ready))
-            with consumer.proof_scope(601.0):
-                result = consumer.produce(self.selected, "5" * 64, packed, (), {}, self.declared_proofs(), work, output, 601.0, context)
+            try:
+                with consumer.proof_scope(601.0):
+                    result = consumer.produce(self.selected, "5" * 64, packed, (), {}, self.declared_proofs(), work, output, 601.0, context)
+            finally:
+                for held in temporary_roots:
+                    self.assertEqual(held.chain, [])
+                for held in scopes:
+                    self.assertEqual(held.root.chain, [])
             self.assertEqual([call.args[0] for call in hold.call_args_list], [retained, controls])
             self.assertEqual([call.args[0] for call in recheck.call_args_list], [retained, controls, retained, controls])
             self.assertEqual(source_read.call_args_list, [unittest.mock.call(self.original)] * 2)
@@ -787,6 +821,10 @@ class CarrierMetadataModels(unittest.TestCase):
         self.assertEqual(scopes[0].root.chain, [])
         self.assertTrue(all(result[name] is False for name in consumer.FALSE_FLAGS))
         self.assertEqual(result["kind"], consumer.OUTPUT_KIND)
+        self.assertEqual(len(temporary_roots), 1)
+        self.assertTrue((work / "extracted/sdk").is_dir())
+        self.assertFalse((output / "extracted").exists())
+        self.assertEqual({path.name for path in output.iterdir()}, {"hub", "metadata-receipt.json"})
         self.assertEqual(os.stat(output).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(output / "metadata-receipt.json").st_mode & 0o777, 0o444)
         self.assertEqual(json.loads((output / "metadata-receipt.json").read_bytes()), result)
@@ -794,6 +832,32 @@ class CarrierMetadataModels(unittest.TestCase):
 
     def test_actual_output_workspace_and_root_holds_preserve_v2_scope(self):
         self.run_bounded_consumer()
+
+    def test_partial_copy_is_private_and_closes_held_temporary_root(self):
+        with self.assertRaises(ValueError):
+            self.run_bounded_consumer(fail_partial_copy=True)
+        self.assertEqual((self.root / "work/extracted/sdk/partial").read_bytes(), b"partial SDK model bytes")
+        self.assertFalse((self.root / "result/extracted").exists())
+        self.assertFalse((self.root / "result/metadata-receipt.json").exists())
+        self.assertIsNone(consumer._SCOPE.get())
+
+    def test_same_byte_temporary_root_replacement_after_final_carrier_read_refuses(self):
+        with self.assertRaisesRegex(ValueError, "named-ancestor"):
+            self.run_bounded_consumer(mutate_final_temporary="inode")
+        self.assertTrue((self.root / "result/metadata-receipt.json").exists())
+        self.assertIsNone(consumer._SCOPE.get())
+
+    def test_temporary_root_mode_change_after_final_carrier_read_refuses(self):
+        with self.assertRaisesRegex(ValueError, "held-ancestor"):
+            self.run_bounded_consumer(mutate_final_temporary="mode")
+        self.assertTrue((self.root / "result/metadata-receipt.json").exists())
+        self.assertIsNone(consumer._SCOPE.get())
+
+    def test_temporary_root_symlink_after_final_carrier_read_refuses(self):
+        with self.assertRaisesRegex(ValueError, "named-ancestor"):
+            self.run_bounded_consumer(mutate_final_temporary="symlink")
+        self.assertTrue((self.root / "result/metadata-receipt.json").exists())
+        self.assertIsNone(consumer._SCOPE.get())
 
     def test_initial_callback_diagnostics_have_bounded_static_order_and_no_content(self):
         output = io.StringIO()
@@ -910,6 +974,9 @@ class CarrierMetadataModels(unittest.TestCase):
             return raw
 
         def publication(*args):
+            self.assertEqual(args[-4], temporary / "native-sdk-carrier-metadata-work")
+            self.assertEqual(args[-3], output / "native-sdk-carrier-metadata")
+            self.assertNotEqual(args[-4].parent, args[-3].parent)
             self.assertEqual(args[-2], 601.0)
             self.assertEqual(consumer._SCOPE.get(), 601.0)
             events.append("publication")
