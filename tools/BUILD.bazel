@@ -18,6 +18,10 @@ load(":codex_metadata_query_tools_declaration_test.bzl", "codex_metadata_query_t
 # Require the real Bazel parser for declaration models; Python translation is
 # insufficient. Loading defines the rule without instantiating its repository.
 load(":codex_owner_status_persistence_metadata_inputs.bzl", "codex_owner_status_persistence_metadata_inputs")
+# Real Starlark load without acquisition: all three new public repository rules
+# are parsed even when only the source/model targets below are requested.
+load(":codex_native_sdk_carrier_inputs.bzl", "codex_native_sdk_carrier_inputs", "codex_native_sdk_carrier_selected_inputs")
+load(":codex_native_sdk_carrier_proof_inputs.bzl", "codex_native_sdk_carrier_proof_inputs")
 
 _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES = [
     "codex_query_registration.py", "guard_query_registration_reserved.py",
@@ -2732,3 +2736,92 @@ python_test(name="home_manager_current_pair_bundle_test",main="//:nix/home_manag
         ["//:nix/home_manager_current_retained_artifact_test.py","//:nix/home_manager_bundle_test.py","//:nix/home_manager_current_artifact_test.py","//:nix/home_manager_acquired_inputs_test.py",
          "//:nix/home_manager_artifact_test.py","//delivery:test_portable.py"]).to_list(),
     target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])
+
+# New SDK transport family. These model targets have no selected/acquisition
+# repository data and therefore cannot execute sealing while running models.
+exports_files([
+    "codex_native_sdk_carrier.py", "codex_native_sdk_carrier_test.py",
+    "codex_native_sdk_carrier_producer.py", "codex_native_sdk_carrier_inputs.bzl",
+    "codex_native_sdk_carrier_declaration_test.py",
+    "codex_native_sdk_carrier_proof_inputs.bzl", "codex_native_sdk_carrier_proof_declaration_test.py",
+    "codex_native_carrier_metadata.py", "codex_native_carrier_metadata_test.py",
+])
+_NATIVE_SDK_CARRIER_SOURCES = ["codex_native_sdk_carrier.py", "codex_retained_sdk_export.py", "nar_descriptor.py"]
+_NATIVE_SDK_CARRIER_ENV = ["OMUX_SDK_CARRIER_MODE", "OMUX_SDK_CARRIER_ENTRY_NS",
+    "OMUX_SDK_CARRIER_DEADLINE_NS", "OMUX_SDK_CARRIER_EPOCH",
+    "OMUX_SDK_CARRIER_SOURCE_COMMIT", "OMUX_SDK_CARRIER_GRAPH_SHA256"]
+python_test(
+    name = "codex_native_sdk_carrier_test",
+    main = "codex_native_sdk_carrier_test.py",
+    srcs = _NATIVE_SDK_CARRIER_SOURCES,
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "codex_native_sdk_carrier_declaration_test",
+    main = "codex_native_sdk_carrier_declaration_test.py",
+    srcs = _NATIVE_SDK_CARRIER_SOURCES + ["codex_native_sdk_carrier_producer.py", "codex_native_sdk_carrier_test.py"],
+    data = ["codex_native_sdk_carrier_inputs.bzl"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "codex_native_sdk_carrier_proof_declaration_test",
+    main = "codex_native_sdk_carrier_proof_declaration_test.py",
+    data = ["codex_native_sdk_carrier_proof_inputs.bzl"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "codex_native_sdk_carrier_seal_producer",
+    main = "codex_native_sdk_carrier_producer.py",
+    srcs = _NATIVE_SDK_CARRIER_SOURCES,
+    data = ["@omux_native_sdk_carrier_acquisition//:inputs",
+            "@omux_native_sdk_carrier_acquisition//:carrier-private/carrier/receipt.json"],
+    args = ["--phase", "qualify", "--carrier-receipt",
+            "$(location @omux_native_sdk_carrier_acquisition//:carrier-private/carrier/receipt.json)"],
+    env_inherit = _NATIVE_SDK_CARRIER_ENV,
+    tags = ["manual", "no-remote", "no-cache"], timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Keep the unchanged source reconstruction/query Python closure while excluding
+# the native image bridge and portable launcher's compiled delivery dependency.
+_NATIVE_CARRIER_METADATA_SOURCES = depset([
+    src for src in native_acquisition_source_closure(
+        _NATIVE_SOURCE_ACQUISITION_SOURCES,
+        _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES,
+    ) if str(src) not in ("//delivery:portable.py", "codex_native_acquisition_bridge_material.py")
+] + ["codex_native_sdk_carrier.py", "codex_native_carrier_metadata.py"]).to_list()
+
+# All five SOURCE ancestors/N5/N9 controls and the independently qualified full
+# query/JDK closure remain. The old persistence metadata SDK per-leaf group and
+# the acquisition repository are deliberately absent from this consumer data.
+_NATIVE_CARRIER_METADATA_DATA = depset(_NATIVE_SOURCE_ACQUISITION_DATA + _NATIVE_SOURCE_CONTEXT_PARENT_DATA + [
+    "//integrations/codex-upstream:native_source_context_patch",
+    "//integrations/codex-upstream:native_acquisition_input_configuration",
+    "//integrations/codex-upstream:native_acquisition_n9_binding",
+    "//integrations/codex-upstream:native-sdk-carrier-metadata-inputs.json",
+    "@omux_codex_native_source_context_refresh_inputs//:inputs",
+    "@omux_native_acquisition_metadata_inputs//:inputs",
+    "@omux_protocol_history_query_tools//:inputs",
+    "@omux_native_sdk_carrier_inputs//:inputs",
+    "@omux_native_sdk_carrier_proof_inputs//:inputs",
+]).to_list()
+python_test(
+    name = "codex_native_carrier_metadata_test",
+    main = "codex_native_carrier_metadata_test.py",
+    srcs = _NATIVE_CARRIER_METADATA_SOURCES,
+    data = ["//integrations/codex-upstream:native-sdk-carrier-metadata-inputs.json"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "codex_native_carrier_metadata_producer",
+    main = "codex_native_carrier_metadata.py",
+    srcs = _NATIVE_CARRIER_METADATA_SOURCES,
+    data = _NATIVE_CARRIER_METADATA_DATA,
+    env_inherit = _NATIVE_SDK_CARRIER_ENV,
+    tags = ["manual", "no-remote", "no-cache"], timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)

@@ -1,0 +1,6 @@
+{
+  "schema_version": 2,
+  "kind": "omux-native-sdk-carrier-metadata-input-v2",
+  "status": "awaiting-qualified-sdk-carrier",
+  "selection": null
+}

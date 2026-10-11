@@ -267,6 +267,29 @@ codex_native_acquisition_inputs(
     manifest = "//integrations/codex-upstream:native-acquisition-inputs.json",
 )
 
+# SDK-only digest acquisition is a distinct fresh guarded producer. Existing
+# source ancestry, SDK/watch declarations and qualified query tools stay intact.
+native_sdk_carrier_acquisition = use_repo_rule("//tools:codex_native_sdk_carrier_inputs.bzl", "codex_native_sdk_carrier_inputs")
+native_sdk_carrier_acquisition(
+    name = "omux_native_sdk_carrier_acquisition",
+    origin_root = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/e5b17d7e-d19d-4cb2-be22-41a86b98af7b/sdk-private/sdk-export",
+    origin_receipt_sha256 = "1aa4c87d689f464e576a5c6a51b4c6350a8f0346f6b94299856d01db5147d4f0",
+)
+
+# Cold until a genuine successful sealing/qualification run is independently
+# retained and reviewed. Empty attributes select no future artifact or digest.
+native_sdk_carrier_selected = use_repo_rule("//tools:codex_native_sdk_carrier_inputs.bzl", "codex_native_sdk_carrier_selected_inputs")
+native_sdk_carrier_selected(
+    name = "omux_native_sdk_carrier_inputs",
+    carrier_root = "",
+    digests = {},
+)
+native_sdk_carrier_proof = use_repo_rule("//tools:codex_native_sdk_carrier_proof_inputs.bzl", "codex_native_sdk_carrier_proof_inputs")
+native_sdk_carrier_proof(
+    name = "omux_native_sdk_carrier_proof_inputs",
+    selection = "//integrations/codex-upstream:native-sdk-carrier-metadata-inputs.json",
+)
+
 native_acquisition_package_inputs = use_extension("//tools:codex_native_acquisition_package_inputs.bzl", "native_acquisition_package_inputs")
 native_acquisition_package_inputs.configuration(manifest="//integrations/codex-upstream:native-acquisition-package-inputs.json")
 use_repo(native_acquisition_package_inputs, "omux_native_acquisition_package_data")

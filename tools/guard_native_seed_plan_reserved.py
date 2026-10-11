@@ -732,3 +732,6 @@ def cleanup_retained(*, deadline, readback, authorize, stop, observe,
 WORKLOAD_PROFILES += ("native-acquisition-inputs-models-reserved", "native-acquisition-binding-reserved", "native-acquisition-metadata-reserved", "native-acquisition-sdk-reserved", "native-acquisition-plan-reserved", "native-acquisition-query-reserved", "native-acquisition-compilation-reserved", "native-acquisition-runtime-qualification-reserved", "native-acquisition-package-reserved", "native-acquisition-bridge-material-reserved", "native-acquisition-bridge-models-reserved", "native-acquisition-package-models-reserved")
 
 WORKLOAD_PROFILES += ("native-acquisition-ordinary-tui-reserved", "native-acquisition-ordinary-models-reserved")
+
+# SDK capture uses the same bounded worker, with distinct qualified inputs.
+WORKLOAD_PROFILES += ("native-sdk-carrier-seal-reserved", "native-sdk-carrier-metadata-reserved")

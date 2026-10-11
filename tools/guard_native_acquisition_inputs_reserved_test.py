@@ -218,4 +218,74 @@ class AdmissionModels(unittest.TestCase):
                     self.assertIs(value[name],False)
 
 
+    def test_carrier_capture_and_metadata_have_distinct_exact_admissions(self):
+        expected = {
+            source.SDK_CARRIER_SEAL: ("//tools:codex_native_sdk_carrier_seal_producer",),
+            source.SDK_CARRIER_METADATA: ("//tools:codex_native_carrier_metadata_producer",),
+        }
+        for profile, targets in expected.items():
+            self.assertEqual(source.COHORTS[profile], targets)
+            vector = ["test", *targets]
+            self.assertTrue(source.request(self.args(profile), vector))
+            for other in expected:
+                if other != profile:
+                    with self.assertRaises(ValueError):
+                        source.selected(other, vector)
+            for dirty, cache in (("true", False), ("false", True)):
+                args = self.args(profile)
+                args.source_dirty, args.reuse_owned_cache = dirty, cache
+                with self.assertRaises(ValueError):
+                    source.request(args, vector)
+
+    def test_carrier_repository_and_test_join_same_original_clock_source_epoch(self):
+        entry, deadline = 100 * 10**9, 1300 * 10**9
+        run = Path("/model/11111111-1111-4111-8111-111111111111")
+        for profile in source.PROFILES:
+            with patch.object(kernel.time, "monotonic_ns", return_value=200 * 10**9), \
+                    patch.object(guard, "graph_digest", return_value=("b" * 64, {})):
+                command = source.command(guard.bazel_command, "bazel", run,
+                    ["test", *source.COHORTS[profile]], profile, entry, deadline,
+                    source_commit="a" * 40, source_dirty="false")
+            actual = {}
+            for kind in ("repo", "test"):
+                prefix = "--" + kind + "_env=OMUX_SDK_CARRIER_"
+                flags = [part.split("=", 1)[1] for part in command if part.startswith(prefix)]
+                actual[kind] = dict(part.split("=", 1) for part in flags)
+                self.assertEqual(len(flags), len(actual[kind]))
+            if profile not in (source.SDK_CARRIER_SEAL, source.SDK_CARRIER_METADATA):
+                self.assertEqual(actual, {"repo": {}, "test": {}})
+                continue
+            expected = {
+                "OMUX_SDK_CARRIER_MODE": profile,
+                "OMUX_SDK_CARRIER_ENTRY_NS": str(entry),
+                "OMUX_SDK_CARRIER_DEADLINE_NS": str(deadline),
+                "OMUX_SDK_CARRIER_EPOCH": str(run),
+                "OMUX_SDK_CARRIER_SOURCE_COMMIT": "a" * 40,
+                "OMUX_SDK_CARRIER_GRAPH_SHA256": "b" * 64,
+            }
+            self.assertEqual(actual, {"repo": expected, "test": expected})
+            self.assertEqual(int(actual["repo"]["OMUX_SDK_CARRIER_DEADLINE_NS"])
+                - int(actual["repo"]["OMUX_SDK_CARRIER_ENTRY_NS"]), 1200 * 10**9)
+            for flag in ("--repo_contents_cache=", "--remote_executor=", "--remote_cache=",
+                    "--nocache_test_results", "--disk_cache=", "--repository_disable_download"):
+                self.assertIn(flag, command)
+
+    def test_carrier_deadline_or_extra_target_refuses_before_graph_and_dispatch(self):
+        for profile in (source.SDK_CARRIER_SEAL, source.SDK_CARRIER_METADATA):
+            vector = ["test", *source.COHORTS[profile]]
+            builder = Mock()
+            with patch.object(guard, "graph_digest", side_effect=AssertionError("unexpected graph IO")) as graph:
+                with self.assertRaises(ValueError):
+                    source.command(builder, "bazel", Path("/model/epoch"),
+                        vector + ["--test_env=OMUX_SDK_CARRIER_ENTRY_NS=1"], profile,
+                        100 * 10**9, 1300 * 10**9)
+                with patch.object(kernel.time, "monotonic_ns", return_value=1270 * 10**9):
+                    with self.assertRaises(ValueError):
+                        source.command(builder, "bazel", Path("/model/epoch"), vector,
+                            profile, 100 * 10**9, 1300 * 10**9)
+                graph.assert_not_called()
+            builder.assert_not_called()
+
+
+
 if __name__ == "__main__": unittest.main()
