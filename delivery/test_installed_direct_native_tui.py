@@ -33,11 +33,24 @@ def main():
     sha_file=Path(sys.argv[2].split('=',1)[1]).resolve(strict=True)
     sha=direct.retained.public_runtime_file(sha_file,65).decode('ascii')
     direct.require(sha.endswith('\n') and len(sha)==65)
-    reader=direct.DirectReader(pin,sha[:-1],work)
+    carrier_mode=len(sys.argv)>3 and sys.argv[3]=='--carrier-v2'
+    direct.require(not any(value=='--carrier-v2' for value in sys.argv[4:]))
+    if carrier_mode:
+        import carrier_direct_native_tui_runtime as carrier_direct
+        reader=carrier_direct.CarrierDirectReader(pin,sha[:-1],work,
+            entry_ns=int(os.environ['OMUX_NATIVE_ORDINARY_ENTRY_NS']),
+            original_deadline_ns=int(os.environ['OMUX_NATIVE_ORDINARY_DEADLINE_NS']))
+    else:reader=direct.DirectReader(pin,sha[:-1],work)
     flags=('--direct-pin='+str(pin),'--direct-pin-sha-file='+str(sha_file))
-    sys.argv[1:]=sys.argv[3:]
-    return tui.main(runtime_reader=reader,entrypoint=Path(__file__).absolute(),entrypoint_args=flags,
-        original_deadline=until,child_environment=declared_child_environment(os.environ))
+    if carrier_mode:flags+=('--carrier-v2',)
+    sys.argv[1:]=sys.argv[4:] if carrier_mode else sys.argv[3:]
+    try:
+        result=tui.main(runtime_reader=reader,entrypoint=Path(__file__).absolute(),entrypoint_args=flags,
+            original_deadline=until,child_environment=declared_child_environment(os.environ))
+        if carrier_mode:reader.finish()
+        return result
+    finally:
+        if carrier_mode:reader.close()
 
 if __name__=='__main__':
     try:sys.exit(main())

@@ -1548,7 +1548,8 @@ python_test(
     target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"],
 )
 python_test(name="direct_native_tui_contract_test",main="test_direct_native_tui_contract.py",
-    srcs=_DIRECT_ORDINARY_TUI_SOURCES+["test_installed_direct_native_tui.py"],
+    srcs=_DIRECT_ORDINARY_TUI_SOURCES+["test_installed_direct_native_tui.py", "carrier_direct_native_tui_runtime.py", "//tools:codex_carrier_direct_native_tui_support"],
+    data=["BUILD.bazel", "//tools:direct_native_tui_inputs.bzl"],
     target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"],
 )
 
@@ -1582,3 +1583,38 @@ python_test(
 python_test(name = "current_home_manager_artifact_test", main = "current_home_manager_artifact_test.py",
     srcs = ["current_home_manager_artifact.py", "test_portable.py"] + _CURRENT_HM_SOURCES,
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
+
+# Genuine compact carrier PACKAGE, independent of the legacy SDK data graph.
+_CARRIER_DIRECT_ORDINARY_TUI_SOURCES = [
+    "test_installed_native_tui.py", "test_installed_codex_live_continuity.py",
+    "test_installed_native_interop.py", "test_installed_custody.py",
+    "native_resumed_checkpoint.py", "pack.py", "install.py", "portable.py",
+    "direct_native_tui_runtime.py", "carrier_direct_native_tui_runtime.py",
+    "//integrations/codex-owner-runtime:runtime_package.py",
+    "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py",
+    "//tools:codex_carrier_direct_native_tui_support",
+]
+python_test(
+    name="installed_carrier_native_tui_test",main="test_installed_direct_native_tui.py",
+    srcs=_CARRIER_DIRECT_ORDINARY_TUI_SOURCES,
+    data=[":default_instance_archive", "@omux_codex_ordinary_direct_runtime//:inputs",
+        "@omux_codex_ordinary_direct_runtime//:input-pin.json", "@omux_codex_ordinary_direct_runtime//:input-pin.sha256",
+        "@omux_codex_ordinary_direct_runtime//:fresh-native-runtime.tar.gz", "@omux_codex_ordinary_direct_runtime//:runtime-receipt.json",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon"],
+    args=["--direct-pin=$(location @omux_codex_ordinary_direct_runtime//:input-pin.json)",
+        "--direct-pin-sha-file=$(location @omux_codex_ordinary_direct_runtime//:input-pin.sha256)", "--carrier-v2",
+        "$(location :default_instance_archive)",
+        "$(location @omux_codex_ordinary_direct_runtime//:fresh-native-runtime.tar.gz)",
+        "$(location @omux_codex_ordinary_direct_runtime//:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)","$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)"],
+    env_inherit=["OMUX_NATIVE_ORDINARY_MODE", "OMUX_NATIVE_ORDINARY_ENTRY_NS", "OMUX_NATIVE_ORDINARY_DEADLINE_NS"],
+    tags=["manual","no-remote","no-cache"],timeout="long",
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+python_test(name="carrier_direct_native_tui_contract_test",main="test_direct_native_tui_contract.py",
+    srcs=_CARRIER_DIRECT_ORDINARY_TUI_SOURCES + ["test_installed_direct_native_tui.py"],
+    data=["BUILD.bazel", "//tools:direct_native_tui_inputs.bzl"],
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+exports_files(["carrier_direct_native_tui_runtime.py"])

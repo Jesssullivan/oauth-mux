@@ -47,6 +47,33 @@ class AdmissionModels(unittest.TestCase):
         self.assertIs(projection['compiler_qualified'],False)
         self.assertIs(projection['native_runtime_qualified'],False)
 
+    def test_carrier_ordinary_is_separate_singleton_with_same_caps_and_clock(self):
+        profile=source.CARRIER_ORDINARY;entry=100*10**9;until=entry+1200*10**9
+        self.assertEqual(source.COHORTS[profile],('//delivery:installed_carrier_native_tui_test',))
+        self.assertIn(profile,kernel.WORKLOAD_PROFILES)
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9):
+            command=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),
+                ['test',*source.COHORTS[profile]],profile,entry,until,
+                source_commit='a'*40,source_dirty='false')
+            self.assertEqual([v for v in command if v.startswith('--test_env=OMUX_NATIVE_ORDINARY_')],
+                ['--test_env=OMUX_NATIVE_ORDINARY_MODE='+source.ORDINARY,
+                 '--test_env=OMUX_NATIVE_ORDINARY_ENTRY_NS='+str(entry),
+                 '--test_env=OMUX_NATIVE_ORDINARY_DEADLINE_NS='+str(until)])
+            self.assertEqual([v for v in command if v.startswith('--repo_env=OMUX_NATIVE_ORDINARY_')],
+                ['--repo_env=OMUX_NATIVE_ORDINARY_MODE='+source.ORDINARY,
+                 '--repo_env=OMUX_NATIVE_ORDINARY_ENTRY_NS='+str(entry),
+                 '--repo_env=OMUX_NATIVE_ORDINARY_DEADLINE_NS='+str(until)])
+            with self.assertRaises(ValueError):source.command(Mock(),'bazel',Path('/model'),
+                ['test',*source.COHORTS[source.ORDINARY]],profile,entry,until)
+        self.assertEqual(source.properties({'PrivateNetwork':'yes'}),kernel.properties({'PrivateNetwork':'yes'}))
+        self.assertIs(source.monitor,kernel.monitor)
+        self.assertIs(source.cleanup_retained,kernel.cleanup_retained)
+        self.assertEqual(kernel.envelope(entry,until),until-30*10**9)
+        proof=source.projection(profile,entry,until,True,{})
+        self.assertEqual(proof['scope'],'fixed-'+profile+'-v1')
+        self.assertIs(proof['native_support'],False)
+        self.assertIs(proof['live_handoff_proven'],False)
+
     def test_ordinary_is_one_real_tui_test_and_retains_original_clock(self):
         self.assertEqual(source.COHORTS[source.ORDINARY],('//delivery:installed_direct_native_tui_test',))
         entry=100*10**9;deadline=1300*10**9
@@ -57,7 +84,7 @@ class AdmissionModels(unittest.TestCase):
                 values=[v for v in command if v.startswith('--test_env=OMUX_NATIVE_ORDINARY_')]
                 self.assertEqual(values,(['--test_env=OMUX_NATIVE_ORDINARY_MODE='+source.ORDINARY,
                     '--test_env=OMUX_NATIVE_ORDINARY_ENTRY_NS='+str(entry),
-                    '--test_env=OMUX_NATIVE_ORDINARY_DEADLINE_NS='+str(deadline)] if profile==source.ORDINARY else []))
+                    '--test_env=OMUX_NATIVE_ORDINARY_DEADLINE_NS='+str(deadline)] if profile in (source.ORDINARY,source.CARRIER_ORDINARY) else []))
         builder=Mock()
         for args in (['run',*source.COHORTS[source.ORDINARY]],
                      ['test',*source.COHORTS[source.ORDINARY],'//:docs_check']):

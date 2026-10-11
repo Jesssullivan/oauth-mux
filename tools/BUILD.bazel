@@ -2944,3 +2944,15 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"], timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+
+# Compact carrier ordinary evaluation imports code only, never legacy SDK DATA.
+filegroup(
+    name = "codex_carrier_direct_native_tui_support",
+    srcs = depset(_NATIVE_CARRIER_PACKAGE_SOURCES + [
+        "codex_native_acquisition_process.py", "nar_descriptor.py",
+        "direct_native_runtime_closure_inputs.py", "//delivery:nix_codex_deployment.py",
+    ]).to_list(),
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["direct_native_runtime_closure_inputs.py"])
