@@ -76,6 +76,7 @@ def _implementation(ctx):
     directory = str(ctx.path("."))
     command = [python, "-I", "-S", str(ctx.path(".metadata-declaration.py"))]
     ctx.report_progress("metadata declaration: beforeplan")
+    print("metadata declaration: beforeplan")
     planned = ctx.execute(command + ["--phase", "plan", "--directory", directory], timeout = 600)
     _need(planned.return_code == 0, "structural-plan-refused")
     plan = json.decode(planned.stdout)
@@ -86,21 +87,26 @@ def _implementation(ctx):
     for path in regular:
         _declared_role(path)
     ctx.report_progress("metadata declaration: acceptedplan")
+    print("metadata declaration: acceptedplan")
     # Preserve every original individual watch, including duplicates and order.
     # Absent targets and skipped JDK symbolic leaves gain no implicit watch.
     for path in watches:
         ctx.watch(ctx.path(_declared_role(path)))
     ctx.report_progress("metadata declaration: registeredwatches")
+    print("metadata declaration: registeredwatches")
     ctx.report_progress("metadata declaration: beforematerialize")
+    print("metadata declaration: beforematerialize")
     made = ctx.execute(command + ["--phase", "materialize", "--directory", directory, "--plan-sha256", plan["plan_sha256"]], timeout = 600)
     _need(made.return_code == 0, "revalidated-publication-refused")
     report = json.decode(made.stdout)
     _need(type(report) == "dict" and sorted(report.keys()) == ["build_sha256", "input_count", "materialized", "plan_sha256", "selection_sha256"] and report["materialized"] == True and report["input_count"] == len(regular) and report["plan_sha256"] == plan["plan_sha256"] and report["selection_sha256"] == _CONTROL_SHA and _sha(report["build_sha256"]), "closed-publication-report")
     ctx.report_progress("metadata declaration: acceptedmaterialize")
+    print("metadata declaration: acceptedmaterialize")
     # BUILD was published last by the helper. These bounded root reads reject an
     # incomplete/mismatched report without granting any new source authority.
     _need(ctx.read("metadata-input.json", watch = "no") == plan["control_raw"] and ctx.read("metadata-input.sha256", watch = "no") == _CONTROL_SHA + "\n" and ctx.read("BUILD.bazel", watch = "no") == _build(len(regular)), "final-root-publication")
     ctx.report_progress("metadata declaration: finalrootreadback")
+    print("metadata declaration: finalrootreadback")
 
 codex_owner_status_persistence_metadata_inputs = repository_rule(
     implementation = _implementation,

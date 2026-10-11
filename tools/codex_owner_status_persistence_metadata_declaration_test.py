@@ -386,7 +386,7 @@ class Model(unittest.TestCase):
 
 class RuleModel(unittest.TestCase):
     @staticmethod
-    def namespace():
+    def namespace(print_handler=lambda message: None):
         raw = RULE_PATH.read_text()
         tree = ast.parse(raw)
         class Translate(ast.NodeTransformer):
@@ -398,7 +398,7 @@ class RuleModel(unittest.TestCase):
                 return node
         tree = ast.fix_missing_locations(Translate().visit(tree))
         kinds = {str: "string", dict: "dict", list: "list", bool: "bool", int: "int"}
-        namespace = {"type": lambda value: kinds.get(type(value)), "repr": json.dumps,
+        namespace = {"type": lambda value: kinds.get(type(value)), "repr": json.dumps, "print": print_handler,
             "json": SimpleNamespace(decode=json.loads), "Label": lambda value: value,
             "attr": SimpleNamespace(string=lambda **_: None, label=lambda **_: None),
             "repository_rule": lambda **_: None,
@@ -416,7 +416,9 @@ class RuleModel(unittest.TestCase):
             helper.CONTROL_SHA, helper.SOURCE_SHA, helper.INVENTORY_SHA, 2896, 8549))
 
     def test_actual_rule_preserves_watches_and_phase_order_without_leaf_rpcs(self):
-        namespace = self.namespace()
+        events, recorded, progress, printed, root_reads = [], [], [], [], []
+        namespace = self.namespace(lambda message: printed.append(
+            (message, list(events), list(root_reads), len(progress))))
         control = " "*2896
         inputs = [helper.CONTROL, helper.SOURCE + "/source-receipt.json", helper.SOURCE + "/source/a",
                   helper.EXPORT + "/receipt.json", helper.JDK + "/lib/regular"]
@@ -425,7 +427,6 @@ class RuleModel(unittest.TestCase):
             "regularInputs": inputs, "watchInputs": watches, "control_raw": control}
         made = {"materialized": True, "input_count": len(inputs), "selection_sha256": helper.CONTROL_SHA,
             "plan_sha256": "a"*64, "build_sha256": "b"*64}
-        events, recorded, progress, root_reads = [], [], [], []
         bootstrap = "/nix/store/" + "a"*32 + "-bootstrap"
         python = "/nix/store/" + "b"*32 + "-python"
         native = "/nix/store/" + "c"*32 + "-native.json"
@@ -508,6 +509,22 @@ class RuleModel(unittest.TestCase):
         self.assertEqual(progress[5][1], progress[4][1])
         self.assertTrue(all(not entry[2] for entry in progress[:5]))
         self.assertEqual(progress[5][2], ["metadata-input.json", "metadata-input.sha256", "BUILD.bazel"])
+        # Literal DEBUG diagnostics share the exact progress checkpoints and
+        # do not add per-leaf or load-time output. This model is not a UI proof.
+        self.assertEqual([entry[:3] for entry in printed], progress)
+        self.assertEqual([entry[3] for entry in printed], list(range(1, 7)))
+        rule = ast.parse(RULE_PATH.read_text())
+        implementation = next(node for node in rule.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_implementation")
+        is_print = lambda node: isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print"
+        prints = [node for node in ast.walk(rule) if is_print(node)]
+        direct_prints = [node.value for node in implementation.body
+            if isinstance(node, ast.Expr) and is_print(node.value)]
+        self.assertEqual(len(prints), 6)
+        self.assertEqual(set(prints), set(direct_prints))
+        self.assertEqual([node.args[0].value for node in direct_prints
+            if len(node.args) == 1 and not node.keywords and isinstance(node.args[0], ast.Constant)],
+            [entry[0] for entry in progress])
         # The real source has no tree-watch or source-symlink API operation.
         calls = [node.func.attr for node in ast.walk(ast.parse(RULE_PATH.read_text()))
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
