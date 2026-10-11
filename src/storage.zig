@@ -567,9 +567,13 @@ pub const Store = struct {
     /// Only the existing writer may call this; no grant is decrypted or issued.
     pub fn custodyObservation(self: *Store, expected_revision: u64, until: std.Io.Clock.Timestamp) !CustodyObservation {
         try self.assertOwner();
-        errdefer |err| {
+        return self.custodyObservationOwned(expected_revision, until) catch |err| {
             if (observationIntegrityFailure(err)) self.poisoned = true;
-        }
+            return err;
+        };
+    }
+
+    fn custodyObservationOwned(self: *Store, expected_revision: u64, until: std.Io.Clock.Timestamp) !CustodyObservation {
         var hash: ObservationHash = .{ .mac = .init(&self.key), .io = self.io, .until = until };
         defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
         try hash.tick();
