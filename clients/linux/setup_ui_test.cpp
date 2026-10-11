@@ -65,6 +65,95 @@ QJsonObject capacitySnapshot(bool custodyReady) {
         {"capacity", QJsonArray{total, partial}},
         {"observations", QJsonArray{sample, unavailable, unknown, expired, ended, futureObservation, futureWindow}}};
 }
+QJsonObject drilldownSnapshot(bool custodyReady, int mode) {
+    const auto now = QDateTime::currentSecsSinceEpoch();
+    const QJsonObject resource {{"kind", "api-calls"}, {"target", "core"}, {"unit", "calls"}, {"scope", "github:rest:core"}};
+    auto bytes = resource;
+    bytes.insert("unit", "bytes");
+    bytes.insert("scope", "github:rest:bytes");
+    const QJsonObject total {{"provider", "github"}, {"issuer", "synthetic-issuer-group"}, {"resource", resource},
+        {"remaining", 17}, {"limit", 100}, {"window_start", now - 3600}, {"window_end", now + 3600},
+        {"complete", true}, {"buckets", 1}, {"unknown_buckets", 0}};
+    auto partial = total;
+    partial.insert("resource", bytes);
+    partial.insert("remaining", 0);
+    partial.insert("complete", false);
+    partial.insert("buckets", 0);
+    partial.insert("unknown_buckets", 1);
+    const QJsonObject observation {{"account_id", "detail-account-a"}, {"resource", resource},
+        {"bucket_id", "synthetic-shared-bucket"}, {"remaining", 17}, {"limit", 100},
+        {"window_start", now - 3600}, {"window_end", now + 3600}, {"observed_at", now - 10},
+        {"expires_at", now + 3600}, {"status", "ready"}, {"provenance", "fixture"}};
+    auto shared = observation;
+    shared.insert("account_id", "detail-account-b");
+    auto unknown = observation;
+    unknown.insert("resource", bytes);
+    unknown.insert("bucket_id", "synthetic-other-bucket");
+    unknown.insert("status", "unknown");
+    unknown.insert("remaining", 999);
+    unknown.insert("window_start", now - 1800);
+    unknown.insert("window_end", now + 1800);
+    const QJsonObject account {{"id", "detail-account-a"}, {"label", "Descriptive fixture label"},
+        {"identity", QJsonObject{{"provider", "github"}, {"verified", false}}},
+        {"account_type", "fixture-type"}, {"lifecycle", "paused"},
+        {"source_ids", QJsonArray{"detail-source-connected", "detail-source-detached"}}};
+    auto otherAccount = account;
+    otherAccount.insert("id", "detail-account-b");
+    otherAccount.insert("identity", QJsonObject{{"provider", "github"}, {"verified", true}});
+    otherAccount.insert("lifecycle", "active");
+    const QJsonObject source {{"id", "detail-source-connected"}, {"provider", "github"}, {"label", "Source fixture"},
+        {"kind", "explicit"}, {"status", "connected"}, {"authorized_at", now - 100}, {"authorized_until", now + 1000}};
+    auto detached = source;
+    detached.insert("id", "detail-source-detached");
+    detached.insert("status", "detached");
+    const QJsonObject grant {{"id", "detail-grant-ready"}, {"account_id", "detail-account-a"},
+        {"source_id", "detail-source-detached"}, {"status", "ready"}, {"credential_kind", "oauth_access"},
+        {"ownership", "adopted"}, {"purposes", QJsonArray{"request"}}, {"audience", "https://github.com"},
+        {"scopes", QJsonArray{"fixture-scope"}}, {"generation", 4},
+        {"provider_expires_at", now + 3600}, {"custody_expires_at", QJsonValue(QJsonValue::Null)}};
+    auto invalid = grant;
+    invalid.insert("id", "detail-grant-invalid");
+    invalid.insert("source_id", "detail-source-connected");
+    invalid.insert("status", "invalid");
+    invalid.insert("credential_kind", "oauth_refresh");
+    invalid.insert("ownership", "external");
+    invalid.insert("purposes", QJsonArray{"renewal"});
+    auto otherGrant = grant;
+    otherGrant.insert("id", "detail-grant-other");
+    otherGrant.insert("account_id", "detail-account-b");
+    const QJsonObject binding {{"id", "detail-route-a"}, {"application", "git"}, {"session_id", "synthetic-session"},
+        {"native_ref", QJsonValue(QJsonValue::Null)}, {"account_id", "detail-account-a"},
+        {"grant_id", "detail-grant-ready"}, {"grant_generation", 3}, {"route_generation", 2}, {"in_flight", 1}};
+    auto otherBinding = binding;
+    otherBinding.insert("id", "detail-route-b");
+    otherBinding.insert("account_id", "detail-account-b");
+    otherBinding.insert("grant_id", "detail-grant-other");
+    otherBinding.insert("grant_generation", 4);
+    const QJsonObject lease {{"id", "detail-lease-a"}, {"binding_id", "detail-route-a"},
+        {"account_id", "detail-account-a"}, {"grant_id", "detail-grant-ready"}, {"grant_generation", 3},
+        {"route_generation", 2}, {"purpose", "request"}, {"audience", "https://github.com"},
+        {"scopes", QJsonArray{"fixture-scope"}}, {"started_at", now - 100}, {"expires_at", now + 1000}};
+    auto otherLease = lease;
+    otherLease.insert("id", "detail-lease-other");
+    otherLease.insert("binding_id", "detail-route-b");
+    otherLease.insert("account_id", "detail-account-b");
+    otherLease.insert("grant_id", "detail-grant-other");
+    otherLease.insert("grant_generation", 4);
+    QJsonObject snapshot {{"revision", 2}, {"custody_available", custodyReady}, {"captured_at", now},
+        {"accounts", QJsonArray{account, otherAccount}}, {"sources", QJsonArray{source, detached}},
+        {"grants", QJsonArray{grant, invalid, otherGrant}}, {"bindings", QJsonArray{binding, otherBinding}},
+        {"leases", QJsonArray{lease, otherLease}}, {"capacity", QJsonArray{total, partial}},
+        {"observations", QJsonArray{observation, shared, unknown}}};
+    if (mode == 1) {
+        auto missing = account;
+        missing.insert("identity", QJsonObject{{"provider", "github"}});
+        missing.remove("source_ids");
+        snapshot.insert("accounts", QJsonArray{missing});
+        snapshot.remove("grants");
+        snapshot.remove("sources");
+    } else if (mode == 2) snapshot.insert("grants", QJsonArray{});
+    return snapshot;
+}
 }
 
 int main(int argc, char **argv) {
@@ -124,6 +213,8 @@ int main(int argc, char **argv) {
     bool omitCapture = false;
     bool integrationDecline = false;
     bool omitRuntime = false;
+    bool detailsFixture = false;
+    int detailsMode = 0;
     bool uncertainRecovery = false;
     bool originalOutcomeCompleted = false;
     QString originalOperation;
@@ -196,7 +287,7 @@ int main(int argc, char **argv) {
                         result.insert("capabilities", QJsonObject{{"custody_reopen", reopenCapability}});
                 }
                 else if (method == "state.snapshot") {
-                    result = capacitySnapshot(custodyReady);
+                    result = detailsFixture ? drilldownSnapshot(custodyReady, detailsMode) : capacitySnapshot(custodyReady);
                     if (omitCapture) result.remove("captured_at");
                 }
                 else if (method == "setup.readiness") {
@@ -643,6 +734,117 @@ int main(int argc, char **argv) {
         if (!until([&] { return catalog->rowCount() == 1 && catalog->item(0, 1)->text() == "Yes"; })
             || removalRequests != 2 || removalOperations.size() != 2 || originalMutationRequests != 1
             || reopenRequests != expectedReopenRequests || connections != recoveryConnections) return 62;
+        window.close();
+    }
+    // Actual socket→applySnapshot→selected-row details: metadata joins never
+    // infer usable authority from a ready grant or add shared observations.
+    uncertainRecovery = false;
+    pendingRemovalFixture = false;
+    snapshotDecline = false;
+    custodyReady = true;
+    detailsFixture = true;
+    {
+        OmuxTray window(socketPath, false, true);
+        window.show();
+        auto *accounts = window.findChild<QTableWidget *>("accounts");
+        auto *routes = window.findChild<QTableWidget *>("activeRoutes");
+        auto *capacity = window.findChild<QTableWidget *>("capacityObservations");
+        auto *refresh = [&]() -> QPushButton * {
+            for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") return button;
+            return nullptr;
+        }();
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Reconnect") button->click();
+        if (!accounts || !routes || !capacity || !refresh || !until([&] {
+                return accounts->rowCount() == 2 && routes->rowCount() == 2 && capacity->rowCount() == 5;
+            })) return 64;
+        const auto inspect = [&](QTableWidget *view, int row, const char *buttonName, const char *dialogName) {
+            view->selectRow(row);
+            auto *button = window.findChild<QPushButton *>(buttonName);
+            if (button) button->click();
+            return window.findChild<QDialog *>(dialogName);
+        };
+        const auto fact = [](QDialog *dialog, const QString &name) {
+            auto *view = dialog ? dialog->findChild<QTableWidget *>("detailFacts") : nullptr;
+            if (view) for (int row = 0; row < view->rowCount(); ++row)
+                if (view->item(row, 0)->text() == name) return view->item(row, 1)->text();
+            return QString();
+        };
+        const auto hasText = [](QDialog *dialog, const QString &value) {
+            if (dialog) for (const auto *label : dialog->findChildren<QLabel *>()) if (label->text().contains(value)) return true;
+            return false;
+        };
+        auto *account = inspect(accounts, 0, "accountDetails", "accountDrilldown");
+        auto *sources = account ? account->findChild<QTableWidget *>("detailSources") : nullptr;
+        auto *grants = account ? account->findChild<QTableWidget *>("detailGrants") : nullptr;
+        auto *observations = account ? account->findChild<QTableWidget *>("detailObservations") : nullptr;
+        auto *accountRoutes = account ? account->findChild<QTableWidget *>("detailRoutes") : nullptr;
+        if (!account || !sources || !grants || !observations || !accountRoutes
+            || fact(account, "Identity verified") != "No" || fact(account, "Lifecycle") != "paused"
+            || !fact(account, "Usable request grant").startsWith("Unknown:")
+            || !fact(account, "Actual renewal writer").startsWith("Unknown:")
+            || sources->rowCount() != 2 || sources->item(1, 3)->text() != "detached"
+            || grants->rowCount() != 2 || grants->item(0, 2)->text() != "ready"
+            || grants->item(0, 4)->text() != "adopted" || grants->item(1, 2)->text() != "invalid"
+            || observations->rowCount() != 2 || observations->item(0, 3)->text() != "synthetic-shared-bucket"
+            || observations->item(1, 4)->text() != "Unknown" || accountRoutes->rowCount() != 1) return 65;
+        delete account;
+        auto *route = inspect(routes, 0, "routeDetails", "routeDrilldown");
+        auto *leases = route ? route->findChild<QTableWidget *>("detailLeases") : nullptr;
+        grants = route ? route->findChild<QTableWidget *>("detailGrants") : nullptr;
+        if (!route || !leases || !grants || fact(route, "Grant generation") != "3"
+            || !fact(route, "Live application / usable authority").startsWith("Unknown:")
+            || grants->rowCount() != 1 || grants->item(0, 1)->text() != "detail-account-a"
+            || grants->item(0, 9)->text() != "4" || leases->rowCount() != 1
+            || leases->item(0, 1)->text() != "detail-account-a" || leases->item(0, 3)->text() != "3"
+            || leases->item(0, 4)->text() != "2") return 66;
+        delete route;
+        auto *resource = inspect(capacity, 0, "resourceDetails", "resourceDrilldown");
+        if (!resource || fact(resource, "Remaining observation") != "17" || fact(resource, "Counted buckets") != "1"
+            || fact(resource, "Issuer group") != "synthetic-issuer-group"
+            || !fact(resource, "Observation membership").startsWith("Unavailable:")
+            || !fact(resource, "Row kind").contains("not request eligibility")) return 67;
+        delete resource;
+        resource = inspect(capacity, 4, "resourceDetails", "resourceDrilldown");
+        if (!resource || fact(resource, "Unit") != "bytes" || fact(resource, "Scope") != "github:rest:bytes"
+            || fact(resource, "Remaining observation") != "Unknown" || fact(resource, "Provenance") != "fixture"
+            || fact(resource, "Observation status") != "unknown") return 68;
+        delete resource;
+        // A failed refresh keeps retained rows inspectable without current counts
+        // or fresh account observations; recover through a later real reply.
+        snapshotDecline = true;
+        refresh->click();
+        auto *snapshotNotice = window.findChild<QLabel *>("snapshotNotice");
+        if (!until([&] { return snapshotNotice->text().startsWith("Snapshot refresh failed"); })) return 69;
+        account = inspect(accounts, 0, "accountDetails", "accountDrilldown");
+        observations = account ? account->findChild<QTableWidget *>("detailObservations") : nullptr;
+        if (!account || !observations || !hasText(account, "current account and related-record counts are Unknown")
+            || !observations->item(0, 6)->text().startsWith("Stale:")) return 70;
+        delete account;
+        snapshotDecline = false;
+        custodyReady = false;
+        refresh->click();
+        const auto connection = [&]() -> QLabel * {
+            for (auto *label : window.findChildren<QLabel *>()) if (label->text() == "Connected; credential custody unavailable") return label;
+            return nullptr;
+        };
+        if (!until([&] { return connection() != nullptr && snapshotNotice->text().startsWith("Last daemon snapshot:"); })) return 71;
+        account = inspect(accounts, 0, "accountDetails", "accountDrilldown");
+        if (!account || !hasText(account, "current account and related-record counts are Unknown")) return 72;
+        delete account;
+        custodyReady = true;
+        detailsMode = 1;
+        refresh->click();
+        if (!until([&] { return accounts->rowCount() == 1; })) return 73;
+        account = inspect(accounts, 0, "accountDetails", "accountDrilldown");
+        if (!account || fact(account, "Identity verified") != "Unknown"
+            || !hasText(account, "Grant metadata; ownership is not a verified renewal writer (current count Unknown)")) return 74;
+        delete account;
+        detailsMode = 2;
+        refresh->click();
+        if (!until([&] { return accounts->rowCount() == 2; })) return 75;
+        account = inspect(accounts, 0, "accountDetails", "accountDrilldown");
+        if (!account || !hasText(account, "Grant metadata; ownership is not a verified renewal writer (0 retained rows)")) return 76;
+        delete account;
         window.close();
     }
     // UI close/destruction sends no unexpected shutdown, mutation, or removal request.

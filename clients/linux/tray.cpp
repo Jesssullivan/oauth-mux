@@ -335,7 +335,9 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     actions->addStretch();
     tabs->addTab(setupPage, "Setup");
     accounts_ = makeTable({"Account", "Provider", "Type", "Lifecycle", "ID"});
+    accounts_->setObjectName("accounts");
     tabs->addTab(page(accounts_, &actions), "Accounts");
+    button(actions, "Account details", this, [this] { showDetails(accounts_); })->setObjectName("accountDetails");
     mutationButton(actions, "Repair", [this] { accountAction("repair.start"); });
     mutationButton(actions, "Pause", [this] { accountAction("account.pause"); });
     mutationButton(actions, "Resume", [this] { accountAction("account.resume"); });
@@ -366,19 +368,22 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     connect(sources_, &QTableWidget::itemSelectionChanged, this, [this] { updateMutationControls(); });
     actions->addStretch();
 
-    grants_ = makeTable({"Account", "Credential type", "Renewal owner", "Purposes", "Audience", "Provider validity", "Custody validity", "Generation"});
+    grants_ = makeTable({"Account", "Credential type", "Renewal ownership metadata", "Purposes", "Audience", "Provider validity", "Custody validity", "Generation"});
     tabs->addTab(page(grants_, &actions), "Grants");
     actions->addWidget(new QLabel("Authorization metadata only. Provider validity and custody authorization are independent."));
 
     capacity_ = makeTable({"Provider", "Resource", "Scope", "Remaining", "Unit", "Window", "Freshness", "Observation status"});
     capacity_->setObjectName("capacityObservations");
     tabs->addTab(page(capacity_, &actions), "Capacity");
+    button(actions, "Resource details", this, [this] { showDetails(capacity_); })->setObjectName("resourceDetails");
     auto *capacityNote = new QLabel("Totals describe retained account observations, not request eligibility. Only matching units, scopes and windows combine; shared buckets count once. Percentages and provider decisions are not additive quotas. Observation status and freshness remain separate.");
     capacityNote->setWordWrap(true);
     actions->addWidget(capacityNote);
 
     bindings_ = makeTable({"Application", "Session", "Account", "In flight", "ID"});
+    bindings_->setObjectName("activeRoutes");
     tabs->addTab(page(bindings_, &actions), "Active routes");
+    button(actions, "Route details", this, [this] { showDetails(bindings_); })->setObjectName("routeDetails");
     actions->addWidget(new QLabel("Native application history stays with the application."));
 
     leases_ = makeTable({"Route", "Account", "Purpose", "Started", "Expires", "Generation"});
@@ -474,6 +479,7 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
         connection_->setText(message);
         tray_.setToolTip(connected ? "Omux: connected" : "Omux: service unavailable");
         if (!connected) {
+            snapshotRefreshSucceeded_ = false;
             setupVerify_->setEnabled(false);
             ++readinessQuery_;
             readiness_->setRowCount(0);
@@ -558,11 +564,13 @@ void OmuxTray::fillTable(QTableWidget *table, const QJsonArray &array,
         for (qsizetype column = 0; column < fields.size(); ++column) {
             const QString value = text(object, fields[column]);
             auto *item = new QTableWidgetItem(fields[column] == "account_id"
+                && (table == grants_ || table == bindings_ || table == leases_ || table == operations_)
                 ? accountLabels_.value(value, value) : value);
             if (fields[column] == "capability") item->setToolTip(object.value("limitation").toString());
             if (column == 0) {
                 item->setData(Qt::UserRole, object.value("id").toString());
-                if (table == nativeThreads_) item->setData(Qt::UserRole + 1, QVariant::fromValue(object));
+                if (table == nativeThreads_ || table == accounts_ || table == bindings_ || table == capacity_)
+                    item->setData(Qt::UserRole + 1, QVariant::fromValue(object));
             }
             table->setItem(row, column, item);
         }
@@ -571,12 +579,155 @@ void OmuxTray::fillTable(QTableWidget *table, const QJsonArray &array,
     }
 }
 
+void OmuxTray::showDetails(QTableWidget *table) {
+    const auto selection = table->selectionModel()->selectedRows();
+    if (selection.isEmpty()) {
+        message_->setText(connected_ && custodyAvailable_ && snapshotRefreshSucceeded_
+            ? "Select a row to inspect its retained metadata."
+            : "Account metadata is unavailable; current counts are Unknown. Restore the service and custody, refresh, then select retained metadata to inspect.");
+        return;
+    }
+    const auto *item = table->item(selection.first().row(), 0);
+    if (!item) return;
+    const auto row = item->data(Qt::UserRole + 1).value<QJsonObject>();
+    const bool available = connected_ && custodyAvailable_ && snapshotRefreshSucceeded_;
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->resize(1080, 640);
+    auto *layout = new QVBoxLayout(dialog);
+    const auto note = [layout](const QString &value) {
+        auto *label = new QLabel(value);
+        label->setWordWrap(true);
+        label->setTextFormat(Qt::PlainText);
+        layout->addWidget(label);
+    };
+    note(snapshotNotice_->text() + " This is a captured read-only view; it does not refresh. Refresh the main controls and reopen details for a newer snapshot.");
+    note(available
+        ? "Labels are descriptive. Identity verification, source connection, grant status and request usability are independent."
+        : "Service, custody or snapshot refresh unavailable: current account and related-record counts are Unknown; displayed rows are retained metadata.");
+    auto *facts = makeTable({"Field", "Retained value"});
+    facts->setObjectName("detailFacts");
+    layout->addWidget(facts);
+    QJsonArray fields;
+    const auto fact = [&fields](const QString &name, const QString &value) {
+        fields.append(QJsonObject{{"field", name}, {"value", value}});
+    };
+    const auto copy = [&fact, &row](const QString &name, const QString &field) { fact(name, text(row, field)); };
+    const auto related = [this, &note, layout, available](const QString &name, const QString &title,
+            const QString &collection, const QString &key, const QString &id,
+            const QStringList &columns, const QStringList &keys) {
+        QJsonArray records;
+        if (!id.isEmpty()) for (const auto &value : snapshot_.value(collection).toArray())
+            if (value.toObject().value(key).toString() == id) records.append(value);
+        note(title + (available && !id.isEmpty() && snapshot_.value(collection).isArray()
+            ? QString(" (%1 retained rows)").arg(records.size()) : " (current count Unknown)"));
+        auto *view = makeTable(columns);
+        view->setObjectName(name);
+        layout->addWidget(view);
+        fillTable(view, collection == "observations"
+            ? capacityRows(records, available, "Stale: service, custody or snapshot refresh unavailable") : records, keys);
+    };
+    if (table == accounts_) {
+        dialog->setObjectName("accountDrilldown");
+        dialog->setWindowTitle("Account details — retained metadata");
+        copy("Opaque account ID", "id");
+        copy("Label (descriptive)", "label");
+        copy("Provider", "identity.provider");
+        copy("Identity verified", "identity.verified");
+        copy("Lifecycle", "lifecycle");
+        copy("Account type (descriptive)", "account_type");
+        fact("Usable request grant", "Unknown: this snapshot has no request-context or held-custody verdict. A ready grant row does not prove usable authority.");
+        fact("Actual renewal writer", "Unknown: ownership metadata does not verify the held renewal writer.");
+        QJsonArray sources;
+        const auto ids = row.value("source_ids");
+        if (ids.isArray()) for (const auto &id : ids.toArray()) {
+            if (!id.isString() || id.toString().isEmpty()) continue;
+            QJsonObject source {{"id", id}};
+            for (const auto &value : snapshot_.value("sources").toArray())
+                if (value.toObject().value("id") == id) { source = value.toObject(); break; }
+            sources.append(source);
+        }
+        note("Account source lineage: connection and authorization timestamps are separate from verified identity and request authority."
+            + QString(available && ids.isArray() && snapshot_.value("sources").isArray()
+                ? "" : " Current source count Unknown."));
+        auto *sourceView = makeTable({"Source ID", "Label", "Kind", "State", "Authorized at", "Authorized until"});
+        sourceView->setObjectName("detailSources");
+        layout->addWidget(sourceView);
+        fillTable(sourceView, sources, {"id", "label", "kind", "status", "authorized_at", "authorized_until"});
+        related("detailGrants", "Grant metadata; ownership is not a verified renewal writer", "grants", "account_id", row.value("id").toString(),
+            {"Grant ID", "Source ID", "Status", "Type", "Ownership metadata", "Purposes", "Audience", "Scopes", "Provider validity", "Custody validity", "Generation"},
+            {"id", "source_id", "status", "credential_kind", "ownership", "purposes", "audience", "scopes", "provider_expires_at", "custody_expires_at", "generation"});
+        related("detailRoutes", "Retained route bindings; live application state is unverified", "bindings", "account_id", row.value("id").toString(),
+            {"Route ID", "Application", "Session", "Grant ID", "Grant generation", "Route generation", "In flight"},
+            {"id", "application", "session_id", "grant_id", "grant_generation", "route_generation", "in_flight"});
+        related("detailObservations", "Resource observations; do not sum rows sharing a bucket", "observations", "account_id", row.value("id").toString(),
+            {"Resource", "Scope", "Unit", "Bucket", "Remaining", "Status", "Freshness", "Provenance"},
+            {"resource.target", "resource.scope", "resource.unit", "bucket_id", "remaining", "status", "freshness", "provenance"});
+    } else if (table == bindings_) {
+        dialog->setObjectName("routeDrilldown");
+        dialog->setWindowTitle("Route details — retained binding");
+        copy("Opaque route ID", "id");
+        copy("Application", "application");
+        copy("Session handle", "session_id");
+        copy("Opaque account ID", "account_id");
+        copy("Opaque grant ID", "grant_id");
+        copy("Grant generation", "grant_generation");
+        copy("Route generation", "route_generation");
+        copy("In flight at snapshot", "in_flight");
+        fact("Live application / usable authority", "Unknown: a retained binding or lease does not prove a live native process, compatible current grant or seamless handoff.");
+        related("detailGrants", "Retained referenced grant; verify account and generation separately", "grants", "id", row.value("grant_id").toString(),
+            {"Grant ID", "Account ID", "Source ID", "Status", "Type", "Ownership metadata", "Purposes", "Audience", "Scopes", "Generation"},
+            {"id", "account_id", "source_id", "status", "credential_kind", "ownership", "purposes", "audience", "scopes", "generation"});
+        related("detailLeases", "Retained leases for this binding; lease tuples remain separate from current grant metadata", "leases", "binding_id", row.value("id").toString(),
+            {"Lease ID", "Account ID", "Grant ID", "Grant generation", "Route generation", "Purpose", "Audience", "Scopes", "Started", "Expires"},
+            {"id", "account_id", "grant_id", "grant_generation", "route_generation", "purpose", "audience", "scopes", "started_at", "expires_at"});
+    } else {
+        dialog->setObjectName("resourceDrilldown");
+        dialog->setWindowTitle("Resource details — retained observation");
+        const bool total = row.value("complete").isBool();
+        fact("Row kind", total ? "Daemon retained-observation total; not request eligibility" : "Individual observation; not a compatible available total");
+        copy("Displayed account / provider", "provider");
+        if (total) {
+            copy("Issuer group", "issuer");
+            copy("Complete at snapshot", "complete");
+            copy("Counted buckets", "buckets");
+            copy("Unknown or stale buckets", "unknown_buckets");
+            fact("Observation membership", "Unavailable: per-account issuer membership is redacted. Inspect individual observations separately.");
+        } else {
+            copy("Opaque account ID", "account_id");
+            copy("Shared bucket", "bucket_id");
+            copy("Provenance", "provenance");
+            copy("Observed at", "observed_at");
+            copy("Observation expires at", "expires_at");
+        }
+        copy("Resource kind", "resource.kind");
+        copy("Resource target", "resource.target");
+        copy("Scope", "resource.scope");
+        copy("Unit", "resource.unit");
+        copy("Window", "window");
+        copy("Remaining observation", "remaining");
+        copy("Limit observation", "limit");
+        copy("Observation status", "status");
+        copy("Freshness", "freshness");
+        note("Only the daemon aggregates compatible provider/issuer, resource, units, scopes and windows with shared buckets counted once. These details do not sum observations or establish entitlement, grant usability or provider acceptance.");
+    }
+    fillTable(facts, fields, {"field", "value"});
+    facts->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    facts->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    facts->resizeRowsToContents();
+    auto *close = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(close, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    layout->addWidget(close);
+    dialog->show();
+}
+
 void OmuxTray::refresh() {
     if (!client_.ready() || refreshing_) return;
     refreshing_ = true;
     client_.request("state.snapshot", {}, [this](const QJsonObject &result, const QString &error) {
         refreshing_ = false;
         if (!error.isEmpty()) {
+            snapshotRefreshSucceeded_ = false;
             message_->setText((client_.hasUncertainOperations() ? client_.uncertaintyMessage() + "\n" : QString()) + error);
             snapshotNotice_->setText("Snapshot refresh failed (" + error + "); displayed account rows are retained. " + snapshotSummary(snapshot_));
             ++readinessQuery_;
@@ -649,6 +800,7 @@ void OmuxTray::refreshReadiness() {
 
 void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
     snapshot_ = snapshot;
+    snapshotRefreshSucceeded_ = true;
     snapshotNotice_->setText(snapshotSummary(snapshot_));
     custodyAvailable_ = snapshot.value("custody_available").toBool(false)
         && setupNotice_->property("custodyFeedback").toString().isEmpty();

@@ -18,6 +18,7 @@ private:
     void refresh();
     void refreshReadiness();
     void applySnapshot(const QJsonObject &snapshot);
+    void showDetails(QTableWidget *table);
     void action(const QString &method, QJsonObject params);
     void connectSource();
     void enroll();
@@ -68,6 +69,7 @@ private:
     bool explicitSocket_ = false;
     bool connected_ = false;
     bool custodyAvailable_ = false;
+    bool snapshotRefreshSucceeded_ = false;
     qint64 revision_ = -1;
     QJsonObject snapshot_;
     QHash<QString, QString> integrationPaths_;
