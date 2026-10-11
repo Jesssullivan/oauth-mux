@@ -1,7 +1,7 @@
 // Test harness only: no browser automation belongs to the product runtime.
 // Uses Chromium's CDP pipe, with no npm packages, listening port or provider IO.
 import { spawn } from "node:child_process";
-import { readFile, rename } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
@@ -14,7 +14,8 @@ const identity = [...createHash("sha256").update(Buffer.from(manifest.key, "base
   .map(value => String.fromCharCode(97 + parseInt(value, 16))).join("");
 const sourceId = "installed-chromium-synthetic-context";
 const syntheticSource = { adapter: "github", storeId: "installed-chromium-synthetic-store", sourceId };
-const registration = `${profile}/NativeMessagingHosts/ai.xoxd.omux.dev.json`;
+const operationId = "chromium-original-operation";
+const newOperationId = "chromium-new-operation";
 const storageKeys = ["omuxSourceMetadataV1", "omuxSourceStatesV1", "omuxSourceRequestsV1"];
 let phase = "chromium-startup";
 let browser;
@@ -110,14 +111,40 @@ async function health(sessionId, id) {
   require(value.identity === identity && value.channel === "development"
     && value.health.protocolVersion === 1 && value.health.channel === value.channel
     && value.health.status === "ready" && value.health.custody_available === true && value.health.provider_access === false
-    && value.health.capabilities.source_connection === true && value.health.capabilities.production_export === false);
+    && value.health.capabilities.source_connection === true && value.health.capabilities.production_export === false
+    && value.health.capabilities.connect_recovery === true);
 }
 
-async function observedMutations() {
+async function native(sessionId, method, requestId, extra) {
+  return evaluate(sessionId, `(async()=>{
+    const {sendNativeRequest}=await import(chrome.runtime.getURL('shared/native.mjs'));
+    const {makeEnvelope,makeHealthEnvelope}=await import(chrome.runtime.getURL('shared/protocol.mjs'));
+    const {getAdapter}=await import(chrome.runtime.getURL('shared/adapters.mjs'));
+    const envelope=makeEnvelope({requestId:${JSON.stringify(requestId)},sourceId:${JSON.stringify(sourceId)},
+      adapter:getAdapter('github'),method:${JSON.stringify(method)},extra:{...${JSON.stringify(extra)},
+      provenance:{browser:'chromium',extensionId:chrome.runtime.id}}});
+    try { return await sendNativeRequest(chrome,envelope,{healthEnvelope:makeHealthEnvelope(crypto.randomUUID(),
+      {browser:'chromium',extensionId:chrome.runtime.id})}); }
+    catch(error) { return {transportLost:error.code==='native_host_unavailable'}; }
+  })()`);
+}
+
+async function outcome(sessionId, requestId, intent, expectedRevision) {
+  const response = await native(sessionId, "browser.connectOutcome", requestId,
+    { operationId: intent, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  return evaluate(sessionId, `(async()=>{
+    const {validateConnectOutcome}=await import(chrome.runtime.getURL('shared/protocol.mjs'));
+    return validateConnectOutcome(${JSON.stringify(response)},${JSON.stringify(requestId)},${JSON.stringify(sourceId)},${JSON.stringify(intent)});
+  })()`);
+}
+
+async function observedRequests() {
   const payload = await readFile(journal, "utf8");
   require(Buffer.byteLength(payload) <= 16384);
   const rows = payload.trim() ? payload.trim().split("\n").map(value => JSON.parse(value)) : [];
-  require(rows.length <= 64 && rows.every(row => Object.keys(row).sort().join(",") === "id,method,sourceId"));
+  const common = ["id", "method", "sourceId"];
+  require(rows.length <= 64 && rows.every(row => common.every(key => Object.hasOwn(row, key))
+    && Object.keys(row).every(key => [...common, "operationId", "expectedRevision", "expectedGeneration"].includes(key))));
   return rows.filter(row => row.method !== "browser.health");
 }
 
@@ -160,12 +187,12 @@ try {
   await permissionsAbsent(first.sessionId);
   phase = "chromium-service-permission-refusal";
   const beforeDenied = await evaluate(first.sessionId, "chrome.storage.local.get(null)");
-  const beforeMutations = await observedMutations();
+  const beforeMutations = await observedRequests();
   require(beforeMutations.length === 0);
   const denied = await evaluate(first.sessionId, `(async () => {
     const {BrowserService,publicError}=await import(chrome.runtime.getURL('shared/service.mjs'));
     const {ADAPTERS,getAdapter}=await import(chrome.runtime.getURL('shared/adapters.mjs'));
-    const ids=['chromium-service-health','chromium-recovery-connect','chromium-service-health'];
+    const ids=['chromium-service-health'];
     // Unchanged shipped class, real Chrome APIs, no fixture adapter or permission
     // mock. This driver instance does not represent a toolbar consent gesture.
     const service=new BrowserService({api:chrome,browserKind:'chromium',randomId:()=>{
@@ -189,55 +216,58 @@ try {
     && isDeepStrictEqual(denied.status, { ok: true, connection: "disconnected", identity: "unverified",
       grant: "unproven", capability: "unproven", sources: [] }));
   require(isDeepStrictEqual(await evaluate(first.sessionId, "chrome.storage.local.get(null)"), beforeDenied));
-  require(isDeepStrictEqual(await observedMutations(), beforeMutations));
-  phase = "chromium-uncertain-source-seed";
-  // Synthetic source/store metadata substitutes only for prior enrollment. No
-  // real store selection, provider permission, consent or capture is established.
+  require(isDeepStrictEqual(await observedRequests(), beforeMutations));
+  phase = "chromium-v4-outcome-preflight";
+  const before = await outcome(first.sessionId, "chromium-outcome-before", operationId);
+  require(before.outcome === "unknown" && before.current_generation === null
+    && before.source_status === "absent" && before.authorized === false);
+  const intent = { operationId, expectedRevision: before.current_revision };
+  phase = "chromium-v4-pending-source-seed";
+  // Only the durable descriptor is seeded. No real browser context, provider
+  // permission, captured fields, identity, grant or consent is established.
+  const pendingConnect = { id: "chromium-lost-connect", method: "browser.connect", ...intent };
   await evaluate(first.sessionId, `chrome.storage.local.set({
     omuxSourceMetadataV1:[${JSON.stringify(syntheticSource)}],
-    omuxSourceStatesV1:{${JSON.stringify(sourceId)}:'pending_connection'},omuxSourceRequestsV1:{}}).then(()=>true)`);
-  phase = "chromium-uncertain-host-disabled";
-  await rename(registration, `${registration}.inactive`);
-  let uncertain;
-  try {
-    phase = "chromium-uncertain-native-dispatch";
-    uncertain = await evaluate(first.sessionId, `(async()=>{
-      const {service,adapter,publicError}=globalThis.omuxInstalledServiceProof;
-      let result;
-      try {result=await service.reconcileSource(${JSON.stringify(syntheticSource)},adapter,'browser.connect');}
-      catch(error){result=publicError(error);}
-      return {result,status:await service.status(),saved:await chrome.storage.local.get(${JSON.stringify(storageKeys)})};
-    })()`);
-  } finally { await rename(`${registration}.inactive`, registration); }
-  phase = "chromium-uncertain-service-outcome";
-  require(isDeepStrictEqual(uncertain.result, { ok: false, code: "native_host_unavailable" }));
-  // Browser storage may reorder record properties. Deep strict comparison
-  // preserves exact key sets, types, values and array order without treating
-  // JSON object insertion order as additional custody authority.
-  phase = "chromium-uncertain-source-metadata";
-  require(Object.keys(uncertain.saved).sort().join(",") === [...storageKeys].sort().join(",")
-    && isDeepStrictEqual(uncertain.saved.omuxSourceMetadataV1, [syntheticSource]));
-  phase = "chromium-uncertain-source-state";
-  require(isDeepStrictEqual(uncertain.saved.omuxSourceStatesV1, { [sourceId]: "completion_unknown" }));
-  phase = "chromium-uncertain-request-identity";
-  require(isDeepStrictEqual(uncertain.saved.omuxSourceRequestsV1, {
-    [sourceId]: { id: "chromium-recovery-connect", method: "browser.connect" },
-  }));
-  phase = "chromium-uncertain-redacted-status";
-  require(isDeepStrictEqual(uncertain.status, { ok: true, connection: "select_source_context", identity: "unverified",
-    grant: "unproven", capability: "unproven", sources: [{ ...syntheticSource, status: "completion_unknown" }] }));
-  phase = "chromium-uncertain-no-mutations";
-  require((await observedMutations()).length === 0);
-  phase = "chromium-uncertain-permissions";
+    omuxSourceStatesV1:{${JSON.stringify(sourceId)}:'pending_connection'},
+    omuxSourceRequestsV1:{${JSON.stringify(sourceId)}:${JSON.stringify(pendingConnect)}}).then(()=>true)`);
+  // This explicit synthetic setup request is not a toolbar gesture or the
+  // service's fresh permission admission. Only real daemon source metadata is
+  // committed; the recorder drops its accepted reply, never its execution.
+  phase = "chromium-v4-committed-reply-loss";
+  require(isDeepStrictEqual(await native(first.sessionId, "browser.connect", "chromium-lost-connect", intent),
+    { transportLost: true }));
+  await evaluate(first.sessionId, `chrome.storage.local.set({
+    omuxSourceStatesV1:{${JSON.stringify(sourceId)}:'completion_unknown'}}).then(()=>true)`);
+  const committed = await outcome(first.sessionId, "chromium-outcome-committed", operationId, intent.expectedRevision);
+  require(committed.outcome === "committed" && committed.current_generation === committed.connect_generation
+    && committed.source_status === "connected" && committed.authorized === true
+    && BigInt(committed.connect_revision) === BigInt(intent.expectedRevision) + 1n);
+  phase = "chromium-v4-exact-retry";
+  const original = await native(first.sessionId, "browser.connect", "chromium-exact-retry", intent);
+  require(isDeepStrictEqual(original.result, { accepted: true, source_id: sourceId, operation_id: operationId,
+    generation: committed.connect_generation, revision: committed.connect_revision }));
+  phase = "chromium-v4-changed-intent-refusal";
+  const changed = await native(first.sessionId, "browser.connect", "chromium-changed-intent",
+    { ...intent, expectedRevision: committed.current_revision });
+  require(changed.error?.code === "OperationIdConflict");
+  phase = "chromium-v4-stale-generation-refusal";
+  const stale = await native(first.sessionId, "browser.disconnect", "chromium-stale-removal", {
+    operationId: "chromium-stale-removal-operation", expectedRevision: committed.current_revision,
+    expectedGeneration: (BigInt(committed.current_generation) + 1n).toString(),
+  });
+  require(stale.error?.code === "GenerationConflict");
+  require(isDeepStrictEqual(await outcome(first.sessionId, "chromium-outcome-unchanged", operationId,
+    intent.expectedRevision), committed));
   await permissionsAbsent(first.sessionId);
+  const beforeRestart = await observedRequests();
   phase = "chromium-restart";
   await close();
   const second = await launch();
   require(second.version === first.version);
   await health(second.sessionId, "chromium-health-restart");
   phase = "chromium-shipped-worker-recovery";
-  // No driver service is recreated. The unchanged background startup observes
-  // missing permission, resolves its retained connect, then disconnects source.
+  // The unchanged shipped worker sees missing permission and reads the exact
+  // original receipt before fenced removal. It never issues another Connect.
   const recoveryDeadline = performance.now() + 12000;
   let recovered = false;
   while (performance.now() < recoveryDeadline) {
@@ -250,16 +280,78 @@ try {
     await delay(25);
   }
   require(recovered);
-  const mutations = await observedMutations();
-  require(mutations.length === 2 && isDeepStrictEqual(mutations[0], {
-    id: "chromium-recovery-connect", method: "browser.connect", sourceId,
-  }) && mutations[1].method === "browser.disconnect" && mutations[1].sourceId === sourceId
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(mutations[1].id)
-    && mutations[1].id !== mutations[0].id);
-  await permissionsAbsent(second.sessionId);
-  console.log(JSON.stringify({scope:"installed-chromium-synthetic-browser-service-recovery",browserVersion:second.version,
+  const afterRestart = await observedRequests();
+  require(isDeepStrictEqual(afterRestart.slice(0, beforeRestart.length), beforeRestart));
+  const worker = afterRestart.slice(beforeRestart.length);
+  require(worker.length === 2 && worker[0].method === "browser.connectOutcome"
+    && worker[0].operationId === operationId && worker[0].expectedRevision === intent.expectedRevision
+    && worker[1].method === "browser.disconnect" && worker[1].sourceId === sourceId
+    && worker[1].expectedRevision === committed.current_revision
+    && worker[1].expectedGeneration === committed.connect_generation
+    && worker[1].operationId !== operationId && worker[1].operationId !== worker[1].id);
+  phase = "chromium-v4-current-removal-readback";
+  const removed = await outcome(second.sessionId, "chromium-outcome-removed", operationId, intent.expectedRevision);
+  require(removed.outcome === "committed" && removed.connect_generation === committed.connect_generation
+    && BigInt(removed.current_generation) === BigInt(committed.connect_generation) + 1n
+    && removed.source_status === "disconnected" && removed.authorized === false);
+  phase = "chromium-v4-old-ack-new-generation";
+  const newIntent = { operationId: newOperationId, expectedRevision: removed.current_revision };
+  const newer = await native(second.sessionId, "browser.connect", "chromium-new-connect", newIntent);
+  require(newer.result?.accepted === true && newer.result.operation_id === newOperationId
+    && BigInt(newer.result.generation) === BigInt(removed.current_generation) + 1n);
+  const newBefore = await outcome(second.sessionId, "chromium-outcome-new", newOperationId, newIntent.expectedRevision);
+  require(newBefore.authorized === true && newBefore.source_status === "connected"
+    && newBefore.current_generation === newer.result.generation);
+  const repeatedRemoval = await native(second.sessionId, "browser.disconnect", "chromium-removal-retry", {
+    operationId: worker[1].operationId, expectedRevision: worker[1].expectedRevision,
+    expectedGeneration: worker[1].expectedGeneration,
+  });
+  require(isDeepStrictEqual(repeatedRemoval.result, { accepted: true, source_id: sourceId,
+    operation_id: worker[1].operationId, generation: removed.current_generation, revision: removed.current_revision }));
+  // The old ACK is historical. This actual current readback must still show
+  // the newer connected generation; cached removal cannot remove it again.
+  require(isDeepStrictEqual(await outcome(second.sessionId, "chromium-outcome-after-replay", newOperationId,
+    newIntent.expectedRevision), newBefore));
+  phase = "chromium-v4-final-explicit-removal";
+  const finalRemoval = await native(second.sessionId, "browser.disconnect", "chromium-final-removal", {
+    operationId: "chromium-final-removal-operation", expectedRevision: newBefore.current_revision,
+    expectedGeneration: newBefore.current_generation,
+  });
+  require(finalRemoval.result?.accepted === true
+    && BigInt(finalRemoval.result.generation) === BigInt(newBefore.current_generation) + 1n);
+  const final = await outcome(second.sessionId, "chromium-outcome-final", newOperationId, newIntent.expectedRevision);
+  require(final.source_status === "disconnected" && final.authorized === false
+    && final.current_generation === finalRemoval.result.generation);
+  phase = "chromium-historical-pending-seed";
+  // A historical descriptor has no authoritative operation receipt. Keep it
+  // uncertain even though this synthetic source has other known operations.
+  const historical = { id: "chromium-recovery-connect", method: "browser.connect" };
+  await evaluate(second.sessionId, `chrome.storage.local.set({
+    omuxSourceMetadataV1:[${JSON.stringify(syntheticSource)}],
+    omuxSourceStatesV1:{${JSON.stringify(sourceId)}:'completion_unknown'},
+    omuxSourceRequestsV1:{${JSON.stringify(sourceId)}:${JSON.stringify(historical)}}).then(()=>true)`);
+  const beforeHistorical = await observedRequests();
+  await close();
+  const third = await launch();
+  require(third.version === first.version);
+  await health(third.sessionId, "chromium-health-historical");
+  phase = "chromium-historical-pending-retained";
+  const historicalDeadline = performance.now() + 12000;
+  let held;
+  while (performance.now() < historicalDeadline) {
+    held = await evaluate(third.sessionId, `chrome.storage.local.get(${JSON.stringify(storageKeys)})`);
+    if (held.omuxSourceStatesV1?.[sourceId] === "pending_disconnect") break;
+    await delay(25);
+  }
+  require(isDeepStrictEqual(held, { omuxSourceMetadataV1: [syntheticSource],
+    omuxSourceStatesV1: { [sourceId]: "pending_disconnect" }, omuxSourceRequestsV1: { [sourceId]: historical } }));
+  require(isDeepStrictEqual(await observedRequests(), beforeHistorical));
+  await permissionsAbsent(third.sessionId);
+  console.log(JSON.stringify({scope:"installed-chromium-synthetic-browser-outcome-v4",browserVersion:third.version,
     extensionId:identity,channel:"development",providerAccess:false,grantExport:false,restarted:true,
-    permissionGranted:false,toolbarConsentProved:false,retainedConnectId:true,distinctDisconnectId:true}));
+    permissionGranted:false,toolbarConsentProved:false,committedReplyLost:true,exactRetryImmutable:true,
+    changedIntentRefused:true,staleGenerationRefused:true,startupConnectReplay:false,
+    fencedRemoval:true,oldAckCurrentAuthority:false,historicalOutcomeHeld:true}));
 } catch {
   console.error(`installed Chromium transport failed at ${phase}`);
   process.exitCode = 1;

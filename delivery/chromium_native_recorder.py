@@ -2,8 +2,10 @@
 
 The private fixture copies this declared source into an executable with its
 declared Python interpreter. It forwards unchanged frames to one hash-bound
-installed native host. Only synthetic request IDs/methods/source IDs enter the
-private journal; frames, native replies and diagnostics are never printed.
+installed native host. Only synthetic request IDs/methods/source IDs and opaque
+operation/revision/generation metadata enter the private journal. Frames, native
+replies and diagnostics are never printed. One fixed synthetic Connect loses
+only its accepted reply; this fault is not part of the attended health proof.
 """
 import fcntl
 import hashlib
@@ -20,7 +22,14 @@ MAX_FRAME = 4096
 MAX_JOURNAL = 16384
 MAX_RECORDS = 64
 SOURCE = "installed-chromium-synthetic-context"
-STATIC_IDS = {"chromium-health-first", "chromium-health-restart", "chromium-service-health"}
+STATIC_IDS = {"chromium-health-first", "chromium-health-restart", "chromium-health-historical", "chromium-service-health"}
+SOURCE_IDS = {"chromium-lost-connect", "chromium-exact-retry", "chromium-changed-intent",
+              "chromium-stale-removal", "chromium-new-connect", "chromium-removal-retry",
+              "chromium-final-removal", "chromium-outcome-before", "chromium-outcome-committed",
+              "chromium-outcome-unchanged", "chromium-outcome-removed", "chromium-outcome-new",
+              "chromium-outcome-after-replay", "chromium-outcome-final"}
+OPERATIONS = {"chromium-original-operation", "chromium-new-operation",
+              "chromium-stale-removal-operation", "chromium-final-removal-operation"}
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 
@@ -64,12 +73,17 @@ def invalid_constant(value):
     raise ValueError("synthetic_recorder_json_constant")
 
 
+def authority_number(value, *, positive=False):
+    require(type(value) is str and re.fullmatch(r"0|[1-9][0-9]{0,19}", value)
+            and int(value) <= 18446744073709551615 and (not positive or int(value) > 0))
+
+
 def project(frame, identity):
     message = json.loads(frame[4:], object_pairs_hook=unique_fields, parse_constant=invalid_constant)
     require(type(message) is dict and set(message) == {"version", "id", "method", "params"}
             and type(message["version"]) is int and message["version"] == 1)
     identifier, method, params = message["id"], message["method"], message["params"]
-    require(type(identifier) is str and method in {"browser.health", "browser.connect", "browser.disconnect"}
+    require(type(identifier) is str and method in {"browser.health", "browser.connect", "browser.connectOutcome", "browser.disconnect"}
             and type(params) is dict)
     require(params.get("provenance") == {"browser": "chromium", "extensionId": identity,
                                          "channel": "development"})
@@ -77,20 +91,53 @@ def project(frame, identity):
     if method == "browser.health":
         require(set(params) == {"provenance"} and (identifier in STATIC_IDS or UUID.fullmatch(identifier)))
     else:
-        require(set(params) == {"sourceId", "adapter", "origin", "provenance"}
+        base = {"sourceId", "adapter", "origin", "provenance", "operationId"}
+        required = base | ({"expectedRevision"} if method != "browser.connectOutcome" else set())
+        if method == "browser.disconnect":
+            required |= {"expectedGeneration"}
+        require(required <= set(params) <= required | {"expectedRevision"}
                 and params["sourceId"] == SOURCE and params["adapter"] == "github"
                 and params["origin"] == "https://github.com")
+        require(identifier in SOURCE_IDS or UUID.fullmatch(identifier))
+        operation = params["operationId"]
+        require(type(operation) is str and (operation in OPERATIONS or UUID.fullmatch(operation))
+                and operation != identifier)
+        if "expectedRevision" in params:
+            authority_number(params["expectedRevision"])
+        if "expectedGeneration" in params:
+            authority_number(params["expectedGeneration"], positive=True)
         source = params["sourceId"]
         if method == "browser.connect":
-            require(identifier == "chromium-recovery-connect")
-        if method == "browser.disconnect":
-            require(UUID.fullmatch(identifier))
-    return {"id": identifier, "method": method, "sourceId": source}
+            require(identifier in {"chromium-lost-connect", "chromium-exact-retry", "chromium-changed-intent", "chromium-new-connect"}
+                    and operation in {"chromium-original-operation", "chromium-new-operation"})
+    return {"id": identifier, "method": method, "sourceId": source,
+            **{name: params[name] for name in ("operationId", "expectedRevision", "expectedGeneration") if name in params}}
+
+
+def suppress_reply(frame, response):
+    request = json.loads(frame[4:], object_pairs_hook=unique_fields, parse_constant=invalid_constant)
+    if request.get("method") != "browser.connect" or request.get("id") != "chromium-lost-connect":
+        return False
+    reply = json.loads(response[4:], object_pairs_hook=unique_fields, parse_constant=invalid_constant)
+    # Refusals are forwarded. Only a validated committed original ACK is lost;
+    # the daemon still executes the unchanged real request, not a mock outcome.
+    if "error" in reply:
+        return False
+    require(set(reply) == {"version", "id", "result"} and type(reply["version"]) is int
+            and reply["version"] == 1 and reply["id"] == request["id"])
+    result = reply["result"]
+    require(type(result) is dict and set(result) == {"accepted", "source_id", "operation_id", "revision", "generation"}
+            and result["accepted"] is True and result["source_id"] == SOURCE
+            and result["operation_id"] == request["params"]["operationId"])
+    authority_number(result["revision"], positive=True)
+    authority_number(result["generation"], positive=True)
+    require(int(result["revision"]) == int(request["params"]["expectedRevision"]) + 1)
+    return True
 
 
 def append(journal, record):
     encoded = json.dumps(record, separators=(",", ":")).encode("ascii") + b"\n"
-    require(len(encoded) <= 256)
+    require(len(encoded) <= 512)
     descriptor = os.open(journal, os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -144,6 +191,9 @@ def main():
             process.stdin.write(frame)
             process.stdin.flush()
             response = read_frame(process.stdout)
+            if suppress_reply(frame, response):
+                # Closing the transport is a reply fault, never cancellation.
+                return 0
             sys.stdout.buffer.write(response)
             sys.stdout.buffer.flush()
         raise ValueError("synthetic_recorder_frame_limit")
