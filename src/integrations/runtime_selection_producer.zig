@@ -1281,8 +1281,18 @@ fn carrierTuple(budget: Budget, tuple: std.json.Value, seal_files: std.json.Valu
             2 => carrier,
             else => row,
         };
-        const hash_key = switch (index) { 0 => "manifest_sha256", 1 => "receipt_sha256", 2 => "payload_sha256", else => "sha256" };
-        const bytes_key = switch (index) { 0 => "manifest_bytes", 1 => "receipt_bytes", 2 => "payload_bytes", else => "bytes" };
+        const hash_key = switch (index) {
+            0 => "manifest_sha256",
+            1 => "receipt_sha256",
+            2 => "payload_sha256",
+            else => "sha256",
+        };
+        const bytes_key = switch (index) {
+            0 => "manifest_bytes",
+            1 => "receipt_bytes",
+            2 => "payload_bytes",
+            else => "bytes",
+        };
         try digestEquals(row, "sha256", if (index == 3) receipt.sha256 else try digestField(selected, hash_key));
         if (bytes != if (index == 3) receipt.bytes else try positiveInteger(selected, bytes_key)) return error.RuntimeSelectionDrift;
     }
@@ -1400,8 +1410,12 @@ fn uniqueHashMarker(a: std.mem.Allocator, budget: Budget, raw: []const u8, prefi
     }
     if (count != 1) return error.InvalidRuntimeProvenance;
 }
-fn xmlSpace(byte: u8) bool { return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n'; }
-fn xmlName(byte: u8) bool { return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-' or byte == '.'; }
+fn xmlSpace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n';
+}
+fn xmlName(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-' or byte == '.';
+}
 /// Deliberately finite Bazel test XML grammar: no DTD/entity expansion/namespaces,
 /// bounded nesting/attributes, matching tags and positive successful suites.
 /// Unsupported XML refuses rather than falling back to substring admission.
@@ -1464,8 +1478,15 @@ fn successfulTestXml(budget: Budget, raw: []const u8) !void {
             const spaced = index < raw.len and xmlSpace(raw[index]);
             while (index < raw.len and xmlSpace(raw[index])) : (index += 1) {}
             if (index >= raw.len) return error.InvalidRuntimeProvenance;
-            if (raw[index] == '>') { index += 1; break; }
-            if (raw[index] == '/' and index + 1 < raw.len and raw[index + 1] == '>') { self_closing = true; index += 2; break; }
+            if (raw[index] == '>') {
+                index += 1;
+                break;
+            }
+            if (raw[index] == '/' and index + 1 < raw.len and raw[index + 1] == '>') {
+                self_closing = true;
+                index += 2;
+                break;
+            }
             if (!spaced or count == attributes.len) return error.InvalidRuntimeProvenance;
             const key_start = index;
             while (index < raw.len and xmlName(raw[index])) : (index += 1) {}
@@ -1482,7 +1503,9 @@ fn successfulTestXml(budget: Budget, raw: []const u8) !void {
             const quote = raw[index];
             index += 1;
             const value_start = index;
-            while (index < raw.len and raw[index] != quote) : (index += 1) { if (raw[index] == '<') return error.InvalidRuntimeProvenance; }
+            while (index < raw.len and raw[index] != quote) : (index += 1) {
+                if (raw[index] == '<') return error.InvalidRuntimeProvenance;
+            }
             if (index >= raw.len) return error.InvalidRuntimeProvenance;
             const value = raw[value_start..index];
             index += 1;
@@ -1808,7 +1831,9 @@ fn carrierMaterial(a: std.mem.Allocator, budget: Budget, modern: ModernInputs, s
         try sameValue(budget, summary, sdk.value, "mapping_sha256");
         try sameValue(budget, summary, source, "patch_sha256");
         const pin = try digestField(summary, "material_selection_sha256");
-        if (material_pin) |expected| { if (!std.meta.eql(expected, pin)) return error.RuntimeSelectionDrift; } else material_pin = pin;
+        if (material_pin) |expected| {
+            if (!std.meta.eql(expected, pin)) return error.RuntimeSelectionDrift;
+        } else material_pin = pin;
     }
     try carrierCompilerJoins(a, budget, modern, selection, compiler_selection.value);
 }
@@ -2285,10 +2310,19 @@ test "held compact carrier reports independently join SOURCE original authority 
     carrierModelSet(&source_row, "producer", producer_pin);
     const original = try carrierModelJson(a, .{ .kind = "omux-native-source-acquisition-metadata-input-v1", .source_root = "/source", .source_receipt_sha256 = std.fmt.bytesToHex(source_input.sha256, .lower), .source_inventory_sha256 = pin, .export_root = origin_root, .export_receipt_sha256 = origin_pin, .binding_receipt_sha256 = pin });
     const carrier = try carrierModelJson(a, .{
-        .kind = "omux-native-sdk-carrier-v1", .producer_context = .{},
+        .kind = "omux-native-sdk-carrier-v1",
+        .producer_context = .{},
         .origin = .{ .root = origin_root, .receipt_sha256 = origin_pin, .receipt_bytes = @as(u64, 32), .baseline_receipt_sha256 = pin, .baseline_inventory_sha256 = pin, .inventory_sha256 = pin, .mapping_sha256 = pin, .selection_sha256 = pin, .producer = "//tools:codex_retained_sdk_export_run" },
         .origin_custody = .{ .sdk = .{ .root = origin_root, .root_identity = .{ 1, 2, 0, 0, 0o40555 }, .ancestry_sha256 = pin, .members_sha256 = pin }, .jdk = .{ .root = "/inert-jdk", .root_identity = .{ 1, 3, 0, 0, 0o40555 }, .ancestry_sha256 = pin, .members_sha256 = pin } },
-        .manifest_sha256 = pin, .manifest_bytes = @as(u64, 32), .payload_sha256 = pin, .payload_bytes = @as(u64, 4 * 1024 * 1024 * 1024), .entry_count = @as(u64, 1), .origin_fully_rechecked = true, .sdk_execution_qualified = false, .metadata_qualified = false, .source_witnesses_replaced = false,
+        .manifest_sha256 = pin,
+        .manifest_bytes = @as(u64, 32),
+        .payload_sha256 = pin,
+        .payload_bytes = @as(u64, 4 * 1024 * 1024 * 1024),
+        .entry_count = @as(u64, 1),
+        .origin_fully_rechecked = true,
+        .sdk_execution_qualified = false,
+        .metadata_qualified = false,
+        .source_witnesses_replaced = false,
     });
     const carrier_input = try carrierModelInput(a, tmp.dir, "carrier", carrier);
     defer _ = c.close(carrier_input.descriptor);
@@ -2299,18 +2333,58 @@ test "held compact carrier reports independently join SOURCE original authority 
         .{ .name = "receipt.json", .sha256 = std.fmt.bytesToHex(carrier_input.sha256, .lower), .bytes = carrier_input.bytes },
     });
     const seal = try carrierModelJson(a, .{
-        .kind = "omux-native-sdk-carrier-producer-v1", .producer = "//tools:codex_native_sdk_carrier_seal_producer", .carrier_receipt_sha256 = std.fmt.bytesToHex(carrier_input.sha256, .lower), .origin_receipt_sha256 = origin_pin, .producer_context = .{},
+        .kind = "omux-native-sdk-carrier-producer-v1",
+        .producer = "//tools:codex_native_sdk_carrier_seal_producer",
+        .carrier_receipt_sha256 = std.fmt.bytesToHex(carrier_input.sha256, .lower),
+        .origin_receipt_sha256 = origin_pin,
+        .producer_context = .{},
         .files = .{ .{ .name = "manifest.json", .sha256 = pin, .size = @as(u64, 32) }, .{ .name = "origin-receipt.json", .sha256 = origin_pin, .size = @as(u64, 32) }, .{ .name = "payload.bin", .sha256 = pin, .size = @as(u64, 4 * 1024 * 1024 * 1024) }, .{ .name = "receipt.json", .sha256 = std.fmt.bytesToHex(carrier_input.sha256, .lower), .size = carrier_input.bytes } },
-        .all_four_leaves_rechecked = true, .sdk_execution_qualified = false, .metadata_qualified = false, .compiler_qualified = false, .runtime_qualified = false,
+        .all_four_leaves_rechecked = true,
+        .sdk_execution_qualified = false,
+        .metadata_qualified = false,
+        .compiler_qualified = false,
+        .runtime_qualified = false,
     });
     const seal_input = try carrierModelInput(a, tmp.dir, "seal", seal);
     defer _ = c.close(seal_input.descriptor);
     const seal_row = try carrierModelRow(a, "/seal/native-sdk-carrier-producer.json", seal_input);
     var metadata_report = try carrierModelJson(a, .{
-        .schema_version = @as(u64, 2), .kind = "omux-native-sdk-carrier-metadata-v2", .status = "verified-fresh-carrier-custody-regenerated-native-acquisition-hub", .original_selection = null, .selector_sha256 = pin, .source_inventory_sha256 = pin, .source_graph = null, .patch_sha256 = patches,
+        .schema_version = @as(u64, 2),
+        .kind = "omux-native-sdk-carrier-metadata-v2",
+        .status = "verified-fresh-carrier-custody-regenerated-native-acquisition-hub",
+        .original_selection = null,
+        .selector_sha256 = pin,
+        .source_inventory_sha256 = pin,
+        .source_graph = null,
+        .patch_sha256 = patches,
         .carrier = .{ .receipt_sha256 = std.fmt.bytesToHex(carrier_input.sha256, .lower), .origin = null, .origin_custody = null, .producer_context = .{}, .qualification = .{ .outer_receipt_sha256 = pin, .report_sha256 = std.fmt.bytesToHex(seal_input.sha256, .lower), .report = null } },
-        .extraction = .{}, .extraction_receipt_sha256 = pin, .consumer_context = .{}, .consumer_deadline = @as(f64, 600), .query_exit = @as(u64, 0), .query_plan = .{}, .output_parent_mode = "0700", .query_tool_closure_independently_rechecked = true, .packaged_jdk_used_as_query_tool_relocation = false, .module_and_cargo_lock_unchanged = true, .retained_hub = .{}, .generated_hub = .{.{ .path = "empty.bzl", .sha256 = pin }}, .source_and_extracted_carrier_rechecked = true,
-        .sdk_export_qualified = false, .sdk_execution_qualified = false, .metadata_qualified = false, .compiler_qualified = false, .native_compile_passed = false, .runtime_qualified = false, .installed_package_primary_qualified = false, .schema_producer_qualified = false, .native_support = false, .provider_evaluation = false, .credential_acquisition_qualified = false, .live_handoff_proven = false, .source_witnesses_replaced = false, .legacy_metadata_family_qualified = false,
+        .extraction = .{},
+        .extraction_receipt_sha256 = pin,
+        .consumer_context = .{},
+        .consumer_deadline = @as(f64, 600),
+        .query_exit = @as(u64, 0),
+        .query_plan = .{},
+        .output_parent_mode = "0700",
+        .query_tool_closure_independently_rechecked = true,
+        .packaged_jdk_used_as_query_tool_relocation = false,
+        .module_and_cargo_lock_unchanged = true,
+        .retained_hub = .{},
+        .generated_hub = .{.{ .path = "empty.bzl", .sha256 = pin }},
+        .source_and_extracted_carrier_rechecked = true,
+        .sdk_export_qualified = false,
+        .sdk_execution_qualified = false,
+        .metadata_qualified = false,
+        .compiler_qualified = false,
+        .native_compile_passed = false,
+        .runtime_qualified = false,
+        .installed_package_primary_qualified = false,
+        .schema_producer_qualified = false,
+        .native_support = false,
+        .provider_evaluation = false,
+        .credential_acquisition_qualified = false,
+        .live_handoff_proven = false,
+        .source_witnesses_replaced = false,
+        .legacy_metadata_family_qualified = false,
     });
     carrierModelSet(&metadata_report, "original_selection", original);
     carrierModelSet(&metadata_report, "source_graph", graph);
@@ -2427,12 +2501,51 @@ test "carrier proof uses held raw guardian copied index XML and actual program d
     const evidence = try carrierModelInput(a, tmp.dir, "copied-index", evidence_doc);
     defer _ = c.close(evidence.descriptor);
     const reservation = .{
-        .scope = "fixed-native-sdk-carrier-sdk-export-reserved-v1", .profile = profile, .original_entry_monotonic_ns = @as(u64, 1000000000), .original_deadline_monotonic_ns = @as(u64, 1201000000000), .verified_after_cleanup = true,
+        .scope = "fixed-native-sdk-carrier-sdk-export-reserved-v1",
+        .profile = profile,
+        .original_entry_monotonic_ns = @as(u64, 1000000000),
+        .original_deadline_monotonic_ns = @as(u64, 1201000000000),
+        .verified_after_cleanup = true,
         .resident = .{ .scope = "sampled-fixed-default-cgroup-kernel-reservation-v1", .kernel_bounds = .{ .@"memory.max" = "268435456", .@"memory.swap.max" = "0", .@"pids.max" = "32", .@"cpu.max" = "10000 100000" }, .observations = @as(u64, 1), .initial_direct_processes_retained = true, .initial_direct_process_count = @as(u64, 1), .outer_pid_namespace_matched = true, .hierarchical_caps = true, .descendant_process_inventory = false, .installation_qualified = false, .health_observed = false, .custody_observed = false, .resident_signalled = false, .whole_host_reservation = false },
-        .input_predicates_required = true, .query_tools_qualified = false, .metadata_qualified = false, .sdk_qualified = false, .schema_qualified = false, .compiler_qualified = false, .native_runtime_qualified = false, .continuity_qualified = false, .custody_qualified = false, .health_qualified = false, .credential_acquisition = false, .native_source_finalized = false, .native_support = false, .provider_identity_proved = false, .live_handoff_proven = false, .context_rotation = false, .daemon_context_acquisition = false,
+        .input_predicates_required = true,
+        .query_tools_qualified = false,
+        .metadata_qualified = false,
+        .sdk_qualified = false,
+        .schema_qualified = false,
+        .compiler_qualified = false,
+        .native_runtime_qualified = false,
+        .continuity_qualified = false,
+        .custody_qualified = false,
+        .health_qualified = false,
+        .credential_acquisition = false,
+        .native_source_finalized = false,
+        .native_support = false,
+        .provider_identity_proved = false,
+        .live_handoff_proven = false,
+        .context_rotation = false,
+        .daemon_context_acquisition = false,
     };
     const outer_doc = try carrierModelJson(a, .{
-        .profile = profile, .id = id, .unit = "omux-execution-11111111-1111-1111-1111-111111111111.service", .source_commit = commit, .graph_sha256 = pin, .manager = "system", .verb = "test", .exit = @as(u64, 0), .workload_exit = @as(u64, 0), .controller_failure = null, .descendants_empty = true, .cleanup = .{ .state = "empty" }, .source_dirty = "false", .cache_reuse_requested = false, .cache_policy = null, .cache_key = null, .targets = .{target}, .output_base = "/output", .epoch_start_ns = @as(u64, 10), .test_evidence = .{ .state = "preserved", .sha256 = std.fmt.bytesToHex(evidence.sha256, .lower) },
+        .profile = profile,
+        .id = id,
+        .unit = "omux-execution-11111111-1111-1111-1111-111111111111.service",
+        .source_commit = commit,
+        .graph_sha256 = pin,
+        .manager = "system",
+        .verb = "test",
+        .exit = @as(u64, 0),
+        .workload_exit = @as(u64, 0),
+        .controller_failure = null,
+        .descendants_empty = true,
+        .cleanup = .{ .state = "empty" },
+        .source_dirty = "false",
+        .cache_reuse_requested = false,
+        .cache_policy = null,
+        .cache_key = null,
+        .targets = .{target},
+        .output_base = "/output",
+        .epoch_start_ns = @as(u64, 10),
+        .test_evidence = .{ .state = "preserved", .sha256 = std.fmt.bytesToHex(evidence.sha256, .lower) },
         .observed_properties = .{ .MemoryMax = "4026531840", .MemorySwapMax = "0", .TasksMax = "480", .PrivateNetwork = "yes", .KillMode = "control-group", .SendSIGKILL = "yes", .OOMPolicy = "kill", .RemainAfterExit = "yes", .CPUQuotaPerSecUSec = "1.9s", .RuntimeMaxUSec = "1200s" },
         .native_acquisition_inputs_reservation = reservation,
     });
