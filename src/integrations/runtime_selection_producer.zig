@@ -2618,7 +2618,11 @@ test "retained PACKAGE proof binds each family target profile namespace and orig
         const other = packageProducerContract(!carrier_family);
         var selected: [5]Input = undefined;
         for (names, &selected) |name, *input| input.* = try carrierModelRawInput(tmp.dir, try a.dupeZ(u8, name), name);
-        defer for (selected) |input| _ = c.close(input.descriptor);
+        defer {
+            for (selected) |input| {
+                _ = c.close(input.descriptor);
+            }
+        }
         var files = (try std.json.parseFromSlice(std.json.Value, a, "{}", .{})).value;
         for (names, selected) |name, input| try files.object.put(a, name, try carrierModelJson(a, .{ .sha256 = std.fmt.bytesToHex(input.sha256, .lower), .bytes = input.bytes }));
         var output_doc = try carrierModelJson(a, .{ .schema_version = @as(u64, 1), .kind = "omux-native-acquisition-package-output-v1", .purpose = "evaluation-only", .acquisitionContract = "unsupported", .files = null });
