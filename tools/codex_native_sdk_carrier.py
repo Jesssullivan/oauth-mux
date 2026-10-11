@@ -537,6 +537,184 @@ def scan(roots, expected, clock):
     return observed, witnesses
 
 
+
+def _fresh_namespace(roots, expected, clock):
+    """Metadata only: a local closed namespace witness, never content authority."""
+    need(0 < len(expected) <= MAX_ENTRIES and set(roots) == {"sdk", "jdk"}, "fresh-entry-bound")
+    children, witnesses, total = {}, {}, 0
+    for key, row in expected.items():
+        clock.tick()
+        need(type(key) is tuple and len(key) == 2 and key[0] in roots, "fresh-entry-key")
+        role, path = key
+        parts = relative(path, empty=True)
+        need(row["kind"] in ("directory", "file", "symlink"), "fresh-entry-kind")
+        if row["kind"] == "file":
+            need(set(row) == {"kind", "mode", "sha256", "size"}
+                 and type(row["size"]) is int and 0 <= row["size"] <= sdk.MAX_FILE
+                 and type(row["mode"]) is int, "fresh-file-shape")
+            digest(row["sha256"])
+        elif row["kind"] == "directory":
+            need(set(row) == {"kind", "mode"} and row["mode"] == 0o555, "fresh-directory-shape")
+        else:
+            need(set(row) == {"kind", "target"} and type(row["target"]) is str, "fresh-link-shape")
+        if parts:
+            parent = (role, "/".join(parts[:-1]))
+            need(parent in expected and expected[parent]["kind"] == "directory", "fresh-entry-parent")
+            children.setdefault(parent, set()).add(parts[-1])
+        else:
+            need(row["kind"] == "directory", "fresh-role-root")
+    need(all((role, "") in expected for role in roots), "fresh-missing-role")
+    def walk(role, fd, path):
+        nonlocal total
+        clock.tick()
+        before = os.fstat(fd)
+        key = (role, path)
+        need(key in expected and expected[key]["kind"] == "directory"
+             and stat.S_ISDIR(before.st_mode) and stat.S_IMODE(before.st_mode) == 0o555
+             and before.st_uid in (0, os.getuid()), "fresh-directory-custody")
+        witnesses[key] = identity(before)
+        for name in names(fd, children.get(key, set()), clock):
+            clock.tick()
+            child = path + "/" + name if path else name
+            relative(child)
+            selected = (role, child)
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            row = expected[selected]
+            if row["kind"] == "directory":
+                need(stat.S_ISDIR(info.st_mode), "fresh-directory-type")
+                nested = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                try:
+                    need(identity(info) == identity(os.fstat(nested)) == identity(
+                        os.stat(name, dir_fd=fd, follow_symlinks=False)), "fresh-directory-open-race")
+                    walk(role, nested, child)
+                finally:
+                    os.close(nested)
+            elif row["kind"] == "symlink":
+                need(stat.S_ISLNK(info.st_mode) and os.readlink(name, dir_fd=fd) == row["target"], "fresh-link-text")
+                witnesses[selected] = identity(info)
+            else:
+                need(stat.S_ISREG(info.st_mode) and roots[role].regular_links(info)
+                     and info.st_uid in (0, os.getuid()) and stat.S_IMODE(info.st_mode) == row["mode"]
+                     and info.st_size == row["size"], "fresh-file-custody")
+                total += info.st_size
+                need(total <= MAX_BYTES, "fresh-byte-bound")
+                witnesses[selected] = identity(info)
+            need(identity(info) == identity(os.stat(name, dir_fd=fd, follow_symlinks=False)), "fresh-node-race")
+        need(identity(before) == identity(os.fstat(fd)), "fresh-directory-read-race")
+    for role, root in roots.items():
+        root.check()
+        walk(role, root.fd, "")
+        root.check()
+    need(set(witnesses) == set(expected), "fresh-missing-member")
+    clock.tick()
+    return witnesses
+
+
+class _FreshNarFile:
+    """One owned nofollow stream; SHA hashes exactly the bytes given to NAR."""
+    def __init__(self, root, name, row, witnesses, role, observed, completed, aggregate, clock):
+        self.root, self.name, self.row, self.clock = root, name, row, clock
+        self.key, self.observed, self.completed, self.aggregate = (role, name), observed, completed, aggregate
+        self.witness = witnesses[self.key]
+        self.parent_key = (role, "/".join(relative(name)[:-1]))
+        self.parent_witness = witnesses[self.parent_key]
+        self.parent = self.fd = None
+        self.count, self.hash, self.eof, self.closed = 0, hashlib.sha256(), False, False
+        try:
+            clock.tick()
+            need(self.key not in completed, "fresh-duplicate-stream")
+            self.parent, self.leaf = root.parent(name)
+            need(identity(os.fstat(self.parent)) == self.parent_witness, "fresh-stream-parent")
+            before = os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)
+            need(identity(before) == self.witness and stat.S_ISREG(before.st_mode)
+                 and root.regular_links(before) and before.st_uid in (0, os.getuid())
+                 and before.st_size == row["size"] and stat.S_IMODE(before.st_mode) == row["mode"], "fresh-stream-before")
+            # A custom opener bypasses the protected serializer's default fstat
+            # checks. Restore its exact size/owner-executable predicates here.
+            need(bool(before.st_mode & stat.S_IXUSR) == bool(row["mode"] & 0o111), "fresh-stream-executable")
+            self.fd = os.open(self.leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=self.parent)
+            self.check()
+        except BaseException:
+            self.close()
+            raise
+
+    def check(self):
+        self.clock.tick()
+        need(not self.closed and identity(os.fstat(self.parent)) == self.parent_witness
+             and identity(os.fstat(self.fd)) == self.witness
+             and identity(os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)) == self.witness, "fresh-stream-held-name")
+        current, leaf = self.root.parent(self.name)
+        try:
+            need(identity(os.fstat(current)) == self.parent_witness
+                 and identity(os.stat(leaf, dir_fd=current, follow_symlinks=False)) == self.witness, "fresh-stream-current-parent")
+        finally:
+            os.close(current)
+        self.root.check()
+
+    def read(self, size=-1):
+        need(not self.closed and type(size) is int and 0 < size <= 65536, "fresh-stream-read-bound")
+        self.clock.tick()
+        block = os.read(self.fd, size)
+        self.clock.tick()
+        self.count += len(block)
+        self.aggregate[0] += len(block)
+        need(self.count <= self.row["size"] and self.aggregate[0] <= MAX_BYTES, "fresh-stream-byte-bound")
+        self.hash.update(block)
+        if not block:
+            self.eof = True
+        return block
+
+    def close(self):
+        self.closed = True
+        try:
+            if self.fd is not None:
+                fd, self.fd = self.fd, None
+                os.close(fd)
+        finally:
+            if self.parent is not None:
+                parent, self.parent = self.parent, None
+                os.close(parent)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, *unused):
+        try:
+            if exc_type is None:
+                self.check()
+                actual = self.hash.hexdigest()
+                need(self.eof and self.count == self.row["size"] and actual == self.row["sha256"], "fresh-stream-content")
+                self.observed[self.key] = {"kind": "file", "mode": self.row["mode"], "sha256": actual, "size": self.count}
+                self.completed.add(self.key)
+                self.clock.tick()
+        finally:
+            self.close()
+
+
+def _scan_nar(roots, expected, clock):
+    """Fresh byte/NAR equivalence only; no later full scan is replaced."""
+    witnesses = _fresh_namespace(roots, expected, clock)
+    observed = {key: dict(row) for key, row in expected.items()}
+    completed, aggregate, nars = set(), [0], {}
+    for role in sorted(roots):
+        def opener(unused, name, selected=role):
+            key = (selected, name)
+            need(key in expected and expected[key]["kind"] == "file", "fresh-stream-selected")
+            return _FreshNarFile(roots[selected], name, expected[key], witnesses, selected,
+                                 observed, completed, aggregate, clock)
+        nars[role] = nar.hash_descriptor(descriptor(role, expected, clock), opener=opener, deadline=clock.deadline)
+        roots[role].check()
+    need(len(completed) == sum(row["kind"] == "file" for row in expected.values())
+         and aggregate[0] == sum(row.get("size", 0) for row in expected.values()), "fresh-stream-complete")
+    # Revisit EVERY earlier node after the last role's stream. A per-file exit
+    # check alone cannot detect mutation while a later file is being read.
+    need(_fresh_namespace(roots, expected, clock) == witnesses, "fresh-namespace-final")
+    for root in roots.values():
+        root.check()
+    clock.tick()
+    return observed, witnesses, nars
+
+
 def descriptor(role, rows, clock):
     nodes = []
     for (selected, path), row in sorted(rows.items()):
@@ -1133,8 +1311,12 @@ def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_
              "extraction-lineage")
         need(type(receipt["fresh_custody"]) is dict and set(receipt["fresh_custody"]) == {"sdk", "jdk"}, "fresh-roles")
         roots = {role: stack.enter_context(Root(output.path / role, clock)) for role in ("sdk", "jdk")}
-        observed, witnesses = scan(roots, rows, clock)
-        need(observed == rows and nar_origins(roots, rows, clock) == manifest["nars"], "fresh-content-nar")
+        if _held_carrier is None:
+            observed, witnesses = scan(roots, rows, clock)
+            need(observed == rows and nar_origins(roots, rows, clock) == manifest["nars"], "fresh-content-nar")
+        else:
+            observed, witnesses, fresh_nars = _scan_nar(roots, rows, clock)
+            need(observed == rows and fresh_nars == manifest["nars"], "fresh-content-nar")
         for role, root in roots.items():
             selected = receipt["fresh_custody"][role]
             need(type(selected) is dict and set(selected) == {"root", "root_identity", "members_sha256"}
@@ -1305,7 +1487,11 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
                 output.seal_directory(role + ("/" + path if path else ""))
         progress("final-proof-start")
         fresh = {role: stack.enter_context(Root(output.path / role, clock)) for role in ("sdk", "jdk")}
-        observed, witnesses = scan(fresh, rows, clock)
+        if _held_carrier is None:
+            observed, witnesses = scan(fresh, rows, clock)
+            fresh_nars = None
+        else:
+            observed, witnesses, fresh_nars = _scan_nar(fresh, rows, clock)
         for (role, path), value in witnesses.items():
             clock.tick()
             name = role + ("/" + path if path else "")
@@ -1313,7 +1499,10 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
                 need(value[:5] == output.root.named[name], "created-directory-identity")
             else:
                 need(value == output.materialized[name], "created-member-identity")
-        need(observed == rows and nar_origins(fresh, rows, clock) == manifest["nars"], "extracted-full-proof")
+        if _held_carrier is None:
+            need(observed == rows and nar_origins(fresh, rows, clock) == manifest["nars"], "extracted-full-proof")
+        else:
+            need(observed == rows and fresh_nars == manifest["nars"], "extracted-full-proof")
         # Default calls fully reauthenticate; scoped calls keep this fence
         # provisional until the owner's mandatory full_final and fresh proof.
         # Neither path reads the old SDK/JDK.

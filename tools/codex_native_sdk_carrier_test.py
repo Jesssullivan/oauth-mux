@@ -4,7 +4,7 @@ The only SDK seam is the synthetic selected JDK root. Existing SDK validators,
 registry/module/link-absence logic, byte readers and canonical NAR run unchanged.
 No model claims a genuine carrier producer, metadata or application qualification.
 """
-from contextlib import closing, redirect_stderr
+from contextlib import closing, ExitStack, redirect_stderr
 import copy
 import io
 import json
@@ -24,6 +24,310 @@ import codex_retained_sdk_export as sdk
 
 
 class CarrierModels(unittest.TestCase):
+    def fresh_fixture(self, name):
+        parent = self.root / name
+        parent.mkdir(mode=0o700)
+        values = {("sdk", "empty"): b"", ("sdk", "one"): b"1", ("sdk", "seven"): b"7" * 7,
+            ("sdk", "eight"): b"8" * 8, ("sdk", "nine"): b"9" * 9,
+            ("sdk", "chunk"): b"c" * 65536, ("sdk", "long"): b"l" * 65537,
+            ("sdk", "a/child"): b"directory child", ("sdk", "a-"): b"flat sibling",
+            ("sdk", "z"): b"z", ("sdk", "é"): b"utf8", ("jdk", "first"): b"first role"}
+        expected = {}
+        for role in ("sdk", "jdk"):
+            (parent / role).mkdir(mode=0o700)
+            expected[(role, "")] = {"kind": "directory", "mode": 0o555}
+        (parent / "sdk/a").mkdir(mode=0o700)
+        expected[("sdk", "a")] = {"kind": "directory", "mode": 0o555}
+        for (role, path), raw in values.items():
+            mode = 0o555 if path == "nine" else 0o444
+            self.write(parent / role / path, raw, mode)
+            expected[(role, path)] = {"kind": "file", "mode": mode, "size": len(raw), "sha256": carrier.sha(raw)}
+        (parent / "sdk/inert").symlink_to("/unselected-external-target/must-not-be-opened")
+        expected[("sdk", "inert")] = {"kind": "symlink", "target": "/unselected-external-target/must-not-be-opened"}
+        self.seal_dirs(parent / "sdk")
+        self.seal_dirs(parent / "jdk")
+        return parent, expected, values
+
+    def fresh_roots(self, parent, clock, stack):
+        return {role: stack.enter_context(carrier.Root(parent / role, clock)) for role in ("sdk", "jdk")}
+
+    def test_fused_real_stream_matches_full_scan_nar_with_one_read_and_eof_per_file(self):
+        parent, expected, values = self.fresh_fixture("fusion-golden")
+        clock = carrier.Clock(self.deadline)
+        real = carrier._FreshNarFile.read
+        reads = []
+        def record(stream, size=-1):
+            block = real(stream, size)
+            reads.append((stream.key, size, len(block)))
+            return block
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            observed, witnesses = carrier.scan(roots, expected, clock)
+            nars = carrier.nar_origins(roots, expected, clock)
+            with patch.object(carrier._FreshNarFile, "read", record):
+                fused, held, actual = carrier._scan_nar(roots, expected, clock)
+            self.assertEqual((fused, held, actual), (observed, witnesses, nars))
+        for key, raw in values.items():
+            selected = [(size, count) for which, size, count in reads if which == key]
+            self.assertEqual(sum(count for _, count in selected), len(raw))
+            self.assertEqual(sum(count == 0 for _, count in selected), 1)
+            self.assertEqual(selected[-1], (1, 0))
+            self.assertTrue(all(0 < size <= 65536 for size, _ in selected))
+        order = [key for key, _, count in reads if count and key[0] == "sdk"]
+        self.assertLess(order.index(("sdk", "a/child")), order.index(("sdk", "a-")))
+        self.assertLess(order.index(("sdk", "z")), order.index(("sdk", "é")))
+        self.assertEqual(values[("sdk", "empty")], b"")
+
+    def test_fused_wrong_selected_digest_refuses_actual_bytes(self):
+        parent, expected, _ = self.fresh_fixture("fusion-hash")
+        expected[("sdk", "seven")]["sha256"] = "f" * 64
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            with self.assertRaisesRegex(ValueError, "fresh-stream-content"):
+                carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_size_mode_hardlink_symlink_and_special_file_refuse_before_read(self):
+        for change in ("size", "mode", "hardlink", "symlink", "fifo"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-type-" + change)
+                leaf = parent / "sdk/seven"
+                leaf.parent.chmod(0o700)
+                if change == "size":
+                    leaf.chmod(0o600); leaf.write_bytes(b"short"); leaf.chmod(0o444)
+                elif change == "mode":
+                    leaf.chmod(0o555)
+                elif change == "hardlink":
+                    os.link(leaf, self.root / ("external-hardlink-" + change))
+                else:
+                    leaf.unlink()
+                    if change == "symlink": leaf.symlink_to(self.root / "never-follow")
+                    else: os.mkfifo(leaf, 0o444)
+                leaf.parent.chmod(0o555)
+                clock = carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarFile, "read", side_effect=AssertionError("invalid namespace read")):
+                        with self.assertRaises(ValueError):
+                            carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_custom_opener_restores_owner_executable_check(self):
+        parent, expected, _ = self.fresh_fixture("fusion-executable")
+        leaf = parent / "sdk/seven"
+        leaf.chmod(0o454)
+        expected[("sdk", "seven")]["mode"] = 0o454
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            with self.assertRaisesRegex(ValueError, "fresh-stream-executable"):
+                carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_read_mutation_truncation_growth_and_fd_cleanup_refuse(self):
+        real = carrier._FreshNarFile.read
+        for change in ("bytes", "truncate", "grow"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-read-" + change)
+                clock = carrier.Clock(self.deadline)
+                descriptors, changed = [], [False]
+                def mutate(stream, size=-1):
+                    if stream.key == ("sdk", "long"):
+                        descriptors.extend((stream.fd, stream.parent))
+                    block = real(stream, size)
+                    if stream.key == ("sdk", "long") and block and not changed[0]:
+                        changed[0] = True
+                        leaf = parent / "sdk/long"
+                        leaf.chmod(0o600)
+                        with leaf.open("r+b") as out:
+                            if change == "truncate": out.truncate(1)
+                            elif change == "grow": out.seek(0, 2); out.write(b"extra")
+                            else: out.seek(0); out.write(b"changed")
+                        leaf.chmod(0o444)
+                    return block
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarFile, "read", mutate):
+                        with self.assertRaises(ValueError):
+                            carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(changed[0])
+                self.assert_descriptors_closed(set(descriptors))
+
+    def test_fused_final_namespace_revisits_earlier_role_after_all_reads(self):
+        original = carrier._FreshNarFile.__init__
+        for change in ("inode", "chmod-restored", "mtime-restored", "link", "extra", "missing", "directory", "root", "alias"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-late-" + change)
+                clock = carrier.Clock(self.deadline)
+                changed = [False]
+                def mutate(stream, root, name, *args):
+                    original(stream, root, name, *args)
+                    if root.path.name == "sdk" and not changed[0]:
+                        changed[0] = True
+                        early = parent / "jdk/first"
+                        if change in ("root", "alias"):
+                            moved = parent / "old-jdk"
+                            (parent / "jdk").rename(moved)
+                            if change == "root": shutil.copytree(moved, parent / "jdk", symlinks=True)
+                            else: (parent / "jdk").symlink_to(moved, target_is_directory=True)
+                        elif change == "directory":
+                            (parent / "sdk").chmod(0o700)
+                            (parent / "sdk/a").rename(parent / "a-aside")
+                            shutil.copytree(parent / "a-aside", parent / "sdk/a")
+                            (parent / "sdk").chmod(0o555)
+                        elif change == "link":
+                            (parent / "sdk").chmod(0o700)
+                            (parent / "sdk/inert").unlink()
+                            (parent / "sdk/inert").symlink_to("/other-inert-target")
+                            (parent / "sdk").chmod(0o555)
+                        elif change in ("inode", "extra", "missing"):
+                            (parent / "jdk").chmod(0o700)
+                            if change == "inode":
+                                raw = early.read_bytes(); early.unlink(); self.write(early, raw)
+                            elif change == "extra": self.write(parent / "jdk/extra", b"extra")
+                            else: early.unlink()
+                            (parent / "jdk").chmod(0o555)
+                        else:
+                            info = early.stat()
+                            early.chmod(0o600)
+                            if change == "mtime-restored":
+                                early.write_bytes(early.read_bytes())
+                                os.utime(early, ns=(info.st_atime_ns, info.st_mtime_ns))
+                            early.chmod(0o444)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarFile, "__init__", mutate):
+                        with self.assertRaises(ValueError):
+                            carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(changed[0])
+
+    def test_fused_entry_byte_depth_bounds_and_missing_protected_namespace_refuse(self):
+        for change in ("entries", "bytes", "depth", "missing"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-bound-" + change)
+                clock = carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    if change == "entries": stack.enter_context(patch.object(carrier, "MAX_ENTRIES", 1))
+                    elif change == "bytes": stack.enter_context(patch.object(carrier, "MAX_BYTES", 1))
+                    elif change == "depth": expected[("sdk", "../escape")] = expected[("sdk", "seven")]
+                    else: del expected[("sdk", "seven")]
+                    with self.assertRaises(ValueError):
+                        carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_expiry_at_stream_eof_and_final_namespace_closes_all_resources(self):
+        for boundary in ("pre", "read", "eof", "final", "integer"):
+            with self.subTest(boundary=boundary):
+                parent, expected, _ = self.fresh_fixture("fusion-clock-" + boundary)
+                clock = carrier.Clock(self.deadline)
+                clock.until_ns = self.context["work_cutoff_monotonic_ns"]
+                now, nanos, descriptors = [self.deadline - 1], [clock.until_ns - 1], []
+                real_read, real_close, real_namespace = carrier._FreshNarFile.read, carrier._FreshNarFile.close, carrier._fresh_namespace
+                passes = [0]
+                def read(stream, size=-1):
+                    block = real_read(stream, size)
+                    if boundary in ("read", "integer") or (boundary == "eof" and not block):
+                        if boundary == "integer": nanos[0] = clock.until_ns
+                        else: now[0] = self.deadline
+                    return block
+                def close(stream):
+                    descriptors.extend(fd for fd in (stream.fd, stream.parent) if fd is not None)
+                    return real_close(stream)
+                def namespace(*args):
+                    result = real_namespace(*args); passes[0] += 1
+                    if boundary == "final" and passes[0] == 2: now[0] = self.deadline
+                    return result
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    root_descriptors = [fd for root in roots.values() for _, fd, _ in root.chain]
+                    if boundary == "pre": now[0] = self.deadline
+                    with patch.object(carrier.time, "monotonic", side_effect=lambda: now[0]), \
+                            patch.object(carrier.time, "monotonic_ns", side_effect=lambda: nanos[0]), \
+                            patch.object(carrier._FreshNarFile, "read", read), \
+                            patch.object(carrier._FreshNarFile, "close", close), \
+                            patch.object(carrier, "_fresh_namespace", namespace):
+                        with self.assertRaises(ValueError): carrier._scan_nar(roots, expected, clock)
+                if boundary != "pre": self.assertTrue(descriptors)
+                self.assert_descriptors_closed(set(descriptors) | set(root_descriptors))
+
+    def test_scoped_fusion_keeps_every_later_full_scan_and_standalone_path(self):
+        root, _, pin = self.seal("fusion-carrier")
+        output = self.root / "fusion-scoped"
+        with patch.object(carrier, "scan", wraps=carrier.scan) as scans, \
+                patch.object(carrier, "nar_origins", wraps=carrier.nar_origins) as nars, \
+                patch.object(carrier, "_scan_nar", wraps=carrier._scan_nar) as fused:
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                result = carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+                receipt_pin = carrier.sha(carrier.encoded(result))
+                carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope)
+                scope.full_final()
+                carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope)
+            self.assertEqual((fused.call_count, scans.call_count, nars.call_count), (3, 4, 0))
+            carrier.extract(root, pin, self.root / "fusion-standalone", self.deadline)
+            self.assertEqual((fused.call_count, scans.call_count, nars.call_count), (3, 7, 1))
+
+    def test_fused_stream_eof_probe_is_required_for_a_normal_exit(self):
+        parent, expected, _ = self.fresh_fixture("fusion-required-eof")
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            witnesses = carrier._fresh_namespace(roots, expected, clock)
+            observed, completed, aggregate = {}, set(), [0]
+            stream = carrier._FreshNarFile(roots["sdk"], "seven", expected[("sdk", "seven")],
+                witnesses, "sdk", observed, completed, aggregate, clock)
+            descriptors = (stream.fd, stream.parent)
+            with self.assertRaisesRegex(ValueError, "fresh-stream-content"):
+                with stream: self.assertEqual(stream.read(7), b"7" * 7)
+            self.assertEqual(completed, set())
+            self.assert_descriptors_closed(descriptors)
+
+    def test_fused_open_read_and_serializer_refusal_close_actual_descriptors(self):
+        for boundary in ("open", "read", "serializer"):
+            with self.subTest(boundary=boundary):
+                parent, expected, _ = self.fresh_fixture("fusion-error-" + boundary)
+                clock = carrier.Clock(self.deadline)
+                captured = []
+                real_open, real_read, real_nar = carrier.os.open, carrier.os.read, carrier.nar.hash_descriptor
+                def opened(*args, **kwargs):
+                    fd = real_open(*args, **kwargs); captured.append(fd); return fd
+                def refused_read(fd, size):
+                    raise OSError("model stream IO refusal")
+                def refused_nar(*args, **kwargs):
+                    real_nar(*args, **kwargs)
+                    raise ValueError("model serializer refusal")
+                def refused_open(name, flags, *args, **kwargs):
+                    if name == "first" and flags & os.O_NONBLOCK:
+                        raise OSError("model regular open refusal")
+                    return opened(name, flags, *args, **kwargs)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with ExitStack() as errors:
+                        errors.enter_context(patch.object(carrier.os, "open", refused_open if boundary == "open" else opened))
+                        if boundary == "read": errors.enter_context(patch.object(carrier.os, "read", refused_read))
+                        if boundary == "serializer": errors.enter_context(patch.object(carrier.nar, "hash_descriptor", refused_nar))
+                        with self.assertRaises((ValueError, OSError)):
+                            carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(captured)
+                self.assert_descriptors_closed(set(captured))
+
+    def test_scoped_fused_writer_identity_substitution_refuses_before_publication(self):
+        root, _, pin = self.seal("fusion-writer-carrier")
+        output = self.root / "fusion-writer-output"
+        real = carrier._scan_nar
+        def replaced(roots, expected, clock):
+            leaf = roots["sdk"].path / "repositories/public+/tool"
+            leaf.parent.chmod(0o700)
+            raw = leaf.read_bytes(); leaf.unlink(); self.write(leaf, raw, 0o555)
+            leaf.parent.chmod(0o555)
+            return real(roots, expected, clock)
+        with self.assertRaisesRegex(ValueError, "created-member-identity"):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                descriptors = self.held_fds(scope)
+                with patch.object(carrier, "_scan_nar", side_effect=replaced):
+                    carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+        self.assert_descriptors_closed(descriptors)
+        self.assertFalse((output / "extraction-receipt.json").exists())
+
     def held_fds(self, scope):
         return [fd for _, fd, _ in scope._held] + [fd for _, fd, _ in scope._chain]
 
@@ -322,7 +626,8 @@ class CarrierModels(unittest.TestCase):
         with carrier.HeldCarrier(root, pin, self.deadline) as scope:
             scope.report()
             descriptors = self.held_fds(scope)
-            with patch.object(carrier, "scan", side_effect=AssertionError("unregistered output read")):
+            with patch.object(carrier, "scan", side_effect=AssertionError("unregistered output read")), \
+                    patch.object(carrier, "_scan_nar", side_effect=AssertionError("unregistered output read")):
                 with self.assertRaisesRegex(ValueError, "registered-extraction"):
                     carrier.revalidate_extraction(root, pin, output, self.deadline,
                         pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(receipt)), _held_carrier=scope)
