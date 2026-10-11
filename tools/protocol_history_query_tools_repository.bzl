@@ -16,12 +16,26 @@ def _leaf(ctx, value):
         fail("selected query metadata or regular leaf redirected/unavailable")
     return path
 
-def _bootstrap_metadata(ctx, value):
+def bootstrap_metadata_shape(role, real):
+    # Only fixed bootstrap metadata roles may follow their linkFarm aliases.
+    if role not in ["native.json", "store-paths"] or type(real) != "string":
+        return False
+    parts = real.split("/")
+    if len(parts) not in [4, 5] or parts[:3] != ["", "nix", "store"]:
+        return False
+    object_name = parts[3]
+    if len(object_name) < 34 or object_name[32] != "-" or not all([object_name[index] in "0123456789abcdfghijklmnpqrsvwxyz" for index in range(32)]):
+        return False
+    if len(parts) == 4:
+        return all([c not in real for c in ["\\", "\n", "\r", "\000", " ", "\t"]]) and object_name not in [".", ".."]
+    return role == "store-paths" and object_name[33:] == "closure-info" and parts[4] == "store-paths"
+
+def _bootstrap_metadata(ctx, value, role):
     # Locked bootstrap linkFarm metadata may redirect only to an immutable
     # physical Nix-store regular object. Selected operator leaves never do.
     path = ctx.path(value)
     real = str(path.realpath)
-    if not path.exists or path.is_dir or not real.startswith("/nix/store/") or len(real.split("/")) != 4:
+    if not path.exists or path.is_dir or not bootstrap_metadata_shape(role, real):
         fail("immutable bootstrap metadata object required")
     physical = _leaf(ctx, real)
     ctx.watch(path)
@@ -51,7 +65,7 @@ def _impl(ctx):
     bootstrap = _absolute(ctx.attr.bootstrap_closure or ctx.os.environ.get("OMUX_BAZEL_BOOTSTRAP_CLOSURE", ""))
     if not bootstrap.startswith("/nix/store/") or len(bootstrap.split("/")) != 4:
         fail("immutable registered bootstrap closure required")
-    native, paths = _bootstrap_metadata(ctx, bootstrap + "/native.json"), _bootstrap_metadata(ctx, bootstrap + "/store-paths")
+    native, paths = _bootstrap_metadata(ctx, bootstrap + "/native.json", "native.json"), _bootstrap_metadata(ctx, bootstrap + "/store-paths", "store-paths")
     ctx.watch(native)
     ctx.watch(paths)
     manifest = json.decode(ctx.read(native))

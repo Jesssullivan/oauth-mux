@@ -2354,6 +2354,7 @@ python_test(
         "native_flake_seed_plan_test.py", "native_flake_schedule_test.py",
         "native_flake_sources_test.py", "nix_private_store_qualification_test.py",
     ],
+    data = ["protocol_history_query_tools_repository.bzl"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )

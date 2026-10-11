@@ -8427,6 +8427,9 @@ test "actual acquisition refuses exhausted route generation before request or le
         _ = try current.state.addGrant(.{ .id = "grant-a", .account_id = "account-a", .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = 1 });
         const binding_id = bindingIdentityForOwner("git", "session", "session", null);
         _ = try current.state.bind(.{ .id = &binding_id, .application = "git", .session_id = "session", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1, .route_generation = std.math.maxInt(u64) });
+        const initial = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(initial);
+        const initial_revision = try current.db.?.commit(0, initial, &.{.{ .put = .{ .context = .{ .account_id = "account-a", .grant_id = "grant-a", .generation = 1, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-initial-route-payload", .renewal_owner = .external } }});
         const selected_account: []const u8 = if (account_change) "account-b" else "account-a";
         const selected_grant: []const u8 = if (account_change) "grant-b" else "grant-a";
         const generation: u64 = if (account_change) 1 else 2;
@@ -8437,7 +8440,7 @@ test "actual acquisition refuses exhausted route generation before request or le
         _ = try current.state.addGrant(.{ .id = selected_grant, .account_id = selected_account, .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = generation });
         const before = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
         defer allocator.free(before);
-        _ = try current.db.?.commit(0, before, &.{.{ .put = .{ .context = .{ .account_id = selected_account, .grant_id = selected_grant, .generation = generation, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-route-payload", .renewal_owner = .external } }});
+        const baseline_revision = try current.db.?.commit(initial_revision, before, &.{.{ .put = .{ .context = .{ .account_id = selected_account, .grant_id = selected_grant, .generation = generation, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-route-payload", .renewal_owner = .external } }});
         const demand: domain.Demand = .{ .allowed_account_ids = &.{ "account-a", "account-b" }, .provider = "github", .audience = "https://github.com", .resource = .{ .kind = "requests" }, .now = current.now() };
         const selected = try current.state.select(demand, &binding_id);
         try std.testing.expectEqualStrings(selected_grant, selected.grant_id);
@@ -8453,7 +8456,7 @@ test "actual acquisition refuses exhausted route generation before request or le
         try std.testing.expectEqual(std.math.maxInt(u64), current.state.binding(&binding_id).?.route_generation);
         var stored = try current.db.?.readSnapshot();
         defer stored.deinit();
-        try std.testing.expectEqual(@as(u64, 1), stored.revision);
+        try std.testing.expectEqual(baseline_revision, stored.revision);
         try std.testing.expectEqualStrings(before, stored.json);
     }
 }

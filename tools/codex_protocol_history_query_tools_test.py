@@ -4,6 +4,7 @@ External evaluation/guard observations are synthetic. They never establish that
 six real query roots exist or that a real missing-plan action succeeded.
 """
 import copy
+import ast
 import os
 from pathlib import Path
 import tempfile
@@ -15,6 +16,59 @@ import codex_protocol_history_query_tools as query
 import native_flake_seed_plan_carrier_test as carrier_models
 import nar_descriptor as nar
 import nix_private_store_seed as seed
+
+
+class BootstrapMetadataModels(unittest.TestCase):
+    def methods(self):
+        # Execute only actual Python-compatible production function definitions;
+        # adapt the Starlark type builtin, never mirror the admission predicate.
+        raw=(Path(__file__).parent/'protocol_history_query_tools_repository.bzl').read_text()
+        tree=ast.parse(raw)
+        selected=[node for node in tree.body if isinstance(node,ast.FunctionDef)
+                  and node.name in ('_absolute','_leaf','bootstrap_metadata_shape','_bootstrap_metadata')]
+        self.assertEqual(len(selected),4)
+        def fail(message):raise ValueError(message)
+        namespace={'type':lambda value:'string' if isinstance(value,str) else 'other','fail':fail}
+        exec(compile(ast.Module(body=selected,type_ignores=[]),'<actual-bootstrap-metadata-functions>','exec'),namespace)
+        return namespace
+
+    def test_actual_role_shape_accepts_closure_info_only_for_paths(self):
+        methods=self.methods();shape=methods['bootstrap_metadata_shape']
+        native='/nix/store/r43fs1sxk8yrlnga45ww7d2nz855cv23-native.json'
+        paths='/nix/store/h3cgn5i0817m39vxpl0bq925gbapv5ma-closure-info/store-paths'
+        self.assertTrue(shape('native.json',native));self.assertTrue(shape('store-paths',paths))
+        for role,value in (('native.json',paths),('other',paths),('store-paths',paths+'/extra'),
+                ('store-paths',paths.replace('closure-info','foreign')),('store-paths',paths.replace('store-paths','registration')),
+                ('store-paths',paths.replace('/nix/store/','/other/store/')),('store-paths',paths.replace('h3cgn','ZZZZZ'))):
+            with self.subTest(role=role,value=value):self.assertFalse(shape(role,value))
+
+    def test_actual_bootstrap_helper_watches_alias_and_physical_and_operator_leaf_stays_strict(self):
+        methods=self.methods()
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);physical=root/'store-paths';physical.write_text('/nix/store/model\n')
+            alias=root/'alias';alias.symlink_to(physical)
+            claimed='/nix/store/h3cgn5i0817m39vxpl0bq925gbapv5ma-closure-info/store-paths'
+            class Leaf:
+                def __init__(self,path,real):self.path=path;self.realpath=real
+                @property
+                def exists(self):return self.path.exists()
+                @property
+                def is_dir(self):return self.path.is_dir()
+            class Context:
+                def __init__(self):self.watched=[];self.redirect=False
+                def path(self,value):
+                    if value=='/nix/store/'+'a'*32+'-bootstrap/store-paths':return Leaf(alias,claimed)
+                    if value==claimed:return Leaf(physical,claimed if not self.redirect else claimed+'/redirect')
+                    raise AssertionError('undeclared path')
+                def watch(self,value):self.watched.append(value)
+            ctx=Context();logical='/nix/store/'+'a'*32+'-bootstrap/store-paths'
+            got=methods['_bootstrap_metadata'](ctx,logical,'store-paths')
+            self.assertEqual(got.path.read_text(),'/nix/store/model\n');self.assertEqual(len(ctx.watched),2)
+            with self.assertRaises(ValueError):methods['_leaf'](ctx,logical)
+            ctx.redirect=True
+            with self.assertRaises(ValueError):methods['_bootstrap_metadata'](ctx,logical,'store-paths')
+            ctx.redirect=False;physical.unlink();physical.mkdir()
+            with self.assertRaises(ValueError):methods['_bootstrap_metadata'](ctx,logical,'store-paths')
 
 
 class ToolFixture:
