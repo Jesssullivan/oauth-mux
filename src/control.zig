@@ -15,6 +15,7 @@ pub const methods = [_]Method{
     .{ .name = "setup.plan", .summary = "Read ownership-aware setup actions without altering managed files." },
     .{ .name = "system.health", .summary = "Read local health without initiating provider access." },
     .{ .name = "custody.reopen", .summary = "Explicitly retry locked startup custody after normal platform unlock; no source enrollment or provider request." },
+    .{ .name = "custody.observation", .summary = "Read bounded exact committed custody schemas, checkpoint and keyed preservation commitment; no update fence, artifact compatibility or deployment authority." },
     .{ .name = "reliability.lifecycle", .summary = "Read retained terminal counts and explicit setup-verification facts; timing and coverage remain partial, with no achieved SLO." },
     .{ .name = "reliability.export", .summary = "Export redacted diagnostic counters and typed timing bounds; no achieved reliability claim." },
     .{ .name = "sources.catalog", .summary = "Read supported source purposes and acquisition constraints." },

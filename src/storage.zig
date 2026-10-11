@@ -127,6 +127,65 @@ pub const GrantStatus = struct {
 /// every persisted section against this bound before external effects; grant
 /// ciphertext has its separate envelope limit and never consumes this JSON.
 pub const maximum_snapshot_bytes = 16 * 1024 * 1024;
+pub const CustodyObservation = struct {
+    storage_schema: u32,
+    snapshot_schema: u32,
+    custody_format: u32 = envelope.format_version,
+    recovery_format: u32 = recovery.format_version,
+    revision: u64,
+    checkpoint_sequence: u64,
+    preservation_commitment: [32]u8,
+};
+// Observation refuses over-limit custody; it never truncates retained authority.
+const maximum_observation_rows = 65536;
+const maximum_observation_bytes = 4 * maximum_snapshot_bytes;
+const ObservationColumn = enum { text, blob, integer, optional_integer };
+// Integrity loss fences admitted custody without restoring or writing it.
+// Capacity, deadlines and an already-open transaction remain ordinary refusals.
+fn observationIntegrityFailure(err: anyerror) bool {
+    return switch (err) {
+        error.DatabaseCorrupt, error.RecordMissing, error.InvalidSnapshot,
+        error.SecretInSnapshot, error.SnapshotTooLarge, error.SnapshotAuthenticationFailed,
+        error.InvalidCustodyObservationSnapshot, error.UnsupportedSchema,
+        error.UnsupportedSnapshotSchema, error.WrongKeyIdentity,
+        error.WrongRecoveryInstallation, error.RecoveryRollbackDetected,
+        error.RecoveryCheckpointMismatch, error.InvalidRecoveryCheckpoint, error.RecoveryAuthorityPoisoned,
+        error.MissingRecoveryAuthority, error.RecoveryAuthorityUnavailable,
+        error.InvalidRecoveryAuthority, error.RecoveryReadFailed,
+        error.RecoveryMigrationRequired, error.RecoveryAuthenticationFailed,
+        error.UnsafeRecoveryFile => true,
+        else => false,
+    };
+}
+const ObservationHash = struct {
+    mac: std.crypto.auth.hmac.sha2.HmacSha256,
+    io: std.Io,
+    until: std.Io.Clock.Timestamp,
+    bytes: usize = 0,
+    rows: usize = 0,
+
+    fn tick(self: *const ObservationHash) !void {
+        if (self.until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.Timeout;
+    }
+
+    fn field(self: *ObservationHash, kind: u8, value: []const u8) !void {
+        try self.tick();
+        const length = std.math.add(usize, value.len, 9) catch return error.CustodyObservationTooLarge;
+        if (length > maximum_observation_bytes - self.bytes) return error.CustodyObservationTooLarge;
+        self.bytes += length;
+        self.mac.update(&.{kind});
+        var size: [8]u8 = undefined;
+        std.mem.writeInt(u64, &size, @intCast(value.len), .little);
+        self.mac.update(&size);
+        var offset: usize = 0;
+        while (offset < value.len) {
+            try self.tick();
+            const end = offset + @min(value.len - offset, 64 * 1024);
+            self.mac.update(value[offset..end]);
+            offset = end;
+        }
+    }
+};
 /// The actor's typed whole-envelope/obligation gate. It must perform no effects;
 /// returning an error prevents storage from adopting any recovered mutation.
 pub const SnapshotValidator = *const fn (std.mem.Allocator, []const u8, u64) anyerror!void;
@@ -499,6 +558,114 @@ pub const Store = struct {
         try validateMetadata(self.allocator, json);
         try self.verifySnapshot(revision, json);
         return .{ .allocator = self.allocator, .revision = revision, .json = try self.allocator.dupe(u8, json) };
+    }
+
+    /// Strict exact-state observation, not a quiescence fence or a restart
+    /// equivalence proof. Cover exact snapshot bytes and five retained tables
+    /// (custody, grants, generations, tombstones, operations), with a verified
+    /// checkpoint. This observes ciphertext; it does not validate every grant.
+    /// Only the existing writer may call this; no grant is decrypted or issued.
+    pub fn custodyObservation(self: *Store, expected_revision: u64, until: std.Io.Clock.Timestamp) !CustodyObservation {
+        try self.assertOwner();
+        errdefer |err| {
+            if (observationIntegrityFailure(err)) self.poisoned = true;
+        }
+        var hash: ObservationHash = .{ .mac = .init(&self.key), .io = self.io, .until = until };
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
+        try hash.tick();
+        if (c.sqlite3_get_autocommit(self.db) != 1) return error.CustodyObservationTransactionPending;
+        try self.exec("BEGIN;");
+        var transaction_open = true;
+        defer if (transaction_open) self.rollback();
+        const schema = try self.scalar("PRAGMA user_version;");
+        if (schema != 3) return error.UnsupportedSchema;
+        const checkpoint = try self.readCheckpoint();
+        try checkpoint.verify(self.checkpoint);
+        if (self.authority) |*authority| try (try authority.read()).verify(checkpoint) else return error.MissingRecoveryAuthority;
+        var snapshot = try self.readSnapshot();
+        defer snapshot.deinit();
+        if (snapshot.revision != expected_revision or snapshot.revision != checkpoint.snapshot_revision) return error.RevisionConflict;
+        const Header = struct { schema_version: u32 };
+        const header = std.json.parseFromSlice(Header, self.allocator, snapshot.json, .{ .ignore_unknown_fields = true, .duplicate_field_behavior = .@"error" }) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return error.InvalidCustodyObservationSnapshot,
+        };
+        defer header.deinit();
+        if (header.value.schema_version != 1 and header.value.schema_version != 2) return error.UnsupportedSnapshotSchema;
+        try hash.field(0, "omux exact committed custody observation v1");
+        try hash.field(1, self.key_id);
+        try hash.field(2, &checkpoint.installation);
+        var formats: [16]u8 = undefined;
+        std.mem.writeInt(u32, formats[0..4], @intCast(schema), .little);
+        std.mem.writeInt(u32, formats[4..8], header.value.schema_version, .little);
+        std.mem.writeInt(u32, formats[8..12], envelope.format_version, .little);
+        std.mem.writeInt(u32, formats[12..16], recovery.format_version, .little);
+        try hash.field(12, &formats);
+        // Exact JSON includes source/identity tombstones, renewal ownership and
+        // request/mutation/native ledgers. Recovery may change these bytes and
+        // conservatively change this commitment; no normalization is applied.
+        try hash.field(3, snapshot.json);
+        {
+            const identity = try self.prepare("SELECT key_id FROM custody WHERE id=1;");
+            defer finalize(identity);
+            try expectRow(identity);
+            if (!std.mem.eql(u8, self.key_id, try textColumn(identity, 0))) return error.WrongKeyIdentity;
+        }
+        try self.observeRows(&hash, "SELECT id,key_id,key_check FROM custody ORDER BY id;", &.{ .integer, .text, .blob });
+        try self.observeRows(&hash, "SELECT account_id,grant_id,generation,purpose,scope,renewal_owner,state,ciphertext FROM grants ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer, .text, .text, .text, .text, .blob });
+        try self.observeRows(&hash, "SELECT account_id,grant_id,generation FROM grant_generations ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer });
+        try self.observeRows(&hash, "SELECT account_id FROM tombstones ORDER BY account_id COLLATE BINARY;", &.{.text});
+        try self.observeRows(&hash, "SELECT operation_id,account_id,grant_id,generation,state,committed_revision FROM operations ORDER BY operation_id COLLATE BINARY;", &.{ .text, .text, .text, .integer, .text, .optional_integer });
+        try hash.tick();
+        if (self.authority) |*authority| try (try authority.read()).verify(checkpoint) else return error.MissingRecoveryAuthority;
+        try hash.tick();
+        var result: CustodyObservation = .{ .storage_schema = @intCast(schema), .snapshot_schema = header.value.schema_version, .revision = snapshot.revision, .checkpoint_sequence = checkpoint.sequence, .preservation_commitment = undefined };
+        hash.mac.final(&result.preservation_commitment);
+        self.exec("ROLLBACK;") catch |err| {
+            self.poisoned = true;
+            return err;
+        };
+        transaction_open = false;
+        try hash.tick();
+        return result;
+    }
+
+    fn observeRows(self: *Store, hash: *ObservationHash, sql: [:0]const u8, columns: []const ObservationColumn) !void {
+        try hash.field(4, sql);
+        const stmt = try self.prepare(sql);
+        defer finalize(stmt);
+        if (c.sqlite3_column_count(stmt) != @as(c_int, @intCast(columns.len))) return error.DatabaseCorrupt;
+        while (true) {
+            try hash.tick();
+            switch (c.sqlite3_step(stmt)) {
+                c.SQLITE_DONE => break,
+                c.SQLITE_ROW => {},
+                else => |result| {
+                    try check(result);
+                    return error.DatabaseFailure;
+                },
+            }
+            if (hash.rows == maximum_observation_rows) return error.CustodyObservationTooLarge;
+            hash.rows += 1;
+            try hash.field(5, "");
+            for (columns, 0..) |kind, index| {
+                const column: c_int = @intCast(index);
+                switch (kind) {
+                    .text => try hash.field(6, try textColumn(stmt, column)),
+                    .blob => try hash.field(7, try blobColumn(stmt, column)),
+                    .integer, .optional_integer => {
+                        if (kind == .optional_integer and c.sqlite3_column_type(stmt, column) == c.SQLITE_NULL) {
+                            try hash.field(8, "");
+                        } else {
+                            var bytes: [8]u8 = undefined;
+                            std.mem.writeInt(u64, &bytes, try integerColumn(stmt, column), .little);
+                            try hash.field(9, &bytes);
+                        }
+                    },
+                }
+            }
+        }
+        try hash.field(10, "");
     }
 
     /// Snapshot JSON is metadata only. Secret-bearing fields are rejected as
@@ -967,6 +1134,145 @@ fn validateValue(value: std.json.Value, depth: usize) error{ InvalidSnapshot, Se
 }
 
 const test_context: envelope.Context = .{ .account_id = "account-1", .grant_id = "grant-1", .generation = 1, .purpose = "request", .scope = "read" };
+
+test "custody observation joins committed schemas and checkpoint without any writes" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    var store = try Store.open(std.testing.io, allocator, path, @splat(63));
+    defer store.close();
+    const revision = try store.commit(0, "{\"schema_version\":2}", &.{.{ .put = .{ .context = test_context, .plaintext = "synthetic-observation-payload" } }});
+    const before = store.checkpoint;
+    const changes = try store.scalar("SELECT total_changes();");
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    const first = try store.custodyObservation(revision, until);
+    const second = try store.custodyObservation(revision, until);
+    try std.testing.expectEqual(@as(u32, 3), first.storage_schema);
+    try std.testing.expectEqual(@as(u32, 2), first.snapshot_schema);
+    try std.testing.expectEqual(envelope.format_version, first.custody_format);
+    try std.testing.expectEqual(recovery.format_version, first.recovery_format);
+    try std.testing.expectEqual(revision, first.revision);
+    try std.testing.expectEqual(before.sequence, first.checkpoint_sequence);
+    try std.testing.expectEqualSlices(u8, &first.preservation_commitment, &second.preservation_commitment);
+    try std.testing.expect(before.eql(store.checkpoint));
+    try (try store.authority.?.read()).verify(before);
+    try std.testing.expectEqual(changes, try store.scalar("SELECT total_changes();"));
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+    try std.testing.expectError(error.RevisionConflict, store.custodyObservation(revision + 1, until));
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+    try store.exec("BEGIN;");
+    try std.testing.expectError(error.CustodyObservationTransactionPending, store.custodyObservation(revision, until));
+    try std.testing.expectEqual(@as(c_int, 0), c.sqlite3_get_autocommit(store.db));
+    try store.exec("ROLLBACK;");
+    const expired = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    try std.testing.expectError(error.Timeout, store.custodyObservation(revision, expired));
+    try std.testing.expect(!store.poisoned);
+    store.poisoned = true;
+    try std.testing.expectError(error.DatabasePoisoned, store.custodyObservation(revision, until));
+    store.poisoned = false;
+    store.checkpoint.sequence += 1;
+    try std.testing.expectError(error.RecoveryCheckpointMismatch, store.custodyObservation(revision, until));
+    try std.testing.expect(store.poisoned);
+    try std.testing.expectError(error.DatabasePoisoned, store.commit(revision, "{\"schema_version\":2}", &.{}));
+    // Test-only repair for the following independent-authority scenario.
+    store.poisoned = false;
+    store.checkpoint = before;
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+    const independent = try before.successor(std.testing.io, before.snapshot_revision, before.snapshot_digest);
+    try store.authority.?.reserve(before, independent);
+    try std.testing.expectError(error.RecoveryRollbackDetected, store.custodyObservation(revision, until));
+    try std.testing.expect(store.poisoned);
+    try std.testing.expectEqual(changes, try store.scalar("SELECT total_changes();"));
+}
+
+test "custody commitment covers SQL renewal generations tombstones and nullable rotation records" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    var store = try Store.open(std.testing.io, allocator, path, @splat(64));
+    defer store.close();
+    const revision = try store.commit(0, "{\"schema_version\":2}", &.{.{ .put = .{ .context = test_context, .plaintext = "synthetic-observation-payload" } }});
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    var prior = try store.custodyObservation(revision, until);
+    // The checkpoint authenticates exact metadata, not these SQL authorities.
+    // Independent commitment coverage must detect each change without issuing,
+    // decrypting or claiming a valid recovery of the tampered grant.
+    for ([_][:0]const u8{
+        "UPDATE grants SET renewal_owner='external';",
+        "UPDATE grants SET ciphertext=x'010203';",
+        "UPDATE grant_generations SET generation=generation+1;",
+        "INSERT INTO tombstones(account_id) VALUES('synthetic-forgotten');",
+        "INSERT INTO operations(operation_id,account_id,grant_id,generation,state,committed_revision) VALUES('synthetic-rotation','account-1','grant-1',1,'started',NULL);",
+        "UPDATE operations SET committed_revision=0;",
+        "UPDATE operations SET state='quarantined';",
+        "UPDATE custody SET key_check=x'010203';",
+    }) |sql| {
+        try store.exec(sql);
+        const next = try store.custodyObservation(revision, until);
+        try std.testing.expect(!std.mem.eql(u8, &prior.preservation_commitment, &next.preservation_commitment));
+        prior = next;
+    }
+    try store.exec("UPDATE snapshot SET metadata_json='{\"schema_version\":1}';");
+    try std.testing.expectError(error.SnapshotAuthenticationFailed, store.custodyObservation(revision, until));
+    try std.testing.expect(store.poisoned);
+    try std.testing.expectError(error.DatabasePoisoned, store.commit(revision, "{\"schema_version\":2}", &.{}));
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+}
+
+test "custody observation aggregate limits refuse before publishing a partial commitment" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    var store = try Store.open(std.testing.io, allocator, path, @splat(65));
+    defer store.close();
+    const revision = try store.commit(0, "{\"schema_version\":2}", &.{.{ .tombstone_account = "synthetic-forgotten" }});
+    const before = store.checkpoint;
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    var hash: ObservationHash = .{ .mac = .init(&store.key), .io = std.testing.io, .until = until, .bytes = maximum_observation_bytes - 9 };
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
+    try hash.field(0, "");
+    try std.testing.expectError(error.CustodyObservationTooLarge, hash.field(0, ""));
+    hash.bytes = 0;
+    hash.rows = maximum_observation_rows;
+    try std.testing.expectError(error.CustodyObservationTooLarge, store.observeRows(&hash, "SELECT account_id FROM tombstones ORDER BY account_id COLLATE BINARY;", &.{.text}));
+    const observed = try store.custodyObservation(revision, until);
+    try std.testing.expectEqual(before.sequence, observed.checkpoint_sequence);
+    try std.testing.expect(before.eql(store.checkpoint));
+}
+
+test "custody observation keys exact authority to installation lineage and sorts retained rows" {
+    const allocator = std.testing.allocator;
+    var first_directory = std.testing.tmpDir(.{});
+    defer first_directory.cleanup();
+    var second_directory = std.testing.tmpDir(.{});
+    defer second_directory.cleanup();
+    const first_path = try testPath(allocator, first_directory);
+    defer allocator.free(first_path);
+    const second_path = try testPath(allocator, second_directory);
+    defer allocator.free(second_path);
+    // One OS wrapping key may legitimately serve more than one installation.
+    var first = try Store.open(std.testing.io, allocator, first_path, @splat(66));
+    defer first.close();
+    var second = try Store.open(std.testing.io, allocator, second_path, @splat(66));
+    defer second.close();
+    const revision = try first.commit(0, "{\"schema_version\":2}", &.{});
+    _ = try second.commit(0, "{\"schema_version\":2}", &.{});
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    const baseline = try first.custodyObservation(revision, until);
+    const other = try second.custodyObservation(revision, until);
+    try std.testing.expect(!std.mem.eql(u8, &baseline.preservation_commitment, &other.preservation_commitment));
+    try first.exec("INSERT INTO tombstones(account_id) VALUES('b'),('a');");
+    const ordered = try first.custodyObservation(revision, until);
+    try first.exec("DELETE FROM tombstones; INSERT INTO tombstones(account_id) VALUES('a'),('b');");
+    const reversed = try first.custodyObservation(revision, until);
+    try std.testing.expectEqualSlices(u8, &ordered.preservation_commitment, &reversed.preservation_commitment);
+}
 
 test "lifecycle terminal fact and mutation replay fence share authenticated commit" {
     const reliability = @import("reliability.zig");

@@ -3298,7 +3298,7 @@ pub const Engine = struct {
         defer request.deinit();
         // Audit refusals do not restore or rewrite the actor's committed state.
         // Production control ingress already verifies the socket's peer user.
-        if (eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "custody.reopen")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "custody.reopen") or eql(request.method, "custody.observation")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -3815,6 +3815,34 @@ pub const Engine = struct {
     fn handleRequest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) ![]u8 {
         const method = request.method;
         const params = request.params;
+        if (builtin.is_test and eql(method, "fixture.custodyObservationRollbackFault")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const mode = if (control.get(params, "mode") != null) try control.string(params, "mode") else "rollback";
+            if (eql(mode, "checkpoint")) {
+                if (sql_api.sqlite3_exec(self.db.?.db, "UPDATE recovery_checkpoint SET sequence=sequence+1 WHERE id=1;", null, null, null) != sql_api.SQLITE_OK) return error.AuthorizerFixtureFailed;
+                return control.success(allocator, request.id, .{ .armed = true });
+            }
+            if (!eql(mode, "rollback") and !eql(mode, "preexisting_poison")) return error.InvalidParams;
+            // Static callback has no borrowed fixture pointer. SQLite owns its
+            // connection lifetime and clears the callback when Store closes.
+            const Fault = struct {
+                fn authorize(_: ?*anyopaque, action: c_int, transaction: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8) callconv(.c) c_int {
+                    if (action == sql_api.SQLITE_TRANSACTION and transaction != null and std.ascii.eqlIgnoreCase(std.mem.span(transaction), "ROLLBACK")) return sql_api.SQLITE_DENY;
+                    return sql_api.SQLITE_OK;
+                }
+            };
+            if (sql_api.sqlite3_set_authorizer(self.db.?.db, Fault.authorize, null) != sql_api.SQLITE_OK) return error.AuthorizerFixtureFailed;
+            if (eql(mode, "preexisting_poison")) {
+                // Produce actual Store poison before the control branch sees
+                // it; do not manufacture either Store or actor flags.
+                _ = self.db.?.custodyObservation(self.revision, self.active_until orelse return error.MissingObservationDeadline) catch |err| {
+                    if (err != error.DatabaseDenied or !self.db.?.poisoned) return err;
+                    return control.success(allocator, request.id, .{ .armed = true });
+                };
+                return error.ExpectedFixtureFault;
+            }
+            return control.success(allocator, request.id, .{ .armed = true });
+        }
         if (builtin.is_test and eql(method, "fixture.measuredRuntime")) return self.measuredRuntimeFixture(allocator, request, channel);
         if (builtin.is_test and eql(method, "fixture.lifecycleMeasurementFault")) {
             if (channel != .control) return error.WrongChannel;
@@ -4096,6 +4124,51 @@ pub const Engine = struct {
             if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
             if (self.poisoned) return error.RepairRequired;
             return control.success(allocator, request.id, .{ .reopened = false, .custody_available = true, .metadata_loaded = true, .account_count = self.state.accounts.items.len, .provider_request_initiated = false, .live_handoff_proven = false });
+        }
+        if (eql(method, "custody.observation")) {
+            if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
+            if (self.poisoned or self.vault_locked or self.db == null) return error.CustodyUnavailable;
+            if (self.db.?.poisoned) {
+                self.poisoned = true;
+                return error.CustodyUnavailable;
+            }
+            if (self.stopping or self.staging_mutation) return error.CustodyObservationPending;
+            const observation = self.db.?.custodyObservation(self.revision, self.active_until orelse return error.MissingObservationDeadline) catch |err| {
+                // A poisoned read transaction or known integrity loss cannot
+                // leave the actor admitting later credential work. No restore.
+                if (err == error.RevisionConflict) self.db.?.poisoned = true;
+                if (self.db.?.poisoned) self.poisoned = true;
+                return err;
+            };
+            const commitment = std.fmt.bytesToHex(observation.preservation_commitment, .lower);
+            // Socket ingress verifies the local peer. No JSON flag proves that
+            // transport to a caller; direct actor fixtures are not socket proof.
+            // No installed artifact digest, active-work claim or fence is made.
+            return control.success(allocator, request.id, .{
+                .schema_version = 1,
+                .scope = "exact-committed-custody-observation",
+                .commitment_format = "exact-committed-custody-v1",
+                .channel = if (self.instance_selection == .dev) "development" else "release",
+                .instance = @tagName(self.instance_selection),
+                .protocol_version = control.protocol_version,
+                .custody_available = true,
+                .metadata_loaded = true,
+                .storage_schema = observation.storage_schema,
+                .snapshot_schema = observation.snapshot_schema,
+                .custody_format = observation.custody_format,
+                .recovery_format = observation.recovery_format,
+                .revision = observation.revision,
+                .checkpoint_sequence = observation.checkpoint_sequence,
+                .preservation_commitment = commitment[0..],
+                .required_features = .{ "tombstones-v1", "credential-generations-v1", "replay-authority-v1" },
+                .artifact_digest = @as(?[]const u8, null),
+                .artifact_compatibility_available = false,
+                .active_work = @as(?u64, null),
+                .update_fence = @as(?[]const u8, null),
+                .activation_authorized = false,
+                .provider_request_initiated = false,
+                .live_handoff_proven = false,
+            });
         }
         if (eql(method, "system.handshake")) return control.success(allocator, request.id, .{
             .protocol_version = control.protocol_version,
@@ -6468,6 +6541,121 @@ test "native request audit exposes unknown and outstanding request credit withou
     try std.testing.expect(result.records[0].first.terminal_report == null);
     try std.testing.expect(result.binding == null);
     try std.testing.expectError(error.AttemptBudgetExhausted, requests.checkIssue(intent));
+}
+
+test "custody observation rejects caller authority foreign channels and unavailable actor without restore" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var current: Engine = undefined;
+    current.poisoned = false;
+    // Refusals must not restore a database or read undefined key/authority.
+    var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\",\"params\":{\"authenticated\":true}}");
+    defer request.deinit();
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .adapter));
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .browser));
+    const refused = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\",\"params\":{\"authenticated\":true}}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "InvalidParams") != null);
+    current.poisoned = true;
+    const poisoned = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\"}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, poisoned, "CustodyUnavailable") != null);
+    current.poisoned = false;
+    current.vault_locked = true;
+    const unavailable = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\"}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, unavailable, "CustodyUnavailable") != null);
+}
+
+test "actor custody observation returns exact schemas and no deployment or authentication claim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const current = try Engine.openWithKey(io, allocator, path, @splat(67));
+    defer current.deinit();
+    const payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\"}";
+    const first = try current.dispatch(allocator, payload, .control);
+    defer allocator.free(first);
+    const second = try current.dispatch(allocator, payload, .control);
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings(first, second);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, first, .{});
+    defer parsed.deinit();
+    const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+    try std.testing.expectEqualStrings("exact-committed-custody-v1", try control.string(result, "commitment_format"));
+    try std.testing.expectEqualStrings("release", try control.string(result, "channel"));
+    try std.testing.expectEqualStrings("default", try control.string(result, "instance"));
+    try std.testing.expectEqual(@as(i64, 3), control.get(result, "storage_schema").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), control.get(result, "snapshot_schema").?.integer);
+    try std.testing.expectEqual(@as(i64, envelope.format_version), control.get(result, "custody_format").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), control.get(result, "recovery_format").?.integer);
+    const commitment = try control.string(result, "preservation_commitment");
+    try std.testing.expectEqual(@as(usize, 64), commitment.len);
+    for (commitment) |byte| try std.testing.expect(std.ascii.isHex(byte));
+    try std.testing.expect(control.get(result, "authenticated") == null);
+    for ([_][]const u8{ "artifact_digest", "active_work", "update_fence" }) |name| try std.testing.expect(control.get(result, name).? == .null);
+    for ([_][]const u8{ "activation_authorized", "artifact_compatibility_available", "provider_request_initiated", "live_handoff_proven" }) |name| try std.testing.expect(!try control.boolean(result, name, true));
+    for ([_][]const u8{ "account_id", "grant_id", "key_id", "ciphertext", "snapshot_json", "installation" }) |name| try std.testing.expect(control.get(result, name) == null);
+}
+
+test "custody observation integrity rollback and preexisting store poison fence actor health readiness and subsequent admission" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]struct { mode: []const u8, expected: []const u8 }{
+        .{ .mode = "rollback", .expected = "DatabaseDenied" },
+        .{ .mode = "checkpoint", .expected = "RecoveryRollbackDetected" },
+        .{ .mode = "preexisting_poison", .expected = "CustodyUnavailable" },
+    }) |fault| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const current = try Engine.openWithKey(io, allocator, path, @splat(68));
+        defer current.deinit();
+        var before = try reopenTestReply(current, "custody.observation", .control);
+        defer before.deinit();
+        const prior_revision = control.get(control.get(before.value, "result").?, "revision").?.integer;
+        const capability = try current.capabilityForTest("enrollment");
+        const arm = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = "fixture.custodyObservationRollbackFault", .params = .{ .application = "enrollment", .capability = capability[0..], .mode = fault.mode } }, .{});
+        defer allocator.free(arm);
+        const armed = try current.dispatch(allocator, arm, .adapter);
+        defer allocator.free(armed);
+        var armed_json = try std.json.parseFromSlice(std.json.Value, allocator, armed, .{});
+        defer armed_json.deinit();
+        try std.testing.expect(control.get(armed_json.value, "result") != null);
+        var failed = try reopenTestReply(current, "custody.observation", .control);
+        defer failed.deinit();
+        try std.testing.expectEqualStrings(fault.expected, try control.string(control.get(failed.value, "error").?, "message"));
+        try std.testing.expect(current.db.?.poisoned and current.poisoned);
+        var health = try reopenTestReply(current, "system.health", .control);
+        defer health.deinit();
+        const health_result = control.get(health.value, "result").?;
+        try std.testing.expect(!try control.boolean(health_result, "custody_available", true));
+        try std.testing.expect(try control.boolean(health_result, "metadata_loaded", false));
+        try std.testing.expectEqualStrings("repair_required", try control.string(health_result, "status"));
+        try std.testing.expectEqual(prior_revision, control.get(health_result, "revision").?.integer);
+        var readiness = try reopenTestReply(current, "setup.readiness", .control);
+        defer readiness.deinit();
+        const readiness_result = control.get(readiness.value, "result").?;
+        try std.testing.expect(!try control.boolean(readiness_result, "ready", true));
+        var vault_unknown = false;
+        for (control.get(readiness_result, "findings").?.array.items) |finding| {
+            if (eql(try control.string(finding, "phase"), "vault") and eql(try control.string(finding, "reason"), "observation_unknown")) vault_unknown = true;
+        }
+        try std.testing.expect(vault_unknown);
+        for ([_]struct { method: []const u8, channel: Channel }{
+            .{ .method = "custody.observation", .channel = .control },
+            .{ .method = "source.connect", .channel = .control },
+            .{ .method = "adapter.materialize", .channel = .adapter },
+        }) |next| {
+            var denied = try reopenTestReply(current, next.method, next.channel);
+            defer denied.deinit();
+            try std.testing.expectEqualStrings("CustodyUnavailable", try control.string(control.get(denied.value, "error").?, "message"));
+        }
+    }
 }
 
 test "native audit RPC rejects adapter purpose, unknown selectors and poisoned custody without restore or mutation" {

@@ -5,6 +5,7 @@ const std = @import("std");
 const Aead = std.crypto.aead.chacha_poly.XChaCha20Poly1305;
 pub const Key = [Aead.key_length]u8;
 pub const default_key_id = "installation-v1";
+pub const format_version: u32 = 1;
 const magic = "OMUXG001";
 const header_length = magic.len + Aead.nonce_length + Aead.tag_length;
 pub const maximum_plaintext = 1024 * 1024;
