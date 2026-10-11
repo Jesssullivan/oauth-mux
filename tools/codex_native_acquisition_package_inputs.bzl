@@ -26,6 +26,41 @@ def package_configuration_valid(value):
     row = value["selection"]
     return value["status"] == "selected-material" and type(row) == "dict" and sorted(row.keys()) == ["path", "sha256"] and _path(row["path"]) and len(row["path"]) <= 4096 and "\000" not in row["path"] and _sha(row["sha256"]) and any([row["path"].startswith(root) for root in _ROOTS])
 
+def carrier_package_shape_valid(value):
+    """Closed compact declaration; action independently authenticates contents."""
+    if type(value) != "dict" or sorted(value.keys()) != ["authority_receipts", "carrier_materials", "compilation", "files", "kind", "material", "native_acquisition_artifact_files", "protocol_schema_files", "purpose", "schema_version"] or type(value["schema_version"]) != "int" or value["schema_version"] != 2 or value["kind"] != "omux-native-carrier-native-package-selection-v2" or value["purpose"] != "evaluation-only":
+        return False
+    retained = value["carrier_materials"]
+    if type(retained) != "dict" or sorted(retained.keys()) != ["authorities", "authority_sha256", "carrier_files", "kind", "projection", "receipts", "schema_version"] or type(retained["schema_version"]) != "int" or retained["schema_version"] != 2 or retained["kind"] != "omux-native-carrier-retained-authority-v2" or not _sha(retained["authority_sha256"]):
+        return False
+    if type(retained["receipts"]) != "dict" or sorted(retained["receipts"].keys()) != ["authority_document", "carrier_receipt", "metadata_program", "seal_program"] or type(retained["authorities"]) != "dict" or sorted(retained["authorities"].keys()) != ["metadata", "seal"]:
+        return False
+    if not all([type(row) == "dict" for row in retained["receipts"].values()]):
+        return False
+    projection = retained["projection"]
+    if type(projection) != "dict" or sorted(projection.keys()) != ["graph_inventory_sha256", "hub_inventory_sha256", "inventory_sha256", "receipt_sha256"] or not all([_sha(pin) for pin in projection.values()]):
+        return False
+    transport = retained["carrier_files"]
+    if type(transport) != "list" or len(transport) != 4:
+        return False
+    for index, name in enumerate(["manifest.json", "origin-receipt.json", "payload.bin", "receipt.json"]):
+        row = transport[index]
+        if type(row) != "dict" or sorted(row.keys()) != ["bytes", "name", "sha256"] or row["name"] != name or not _sha(row["sha256"]) or type(row["bytes"]) != "int" or row["bytes"] <= 0:
+            return False
+    for group in retained["authorities"].values():
+        if type(group) != "dict" or sorted(group.keys()) != ["evidence", "members", "outer"] or type(group["members"]) != "dict" or len(group["members"]) != 2 or not all([type(name) == "string" and name.endswith(".evidence") and _sha(name[:-9]) for name in group["members"]]):
+            return False
+    return type(value["files"]) == "dict" and sorted(value["files"].keys()) == sorted(_ROLES) and all([type(row) == "dict" for row in value["files"].values()]) and retained["receipts"]["metadata_program"] == value["files"]["sdk_metadata"] and retained["receipts"]["authority_document"].get("sha256") == retained["authority_sha256"] and projection["inventory_sha256"] == retained["authority_sha256"] and projection["receipt_sha256"] == value["files"]["sdk"].get("sha256")
+
+def carrier_package_entries(value):
+    result = {"carrier/" + role: row for role, row in value["carrier_materials"]["receipts"].items()}
+    for action, group in value["carrier_materials"]["authorities"].items():
+        result["carrier-authority/" + action + "/outer"] = group["outer"]
+        result["carrier-authority/" + action + "/evidence"] = group["evidence"]
+        for name, row in group["members"].items():
+            result["carrier-authority/" + action + "/" + name] = row
+    return result
+
 def _impl(ctx):
     manifest = ctx.path(ctx.attr.manifest)
     configuration_raw = ctx.read(manifest)
@@ -52,8 +87,11 @@ def _impl(ctx):
     if len(raw) > 16 * 1024 * 1024:
         fail("package selection exceeds metadata bound")
     value = json.decode(raw)
-    if value.get("kind") != "omux-native-source-acquisition-native-package-selection-v1" or value.get("purpose") != "evaluation-only" or sorted(value.get("files", {}).keys()) != sorted(_ROLES):
+    carrier = value.get("kind") == "omux-native-carrier-native-package-selection-v2"
+    if (carrier and not carrier_package_shape_valid(value)) or (not carrier and (value.get("kind") != "omux-native-source-acquisition-native-package-selection-v1" or value.get("purpose") != "evaluation-only" or sorted(value.get("files", {}).keys()) != sorted(_ROLES))):
         fail("package requires distinct modern evaluation material")
+    if not carrier and (type(value.get("schema_version")) != "int" or value["schema_version"] != 1 or "carrier_materials" in value):
+        fail("package mixed schema/material family")
     entries = dict(value["files"])
     for family, prefix in [("protocol_schema_files", "schema/"), ("native_acquisition_artifact_files", "evidence/")]:
         pins = value.get(family)
@@ -77,6 +115,18 @@ def _impl(ctx):
             entries["authority/" + action + "/" + name] = pin
     if len(entries) > 4096:
         fail("package total input count bound")
+    if carrier:
+        entries.update(carrier_package_entries(value))
+        if len(entries) + 3 > 4096:
+            fail("carrier package count includes declaration controls")
+        projected_aliases = {role: ctx.name + "/input-" + str(index) for index, role in enumerate(sorted(entries))}
+        retained_bytes = len(raw) + 65 + len(json.encode(projected_aliases) + "\n")
+        for role, pin in entries.items():
+            if type(pin) != "dict" or sorted(pin.keys()) != ["bytes", "path", "sha256"] or not _path(pin["path"]) or not _sha(pin["sha256"]) or type(pin["bytes"]) != "int" or not (0 < pin["bytes"] and pin["bytes"] <= (512 * 1024 * 1024 if role == "codex" else 16 * 1024 * 1024)) or not package_member_path_valid(role, pin["path"], pin["sha256"]):
+                fail("carrier bounded compact declaration row")
+            retained_bytes += pin["bytes"]
+        if retained_bytes > 512 * 1024 * 1024:
+            fail("carrier aggregate includes aliases and declaration before retention")
     aliases, names, total = {}, [], 0
     for index, role in enumerate(sorted(entries)):
         pin = entries[role]

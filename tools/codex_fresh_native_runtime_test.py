@@ -1,11 +1,15 @@
 """Finite public path, full JSON inventory and ELF-edge models; no tools invoked."""
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import struct
 import tempfile
+import time
+import types
+import sys
 import unittest
 from unittest.mock import patch
 import codex_fresh_native_runtime as fresh
@@ -408,6 +412,258 @@ class CombinedActionChainModels(unittest.TestCase):
         values['codex']=raw+b'changed'
         with self.assertRaises(ValueError):
             fresh.validate_combined_cli(group,selection,values,receipt,source,exported)
+
+class CarrierPackageModels(unittest.TestCase):
+    def selection(self):
+        row = {'path':'/home/jess/.local/state/omux-execution-20261005/model/metadata',
+            'sha256':'a'*64,'bytes':1}
+        group = {'outer':dict(row),'evidence':dict(row),
+            'members':{'b'*64+'.evidence':dict(row),'c'*64+'.evidence':dict(row)}}
+        return {'schema_version':2,'kind':fresh.CARRIER_SELECTION_KIND,'purpose':'evaluation-only',
+            'material':{},'compilation':{},'files':{'sdk_metadata':dict(row)},
+            'protocol_schema_files':{},'native_acquisition_artifact_files':{},'authority_receipts':{},
+            'carrier_materials':{'schema_version':2,'kind':'omux-native-carrier-retained-authority-v2',
+                'authority_sha256':'a'*64,'carrier_files':[], 'projection':{},
+                'receipts':{name:dict(row) for name in ('authority_document','carrier_receipt','seal_program','metadata_program')},
+                'authorities':{'seal':copy.deepcopy(group),'metadata':copy.deepcopy(group)}}}
+
+    def test_actual_compact_mapping_never_resolves_tuple_transport_and_keeps_identity_names(self):
+        selection = self.selection()
+        rows = fresh.carrier_entries(selection)
+        self.assertEqual(len(rows),12)
+        self.assertIn('carrier-authority/seal/'+'b'*64+'.evidence',rows)
+        self.assertEqual(rows['carrier-authority/seal/'+'b'*64+'.evidence']['sha256'],'a'*64)
+        self.assertFalse(any(role.endswith(('payload.bin','manifest.json','origin-receipt.json')) for role in rows))
+        for mutation in ('extra','schema','missing','program','authority','member'):
+            changed = copy.deepcopy(selection)
+            if mutation == 'extra':changed['extra'] = True
+            if mutation == 'schema':changed['schema_version'] = True
+            if mutation == 'missing':del changed['carrier_materials']['receipts']['seal_program']
+            if mutation == 'program':changed['carrier_materials']['receipts']['metadata_program']['sha256'] = 'd'*64
+            if mutation == 'authority':changed['carrier_materials']['authority_sha256'] = 'd'*64
+            if mutation == 'member':changed['carrier_materials']['authorities']['seal']['members']['../escape'] = {'path':'/escape'}
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):fresh.carrier_entries(changed)
+
+    def test_actual_selected_bound_includes_control_bytes_counts_and_rejects_boolean_lengths(self):
+        rows = fresh.carrier_entries(self.selection())
+        control = b'a'*64+b'\n'
+        fresh.selected_input_bound(rows,b'declaration',b'aliases',control)
+        row = next(iter(rows.values()))
+        with self.assertRaises(ValueError):fresh.selected_input_bound({str(n):row for n in range(4094)},b'',b'',control)
+        with self.assertRaises(ValueError):fresh.selected_input_bound({'codex':{**row,'bytes':512*1024*1024}},b'x',b'',control)
+        with self.assertRaises(ValueError):fresh.selected_input_bound({'bad':{**row,'bytes':True}},b'',b'',control)
+        fresh.selected_input_bound({'codex':{**row,'bytes':512*1024*1024-65}},b'',b'',control)
+        with self.assertRaises(ValueError):fresh.selected_input_bound({'codex':{**row,'bytes':512*1024*1024-64}},b'',b'',control)
+
+    def test_schema_family_cannot_cross_promote_legacy_or_carrier(self):
+        v2 = self.selection(); v1 = {'kind':fresh.DIRECT_SELECTION_KIND}
+        fresh.validate_material_family(v2,{'material_family':'native-carrier-acquisition-evaluation-v2'})
+        fresh.validate_material_family(v1,{'material_family':'native-acquisition-evaluation-v1'})
+        for selection,family in ((v2,'native-acquisition-evaluation-v1'),(v1,'native-carrier-acquisition-evaluation-v2')):
+            with self.assertRaises(ValueError):fresh.validate_material_family(selection,{'material_family':family})
+
+    def test_real_declared_aliases_are_rechecked_after_trusted_packaging_boundary(self):
+        # The mock owns only the independently tested chain/ELF producer seam;
+        # this production caller still resolves and reads every actual alias.
+        for fault in ('none','alias','bytes','missing'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); source = root/'source.json'; source.write_bytes(b'public')
+                source.chmod(0o444); runfiles = root/'runfiles'; runfiles.mkdir(mode=0o700)
+                selection = self.selection(); pin = {'path':str(source),'sha256':fresh.digest(b'public'),'bytes':6}
+                selection['files']['sdk_metadata'] = dict(pin)
+                compact = selection['carrier_materials']
+                compact['authority_sha256'] = pin['sha256']
+                compact['receipts'] = {name:dict(pin) for name in compact['receipts']}
+                for group in compact['authorities'].values():
+                    group['outer'] = dict(pin); group['evidence'] = dict(pin)
+                    group['members'] = {name:dict(pin) for name in group['members']}
+                entries = fresh.direct_entries(selection)
+                (runfiles/'declared').mkdir(mode=0o700)
+                aliases = {role:'declared/input-'+str(n) for n,role in enumerate(entries)}
+                for alias in aliases.values():(runfiles/alias).symlink_to(source)
+                if fault == 'missing':del aliases['carrier/seal_program']
+                def load(selected,read,selected_alias=None):
+                    for role,row in entries.items():read(role,row,row['bytes'])
+                    return {},{},{}
+                material = types.SimpleNamespace(load_inputs=load)
+                def package(*args):
+                    if fault == 'alias':
+                        alias = runfiles/aliases['carrier/seal_program']; alias.unlink(); alias.symlink_to(root/'foreign')
+                    if fault == 'bytes':
+                        source.chmod(0o600); source.write_bytes(b'change'); source.chmod(0o444)
+                args = types.SimpleNamespace(runtime_files_manifest=root/'runtime.json')
+                with patch.dict('sys.modules',{'codex_native_acquisition_material':material}),\
+                        patch.object(fresh,'_ROOT',runfiles/'workspace'),\
+                        patch.object(fresh.runtime,'read_runtime_inputs',return_value=[]),\
+                        patch.object(fresh,'package',side_effect=package),patch.object(fresh,'DEADLINE',None):
+                    if fault == 'none':fresh.produce_selected(args,root,selection,aliases,'a'*64,b'raw',b'aliases',b'a'*64+b'\n')
+                    else:
+                        with self.assertRaises((ValueError,OSError)):
+                            fresh.produce_selected(args,root,selection,aliases,'a'*64,b'raw',b'aliases',b'a'*64+b'\n')
+
+    def test_carrier_aliases_cannot_escape_declared_repository_or_collapse_roles(self):
+        entries = fresh.carrier_entries(self.selection())
+        aliases = {role:'repo/input-'+str(n) for n,role in enumerate(entries)}
+        fresh.carrier_aliases_valid(entries,aliases)
+        role = next(iter(entries))
+        for value in ('/absolute/input-0','../input-0','repo/../input-0','repo//input-0','repo/payload.bin'):
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                fresh.carrier_aliases_valid(entries,{**aliases,role:value})
+        values = list(aliases.values())
+        with self.assertRaises(ValueError):fresh.carrier_aliases_valid(entries,{name:values[0] for name in entries})
+
+    def test_actual_carrier_main_refuses_bad_or_late_sha_controls_before_any_acceptance_marker(self):
+        # Clock/session/ELF work are explicit trusted seams. Main, argv parsing,
+        # bounded control reads, preflight, close ordering and marker are actual.
+        for fault in ('none','padding','oversized','uppercase','missing-newline','late','close-drift','flag-missing','legacy-under-carrier',
+                'close-output-bytes','close-output-replacement','close-inventory','close-output-root','late-output-readback','late-control-output',
+                'late-selector-bytes','late-selector-replacement','selector-close-failure',
+                'late-control-selector-bytes','late-control-selector-replacement'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); outputs = root/'outputs'; outputs.mkdir(mode=0o700)
+                selection = self.selection()
+                if fault == 'legacy-under-carrier':selection['kind'] = fresh.DIRECT_SELECTION_KIND
+                raw = fresh.encoded(selection)
+                selected = root/'selection.json'; selected.write_bytes(raw)
+                sha_file = root/'selection.sha256'; control = fresh.digest(raw).encode()+b'\n'
+                bad = {'padding':b' '+control,'oversized':control+b'x'*4096,
+                    'uppercase':control.upper(),'missing-newline':control[:-1]}
+                sha_file.write_bytes(bad.get(fault,control)); sha_file.chmod(0o444)
+                aliases = {role:'repo/input-'+str(n) for n,role in enumerate(fresh.direct_entries(selection))}
+                aliases_file = root/'aliases.json'; aliases_file.write_bytes(fresh.encoded(aliases))
+                events = []
+                output_bytes = {name:('public fixture '+name).encode() for name in fresh.PackageOutputWitness.NAMES}
+                inventory = {'files':{name:{'sha256':fresh.digest(value),'bytes':len(value)} for name,value in output_bytes.items()}}
+                witness_type = fresh.PackageOutputWitness; held_descriptors = []
+                reader = os.read; late_mutations = []
+                control_reader = Path.read_bytes; control_reads = []
+                selector_paths = (root/'material-config.json',root/'metadata-config.json')
+                for path in selector_paths:path.write_bytes(b'{"public":"selected authority"}')
+                class Selectors:
+                    # Actual files/FDs model the separately owned capability;
+                    # this caller test checks handoff and final-check ordering.
+                    def __init__(self):
+                        self.rows = []
+                        for path in selector_paths:
+                            fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+                            held_descriptors.append(fd)
+                            self.rows.append((path,fd,control_reader(path),witness_type.witness(os.fstat(fd))))
+                    def __enter__(self):return self
+                    def __exit__(self,*unused):self.close()
+                    def check(self):
+                        events.append('selectors-check')
+                        for path,fd,raw,witness in self.rows:
+                            fresh.require(control_reader(path) == raw
+                                and witness_type.witness(os.fstat(fd)) == witness
+                                == witness_type.witness(os.stat(path,follow_symlinks=False)),
+                                'modeled final held selector join')
+                    def close(self):
+                        events.append('selectors-close')
+                        rows,self.rows = self.rows,[]
+                        for _,fd,_,_ in rows:os.close(fd)
+                        if fault == 'selector-close-failure':raise ValueError('modeled selector close refusal')
+                def read_control(path):
+                    value = control_reader(path)
+                    if path == aliases_file:
+                        control_reads.append(True)
+                        if fault == 'late-control-output' and len(control_reads) == 4:
+                            # Actual final alias control read follows the full
+                            # output hashes; mutate an earlier ready output now.
+                            target = outputs/'fresh-native-runtime/runtime-manifest.json'
+                            target.chmod(0o600); target.write_bytes(b'X'*len(output_bytes[target.name])); target.chmod(0o444)
+                            late_mutations.append(True)
+                        if fault in ('late-control-selector-bytes','late-control-selector-replacement') and len(control_reads) == 4:
+                            if fault == 'late-control-selector-bytes':selector_paths[0].write_bytes(b'{"public":"changed authority"}')
+                            else:
+                                target = selector_paths[1]; raw = control_reader(target)
+                                target.rename(root/'displaced-selector.json'); target.write_bytes(raw)
+                            late_mutations.append(True)
+                    return value
+                def witness(*args):
+                    result = witness_type(*args)
+                    held_descriptors.extend([result.root]+[fd for _,fd,_,_ in result.files])
+                    return result
+                def output_read(fd,maximum):
+                    value = reader(fd,maximum)
+                    if fault in ('late-output-readback','late-selector-bytes','late-selector-replacement') and events and events[-1] == 'close'\
+                            and held_descriptors and fd == held_descriptors[-1] and not value and not late_mutations:
+                        # Mutate only during the final inventory hash, after the
+                        # original Session close, before the caller's final joins.
+                        if fault == 'late-output-readback':
+                            path = outputs/'fresh-native-runtime/fresh-native-runtime.tar.gz'
+                            path.chmod(0o600); path.write_bytes(b'X'*len(output_bytes[path.name])); path.chmod(0o444)
+                        elif fault == 'late-selector-bytes':selector_paths[0].write_bytes(b'{"public":"changed authority"}')
+                        else:
+                            path = selector_paths[1]; raw = control_reader(path)
+                            path.rename(root/'displaced-selector.json'); path.write_bytes(raw)
+                        late_mutations.append(True)
+                    return value
+                def mutate():
+                    sha_file.chmod(0o600); sha_file.write_bytes(b'f'*64+b'\n'); sha_file.chmod(0o444)
+                @contextmanager
+                def session(*args,**kwargs):
+                    # Session.private_child exclusively creates its own child;
+                    # the enclosing TemporaryDirectory is already present.
+                    session_path = args[2]
+                    self.assertEqual(session_path.name,'native-carrier-package-session')
+                    self.assertTrue(session_path.parent.is_dir())
+                    self.assertFalse(session_path.exists())
+                    session_path.mkdir(mode=0o700)
+                    events.append('enter')
+                    yield types.SimpleNamespace(retain_selectors=Selectors)
+                    events.append('close')
+                    if fault == 'close-drift':mutate()
+                    output = outputs/'fresh-native-runtime'
+                    if fault == 'close-output-bytes':
+                        path = output/'runtime-manifest.json'; path.chmod(0o600)
+                        path.write_bytes(b'changed ready output'); path.chmod(0o444)
+                    if fault == 'close-output-replacement':
+                        path = output/'registration-receipt.json'; raw = path.read_bytes()
+                        path.rename(output/'replaced-receipt.json'); path.write_bytes(raw); path.chmod(0o444)
+                    if fault == 'close-inventory':
+                        path = output/'package-outputs.json'; path.chmod(0o600)
+                        path.write_bytes(b'changed inventory'); path.chmod(0o444)
+                    if fault == 'close-output-root':
+                        output.rename(outputs/'displaced-original'); output.mkdir(mode=0o700)
+                def produce(args,output,*unused):
+                    events.append('produce')
+                    for name,value in output_bytes.items():
+                        path = output/name; path.write_bytes(value); path.chmod(0o444)
+                    path = output/'package-outputs.json'; path.write_bytes(fresh.encoded(inventory)); path.chmod(0o444)
+                    if fault == 'late':mutate()
+                clock = types.SimpleNamespace(original_package_deadline=lambda environment:time.monotonic()+30,
+                    package_output_inventory=lambda output,deadline:inventory)
+                carrier = types.SimpleNamespace(session_scope_for_package=session)
+                argv = ['producer','--carrier-v2','--launch-profile','linux_nix_direct_main_v1','--tool-path','/declared']
+                if fault == 'flag-missing':argv.remove('--carrier-v2')
+                for name,path in (('selection',selected),('selection-sha-file',sha_file),('input-aliases',aliases_file),
+                        ('strip',root/'strip'),('patchelf',root/'patchelf'),('ca-bundle',root/'ca'),('runtime-files-manifest',root/'runtime')):
+                    argv += ['--'+name,str(path)]
+                with patch.object(sys,'argv',argv),patch.dict(os.environ,{'TEST_UNDECLARED_OUTPUTS_DIR':str(outputs),
+                        'OMUX_NATIVE_PACKAGE_ENTRY_NS':'1','OMUX_NATIVE_PACKAGE_DEADLINE_NS':'1200000000001'}),\
+                        patch.dict(sys.modules,{'nix_codex_runtime':clock,'codex_native_carrier_material':carrier}),\
+                        patch.object(fresh,'validate_selection_paths'),patch.object(fresh,'produce_selected',side_effect=produce),\
+                        patch.object(fresh,'PackageOutputWitness',side_effect=witness),\
+                        patch.object(fresh.os,'read',side_effect=output_read),\
+                        patch.object(Path,'read_bytes',new=read_control),\
+                        patch.object(fresh,'DEADLINE',None),patch('builtins.print') as emitted:
+                    if fault == 'none':
+                        fresh.main()
+                        self.assertEqual(events,['enter','produce','close','selectors-check','selectors-close'])
+                        emitted.assert_any_call('omux-native-package-output-sha256='+fresh.digest(fresh.encoded(inventory)))
+                    else:
+                        with self.assertRaises(ValueError):fresh.main()
+                        emitted.assert_not_called()
+                        if fault in bad:self.assertEqual(events,[])
+                for fd in held_descriptors:
+                    with self.assertRaises(OSError):os.fstat(fd)
+                if fault in ('late-output-readback','late-control-output','late-selector-bytes','late-selector-replacement',
+                        'late-control-selector-bytes','late-control-selector-replacement'):
+                    self.assertEqual(late_mutations,[True])
+
+    def test_package_kind_chooses_exact_distinct_target_without_legacy_promotion(self):
+        self.assertEqual(fresh.direct_target(self.selection()),'//tools:codex_native_carrier_runtime_package')
+        self.assertEqual(fresh.direct_target({'kind':fresh.DIRECT_SELECTION_KIND}),'//tools:codex_native_acquisition_runtime_package')
 
 if __name__ == '__main__':
     unittest.main()

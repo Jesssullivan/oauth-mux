@@ -1,6 +1,6 @@
 """Actual Starlark receipt namespace predicates; no selected input IO."""
 load(":codex_fresh_native_package_inputs.bzl", "receipt_producer")
-load(":codex_native_acquisition_package_inputs.bzl", "package_configuration_valid", "package_member_path_valid")
+load(":codex_native_acquisition_package_inputs.bzl", "carrier_package_entries", "carrier_package_shape_valid", "package_configuration_valid", "package_member_path_valid")
 
 def _receipt_scope_test_impl(ctx):
     home = "/home/jess/.local/state/omux-execution-20261005/"
@@ -54,6 +54,29 @@ def _receipt_scope_test_impl(ctx):
                         (role, path.replace("receipt.json", "receipt.json.bak")),
                     ]
     failures = []
+    # Actual v2 declaration accepts only compact12, never four transport paths.
+    pin = {"path":home + epoch + "/public.json", "sha256":"a" * 64, "bytes":1}
+    group = {"outer":pin, "evidence":pin, "members":{"b" * 64 + ".evidence":pin, "c" * 64 + ".evidence":pin}}
+    roles = ["source", "sdk", "sdk_metadata", "plan", "query", "compiler_selection", "compiler_ledger", "compiler_ledger_snapshot", "compiler", "compiler_outer", "codex", "config_schema"]
+    retained = {"schema_version":2, "kind":"omux-native-carrier-retained-authority-v2", "authority_sha256":"a" * 64,
+        "carrier_files":[{"name":name, "sha256":"a" * 64, "bytes":1} for name in ["manifest.json", "origin-receipt.json", "payload.bin", "receipt.json"]],
+        "projection":{name:"a" * 64 for name in ["receipt_sha256", "inventory_sha256", "hub_inventory_sha256", "graph_inventory_sha256"]},
+        "receipts":{name:pin for name in ["authority_document", "carrier_receipt", "seal_program", "metadata_program"]},
+        "authorities":{"seal":group, "metadata":group}}
+    carrier = {"schema_version":2, "kind":"omux-native-carrier-native-package-selection-v2", "purpose":"evaluation-only", "material":{}, "compilation":{},
+        "files":{name:pin for name in roles}, "protocol_schema_files":{}, "native_acquisition_artifact_files":{}, "authority_receipts":{}, "carrier_materials":retained}
+    carrier_cases = [(carrier, True), (dict(carrier, schema_version=True), False), (dict(carrier, schema_version=1), False),
+        (dict(carrier, kind="omux-native-source-acquisition-native-package-selection-v1"), False), (dict(carrier, extra=True), False),
+        (dict(carrier, carrier_materials=dict(retained, receipts={name:pin for name in ["authority_document", "carrier_receipt", "metadata_program"]})), False),
+        (dict(carrier, carrier_materials=dict(retained, carrier_files=[dict(row, path=pin["path"]) for row in retained["carrier_files"]])), False),
+        (dict(carrier, carrier_materials=dict(retained, authority_sha256="d" * 64)), False)]
+    for index, case in enumerate(carrier_cases):
+        value, expected = case
+        if carrier_package_shape_valid(value) != expected:
+            failures.append("carrier-shape-" + str(index))
+    compact = carrier_package_entries(carrier)
+    if len(compact) != 12 or compact.get("carrier-authority/seal/" + "b" * 64 + ".evidence") != pin or any([role.endswith("payload.bin") for role in compact]):
+        failures.append("carrier-compact-mapping")
     snapshot_prefix = "/srv/fast-local/jess/git/oauth-mux/docs/agent-notes/2026-10-10-native-acquisition-input-lift.UNAPPLIED/ledger-snapshots/"
     snapshot = snapshot_prefix + "a" * 64 + ".json"
     # Production role/path/hash gate, not a fixture-only duplicate predicate.
