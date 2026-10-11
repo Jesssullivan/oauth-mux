@@ -11,7 +11,18 @@ reconcile Linear and architecture, use up to 24 Sol 6.1 agents, and establish a
 [architecture SSOT](omux-native-account-lifecycle-reset-2026-10-02.md).
 Lab receipt authority is R-HOOK-CONVERGENCE-20261004, R-N11/R-N12/R-N13.
 
-## Current operational pointer — October 10
+## Current operational pointer — October 11
+
+The [product reality and coordinated work order](../agent-notes/2026-10-11-product-reality-and-work-order.md)
+records the 24 reattached source audits, implemented user-facing repairs,
+actual PR1/PR2 failure and passing cohorts, and the original incomplete goal.
+The [audit index](../agent-notes/2026-10-11-product-reality-reattachment-index.json)
+pins source-review scope; later exact terminal receipts remain separate.
+Linux/Chromium/maintained Codex lead. Normal custody/two retained accounts,
+ordinary accepted-history resume, production renewal and same-process handoff
+remain product gates. No new clock, support claim or SLA is created.
+
+## October 10 operational checkpoint (historical)
 
 The [dated implementation checkpoint](../agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
 records the pushed726033d source and actual IC2/IA2 model and V2 metadata results.

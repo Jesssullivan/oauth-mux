@@ -6,8 +6,10 @@ it does not mean shipped, supported or proven live.
 
 The [October 5 integrated delivery sprint](plans/omux-integrated-delivery-sprint-2026-10-05.md)
 preserves the original implementation sequence and full acceptance scope.
-The [October 10 implementation checkpoint](agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
-is the dated operational pointer. The original fifteen-hour window ran
+The [October 11 product reality and work order](agent-notes/2026-10-11-product-reality-and-work-order.md)
+is the dated operational pointer; its [audit index](agent-notes/2026-10-11-product-reality-reattachment-index.json)
+pins the independent review scope. The [October 10 checkpoint](agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
+retains its original evidence. The original fifteen-hour window ran
 from `2026-10-05T04:03:36Z` to `2026-10-05T19:03:36Z`; resumed work preserves
 that clock and all historical results. The October 6 user-ratified five-hour
 continuation ran from **20:13:12 UTC October 6** to **01:13:12 UTC October 7**.
