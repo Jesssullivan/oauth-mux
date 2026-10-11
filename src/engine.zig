@@ -5632,6 +5632,10 @@ pub const Engine = struct {
             description = item;
         };
         const scope = (description orelse return error.NativeSourceConsentRequired).native_authority orelse return error.NativeSourceConsentRequired;
+        // A fresh worker response cannot replace the persisted context authority.
+        // Fence older pending imports against any later source-context change.
+        const retained_context = scope.context orelse return error.NativeSourceFreshCheckRequired;
+        if (!retained_context.same(admission.context)) return error.NativeSourceContextChanged;
         if (!std.crypto.timing_safe.eql([32]u8, scope.origin, fresh.origin)) return error.NativeSourceOriginChanged;
         if (fresh.declaration.status != .available or fresh.declaration.store_present != true or
             fresh.declaration.credential_acquisition_authorized) return error.NativeSourceUnavailable;
@@ -7608,10 +7612,29 @@ test "native import joins actual source lifecycle with retained consent and fres
     const admission: native_source_consent.Admission = .{ .source_id = source_handle, .source_generation = 1, .consent_id = permission.id, .consent_generation = 1, .owner = owner, .context = context, .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 100 };
     _ = try current.state.connectSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex", .authorized_at = 0 });
     _ = try current.importSourceGeneration(&source_id);
-    try current.addDescription(.{ .source_id = &source_id, .provider = "codex", .native_authority = .{ .origin = @splat(6), .consent = permission } });
+    try current.addDescription(.{ .source_id = &source_id, .provider = "codex", .native_authority = .{ .origin = @splat(6), .consent = permission, .context = context } });
     var pending: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"), .credential_kind = .oauth_access, .source_generation = 1, .credit_key = undefined, .forget_epoch = 0, .job_id = @constCast(""), .token = @constCast(""), .label = @constCast(""), .expires_at = null, .native_admission = admission };
     var fresh: NativeImportFresh = .{ .origin = @splat(6), .selection_digest = @splat(0), .declaration = .{ .owner_id = owner.id, .native_nonce = owner.nonce, .endpoint_generation = 1, .witness = witness, .status = .available, .context = .{ .id = context.id, .generation = 1 }, .store_present = true, .credential_acquisition_authorized = false } };
     try native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0);
+    // Keep the pending admission and worker response unchanged while the saved
+    // source authority disappears or advances. Neither may authorize the old copy.
+    current.descriptions.items[0].native_authority.?.context = null;
+    try std.testing.expectError(error.NativeSourceFreshCheckRequired, current.nativeImportCurrent(pending, fresh));
+    current.descriptions.items[0].native_authority.?.context = context;
+    current.descriptions.items[0].native_authority.?.context.?.id = @splat(7);
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    current.descriptions.items[0].native_authority.?.context = context;
+    current.descriptions.items[0].native_authority.?.context.?.generation = 2;
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    // Even a fresh declaration matching that successor cannot upgrade an older
+    // admission; a future authenticated transition needs its own explicit CAS.
+    fresh.declaration.context.?.generation = 2;
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    fresh.declaration.context.?.generation = 1;
+    current.descriptions.items[0].native_authority.?.context = context;
+    try native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0);
+    try std.testing.expectEqual(@as(usize, 0), current.state.grants.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.state.jobs.items.len);
     fresh.origin = @splat(7);
     try std.testing.expectError(error.NativeSourceOriginChanged, current.nativeImportCurrent(pending, fresh));
     fresh.origin = @splat(6);
