@@ -86,8 +86,14 @@ def declared_query_tools(runfiles, rows):
     tick()
     selected = [row[2] for row in rows if len(row) == 3 and row[0] in ("", "_main") and row[1] == query_tools.REPOSITORY]
     require(len(selected) == 1 and re.fullmatch(r"[A-Za-z0-9_+.-]{1,256}", selected[0]) is not None)
-    parent = (runfiles/selected[0]).resolve(strict=True)
-    require(parent.name == selected[0] and "external" in parent.parts)
+    # Bazel directory runfiles materialize the repository directory and link
+    # its declared leaves. Bind the one mapped descriptor alias to its exact
+    # physical repository; physical metadata readers remain nofollow.
+    alias = runfiles/selected[0]/"codex-metadata-query-tools.json"
+    physical = alias.resolve(strict=True)
+    parent = physical.parent
+    require(physical.name == "codex-metadata-query-tools.json"
+        and parent.name == selected[0] and parent.parent.name == "external")
     fd = source.directory(parent)
     try:
         raw, _ = source.read(fd, "codex-metadata-query-tools.json", 1024*1024)
@@ -98,6 +104,8 @@ def declared_query_tools(runfiles, rows):
     qualified = query_tools.verify_repository(parent, DEADLINE)
     require(qualified["status"] == "declared-fixed-query-tools-byte-qualified"
         and qualified["inputs_rechecked"] is True and qualified["query_tools"] == descriptor)
+    require(alias.resolve(strict=True) == physical)
+    tick()
     QUERY_REPOSITORY = parent
     return True
 

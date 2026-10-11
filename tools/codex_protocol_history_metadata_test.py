@@ -117,6 +117,87 @@ class QueryToolsBindingModels(unittest.TestCase):
             manifest.unlink();manifest.symlink_to(repository/"missing")
             with self.assertRaises(OSError): producer.declared_query_tools(root, rows)
 
+    def test_materialized_runfiles_descriptor_alias_binds_the_exact_physical_repository(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runfiles = root/"test.sh.runfiles";runfiles.mkdir()
+            canonical = "+protocol_history_query_tools_repository+"+producer.query_tools.REPOSITORY
+            declared = runfiles/canonical;declared.mkdir()
+            external = root/"output-base/external";external.mkdir(parents=True)
+            repository = external/canonical;repository.mkdir()
+            manifest = repository/"codex-metadata-query-tools.json"
+            manifest.write_bytes(source.encoded(self.descriptor()));manifest.chmod(0o444)
+            alias = declared/manifest.name;alias.symlink_to(manifest)
+            rows = [["",producer.query_tools.REPOSITORY,canonical]]
+            self.addCleanup(setattr,producer,"DEADLINE",None)
+            self.addCleanup(setattr,producer,"QUERY_REPOSITORY",None)
+            producer.DEADLINE=float(producer.time.monotonic()+60)
+            # Only the independent byte gate is stubbed. Mapping, real symlink
+            # resolution, nofollow physical read and descriptor parsing are real.
+            result = {"status":"declared-fixed-query-tools-byte-qualified",
+                "inputs_rechecked":True,"query_tools":self.descriptor()}
+            with patch.object(producer.query_tools,"verify_repository",return_value=result) as verified:
+                self.assertIs(producer.declared_query_tools(runfiles,rows),True)
+                verified.assert_called_once_with(repository,producer.DEADLINE)
+                self.assertEqual(producer.QUERY_REPOSITORY,repository)
+            for bad_rows in ([],rows+rows,[["",producer.query_tools.REPOSITORY,"../outside"]]):
+                with self.subTest(rows=bad_rows), self.assertRaises(ValueError):
+                    producer.declared_query_tools(runfiles,bad_rows)
+            for location in (external/"different-repository"/manifest.name,
+                    root/"outside"/canonical/manifest.name,
+                    repository/"different-descriptor.json"):
+                location.parent.mkdir(parents=True,exist_ok=True)
+                location.write_bytes(source.encoded(self.descriptor()));location.chmod(0o444)
+                alias.unlink();alias.symlink_to(location)
+                with self.subTest(location=location),patch.object(
+                        producer.query_tools,"verify_repository",return_value=result) as verified:
+                    with self.assertRaises(ValueError):producer.declared_query_tools(runfiles,rows)
+                    verified.assert_not_called()
+            alias.unlink();alias.symlink_to(manifest)
+            for bad in ({**result,"inputs_rechecked":False},
+                    {**result,"status":"unqualified"},
+                    {**result,"query_tools":{**self.descriptor(),"roots":[]}}):
+                with self.subTest(result=bad),patch.object(
+                        producer.query_tools,"verify_repository",return_value=bad):
+                    with self.assertRaises(ValueError):producer.declared_query_tools(runfiles,rows)
+            redirected = root/"other-output-base/external"/canonical
+            redirected.mkdir(parents=True)
+            other = redirected/manifest.name
+            other.write_bytes(source.encoded(self.descriptor()));other.chmod(0o444)
+            def redirect(parent,deadline):
+                self.assertEqual((parent,deadline),(repository,producer.DEADLINE))
+                alias.unlink();alias.symlink_to(other)
+                return result
+            with patch.object(producer.query_tools,"verify_repository",side_effect=redirect):
+                with self.assertRaises(ValueError):producer.declared_query_tools(runfiles,rows)
+
+    def test_declared_descriptor_alias_keeps_physical_leaf_custody_and_deadline_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runfiles = root/"runfiles";runfiles.mkdir()
+            canonical = "+protocol_history_query_tools_repository+"+producer.query_tools.REPOSITORY
+            declared = runfiles/canonical;declared.mkdir()
+            repository = root/"external"/canonical;repository.mkdir(parents=True)
+            manifest = repository/"codex-metadata-query-tools.json"
+            manifest.write_bytes(source.encoded(self.descriptor()));manifest.chmod(0o666)
+            alias = declared/manifest.name;alias.symlink_to(manifest)
+            rows = [["_main",producer.query_tools.REPOSITORY,canonical]]
+            self.addCleanup(setattr,producer,"DEADLINE",None)
+            self.addCleanup(setattr,producer,"QUERY_REPOSITORY",None)
+            producer.DEADLINE=float(producer.time.monotonic()+60)
+            with patch.object(producer.query_tools,"verify_repository") as verified:
+                with self.assertRaises(ValueError):producer.declared_query_tools(runfiles,rows)
+                verified.assert_not_called()
+            manifest.chmod(0o444)
+            producer.DEADLINE=float(producer.time.monotonic()-1)
+            with self.assertRaises(ValueError):producer.declared_query_tools(runfiles,rows)
+            producer.DEADLINE=float(producer.time.monotonic()+60)
+            alias.unlink();alias.symlink_to(repository/"missing")
+            with self.assertRaises(OSError):producer.declared_query_tools(runfiles,rows)
+            manifest.unlink();manifest.mkdir()
+            alias.unlink();alias.symlink_to(manifest)
+            with self.assertRaises(ValueError):producer.declared_query_tools(runfiles,rows)
+
 
 class MetadataProducerModels(unittest.TestCase):
     hub = ProtocolHistoryMetadataTests.hub
