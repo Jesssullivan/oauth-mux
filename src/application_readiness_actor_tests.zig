@@ -362,15 +362,19 @@ test "application readiness opaque context canonicalizes scopes and binds applic
 const SqlWitness = struct {
     grant_reads: usize = 0,
     ciphertext_reads: usize = 0,
+    generation_reads: usize = 0,
+    sql_writes: usize = 0,
     sql_reads: usize = 0,
     deny_all_reads: bool = false,
     active: bool = false,
     fn authorize(raw: ?*anyopaque, action: c_int, table: [*c]const u8, column: [*c]const u8, _: [*c]const u8, _: [*c]const u8) callconv(.c) c_int {
         const self: *SqlWitness = @ptrCast(@alignCast(raw.?));
+        if (action == c.SQLITE_INSERT or action == c.SQLITE_UPDATE or action == c.SQLITE_DELETE) self.sql_writes += 1;
         if (action != c.SQLITE_READ) return c.SQLITE_OK;
         self.sql_reads += 1;
         if (table != null and std.mem.eql(u8, std.mem.span(table), "grants")) {
             self.grant_reads += 1;
+            if (column != null and std.mem.eql(u8, std.mem.span(column), "generation")) self.generation_reads += 1;
             if (column != null and std.mem.eql(u8, std.mem.span(column), "ciphertext")) {
                 self.ciphertext_reads += 1;
                 return c.SQLITE_DENY;
@@ -427,4 +431,279 @@ test "application readiness stale and poisoned actor diagnostics skip denied cus
     witness.remove(actor.engine.?);
     try saved.expectSame(actor, &enrolled);
     try expectNoProviderWork(actor.engine.?);
+}
+
+fn selectedQuery(actor: *engine.Engine, account: []const u8, demand: Demand, expected: u64) !Reply {
+    return rpc(actor, .control, readiness.method, .{ .application = "codex", .account_id = account, .expected_revision = expected, .demand = demand });
+}
+fn selectedDiagnostics(reply: *const Reply, account: ?[]const u8) !std.json.Value {
+    const value = try reply.result();
+    try std.testing.expectEqual(@as(i64, 2), control.get(value, "schema_version").?.integer);
+    try std.testing.expectEqualStrings("selected_account_request_authority_and_adapter_diagnostics", try control.string(value, "scope"));
+    if (account) |id| {
+        try std.testing.expect(std.mem.eql(u8, id, try control.string(value, "account_id")));
+    } else try std.testing.expect(control.get(value, "account_id").? == .null);
+    try std.testing.expectEqualStrings("unknown", try control.string(value, "actual_renewal_writer"));
+    try std.testing.expectEqualStrings("unknown", try control.string(value, "live_process"));
+    const diagnostics = control.get(value, "diagnostics") orelse return error.MissingDiagnostics;
+    try std.testing.expect(!privateFieldPresent(diagnostics));
+    inline for (.{ "ready", "provider_access", "enrollment_success_proven", "seamless_handoff_proven" }) |name| try std.testing.expect(!(try control.boolean(diagnostics, name, true)));
+    try expectPhase(diagnostics, "ordinary_launch", "unknown");
+    try std.testing.expect(reply.bytes.len <= 8192);
+    return diagnostics;
+}
+fn custodyFault(actor: *engine.Engine, enrollment: *const Enrollment, state: []const u8, generation: u64, owner: []const u8) !void {
+    const capability = try actor.capabilityForTest("enrollment");
+    var reply = try rpc(actor, .adapter, "fixture.applicationReadinessCustodyFault", .{ .application = "enrollment", .capability = &capability, .account_id = enrollment.account, .grant_id = enrollment.grant, .state = state, .generation = generation, .renewal_owner = owner });
+    defer reply.deinit();
+    _ = try reply.result();
+}
+
+test "selected readiness requires negotiated exact context and unavailable handles never query or borrow custody" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const producer = try native_fixture.Fixture.create(io, allocator);
+    defer producer.destroy();
+    const actor = try native_fixture.ActorFixture.create(io, allocator, producer);
+    defer actor.destroy();
+    try disablePolling(actor.engine.?);
+    var enrolled = try Enrollment.create(actor.engine.?);
+    defer enrolled.deinit();
+    const rev = try revision(actor.engine.?);
+    var saved = try Stored.capture(actor, &enrolled);
+    defer saved.deinit();
+    var handshake = try rpc(actor.engine.?, .control, "system.handshake", @as(?u8, null));
+    defer handshake.deinit();
+    const capabilities = control.get(try handshake.result(), "capabilities") orelse return error.MissingCapabilities;
+    try std.testing.expect(try control.boolean(capabilities, "account_scoped_readiness_v2", false));
+    inline for (.{
+        .{ .application = "codex", .account_id = "opaque-unknown" },
+        .{ .application = "codex", .account_id = "opaque-unknown", .demand = Demand{} },
+        .{ .application = "codex", .account_id = "opaque-unknown", .expected_revision = rev },
+        .{ .application = "codex", .account_id = "opaque-unknown", .expected_revision = @as(?u64, null), .demand = Demand{} },
+        .{ .application = "codex", .account_id = "opaque-unknown", .expected_revision = rev, .demand = @as(?u8, null) },
+        .{ .application = "codex", .account_id = @as(?u8, null), .expected_revision = rev, .demand = Demand{} },
+        .{ .application = "codex", .account_id = @as(u8, 7), .expected_revision = rev, .demand = Demand{} },
+    }) |params| {
+        var invalid = try rpc(actor.engine.?, .control, readiness.method, params);
+        defer invalid.deinit();
+        try invalid.expectError("InvalidParams");
+    }
+    var wrong_context = try selectedQuery(actor.engine.?, "opaque-unknown", .{ .audience = "https://github.com" }, rev);
+    defer wrong_context.deinit();
+    try wrong_context.expectError("InvalidApplicationContext");
+    var witness: SqlWitness = .{ .deny_all_reads = true };
+    try witness.install(actor.engine.?);
+    defer witness.remove(actor.engine.?);
+    var unknown = try selectedQuery(actor.engine.?, "opaque-unknown", .{}, rev);
+    defer unknown.deinit();
+    const unavailable = try selectedDiagnostics(&unknown, null);
+    try std.testing.expectEqualStrings("account_unavailable", try control.string(unavailable, "reason"));
+    try std.testing.expect(control.get(unavailable, "context_ref").? == .null);
+    try expectPhase(unavailable, "source", "unknown");
+    var stale = try selectedQuery(actor.engine.?, enrolled.account, .{}, rev - 1);
+    defer stale.deinit();
+    try std.testing.expectEqualStrings("revision_changed", try control.string(try selectedDiagnostics(&stale, null), "reason"));
+    var large = try selectedQuery(actor.engine.?, enrolled.account, .{}, 9007199254740993);
+    defer large.deinit();
+    try std.testing.expectEqualStrings("revision_changed", try control.string(try selectedDiagnostics(&large, null), "reason"));
+    var poisoned = try rpc(actor.engine.?, .control, "fixture.applicationReadinessPoisoned", .{ .application = "codex", .account_id = enrolled.account, .expected_revision = rev, .demand = Demand{} });
+    defer poisoned.deinit();
+    try std.testing.expectEqualStrings("custody_unavailable", try control.string(try selectedDiagnostics(&poisoned, null), "reason"));
+    try std.testing.expectEqual(@as(usize, 0), witness.sql_reads);
+    try std.testing.expectEqual(@as(usize, 0), witness.sql_writes);
+    witness.remove(actor.engine.?);
+    try saved.expectSame(actor, &enrolled);
+    try expectNoProviderWork(actor.engine.?);
+}
+
+test "selected readiness source and opaque context belong to the exact account while global mode stays global" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const producer = try native_fixture.Fixture.create(io, allocator);
+    defer producer.destroy();
+    const actor = try native_fixture.ActorFixture.create(io, allocator, producer);
+    defer actor.destroy();
+    try disablePolling(actor.engine.?);
+    var a = try Enrollment.create(actor.engine.?);
+    defer a.deinit();
+    var b = try Enrollment.create(actor.engine.?);
+    defer b.deinit();
+    var initial_a = try Stored.capture(actor, &a);
+    defer initial_a.deinit();
+    var initial_b = try Stored.capture(actor, &b);
+    defer initial_b.deinit();
+    const rev = try revision(actor.engine.?);
+    var first = try selectedQuery(actor.engine.?, a.account, .{ .scopes = &.{ "b", "a" } }, rev);
+    defer first.deinit();
+    const first_ref = try context(try selectedDiagnostics(&first, a.account));
+    var reordered = try selectedQuery(actor.engine.?, a.account, .{ .scopes = &.{ "a", "b" } }, rev);
+    defer reordered.deinit();
+    try std.testing.expect(std.mem.eql(u8, &first_ref, &(try context(try selectedDiagnostics(&reordered, a.account)))));
+    var different = try selectedQuery(actor.engine.?, b.account, .{ .scopes = &.{ "a", "b" } }, rev);
+    defer different.deinit();
+    try std.testing.expect(!std.mem.eql(u8, &first_ref, &(try context(try selectedDiagnostics(&different, b.account)))));
+    var changed = try selectedQuery(actor.engine.?, a.account, .{ .scopes = &.{ "a", "c" } }, rev);
+    defer changed.deinit();
+    try std.testing.expect(!std.mem.eql(u8, &first_ref, &(try context(try selectedDiagnostics(&changed, a.account)))));
+    var legacy = try query(actor.engine.?, .{ .scopes = &.{ "a", "b" } }, rev);
+    defer legacy.deinit();
+    const legacy_value = try legacy.result();
+    try std.testing.expectEqual(@as(i64, 1), control.get(legacy_value, "schema_version").?.integer);
+    try std.testing.expect(control.get(legacy_value, "account_id") == null);
+    try std.testing.expect(!std.mem.eql(u8, &first_ref, &(try context(legacy_value))));
+    var git = try rpc(actor.engine.?, .control, readiness.method, .{ .application = "git", .account_id = a.account, .expected_revision = rev, .demand = .{ .provider = "github", .audience = "https://github.com", .resource = .{ .kind = "repository" } } });
+    defer git.deinit();
+    try std.testing.expect(!std.mem.eql(u8, &first_ref, &(try context(try selectedDiagnostics(&git, a.account)))));
+    try initial_a.expectSame(actor, &a);
+    try initial_b.expectSame(actor, &b);
+    const operation = try hex();
+    var disconnected = try rpc(actor.engine.?, .control, "source.disconnect", .{ .source_id = a.source, .operation_id = operation[0..], .expected_revision = rev });
+    defer disconnected.deinit();
+    _ = try disconnected.result();
+    const current = try revision(actor.engine.?);
+    var saved_a = try Stored.capture(actor, &a);
+    defer saved_a.deinit();
+    var saved_b = try Stored.capture(actor, &b);
+    defer saved_b.deinit();
+    var witness: SqlWitness = .{};
+    try witness.install(actor.engine.?);
+    defer witness.remove(actor.engine.?);
+    var selected_a = try selectedQuery(actor.engine.?, a.account, .{}, current);
+    defer selected_a.deinit();
+    const a_value = try selectedDiagnostics(&selected_a, a.account);
+    try std.testing.expectEqualStrings("source_unauthorized", try control.string(control.get(a_value, "source").?, "reason"));
+    try std.testing.expectEqualStrings("source_unauthorized", try control.string(control.get(a_value, "enrollment").?, "reason"));
+    try std.testing.expect(!std.mem.eql(u8, &first_ref, &(try context(a_value))));
+    try std.testing.expect(!std.mem.eql(u8, "ready", try control.string(control.get(a_value, "authority").?, "state")));
+    const reads_before_b = witness.generation_reads;
+    var selected_b = try selectedQuery(actor.engine.?, b.account, .{}, current);
+    defer selected_b.deinit();
+    try expectPhase(try selectedDiagnostics(&selected_b, b.account), "source", "ready");
+    try expectPhase(try selectedDiagnostics(&selected_b, b.account), "authority", "ready");
+    try std.testing.expectEqual(@as(usize, 1), witness.generation_reads - reads_before_b);
+    var global = try query(actor.engine.?, .{}, current);
+    defer global.deinit();
+    try expectPhase(try global.result(), "authority", "ready");
+    try std.testing.expectEqual(@as(usize, 0), witness.ciphertext_reads);
+    try std.testing.expectEqual(@as(usize, 0), witness.sql_writes);
+    witness.remove(actor.engine.?);
+    try saved_a.expectSame(actor, &a);
+    try saved_b.expectSame(actor, &b);
+    try expectNoProviderWork(actor.engine.?);
+    // Startup is bracketed separately; it may legitimately commit a revision.
+    try actor.restart();
+    const restarted_revision = try revision(actor.engine.?);
+    var restored = try Stored.capture(actor, &b);
+    defer restored.deinit();
+    var restarted = try selectedQuery(actor.engine.?, b.account, .{}, restarted_revision);
+    defer restarted.deinit();
+    try expectPhase(try selectedDiagnostics(&restarted, b.account), "authority", "ready");
+    try restored.expectSame(actor, &b);
+}
+
+test "selected readiness joins the same actual SQL row without another account lending custody or a writer claim" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const producer = try native_fixture.Fixture.create(io, allocator);
+    defer producer.destroy();
+    const actor = try native_fixture.ActorFixture.create(io, allocator, producer);
+    defer actor.destroy();
+    try disablePolling(actor.engine.?);
+    var a = try Enrollment.create(actor.engine.?);
+    defer a.deinit();
+    var b = try Enrollment.create(actor.engine.?);
+    defer b.deinit();
+    const cases = [_]struct { state: []const u8, generation: u64, owner: []const u8, authority: []const u8, reason: []const u8 }{
+        .{ .state = "refreshing", .generation = 1, .owner = "external", .authority = "unknown", .reason = "custody_unavailable" },
+        .{ .state = "quarantined", .generation = 1, .owner = "external", .authority = "unknown", .reason = "custody_unavailable" },
+        .{ .state = "ready", .generation = 2, .owner = "external", .authority = "action_required", .reason = "custody_generation_mismatch" },
+        .{ .state = "ready", .generation = 1, .owner = "omux", .authority = "action_required", .reason = "renewal_owner_mismatch" },
+        .{ .state = "ready", .generation = 1, .owner = "external", .authority = "ready", .reason = "ready" },
+        .{ .state = "missing", .generation = 1, .owner = "external", .authority = "unknown", .reason = "custody_unavailable" },
+    };
+    for (cases) |case| {
+        try custodyFault(actor.engine.?, &a, case.state, case.generation, case.owner);
+        const rev = try revision(actor.engine.?);
+        var saved_a = try Stored.capture(actor, &a);
+        defer saved_a.deinit();
+        var saved_b = try Stored.capture(actor, &b);
+        defer saved_b.deinit();
+        var witness: SqlWitness = .{};
+        try witness.install(actor.engine.?);
+        defer witness.remove(actor.engine.?);
+        var selected_a = try selectedQuery(actor.engine.?, a.account, .{}, rev);
+        defer selected_a.deinit();
+        const a_value = try selectedDiagnostics(&selected_a, a.account);
+        try expectPhase(a_value, "authority", case.authority);
+        try std.testing.expectEqualStrings(case.reason, try control.string(control.get(a_value, "authority").?, "reason"));
+        try std.testing.expectEqual(@as(usize, 1), witness.generation_reads);
+        if (std.mem.eql(u8, case.authority, "ready")) try std.testing.expectEqualStrings("external", try control.string(a_value, "renewal_owner"));
+        var selected_b = try selectedQuery(actor.engine.?, b.account, .{}, rev);
+        defer selected_b.deinit();
+        try expectPhase(try selectedDiagnostics(&selected_b, b.account), "authority", "ready");
+        try std.testing.expectEqual(@as(usize, 2), witness.generation_reads);
+        try std.testing.expectEqual(@as(usize, 0), witness.ciphertext_reads);
+        try std.testing.expectEqual(@as(usize, 0), witness.sql_writes);
+        witness.remove(actor.engine.?);
+        try saved_a.expectSame(actor, &a);
+        try saved_b.expectSame(actor, &b);
+    }
+    try expectNoProviderWork(actor.engine.?);
+}
+
+test "selected readiness forgotten and foreign installation handles remain unavailable beside ready alternatives" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const producer = try native_fixture.Fixture.create(io, allocator);
+    defer producer.destroy();
+    const actor = try native_fixture.ActorFixture.create(io, allocator, producer);
+    defer actor.destroy();
+    try disablePolling(actor.engine.?);
+    var a = try Enrollment.create(actor.engine.?);
+    defer a.deinit();
+    var b = try Enrollment.create(actor.engine.?);
+    defer b.deinit();
+    const operation = try hex();
+    var forgotten = try rpc(actor.engine.?, .control, "account.forget", .{ .account_id = a.account, .operation_id = operation[0..], .expected_revision = try revision(actor.engine.?) });
+    defer forgotten.deinit();
+    _ = try forgotten.result();
+    const rev = try revision(actor.engine.?);
+    var saved = try Stored.capture(actor, &b);
+    defer saved.deinit();
+    var witness: SqlWitness = .{ .deny_all_reads = true };
+    try witness.install(actor.engine.?);
+    defer witness.remove(actor.engine.?);
+    var removed = try selectedQuery(actor.engine.?, a.account, .{}, rev);
+    defer removed.deinit();
+    const removed_value = try selectedDiagnostics(&removed, null);
+    try std.testing.expectEqualStrings("account_unavailable", try control.string(removed_value, "reason"));
+    try std.testing.expect(control.get(removed_value, "context_ref").? == .null);
+    try std.testing.expectEqual(@as(usize, 0), witness.sql_reads);
+    try std.testing.expectEqual(@as(usize, 0), witness.sql_writes);
+    witness.remove(actor.engine.?);
+    var still_b = try selectedQuery(actor.engine.?, b.account, .{}, rev);
+    defer still_b.deinit();
+    try expectPhase(try selectedDiagnostics(&still_b, b.account), "authority", "ready");
+    try saved.expectSame(actor, &b);
+    const other_producer = try native_fixture.Fixture.create(io, allocator);
+    defer other_producer.destroy();
+    const other = try native_fixture.ActorFixture.create(io, allocator, other_producer);
+    defer other.destroy();
+    try disablePolling(other.engine.?);
+    var foreign_ready = try Enrollment.create(other.engine.?);
+    defer foreign_ready.deinit();
+    const foreign_revision = try revision(other.engine.?);
+    var foreign_saved = try Stored.capture(other, &foreign_ready);
+    defer foreign_saved.deinit();
+    var foreign_witness: SqlWitness = .{ .deny_all_reads = true };
+    try foreign_witness.install(other.engine.?);
+    defer foreign_witness.remove(other.engine.?);
+    var foreign = try selectedQuery(other.engine.?, b.account, .{}, foreign_revision);
+    defer foreign.deinit();
+    const foreign_value = try selectedDiagnostics(&foreign, null);
+    try std.testing.expectEqualStrings("account_unavailable", try control.string(foreign_value, "reason"));
+    try std.testing.expect(control.get(foreign_value, "context_ref").? == .null);
+    try std.testing.expectEqual(@as(usize, 0), foreign_witness.sql_reads);
+    try std.testing.expectEqual(@as(usize, 0), foreign_witness.sql_writes);
+    foreign_witness.remove(other.engine.?);
+    try foreign_saved.expectSame(other, &foreign_ready);
+    try expectNoProviderWork(actor.engine.?);
+    try expectNoProviderWork(other.engine.?);
 }

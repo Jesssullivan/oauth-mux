@@ -9,7 +9,7 @@ pub const Method = struct { name: []const u8, summary: []const u8, channel: Chan
 pub const methods = [_]Method{
     .{ .name = "system.handshake", .summary = "Negotiate the implemented local protocol and capabilities." },
     .{ .name = "setup.readiness", .summary = "Inspect independent installation and account readiness without provider access." },
-    .{ .name = "setup.applicationReadiness", .summary = "Read selected application and caller-declared demand diagnostics with independent source, identity, authority, renewal and capacity facts; ordinary launch remains unknown." },
+    .{ .name = "setup.applicationReadiness", .summary = "Read global application or negotiated selected-account request diagnostics at an exact revision; recorded renewal ownership is separate from unknown actual writer and live process." },
     .{ .name = "setup.refresh", .summary = "Refresh bounded readiness diagnostics; optional operation_id and expected_revision record verification completion, not installation or continuity." },
     .{ .name = "setup.evidence", .summary = "Read cached bounded installation probes, diagnostic failures and freshness without provider access." },
     .{ .name = "setup.plan", .summary = "Read ownership-aware setup actions without altering managed files." },
@@ -244,4 +244,14 @@ test "mutation and adapter authority identifiers are explicit and distinct from 
     try std.testing.expectError(error.InvalidParams, operationId(missing.params));
     try std.testing.expectError(error.InvalidParams, requestId(missing.params));
     try std.testing.expectError(error.InvalidParams, expectedRevision(missing.params));
+}
+
+test "selected account readiness is read-only and revision decoding preserves exact integer intent" {
+    var selected = try parse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"setup.applicationReadiness\",\"params\":{\"account_id\":\"opaque-account\",\"application\":\"codex\",\"expected_revision\":9007199254740993,\"demand\":{}}}");
+    defer selected.deinit();
+    try std.testing.expectEqual(@as(u64, 9007199254740993), try expectedRevision(selected.params));
+    try std.testing.expect(!isMutation(selected.method) and !hasOperationAuthority(selected.method, selected.params));
+    var rounded_kind = try parse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"setup.applicationReadiness\",\"params\":{\"expected_revision\":9007199254740993.0}}");
+    defer rounded_kind.deinit();
+    try std.testing.expectError(error.InvalidParams, expectedRevision(rounded_kind.params));
 }

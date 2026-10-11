@@ -237,3 +237,82 @@ test "report serialization exposes only finite facts and an opaque context refer
     }
     try std.testing.expect(std.mem.indexOf(u8, bytes, context) != null);
 }
+
+fn addReadinessAlternative(state: *domain.State) !void {
+    _ = try state.connectSource(.{ .id = "second-source", .provider = "codex", .kind = .explicit, .authorized_at = 1, .authorized_until = 100 });
+    _ = try state.enroll(.{ .account_id = "second-account", .source_id = "second-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "second-generated-subject", .verified = true } }, 10);
+    _ = try state.addGrant(.{ .id = "second-grant", .account_id = "second-account", .source_id = "second-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com", .scopes = &.{"model.read"} });
+}
+fn selectedInput(fixture: *const Fixture, account_id: []const u8, constraint: []const []const u8) readiness.Input {
+    var input_value = fixture.input();
+    input_value.account_id = account_id;
+    input_value.demand.?.allowed_account_ids = constraint;
+    return input_value;
+}
+
+test "selected account cannot borrow alternative source identity grant custody or capacity" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    try addReadinessAlternative(&fixture.state);
+    const rows = [_]readiness.Custody{ fixture.custody[0], .{ .account_id = "second-account", .grant_id = "second-grant", .generation = 1, .state = .ready, .renewal_owner = .external } };
+    try fixture.state.disconnectSource("private-source-fixture");
+    const before = try std.json.Stringify.valueAlloc(std.testing.allocator, fixture.state.snapshot(), .{});
+    defer std.testing.allocator.free(before);
+    var chosen = selectedInput(&fixture, "private-account-fixture", &.{"private-account-fixture"});
+    chosen.custody = &rows;
+    const unavailable = try readiness.project(&fixture.state, chosen);
+    try std.testing.expectEqual(readiness.Reason.source_unauthorized, unavailable.source.reason);
+    try std.testing.expectEqual(readiness.Reason.source_unauthorized, unavailable.enrollment.reason);
+    try std.testing.expect(unavailable.authority.state != .ready and !unavailable.ready);
+    var alternative = selectedInput(&fixture, "second-account", &.{"second-account"});
+    alternative.custody = &rows;
+    const available = try readiness.project(&fixture.state, alternative);
+    try std.testing.expectEqual(readiness.State.ready, available.authority.state);
+    try std.testing.expectEqual(readiness.State.ready, available.source.state);
+    var global = fixture.input();
+    global.custody = &rows;
+    try std.testing.expectEqual(readiness.State.ready, (try readiness.project(&fixture.state, global)).authority.state);
+    const after = try std.json.Stringify.valueAlloc(std.testing.allocator, fixture.state.snapshot(), .{});
+    defer std.testing.allocator.free(after);
+    try std.testing.expect(std.mem.eql(u8, before, after));
+}
+
+test "selected readiness requires exact singleton account and revision without inferring unavailable membership" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var chosen = selectedInput(&fixture, "private-account-fixture", &.{"private-account-fixture"});
+    chosen.expected_revision = null;
+    try std.testing.expectError(error.InvalidApplicationContext, readiness.project(&fixture.state, chosen));
+    chosen = selectedInput(&fixture, "private-account-fixture", &.{});
+    try std.testing.expectError(error.InvalidApplicationContext, readiness.project(&fixture.state, chosen));
+    chosen = selectedInput(&fixture, "private-account-fixture", &.{"private-account-fixture", "second-account"});
+    try std.testing.expectError(error.InvalidApplicationContext, readiness.project(&fixture.state, chosen));
+    chosen = selectedInput(&fixture, "unknown-account", &.{"unknown-account"});
+    chosen.context_ref = null;
+    const unknown = try readiness.project(&fixture.state, chosen);
+    try std.testing.expectEqual(readiness.Reason.account_unavailable, unknown.reason);
+    try std.testing.expectEqual(readiness.State.unknown, unknown.source.state);
+    chosen.expected_revision = 6;
+    try std.testing.expectEqual(readiness.Reason.revision_changed, (try readiness.project(&fixture.state, chosen)).reason);
+    chosen.expected_revision = 7;
+    chosen.custody_available = false;
+    try std.testing.expectEqual(readiness.Reason.custody_unavailable, (try readiness.project(&fixture.state, chosen)).reason);
+}
+
+test "selected account retains shared bucket contradictions and never spends a cross-account aggregate" {
+    for ([_]bool{ true, false }) |shared| {
+        var fixture = try Fixture.init();
+        defer fixture.deinit();
+        try addReadinessAlternative(&fixture.state);
+        var chosen = selectedInput(&fixture, "private-account-fixture", &.{"private-account-fixture"});
+        chosen.demand.?.requires_capacity = true;
+        chosen.demand.?.required = if (shared) 1 else 5;
+        try fixture.state.observe(.{ .account_id = "private-account-fixture", .resource = chosen.demand.?.resource, .bucket_id = "bucket-A", .remaining = if (shared) 5 else 4, .window_start = 1, .window_end = 100, .observed_at = 9, .expires_at = 50, .provenance = .provider_api });
+        try fixture.state.observe(.{ .account_id = "second-account", .resource = chosen.demand.?.resource, .bucket_id = if (shared) "bucket-A" else "bucket-B", .remaining = if (shared) 0 else 4, .window_start = 1, .window_end = 100, .observed_at = 9, .expires_at = 50, .status = if (shared) .unavailable else .ready, .provenance = .provider_api });
+        const report = try readiness.project(&fixture.state, chosen);
+        try std.testing.expectEqual(readiness.State.ready, report.authority.state);
+        try std.testing.expectEqual(readiness.Reason.capacity_unavailable, report.capacity.reason);
+        try std.testing.expect(!report.ready);
+        if (!shared) try std.testing.expectEqual(@as(f64, 8), fixture.state.aggregate("codex", "https://chatgpt.com", chosen.demand.?.resource, 1, 100, 10).remaining);
+    }
+}

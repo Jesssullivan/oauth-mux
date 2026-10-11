@@ -3728,9 +3728,18 @@ pub const Engine = struct {
     fn applicationReadiness(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
         if (request.params != .object) return error.InvalidParams;
         var fields = request.params.object.iterator();
-        while (fields.next()) |field| if (!eql(field.key_ptr.*, "application") and !eql(field.key_ptr.*, "expected_revision") and !eql(field.key_ptr.*, "demand")) return error.InvalidParams;
+        while (fields.next()) |field| if (!eql(field.key_ptr.*, "application") and !eql(field.key_ptr.*, "expected_revision") and !eql(field.key_ptr.*, "demand") and !eql(field.key_ptr.*, "account_id")) return error.InvalidParams;
         const application = std.meta.stringToEnum(application_readiness.Application, try control.string(request.params, "application")) orelse return error.UnknownAdapter;
         const expected: ?u64 = if (control.get(request.params, "expected_revision") != null) try control.expectedRevision(request.params) else null;
+        const account_id = if (control.get(request.params, "account_id") != null) try control.string(request.params, "account_id") else null;
+        if (account_id != null and (expected == null or control.get(request.params, "demand") == null)) return error.InvalidParams;
+        // Resolve only at the exact revision with available custody. A stale or
+        // unloaded query cannot borrow an alternative or disclose membership.
+        const selected_account: ?domain.Account = if (account_id) |id| selected: {
+            if (self.poisoned or expected.? != self.revision) break :selected null;
+            break :selected self.state.account(id);
+        } else null;
+        var allowed_accounts: [1][]const u8 = undefined;
         const DemandInput = struct {
             provider: []const u8,
             audience: []const u8,
@@ -3775,17 +3784,27 @@ pub const Engine = struct {
             }.lessThan);
             for (scopes.?, 0..) |scope, index| if (scope.len == 0 or scope.len > 256 or (index > 0 and eql(scope, scopes.?[index - 1]))) return error.InvalidParams;
             demand = .{ .provider = d.provider, .audience = d.audience, .issuer = d.issuer, .purpose = d.purpose, .resource = d.resource, .required = d.required, .scopes = scopes.?, .requires_capacity = d.requires_capacity, .now = self.now() };
+            if (account_id) |id| {
+                allowed_accounts[0] = if (selected_account) |account| account.id else id;
+                demand.?.allowed_account_ids = &allowed_accounts;
+            }
             var normalized = d;
             normalized.scopes = scopes.?;
-            const intent = try std.json.Stringify.valueAlloc(allocator, .{ .domain = "omux.application-readiness.v1", .installation = self.db.?.checkpoint.installation, .revision = self.revision, .application = application, .demand = normalized }, .{});
-            defer allocator.free(intent);
-            var digest: [32]u8 = undefined;
-            std.crypto.auth.hmac.sha2.HmacSha256.create(&digest, intent, &self.root_key);
-            context = std.fmt.bytesToHex(digest, .lower);
+            if (account_id == null or selected_account != null) {
+                const intent = if (selected_account) |account|
+                    try std.json.Stringify.valueAlloc(allocator, .{ .domain = "omux.application-readiness.account.v2", .installation = self.db.?.checkpoint.installation, .revision = self.revision, .application = application, .account_id = account.id, .demand = normalized }, .{})
+                else
+                    try std.json.Stringify.valueAlloc(allocator, .{ .domain = "omux.application-readiness.v1", .installation = self.db.?.checkpoint.installation, .revision = self.revision, .application = application, .demand = normalized }, .{});
+                defer allocator.free(intent);
+                var digest: [32]u8 = undefined;
+                std.crypto.auth.hmac.sha2.HmacSha256.create(&digest, intent, &self.root_key);
+                context = std.fmt.bytesToHex(digest, .lower);
+            }
         }
         var custody: std.ArrayList(application_readiness.Custody) = .empty;
         defer custody.deinit(allocator);
         if (!self.poisoned and demand != null and (expected == null or expected.? == self.revision)) for (self.state.grants.items) |grant| {
+            if (account_id != null and (selected_account == null or !eql(grant.account_id, selected_account.?.id))) continue;
             const row = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse continue;
             try custody.append(allocator, .{ .account_id = grant.account_id, .grant_id = grant.id, .generation = row.generation, .state = switch (row.state) {
                 .ready => .ready,
@@ -3797,8 +3816,40 @@ pub const Engine = struct {
                 .omux => .omux,
             } });
         };
-        const readiness_report = try application_readiness.project(&self.state, .{ .application = application, .revision = self.revision, .expected_revision = expected, .context_ref = if (context) |*value| value else null, .demand = demand, .custody = custody.items, .custody_available = !self.poisoned, .adapter = .{ .application = application, .revision = self.revision, .configuration = if (self.integrationInstalled(@tagName(application))) .installed else .absent } });
+        const readiness_report = try application_readiness.project(&self.state, .{ .application = application, .revision = self.revision, .expected_revision = expected, .context_ref = if (context) |*value| value else null, .account_id = account_id, .demand = demand, .custody = custody.items, .custody_available = !self.poisoned, .adapter = .{ .application = application, .revision = self.revision, .configuration = if (self.integrationInstalled(@tagName(application))) .installed else .absent } });
+        if (account_id != null) return control.success(allocator, request.id, application_readiness.SelectedReport{ .account_id = if (selected_account) |account| account.id else null, .diagnostics = readiness_report });
         return control.success(allocator, request.id, readiness_report);
+    }
+
+    fn applicationReadinessCustodyFaultForTest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) ![]u8 {
+        if (!builtin.is_test) return error.TestOnly;
+        if (channel != .adapter or !eql(try self.authenticate(request.params), "enrollment")) return error.WrongPurpose;
+        if (request.params != .object or request.params.object.count() != 7) return error.InvalidParams;
+        const account_id = try control.string(request.params, "account_id");
+        const grant_id = try control.string(request.params, "grant_id");
+        const grant = self.state.grant(grant_id) orelse return error.NotFound;
+        if (!eql(grant.account_id, account_id)) return error.NotFound;
+        const state_text = try control.string(request.params, "state");
+        const owner_text = try control.string(request.params, "renewal_owner");
+        _ = std.meta.stringToEnum(storage.RenewalOwner, owner_text) orelse return error.InvalidParams;
+        const generation = control.get(request.params, "generation") orelse return error.InvalidParams;
+        if (generation != .integer or generation.integer <= 0) return error.InvalidParams;
+        const missing = eql(state_text, "missing");
+        if (!missing) {
+            _ = std.meta.stringToEnum(storage.GrantState, state_text) orelse return error.InvalidParams;
+        }
+        var statement: ?*sql_api.sqlite3_stmt = null;
+        const sql = if (missing) "DELETE FROM grants WHERE account_id=?1 AND grant_id=?2;" else "UPDATE grants SET state=?3,generation=?4,renewal_owner=?5 WHERE account_id=?1 AND grant_id=?2;";
+        if (sql_api.sqlite3_prepare_v2(self.db.?.db, sql, -1, &statement, null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+        defer _ = sql_api.sqlite3_finalize(statement.?);
+        if (sql_api.sqlite3_bind_text(statement.?, 1, account_id.ptr, @intCast(account_id.len), null) != sql_api.SQLITE_OK or sql_api.sqlite3_bind_text(statement.?, 2, grant_id.ptr, @intCast(grant_id.len), null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+        if (!missing) {
+            if (sql_api.sqlite3_bind_text(statement.?, 3, state_text.ptr, @intCast(state_text.len), null) != sql_api.SQLITE_OK or sql_api.sqlite3_bind_int64(statement.?, 4, generation.integer) != sql_api.SQLITE_OK or sql_api.sqlite3_bind_text(statement.?, 5, owner_text.ptr, @intCast(owner_text.len), null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+        }
+        if (sql_api.sqlite3_step(statement.?) != sql_api.SQLITE_DONE or sql_api.sqlite3_changes(self.db.?.db) != 1) return error.FixtureSqlFailed;
+        // Deliberately inconsistent SQL metadata is fixture setup only. The
+        // diagnostic under test must observe it, never repair/materialize it.
+        return control.success(allocator, request.id, .{ .updated = true });
     }
 
     fn applicationReadinessPoisonedForTest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) anyerror![]u8 {
@@ -3852,6 +3903,7 @@ pub const Engine = struct {
             self.fixture_native_allocation_failed = false;
             return control.success(allocator, request.id, .{ .armed = true });
         }
+        if (builtin.is_test and eql(method, "fixture.applicationReadinessCustodyFault")) return self.applicationReadinessCustodyFaultForTest(allocator, request, channel);
         if (builtin.is_test and eql(method, "fixture.applicationReadinessPoisoned")) return self.applicationReadinessPoisonedForTest(allocator, request, channel);
         if (eql(method, application_readiness.method)) {
             if (channel != .control) return error.WrongChannel;
@@ -4174,7 +4226,7 @@ pub const Engine = struct {
             .protocol_version = control.protocol_version,
             .service = "omuxd",
             .channel = @tagName(channel),
-            .capabilities = .{ .native_launch = true, .credential_free_control = true, .custody_reopen = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true },
+            .capabilities = .{ .native_launch = true, .credential_free_control = true, .custody_reopen = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true, .account_scoped_readiness_v2 = true },
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);

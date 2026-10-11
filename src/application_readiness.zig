@@ -10,6 +10,7 @@ pub const Reason = enum {
     ready,
     context_required,
     revision_changed,
+    account_unavailable,
     source_required,
     source_unauthorized,
     source_detached,
@@ -31,6 +32,7 @@ pub const Action = enum {
     none,
     select_application_context,
     refresh_context,
+    select_account,
     connect_source,
     reconcile_source,
     inspect_acquisition,
@@ -73,6 +75,8 @@ pub const Input = struct {
     context_ref: ?[]const u8 = null,
     /// Optional private source constraint resolved by the actor, not a wire ID.
     source_id: ?[]const u8 = null,
+    /// Exact actor-selected opaque account; never a label or identity assertion.
+    account_id: ?[]const u8 = null,
     demand: ?domain.Demand = null,
     custody: []const Custody = &.{},
     custody_available: bool = true,
@@ -101,6 +105,17 @@ pub const Report = struct {
     provider_access: bool = false,
     enrollment_success_proven: bool = false,
     seamless_handoff_proven: bool = false,
+};
+
+/// Negotiated account mode leaves the legacy global Report schema unchanged.
+/// Recorded SQL ownership is not a running/exclusive writer or process proof.
+pub const SelectedReport = struct {
+    schema_version: u8 = 2,
+    scope: enum { selected_account_request_authority_and_adapter_diagnostics } = .selected_account_request_authority_and_adapter_diagnostics,
+    account_id: ?[]const u8,
+    diagnostics: Report,
+    actual_renewal_writer: enum { unknown } = .unknown,
+    live_process: enum { unknown } = .unknown,
 };
 
 fn eql(a: []const u8, b: []const u8) bool {
@@ -229,6 +244,7 @@ pub fn project(state: *const domain.State, input: Input) !Report {
         if (row.generation == 0) return error.InvalidApplicationCustody;
         for (input.custody[0..index]) |prior| if (eql(row.account_id, prior.account_id) and eql(row.grant_id, prior.grant_id)) return error.InvalidApplicationCustody;
     }
+    if (input.account_id != null and (input.expected_revision == null or input.demand == null)) return error.InvalidApplicationContext;
     var result: Report = .{ .application = input.application, .revision = input.revision };
     if (input.context_ref) |reference| {
         if (!validContextRef(reference)) return error.InvalidApplicationContext;
@@ -240,6 +256,25 @@ pub fn project(state: *const domain.State, input: Input) !Report {
         return result;
     };
     const demand = input.demand orelse return result;
+    if (input.account_id != null) try validateContext(input, demand);
+    // Selected mode does not reveal account membership while custody is fenced.
+    if (input.account_id != null and !input.custody_available) {
+        result.reason = .custody_unavailable;
+        result.action = .repair_custody;
+        result.authority = .{ .reason = .custody_unavailable, .action = .repair_custody };
+        return result;
+    }
+    const selected_account = if (input.account_id) |id| state.account(id) else null;
+    if (input.account_id) |id| {
+        if (selected_account == null) {
+            result.state = .action_required;
+            result.reason = .account_unavailable;
+            result.action = .select_account;
+            return result;
+        }
+        // The actor's constraint must be exact, including inside State.select.
+        if (demand.allowed_account_ids.len != 1 or !eql(demand.allowed_account_ids[0], id)) return error.InvalidApplicationContext;
+    }
     if (input.context_ref == null) return result;
     try validateContext(input, demand);
     result.evaluated_at = demand.now;
@@ -264,6 +299,9 @@ pub fn project(state: *const domain.State, input: Input) !Report {
     var best_score: u8 = 0;
     var have_partial = false;
     for (state.sources.items) |source| {
+        // Source/enrollment diagnostics also belong to this account's lineage;
+        // a compatible alternative's source must not lend a partial score.
+        if (selected_account) |account| if (!contains(account.source_ids, source.id)) continue;
         if (!contextSource(input, demand, source)) continue;
         var partial = base;
         applySource(&partial, input, source, demand.now);
