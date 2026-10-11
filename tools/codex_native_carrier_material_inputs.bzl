@@ -35,7 +35,7 @@ def _read(ctx, value, maximum):
     path = _physical(ctx, value)
     ctx.watch(path)
     raw = ctx.read(path, watch = "no")
-    _need(0 < len(raw) <= maximum, "bounded-json")
+    _need(0 < len(raw) and len(raw) <= maximum, "bounded-json")
     document = json.decode(raw)
     _need(type(document) == "dict", "json-object")
     return document, raw
@@ -43,7 +43,7 @@ def _read(ctx, value, maximum):
 
 def _add(ctx, files, role, path, digest, size):
     _name(role)
-    _need(role not in files and _hex(digest, 64) and type(size) == "int" and 0 <= size <= 67108864, "closed-leaf-row")
+    _need(role not in files and _hex(digest, 64) and type(size) == "int" and 0 <= size and size <= 67108864, "closed-leaf-row")
     physical = _physical(ctx, path)
     alias = "inputs/" + role
     ctx.watch(physical)
@@ -56,7 +56,7 @@ def _producer(ctx, files, role, selected):
     _need(type(selected) == "dict" and sorted(selected.keys()) == ["producer", "program"], "selected-program")
     producer, program = selected["producer"], selected["program"]
     _need(type(producer) == "dict" and sorted(producer.keys()) == ["graph_sha256", "receipt", "sha256", "source_commit"] and _hex(producer["sha256"], 64) and _hex(producer["graph_sha256"], 64) and _hex(producer["source_commit"], 40), "selected-outer-pins")
-    _need(type(program) == "dict" and sorted(program.keys()) == ["bytes", "path", "sha256"] and _hex(program["sha256"], 64) and type(program["bytes"]) == "int" and 0 < program["bytes"] <= 16777216, "selected-program-row")
+    _need(type(program) == "dict" and sorted(program.keys()) == ["bytes", "path", "sha256"] and _hex(program["sha256"], 64) and type(program["bytes"]) == "int" and 0 < program["bytes"] and program["bytes"] <= 16777216, "selected-program-row")
     prefixes = [prefix for prefix in _ROOTS if producer["receipt"].startswith(prefix)]
     _need(len(prefixes) == 1, "outer-namespace")
     parts = producer["receipt"][len(prefixes[0]):].split("/")
@@ -78,7 +78,7 @@ def _producer(ctx, files, role, selected):
     _add(ctx, files, role + "/test-evidence.json", epoch + "/test-evidence.json", retained["sha256"], len(index_raw))
     for source, leaf in [("test.log", "test-log.evidence"), ("test.xml", "test-xml.evidence")]:
         rows = [row for row in index["results"][0].get("files", []) if row.get("source") == source]
-        _need(len(rows) == 1 and rows[0].get("state") == "copied" and _hex(rows[0].get("sha256"), 64) and type(rows[0].get("bytes")) == "int" and 0 < rows[0]["bytes"] <= 67108864 and type(rows[0].get("file")) == "string" and rows[0]["file"].endswith(".evidence") and _hex(rows[0]["file"][:-len(".evidence")], 64), "copied-proof-member")
+        _need(len(rows) == 1 and rows[0].get("state") == "copied" and _hex(rows[0].get("sha256"), 64) and type(rows[0].get("bytes")) == "int" and 0 < rows[0]["bytes"] and rows[0]["bytes"] <= 67108864 and type(rows[0].get("file")) == "string" and rows[0]["file"].endswith(".evidence") and _hex(rows[0]["file"][:-len(".evidence")], 64), "copied-proof-member")
         _add(ctx, files, role + "/" + leaf, epoch + "/test-evidence/" + rows[0]["file"], rows[0]["sha256"], rows[0]["bytes"])
     report, report_raw = _read(ctx, program["path"], 16777216)
     _need(len(report_raw) == program["bytes"], "program-byte-count")
@@ -90,13 +90,13 @@ def _implementation(ctx):
     selector = ctx.path(ctx.attr.selection)
     ctx.watch(selector)
     raw = ctx.read(selector, watch = "no")
-    _need(0 < len(raw) <= 65536, "bounded-selector")
+    _need(0 < len(raw) and len(raw) <= 65536, "bounded-selector")
     document = json.decode(raw)
     _need(type(document) == "dict" and sorted(document.keys()) == ["compile", "kind", "metadata", "schema_version", "selection", "status"] and type(document["schema_version"]) == "int" and document["schema_version"] == 2 and document["kind"] == "omux-native-carrier-material-config-v2", "typed-config")
     _need(document["status"] == "actual-qualified-carrier-route-selected" and document["metadata"] != None, "cold-selection")
     files = {}
     metadata = _producer(ctx, files, "metadata", document["metadata"])
-    _need(metadata.get("kind") == "omux-native-sdk-carrier-metadata-v2" and type(metadata.get("generated_hub")) == "list" and 0 < len(metadata["generated_hub"]) <= 16, "actual-hub-report")
+    _need(metadata.get("kind") == "omux-native-sdk-carrier-metadata-v2" and type(metadata.get("generated_hub")) == "list" and 0 < len(metadata["generated_hub"]) and len(metadata["generated_hub"]) <= 16, "actual-hub-report")
     metadata_root = document["metadata"]["program"]["path"][:-len("/metadata-receipt.json")]
     for row in metadata["generated_hub"]:
         _need(type(row) == "dict" and sorted(row.keys()) == ["path", "sha256"] and "/" not in row["path"] and _hex(row["sha256"], 64), "hub-member")
@@ -118,7 +118,7 @@ def _implementation(ctx):
         _add(ctx, files, "sdk/authority.json", sdk["root"] + "/authority.json", sdk["inventory_sha256"], len(authority_raw))
         for role in ["hub", "graph"]:
             members = report.get(role + "_files")
-            _need(type(members) == "dict" and 0 < len(members) <= 4096, "projection-map")
+            _need(type(members) == "dict" and 0 < len(members) and len(members) <= 4096, "projection-map")
             for name, row in sorted(members.items()):
                 _name(name)
                 _need(type(row) == "dict" and sorted(row.keys()) == ["bytes", "mode", "sha256"] and row["mode"] in ["100644", "100755"], "projection-member")
