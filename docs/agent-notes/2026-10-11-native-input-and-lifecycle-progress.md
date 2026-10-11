@@ -125,3 +125,44 @@ The completed source-only documentation readback found all four earlier authorit
 | `/home/jess/.local/state/omux-proposals-20261010/estate_home_manager/docs/agent-notes/2026-10-11-native-metadata-repository-boundary-review.md` | `3ec274a5ddd815351bda4b5ffa580d5a5dd46047c40b522e709b7f0032b06beb` |
 | `/home/jess/.local/state/omux-proposals-20261010/estate_docs_authority/docs/agent-notes/2026-10-11-docs-authority-e0e914cc-no-change-readback.txt` | `d4798df4feda45ff5eaa1ab81f9e7ee928a3b2fdbfca15686680e00c0eb7777a` |
 | `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-estate-tracker-reconciliation-v3-live-result.json` | `3d2203b50758c87ad02ec9808eca05bb0640df8902e5f809676d6ab8428e39c9` |
+
+
+## Root custody, declaration and browser continuation — 2026-10-11
+
+Authority remains user-requested integrated implementation, AGENTS.md and R-HOOK-CONVERGENCE-20261004/R-N13. This append preserves preceding bytes, epochs and failures. Latest source is `9495426c27faa1ad06f336e47e125077534c793f`, tree `abeeddcb8bac0a89d7596448aef935ef8898727f`, graph `2dac0bd2ae55528f6c52be6b22ef16cc401e84db130b57203b8df80317702f0f` /434 files. Root remains sole adopter/executor; source was reviewed and pushed without force, preserving the original mixed index and nine protected helpers.
+
+The source receipts supersede implementation-pending descriptions above: `655002ea` corrects three stale reliability/custody assertions; startup-vault V4 `f33a9087` retains same-actor credential-free controls for typed key failures, checked namespace and load-only existing custody. `6b1ee7b4` corrects the actual test-build boundary without weakening production refusal; formatter FM3 changed only onboarding-test presentation at `b739d549`. Installed-native fixture `48799b2d` aligns missing-capability reason/action and the seventh verification phase, keeping global readiness false.
+
+Declaration helper `3af80058` adopts two locked-Python structural phases, preserving individual ordered watches, physical/link/absence checks, downstream SDK authentication and original clocks. Alias identities are rechecked after metadata and BUILD-last publication; V1 stays rejected. Firefox development `dca7c7a9` adds a deterministic unsigned XPI and selected-instance launch metadata with existing exact development ID/host/channel/instance. Chromium remains the leading installed lane; release identity and disabled production exports remain unchanged.
+
+| Actual gate / epoch | Source | Result and scope |
+| --- | --- | --- |
+| VM1 `cbd4a0f3-0a6b-4dd2-85d3-cf873cc3d837` | f33a9087 | Six targets PASS; Engine-build, formatter and installed-core-custody failures retained. Original **1/1**. |
+| VM2 `61f24f54-450d-4050-a9aa-6e5d1043072c` | 48799b2d | **0/0**: Engine 298, isolated installed core-custody and formatter PASS; no normal-vault/enrollment proof. |
+| HM1 `e6dec550-9feb-4802-aab7-79458710da03` | dca7c7a9 | **0/0**, eleven targets PASS, including declaration 22, actual unsigned Firefox development XPI/channel checks, host 45 and built-CLI 24. Separate suite populations are not summed. |
+| HM2 `a4e0dac6-96dd-4a7d-a7bf-572248983ff8` | 9495426c | **0/0**: real mapper parse/load and 22 declaration models PASS; no metadata repository instantiation/output qualification. |
+
+These four cohorts retain generic cleanup **empty/unproved, readbacks0**. Empty descendants/absent cgroup do not establish owned cleanup. Later passes do not retrospectively pass VM1; HM1 establishes no genuine Home Manager realization/activation.
+
+NM3 `75b2398c-670c-4555-b8e8-1cfc7369eaf4` at dca terminated **125/1**: real module analysis rejected Starlark chained comparisons at `metadata_inputs.bzl:84`, after 150.229 seconds, 113 packages/47569 configured targets, zero tests/output. Python translation models had not proved real syntax. This grammar failure remains distinct from NM1/NM2 deadlines. Reviewed `9495426c` uses equivalent bound conjunctions and loads the real mapper in tools BUILD without calling its factory; HM2 qualifies that narrow parse/model boundary.
+
+NM4 `7a016a23-5e9d-4fb6-a11c-7f88a7a8adfd` at 949 terminated **125/124** at its original deadline, no executed tests or qualified metadata output. Both NM3/NM4 retain verified owned stop and two cleanup readbacks, empty descendants, absent original cgroup and null controller failure. NM4 retained its 22,396-byte workload log and matching copied helper. The 136,437,266-byte plan remained **UNREAD**, above the 8MiB ceiling. Stage/input-files/published metadata/BUILD were absent; cleanup makes absence ambiguous. Neither helper success, source phase nor root cause is inferred. The single owned JVM SIGQUIT sample naming `SkyFunctionEnvironment.batchPrefetch` is diagnostic, not RCA. Original 1170/1200-second work/cleanup cutoffs and 4GiB/512-task limits remain; no metadata selector, speedup or native qualification follows.
+
+Browser reconnect `c6358e72` remains **REJECTED UNSAFE / UNAPPLIED / UNRUN**, with independently reviewed zero-path adoption. Safe recovery lacks original-operation outcome/current-source lifecycle-generation readback; retry can renew/reactivate authorization. Root's fresh readback records seven Linear carriers without completedAt and eight open draft PRs. Rendered public content still advertises historical managed launch/npm/version0.1.7; origin freshness is unestablished, and development/installer retrieval errors are inconclusive. No deployed successor download is proved.
+
+NV4 remains **Locked**, normal-collection metadata only, without item/key/datastore/provider/account-count reads. No current retained count was observed; loaded custody/count remains unproved. Historical C8/private Linux/Keychain evidence stays scoped; PZM remains held. Next five-hour priorities are normal OS unlock/restoration and retained two-account custody, changed-source native diagnosis/instrumentation, then genuine SDK/compiler/package prerequisite qualification. Native metadata/SDK/compiler/package/runtime outputs remain unqualified. Ordinary launch/resume, stock support and live handoff remain unproved, alongside complete installed/browser/fleet/Darwin/signing/SLO gates. Compiler 7/8 stays HOLD. The original **2026-10-05T04:03:36Z–19:03:36Z fifteen-hour clock remains active, overdue and incomplete**.
+
+Added receipts use the existing [root custody directory](#durable-receipt-custody); these hashes bind retained results rather than execution by this author.
+
+| Root receipt filename | SHA256 |
+| --- | --- |
+| `2026-10-11-integrated-models-VM1-result.json` | `ed7cf7185c4a56a6743733a77dc57b86b2b48c62550d5d6528740e7eb34f0035` |
+| `2026-10-11-integrated-models-VM2-result.json` | `3ec65717af27d1d6ca5fde610e8d4c86248c3eca52553337614e8b4cf39b23bf` |
+| `2026-10-11-integrated-models-HM1-result.json` | `7e742b3e1ad645e428dfbee94287cab636d8119c9ae825250dba7be80650598b` |
+| `2026-10-11-integrated-models-HM2-result.json` | `4b71bca97065d3d9d6474fe927fabbdd7b8fd7055aa24d42f64edff556ee496b` |
+| `2026-10-11-integrated-models-NM3-result.json` | `abbec6d1be60e63d2a60adb5c7a7b3b33d2a87771d3200083ce95aa3ed7882e9` |
+| `2026-10-11-integrated-models-NM4-result.json` | `1d0a414c876ef5b9602f07b0526b07260265426a520045fb313d11110ea9b2c5` |
+| `2026-10-11-NM4-terminal-boundary-retention.json` | `ddbc0a85b840e7a25b94fc9fdfea8b0762a32ce319a854e19b5404fdf83eeb40` |
+| `2026-10-11-estate-fresh-tracker-and-web-readback.json` | `d2e901f6b100b3a42de145b3ffee4bd3789a477397d9ad130af0fef7196ae789` |
+
+Browser disposition remains `/home/jess/.local/state/omux-proposals-20261010/estate_browser_flow/docs/agent-notes/2026-10-11-browser-reconnect-no-change-authority-disposition.md`, SHA256 `1e8d91aee213eb92521e8fc007fc426e7c6e8bbb8d0a35a9c915be3c0afb52ab`. This author performed private source/receipt drafting only; no project execution/import, shared edit or service/provider/tracker action.
