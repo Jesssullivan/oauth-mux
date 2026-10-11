@@ -194,7 +194,7 @@ class CarrierModels(unittest.TestCase):
         fresh = carrier.extract(retained, pin, output, self.deadline)
         fresh_pin = carrier.sha(carrier.encoded(fresh))
         for name in carrier.FILES:
-            for mode in (0o600, 0o644, 0o666, 0o755, 0o4555):
+            for mode in (0o600, 0o644, 0o666, 0o755):
                 with self.subTest(leaf=name, mode=oct(mode)):
                     (retained / name).chmod(mode)
                     with self.assertRaises(ValueError):
@@ -208,6 +208,35 @@ class CarrierModels(unittest.TestCase):
                                                      pinned_extraction_receipt_sha256=fresh_pin)
                     self.assertFalse((self.root / "refused-extraction").exists())
                     (retained / name).chmod(0o555)
+
+        # The guarded workload forbids creating SUID/SGID files. Model only
+        # the returned mode witness after a real nofollow/custody-checked open;
+        # each public route must reject it at the transport mode predicate.
+        real_open = carrier.Root.open
+        for name in carrier.FILES:
+            for mode in (0o4555, 0o2555):
+                with self.subTest(leaf=name, special_mode=oct(mode)):
+                    opened = []
+                    def special_mode_witness(root, leaf):
+                        fd, witness = real_open(root, leaf)
+                        if root.path == retained and leaf == name:
+                            opened.append(stat.S_IMODE(witness[4]))
+                            witness = list(witness)
+                            witness[4] |= mode & 0o7000
+                        return fd, witness
+                    with patch.object(carrier.Root, "open", special_mode_witness):
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.validate_binding(retained, pin, self.deadline)
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.publication_report(retained, pin, self.deadline)
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.extract(retained, pin, self.root / "refused-extraction", self.deadline)
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.revalidate_extraction(retained, pin, output, self.deadline,
+                                                         pinned_extraction_receipt_sha256=fresh_pin)
+                    self.assertEqual(opened, [0o555] * 4)
+                    self.assertFalse((self.root / "refused-extraction").exists())
+                    self.assertEqual(stat.S_IMODE((retained / name).stat().st_mode), 0o555)
 
     def test_retained_transport_symlink_and_same_bytes_mode_or_inode_race_refuse(self):
         for name in carrier.FILES:
