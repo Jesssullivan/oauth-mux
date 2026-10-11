@@ -180,10 +180,8 @@ test "production receipt parser types desktop placement and preserves legacy sch
 
 test "desktop placement admits only exact channel data with control and retains service selection" {
     var entries = [_]collector.Entry{
-        files[0], files[1], files[2],
-        .{ .path = "/opt/omux/bin/omux-control", .sha256 = digest, .mode = 0o755 },
-        .{ .path = "/home/operator/.local/share/applications/ai.xoxd.omux.dev.desktop", .sha256 = digest, .mode = 0o644 },
-        .{ .path = "/home/operator/.config/systemd/user/ai.xoxd.omux.dev.service", .sha256 = digest, .mode = 0o600 },
+        files[0],                                                                   files[1],                                                                                                          files[2],
+        .{ .path = "/opt/omux/bin/omux-control", .sha256 = digest, .mode = 0o755 }, .{ .path = "/home/operator/.local/share/applications/ai.xoxd.omux.dev.desktop", .sha256 = digest, .mode = 0o644 }, .{ .path = "/home/operator/.config/systemd/user/ai.xoxd.omux.dev.service", .sha256 = digest, .mode = 0o600 },
     };
     var receipt = valid();
     receipt.artifact = .{ .channel = "development", .manifestSha256 = digest };
