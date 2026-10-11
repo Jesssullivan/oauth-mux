@@ -4,7 +4,7 @@ pub const Channel = enum { unknown, development, release };
 pub const Ownership = enum { unknown, home_manager, installation_receipt };
 pub const Evidence = enum { unobserved, diagnostic, synthetic, native_conformance, live };
 pub const Freshness = enum { unknown, current, stale };
-pub const State = enum { unknown, ready, missing, pending, incompatible, locked, key_lost, expired, browser_required, unsupported, unverified };
+pub const State = enum { unknown, ready, missing, pending, incompatible, locked, key_lost, expired, browser_required, unsupported, unverified, key_unavailable, access_denied, unavailable };
 pub const Observation = struct {
     state: State = .unknown,
     freshness: Freshness = .unknown,
@@ -37,6 +37,9 @@ pub const Reason = enum {
     incompatible,
     vault_locked,
     vault_key_lost,
+    vault_key_unavailable,
+    vault_access_denied,
+    vault_unavailable,
     authority_expired,
     browser_required,
     native_unsupported,
@@ -50,6 +53,8 @@ pub const Action = enum {
     activate_service,
     unlock_vault,
     preserve_and_offer_fresh_enrollment,
+    restore_original_vault_key,
+    restore_vault_access,
     connect_source,
     verify_identity,
     enroll_usable_authority,
@@ -94,6 +99,14 @@ pub fn assess(snapshot: Snapshot) Readiness {
 fn finding(phase: Phase, observation: Observation) Finding {
     // Lost-key guidance must remain visible even if its observation is stale.
     if (phase == .vault and observation.state == .key_lost) return .{ .phase = phase, .reason = .vault_key_lost, .action = .preserve_and_offer_fresh_enrollment };
+    // Retained startup failures remain actionable without claiming that the
+    // OS state is freshly observed or that a missing key is permanently lost.
+    if (phase == .vault) switch (observation.state) {
+        .key_unavailable => return .{ .phase = phase, .reason = .vault_key_unavailable, .action = .restore_original_vault_key },
+        .access_denied => return .{ .phase = phase, .reason = .vault_access_denied, .action = .restore_vault_access },
+        .unavailable => return .{ .phase = phase, .reason = .vault_unavailable, .action = .restore_vault_access },
+        else => {},
+    };
     const reason: Reason = switch (observation.freshness) {
         .unknown => .observation_unknown,
         .stale => .observation_stale,
@@ -104,6 +117,9 @@ fn finding(phase: Phase, observation: Observation) Finding {
             .incompatible => .incompatible,
             .locked => .vault_locked,
             .key_lost => .vault_key_lost,
+            .key_unavailable => .vault_key_unavailable,
+            .access_denied => .vault_access_denied,
+            .unavailable => .vault_unavailable,
             .expired => .authority_expired,
             .browser_required => .browser_required,
             .unsupported => .native_unsupported,
@@ -134,6 +150,8 @@ fn finding(phase: Phase, observation: Observation) Finding {
         .incompatible => .inspect_compatibility,
         .vault_locked => .unlock_vault,
         .vault_key_lost => .preserve_and_offer_fresh_enrollment,
+        .vault_key_unavailable => .restore_original_vault_key,
+        .vault_access_denied, .vault_unavailable => .restore_vault_access,
         .authority_expired => .maintain_authority,
         .browser_required => .reconnect_browser,
         .native_unsupported => .install_native_adapter,

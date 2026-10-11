@@ -12,7 +12,7 @@ import guard_resident_enrollment_profile as guard
 import guard_resident_owned_update as owned
 import resident_enrollment as resident
 
-SAFE_ERRORS=frozenset(("Locked","Missing","Denied","Cancelled","Unavailable","InvalidKey","BackendFailure","Timeout","RepairRequired"))
+SAFE_ERRORS=frozenset(("Locked","Missing","Denied","Cancelled","Unavailable","InvalidKey","Conflict","InvalidRoot","BackendFailure","RecoveryDatabaseMissing","RecoveryDatabaseChanged","Timeout","RepairRequired"))
 PROPERTIES=owned.IDLE_PROPERTIES|{"InvocationID","NRestarts"}
 
 def metadata(health,handshake):
@@ -33,9 +33,17 @@ def metadata(health,handshake):
     if loaded:
         guard.require(health.get("status") == "ready" and type(count) is int and count >= 0)
     else:
-        guard.require(health.get("status") == "vault_locked" and count is None
-            and health.get("provider_access") is False
-            and health.get("recovery_action") == "unlock_platform_vault_then_reopen_custody")
+        guard.require(count is None and health.get("provider_access") is False)
+        status,error,action=health.get("status"),health.get("custody_error"),health.get("recovery_action")
+        if status == "vault_locked":
+            # Older Locked services lack the additive typed reason field.
+            guard.require(error in (None,"Locked") and action == "unlock_platform_vault_then_reopen_custody")
+        else:
+            guard.require(status == "vault_unavailable" and error in
+                ("Missing","Denied","Cancelled","Unavailable","InvalidKey","Conflict","BackendFailure","InvalidRoot"))
+            expected="restore_original_vault_key_then_reopen_custody" if error in ("Missing","InvalidKey") \
+                else "restore_platform_vault_access_then_reopen_custody"
+            guard.require(action == expected)
     return loaded,count
 
 def classify(before,after,envelope):

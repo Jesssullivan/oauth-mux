@@ -271,7 +271,7 @@ final class DaemonStore: ObservableObject {
               result["timing_scope"].string == "admission_to_terminal_before_commit_process_local",
               result["phases"].array.count == 7 else { return false }
         let unknownReasons: Set<String> = ["observation_unknown", "observation_stale", "evidence_unobserved", "synthetic_only", "native_evidence_missing", "channel_unknown"]
-        let actionReasons: Set<String> = ["channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "authority_expired", "browser_required", "native_unsupported"]
+        let actionReasons: Set<String> = ["channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "vault_key_unavailable", "vault_access_denied", "vault_unavailable", "authority_expired", "browser_required", "native_unsupported"]
         switch result["outcome"].string {
         case "verification_completed":
             guard generation > 0, result["refusal"] == .null else { return false }

@@ -30,7 +30,7 @@ pub fn classify(reason: onboarding.Reason) PhaseOutcome {
     return switch (reason) {
         .ready => .verified_ready,
         .observation_unknown, .observation_stale, .evidence_unobserved, .synthetic_only, .native_evidence_missing, .channel_unknown => .unknown,
-        .channel_mismatch, .missing, .pending, .incompatible, .vault_locked, .vault_key_lost, .authority_expired, .browser_required, .native_unsupported => .action_required,
+        .channel_mismatch, .missing, .pending, .incompatible, .vault_locked, .vault_key_lost, .vault_key_unavailable, .vault_access_denied, .vault_unavailable, .authority_expired, .browser_required, .native_unsupported => .action_required,
     };
 }
 pub fn makeCompleted(id: []const u8, generation: u64, observed_at: i64, readiness: onboarding.Readiness, elapsed_ns: ?u64) !Result {

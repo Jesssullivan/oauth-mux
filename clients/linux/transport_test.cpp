@@ -242,7 +242,7 @@ bool declaredFailureReconciliation(DeclineOutcome outcome) {
     client.request("state.snapshot", {}, [](const QJsonObject &, const QString &) {});
     return waitUntil([&] { return finishedQueries == 2; }) && secondBlocked && !recovered && wireValid && mutations == 1;
 }
-bool identifiedSetupVerification(bool indeterminate = false, bool recover = false, bool timedOut = false) {
+bool identifiedSetupVerification(bool indeterminate = false, bool recover = false, bool timedOut = false, const QString &vaultReason = {}) {
     Fixture fixture;
     OmuxClient client(fixture.path());
     int passive = 0, checks = 0, statusQueries = 0;
@@ -269,6 +269,7 @@ bool identifiedSetupVerification(bool indeterminate = false, bool recover = fals
             else {
                 QJsonArray phases;
                 for (int index = 0; index < 7; ++index) phases.append(QJsonObject{{"outcome", "unknown"}, {"reason", "observation_unknown"}});
+                if (!vaultReason.isEmpty()) phases[2] = QJsonObject{{"outcome", "action_required"}, {"reason", vaultReason}};
                 if (recover && statusQueries == 3) phases = QJsonArray{QJsonValue(), QJsonValue(), QJsonValue(), QJsonValue(), QJsonValue(), QJsonValue(), QJsonValue()};
                 if (recover && statusQueries == 4) phases[0] = QJsonObject{{"reason", "missing"}, {"outcome", "verified_ready"}};
                 QJsonObject terminal {
@@ -305,6 +306,11 @@ bool identifiedSetupVerification(bool indeterminate = false, bool recover = fals
     client.onEvent = [&](const QJsonObject &event) {
         complete = event.value("operation_kind").toString() == "setup_verification"
             && event.value("operation_status").toString() == (indeterminate && !recover ? "indeterminate" : "completed");
+        if (!vaultReason.isEmpty() && complete) {
+            const auto phase = event.value("operation_result").toObject().value("phases").toArray()[2].toObject();
+            wireValid = wireValid && phase.value("reason").toString() == vaultReason
+                && phase.value("outcome").toString() == "action_required";
+        }
         if (timedOut && complete) {
             const auto terminal = event.value("operation_result").toObject();
             wireValid = wireValid && terminal.value("outcome").toString() == "safe_refusal"
@@ -341,6 +347,9 @@ int main(int argc, char **argv) {
     const std::pair<const char *, std::function<bool()>> tests[] {
         {"versioned same-user socket", versionNegotiation},
         {"identified setup polls one operation without repeating verification", [] { return identifiedSetupVerification(); }},
+        {"setup key restoration reason retains authentic terminal classification", [] { return identifiedSetupVerification(false, false, false, "vault_key_unavailable"); }},
+        {"setup access denial reason retains authentic terminal classification", [] { return identifiedSetupVerification(false, false, false, "vault_access_denied"); }},
+        {"setup unavailable reason retains authentic terminal classification", [] { return identifiedSetupVerification(false, false, false, "vault_unavailable"); }},
         {"setup timeout rejects invented readiness and timing before accepting safe refusal", [] { return identifiedSetupVerification(false, false, true); }},
         {"indeterminate setup keeps the operation fence", [] { return identifiedSetupVerification(true); }},
         {"indeterminate setup survives missing and malformed status before validated completion", [] { return identifiedSetupVerification(true, true); }},

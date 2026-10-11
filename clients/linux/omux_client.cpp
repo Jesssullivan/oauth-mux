@@ -51,7 +51,7 @@ bool verificationTerminal(const QJsonObject &result, const QString &operation) {
         || (refusal && (!QStringList{"busy", "installation_selection_required", "collection_timed_out"}.contains(result.value("refusal").toString())
             || (version == 1 && !result.value("elapsed_ns").isNull())))) return false;
     const QStringList unknown {"observation_unknown", "observation_stale", "evidence_unobserved", "synthetic_only", "native_evidence_missing", "channel_unknown"};
-    const QStringList action {"channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "authority_expired", "browser_required", "native_unsupported"};
+    const QStringList action {"channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "vault_key_unavailable", "vault_access_denied", "vault_unavailable", "authority_expired", "browser_required", "native_unsupported"};
     for (const auto &value : result.value("phases").toArray()) {
         if (!value.isObject()) return false;
         const auto phase = value.toObject();

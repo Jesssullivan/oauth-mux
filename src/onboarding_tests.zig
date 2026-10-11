@@ -117,3 +117,23 @@ test "otherwise ready artifacts still require a known matching channel" {
     try std.testing.expect(!result.ready);
     try std.testing.expectEqual(model.Reason.channel_unknown, result.findings[0].reason);
 }
+
+
+test "retained unavailable vault diagnoses give restoration guidance without asserting permanent loss or unlock" {
+    const cases = [_]struct { state: model.State, reason: model.Reason, action: model.Action }{
+        .{ .state = .key_unavailable, .reason = .vault_key_unavailable, .action = .restore_original_vault_key },
+        .{ .state = .access_denied, .reason = .vault_access_denied, .action = .restore_vault_access },
+        .{ .state = .unavailable, .reason = .vault_unavailable, .action = .restore_vault_access },
+    };
+    for (cases) |selected| {
+        var snapshot = observed();
+        snapshot.vault = .{ .state = selected.state, .freshness = .stale, .evidence = .diagnostic };
+        const result = model.assess(snapshot);
+        try std.testing.expect(!result.ready and !result.seamless_handoff_proven);
+        try std.testing.expectEqual(selected.reason, result.findings[2].reason);
+        try std.testing.expectEqual(selected.action, result.findings[2].action);
+    }
+    var locked = observed();
+    locked.vault = .{ .state = .locked, .freshness = .stale, .evidence = .diagnostic };
+    try std.testing.expectEqual(model.Reason.observation_stale, model.assess(locked).findings[2].reason);
+}

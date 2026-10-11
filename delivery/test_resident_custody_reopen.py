@@ -28,6 +28,32 @@ class ReopenContract(unittest.TestCase):
             bad=copy.deepcopy(pair)
             bad[1]["capabilities"]["custody_reopen"]=change
             with self.assertRaises(ValueError): reopen.metadata(*bad)
+    def test_database_disappearance_or_substitution_is_safe_refusal_without_metadata_adoption(self):
+        for error in ("RecoveryDatabaseMissing","RecoveryDatabaseChanged"):
+            response={"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":error}}
+            self.assertEqual(reopen.classify((False,None),(False,None),response),("safe_refusal",error))
+            with self.assertRaises(ValueError): reopen.classify((False,None),(True,0),response)
+
+    def test_typed_unavailable_health_requires_exact_original_key_or_access_guidance(self):
+        for error in ("Missing","InvalidKey","Denied","Cancelled","Unavailable","Conflict","BackendFailure","InvalidRoot"):
+            pair=self.pair()
+            pair[0].update(status="vault_unavailable",custody_error=error,
+                recovery_action="restore_original_vault_key_then_reopen_custody" if error in ("Missing","InvalidKey")
+                    else "restore_platform_vault_access_then_reopen_custody")
+            self.assertEqual(reopen.metadata(*pair),(False,None))
+            bad=copy.deepcopy(pair)
+            bad[0]["recovery_action"]="unlock_platform_vault_then_reopen_custody"
+            with self.assertRaises(ValueError): reopen.metadata(*bad)
+            bad=copy.deepcopy(pair)
+            bad[0]["custody_error"]="OutOfMemory"
+            with self.assertRaises(ValueError): reopen.metadata(*bad)
+            bad=copy.deepcopy(pair)
+            bad[0]["status"]="vault_locked"
+            with self.assertRaises(ValueError): reopen.metadata(*bad)
+        pair=self.pair()
+        pair[0]["custody_error"]="Locked"
+        self.assertEqual(reopen.metadata(*pair),(False,None))
+
     def test_loaded_count_is_typed_and_both_views_must_agree(self):
         self.assertEqual(reopen.metadata(*self.pair(True,2)),(True,2))
         for count in (True,None,-1):

@@ -39,6 +39,7 @@ PROBE_FAILURES = ("none", "receipt_absent", "invalid_receipt", "unsafe_path", "u
 READINESS_REASONS = ("ready", "observation_unknown", "observation_stale", "evidence_unobserved",
                      "synthetic_only", "native_evidence_missing", "channel_unknown", "channel_mismatch",
                      "missing", "pending", "incompatible", "vault_locked", "vault_key_lost",
+                     "vault_key_unavailable", "vault_access_denied", "vault_unavailable",
                      "authority_expired", "browser_required", "native_unsupported")
 SUBPHASES = ("readiness-command", "readiness-shared-result", "readiness-claims", "readiness-phases",
              "readiness-artifact", "readiness-service", "readiness-vault", "readiness-source",
