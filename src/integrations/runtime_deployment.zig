@@ -30,7 +30,10 @@ const ModernRoles = struct {
 };
 const AuthorityGroup = struct { outer: Role, evidence: Role, members: []const Member };
 const Authorities = struct { source: AuthorityGroup, sdk: AuthorityGroup, plan: AuthorityGroup, query: AuthorityGroup, compiler: AuthorityGroup };
-const Modern = struct { package_selection: Role, package_outputs: Role, package_output_root: []const u8, package_authority: AuthorityGroup, roles: ModernRoles, protocol_schema_files: []const Member, native_acquisition_artifact_files: []const Member, authority_receipts: Authorities };
+const CarrierReceipts = struct { authority_document: Role, carrier_receipt: Role, seal_program: Role, metadata_program: Role };
+const CarrierAuthorities = struct { seal: AuthorityGroup, metadata: AuthorityGroup };
+const Carrier = struct { receipts: CarrierReceipts, authorities: CarrierAuthorities };
+const Modern = struct { package_selection: Role, package_outputs: Role, package_output_root: []const u8, package_authority: AuthorityGroup, roles: ModernRoles, protocol_schema_files: []const Member, native_acquisition_artifact_files: []const Member, authority_receipts: Authorities, carrier_materials: ?Carrier = null };
 const Declaration = struct {
     schema_version: u8,
     kind: []const u8,
@@ -186,7 +189,9 @@ fn parseDeclaration(allocator: std.mem.Allocator, raw: []const u8) !std.json.Par
         for (selected[0..index]) |previous| if (std.mem.eql(u8, previous.path, role.path)) return error.InvalidDeploymentSelection;
     }
     const modern = value.modern_materials orelse return error.InvalidDeploymentSelection;
-    if (48 + modern.protocol_schema_files.len + modern.native_acquisition_artifact_files.len > producer.maximum_files) return error.InvalidDeploymentSelection;
+    const overhead: usize = if (modern.carrier_materials != null) 60 else 48;
+    if (modern.protocol_schema_files.len > producer.maximum_files - overhead or
+        modern.native_acquisition_artifact_files.len > producer.maximum_files - overhead - modern.protocol_schema_files.len) return error.InvalidDeploymentSelection;
     if (!std.mem.startsWith(u8, modern.package_output_root, "/")) return error.InvalidDeploymentSelection;
     try relative(modern.package_output_root[1..]);
     var total: u64 = 0;
@@ -222,8 +227,41 @@ fn parseDeclaration(allocator: std.mem.Allocator, raw: []const u8) !std.json.Par
             for (member.name[0..64]) |ch| if (!std.ascii.isDigit(ch) and !(ch >= 'a' and ch <= 'f')) return error.InvalidDeploymentSelection;
             if (index > 0 and std.mem.order(u8, group.members[index - 1].name, member.name) != .lt) return error.InvalidDeploymentSelection;
             _ = try roleDigest(.{ .path = member.path, .sha256 = member.sha256, .bytes = member.bytes });
-            if (member.bytes > producer.maximum_metadata_bytes or !std.mem.eql(u8, member.name[0..64], member.sha256)) return error.InvalidDeploymentSelection;
+            if (member.bytes > producer.maximum_metadata_bytes or (modern.carrier_materials == null and !std.mem.eql(u8, member.name[0..64], member.sha256))) return error.InvalidDeploymentSelection;
             total = std.math.add(u64, total, member.bytes) catch return error.InvalidDeploymentSelection;
+        }
+    }
+    if (modern.carrier_materials) |carrier| {
+        // Count all selected V2 logical rows, including aliases, before any
+        // deployment descriptor arrays are allocated or files opened.
+        for (selected) |role| total = std.math.add(u64, total, role.bytes) catch return error.InvalidDeploymentSelection;
+        total = std.math.add(u64, total, raw.len) catch return error.InvalidDeploymentSelection;
+        inline for (@typeInfo(CarrierReceipts).@"struct".field_names) |field| {
+            const role = @field(carrier.receipts, field);
+            _ = try roleDigest(role);
+            if (role.bytes > producer.maximum_metadata_bytes) return error.InvalidDeploymentSelection;
+            total = std.math.add(u64, total, role.bytes) catch return error.InvalidDeploymentSelection;
+        }
+        const alias = carrier.receipts.metadata_program;
+        const metadata_role = modern.roles.sdk_metadata;
+        if (!std.mem.eql(u8, alias.path, metadata_role.path) or alias.bytes != metadata_role.bytes or
+            !std.mem.eql(u8, alias.sha256, metadata_role.sha256)) return error.InvalidDeploymentSelection;
+        inline for (@typeInfo(CarrierAuthorities).@"struct".field_names) |field| {
+            const group = @field(carrier.authorities, field);
+            if (group.members.len != 2) return error.InvalidDeploymentSelection;
+            for ([_]Role{ group.outer, group.evidence }) |role| {
+                _ = try roleDigest(role);
+                if (role.bytes > producer.maximum_metadata_bytes) return error.InvalidDeploymentSelection;
+                total = std.math.add(u64, total, role.bytes) catch return error.InvalidDeploymentSelection;
+            }
+            for (group.members, 0..) |member, index| {
+                if (member.name.len != 73 or !std.mem.endsWith(u8, member.name, ".evidence")) return error.InvalidDeploymentSelection;
+                for (member.name[0..64]) |ch| if (!std.ascii.isDigit(ch) and !(ch >= 'a' and ch <= 'f')) return error.InvalidDeploymentSelection;
+                if (index > 0 and std.mem.order(u8, group.members[index - 1].name, member.name) != .lt) return error.InvalidDeploymentSelection;
+                _ = try roleDigest(.{ .path = member.path, .sha256 = member.sha256, .bytes = member.bytes });
+                if (member.bytes > producer.maximum_metadata_bytes) return error.InvalidDeploymentSelection;
+                total = std.math.add(u64, total, member.bytes) catch return error.InvalidDeploymentSelection;
+            }
         }
     }
     if (total > producer.maximum_payload_bytes) return error.InvalidDeploymentSelection;
@@ -240,6 +278,15 @@ fn parseDeclaration(allocator: std.mem.Allocator, raw: []const u8) !std.json.Par
         try consistentRole(allocator, &seen, group.outer);
         try consistentRole(allocator, &seen, group.evidence);
         for (group.members) |member| try consistentRole(allocator, &seen, .{ .path = member.path, .sha256 = member.sha256, .bytes = member.bytes });
+    }
+    if (modern.carrier_materials) |carrier| {
+        inline for (@typeInfo(CarrierReceipts).@"struct".field_names) |field| try consistentRole(allocator, &seen, @field(carrier.receipts, field));
+        inline for (@typeInfo(CarrierAuthorities).@"struct".field_names) |field| {
+            const group = @field(carrier.authorities, field);
+            try consistentRole(allocator, &seen, group.outer);
+            try consistentRole(allocator, &seen, group.evidence);
+            for (group.members) |member| try consistentRole(allocator, &seen, .{ .path = member.path, .sha256 = member.sha256, .bytes = member.bytes });
+        }
     }
     return parsed;
 }
@@ -298,7 +345,8 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, registered: RegisteredDepl
     const value = parsed.value;
     const modern = value.modern_materials.?;
     const authority_count = 28;
-    const count = 20 + modern.protocol_schema_files.len + modern.native_acquisition_artifact_files.len + authority_count;
+    const carrier_rows: usize = if (modern.carrier_materials != null) 12 else 0;
+    const count = 20 + modern.protocol_schema_files.len + modern.native_acquisition_artifact_files.len + authority_count + carrier_rows;
     const descriptors = try allocator.alloc(c.fd_t, count);
     errdefer allocator.free(descriptors);
     @memset(descriptors, -1);
@@ -333,6 +381,22 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, registered: RegisteredDepl
         selected_roles[authority_cursor] = .{ .path = member.path, .sha256 = member.sha256, .bytes = member.bytes };
         authority_cursor += 1;
     }
+    if (modern.carrier_materials) |carrier| {
+        inline for (@typeInfo(CarrierReceipts).@"struct".field_names) |field| {
+            selected_roles[authority_cursor] = @field(carrier.receipts, field);
+            authority_cursor += 1;
+        }
+        inline for (@typeInfo(CarrierAuthorities).@"struct".field_names) |field| {
+            const group = @field(carrier.authorities, field);
+            selected_roles[authority_cursor] = group.outer;
+            selected_roles[authority_cursor + 1] = group.evidence;
+            authority_cursor += 2;
+            for (group.members) |member| {
+                selected_roles[authority_cursor] = .{ .path = member.path, .sha256 = member.sha256, .bytes = member.bytes };
+                authority_cursor += 1;
+            }
+        }
+    }
     selected_roles[count - 2] = modern.package_selection;
     selected_roles[count - 1] = modern.package_outputs;
     const inputs = try allocator.alloc(producer.Input, count);
@@ -349,7 +413,7 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, registered: RegisteredDepl
     errdefer allocator.free(protocol_members);
     const acquisition_members = try allocator.alloc(producer.ModernMember, modern.native_acquisition_artifact_files.len);
     errdefer allocator.free(acquisition_members);
-    const authority_members = try allocator.alloc(producer.ModernMember, 16);
+    const authority_members = try allocator.alloc(producer.ModernMember, if (modern.carrier_materials != null) 20 else 16);
     errdefer allocator.free(authority_members);
     for (modern.protocol_schema_files, 0..) |member, index| protocol_members[index] = .{ .name = member.name, .input = inputs[18 + index] };
     for (modern.native_acquisition_artifact_files, 0..) |member, index| acquisition_members[index] = .{ .name = member.name, .input = inputs[18 + protocol_members.len + index] };
@@ -376,11 +440,30 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, registered: RegisteredDepl
         member_cursor += 1;
         authority_cursor += 1;
     }
+    var carrier_inputs: ?producer.CarrierInputs = null;
+    if (modern.carrier_materials) |carrier| {
+        var compact: [4]producer.Input = undefined;
+        @memcpy(&compact, inputs[authority_cursor .. authority_cursor + 4]);
+        authority_cursor += 4;
+        var proof: [2]producer.ModernAuthority = undefined;
+        inline for (@typeInfo(CarrierAuthorities).@"struct".field_names, 0..) |field, index| {
+            const group = @field(carrier.authorities, field);
+            const first = member_cursor;
+            proof[index] = .{ .outer = inputs[authority_cursor], .evidence = inputs[authority_cursor + 1], .members = authority_members[first .. first + group.members.len] };
+            authority_cursor += 2;
+            for (group.members) |member| {
+                authority_members[member_cursor] = .{ .name = member.name, .input = inputs[authority_cursor] };
+                member_cursor += 1;
+                authority_cursor += 1;
+            }
+        }
+        carrier_inputs = .{ .receipts = compact, .authority_receipts = proof };
+    }
     var declaration_digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(raw, &declaration_digest, .{});
     const held = try allocator.create(Held);
     errdefer allocator.destroy(held);
-    held.* = .{ .allocator = allocator, .root = root, .root_status = root_status, .root_path = root_path, .selector_fd = selector_fd, .selector_status = status, .parsed = parsed, .descriptors = descriptors, .statuses = statuses, .selected_roles = selected_roles, .protocol_members = protocol_members, .acquisition_members = acquisition_members, .authority_members = authority_members, .until = until, .selected = .{ .archive = inputs[0], .manifest = inputs[1], .runtime_receipt = inputs[2], .source_receipt = inputs[3], .producer_receipt = inputs[4], .registration_receipt = inputs[5], .installation_directory = -1, .modern_materials = .{ .package_selection = inputs[count - 2], .package_outputs = inputs[count - 1], .package_output_root = modern.package_output_root, .package_authority = package_authority, .roles = modern_inputs, .protocol_schema_files = protocol_members, .native_acquisition_artifact_files = acquisition_members, .authority_receipts = authorities }, .deployment_root = .{ .path = root_path, .descriptor = root }, .deployment_declaration = .{ .descriptor = selector_fd, .sha256 = declaration_digest, .bytes = raw.len } } };
+    held.* = .{ .allocator = allocator, .root = root, .root_status = root_status, .root_path = root_path, .selector_fd = selector_fd, .selector_status = status, .parsed = parsed, .descriptors = descriptors, .statuses = statuses, .selected_roles = selected_roles, .protocol_members = protocol_members, .acquisition_members = acquisition_members, .authority_members = authority_members, .until = until, .selected = .{ .archive = inputs[0], .manifest = inputs[1], .runtime_receipt = inputs[2], .source_receipt = inputs[3], .producer_receipt = inputs[4], .registration_receipt = inputs[5], .installation_directory = -1, .modern_materials = .{ .package_selection = inputs[count - 2], .package_outputs = inputs[count - 1], .package_output_root = modern.package_output_root, .package_authority = package_authority, .roles = modern_inputs, .protocol_schema_files = protocol_members, .native_acquisition_artifact_files = acquisition_members, .authority_receipts = authorities, .carrier_materials = carrier_inputs }, .deployment_root = .{ .path = root_path, .descriptor = root }, .deployment_declaration = .{ .descriptor = selector_fd, .sha256 = declaration_digest, .bytes = raw.len } } };
     const owned: *OwnedInputs = @ptrCast(held);
     try owned.recheck(io);
     return owned;
@@ -455,5 +538,94 @@ test "actual declaration parser binds distinct package output input and canonica
     try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
     value.modern_materials.?.package_outputs = role;
     value.modern_materials.?.package_outputs.bytes = 2;
+    try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
+}
+
+test "compact carrier deployment keeps exact metadata alias and counts original selected bytes" {
+    // Actual protected declaration parser only; this creates no deployment,
+    // executed SDK proof or native runtime qualification.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const shared: Role = .{ .path = "selected/shared.json", .sha256 = digest, .bytes = 1 };
+    var members: [6]Member = undefined;
+    for (&members, 0..) |*member, index| {
+        const sha = try std.fmt.allocPrint(allocator, "{x:0>64}", .{index + 1});
+        member.* = .{ .name = try std.fmt.allocPrint(allocator, "{s}.evidence", .{sha}), .path = try std.fmt.allocPrint(allocator, "selected/{s}.evidence", .{sha}), .sha256 = sha, .bytes = 1 };
+    }
+    const historical_members = members;
+    // Actual CS2 collector identity differs from each copied content digest.
+    // Place these last to preserve the required sorted six-member SOURCE map;
+    // every two-member v2 group uses the same exact declared aliases here.
+    members[4] = .{ .name = "a15b7a08edaac07aafb177ff16dd333ddfae594d871eab2b79cafe382eba6af9.evidence", .path = "selected/a15b7a08edaac07aafb177ff16dd333ddfae594d871eab2b79cafe382eba6af9.evidence", .sha256 = "f3dac8e579d04e01da260f9e9be250a9e9358bbb6a742c4ade1cb69036425612", .bytes = 1973 };
+    members[5] = .{ .name = "ea1f9312aa20d326215c378fbaa9b7fb3ab3f2d53e3e0d4c784b6193d1e32b43.evidence", .path = "selected/ea1f9312aa20d326215c378fbaa9b7fb3ab3f2d53e3e0d4c784b6193d1e32b43.evidence", .sha256 = "b97b5a72bb207b508ec37ea286b345164636a8b8d4906634c0c11338f5bb3318", .bytes = 1540 };
+    const group: AuthorityGroup = .{ .outer = shared, .evidence = shared, .members = members[4..6] };
+    var modern_roles: ModernRoles = undefined;
+    inline for (@typeInfo(ModernRoles).@"struct".field_names) |field| @field(modern_roles, field) = shared;
+    const carrier: Carrier = .{
+        .receipts = .{
+            .authority_document = .{ .path = "selected/authority.json", .sha256 = digest, .bytes = 1 },
+            .carrier_receipt = .{ .path = "selected/carrier-receipt.json", .sha256 = digest, .bytes = 1 },
+            .seal_program = .{ .path = "selected/seal-program.json", .sha256 = digest, .bytes = 1 },
+            .metadata_program = shared,
+        },
+        .authorities = .{ .seal = group, .metadata = group },
+    };
+    var value: Declaration = .{
+        .schema_version = 2,
+        .kind = "omux-native-source-acquisition-deployment-v1",
+        .target = "x86_64-linux",
+        .launch_profile = "linux_nix_direct_main_v1",
+        .inputs = undefined,
+        .modern_materials = .{
+            .package_selection = shared,
+            .package_outputs = .{ .path = "selected/package-outputs.json", .sha256 = digest, .bytes = 1 },
+            .package_output_root = "/home/model/public/output-base/test.outputs/fresh-native-runtime",
+            .package_authority = group,
+            .roles = modern_roles,
+            .protocol_schema_files = &.{},
+            .native_acquisition_artifact_files = &.{},
+            .authority_receipts = .{ .source = .{ .outer = shared, .evidence = shared, .members = &members }, .sdk = group, .plan = group, .query = group, .compiler = group },
+            .carrier_materials = carrier,
+        },
+    };
+    inline for (@typeInfo(@TypeOf(value.inputs)).@"struct".field_names) |field| {
+        @field(value.inputs, field) = .{ .path = try std.fmt.allocPrint(allocator, "selected/{s}.json", .{field}), .sha256 = digest, .bytes = 1 };
+    }
+    {
+        const accepted = try parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{}));
+        defer accepted.deinit();
+        try std.testing.expect(accepted.value.modern_materials.?.carrier_materials != null);
+    }
+    value.modern_materials.?.carrier_materials = null;
+    try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
+    value.modern_materials.?.carrier_materials = carrier;
+    const actual_xml = members[4];
+    members[4].name = "A15b7a08edaac07aafb177ff16dd333ddfae594d871eab2b79cafe382eba6af9.evidence";
+    try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
+    members[4] = actual_xml;
+    value.modern_materials.?.carrier_materials.?.receipts.metadata_program.path = "selected/copied-metadata.json";
+    try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
+    value.modern_materials.?.carrier_materials = carrier;
+    value.modern_materials.?.carrier_materials.?.receipts.metadata_program.bytes = 2;
+    try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
+    value.modern_materials.?.carrier_materials = carrier;
+    value.modern_materials.?.carrier_materials.?.receipts.authority_document.path = "/ambient/authority.json";
+    try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
+    value.modern_materials.?.carrier_materials = carrier;
+    value.modern_materials.?.carrier_materials.?.authorities.seal.members = members[0..3];
+    try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
+    members = historical_members;
+    value.modern_materials.?.carrier_materials = null;
+    value.modern_materials.?.roles.codex = .{ .path = "selected/codex.bin", .sha256 = digest, .bytes = 500 * 1024 * 1024 };
+    value.inputs.archive.bytes = 13 * 1024 * 1024;
+    {
+        // Preserve the historical parser family; its constructor still has its
+        // own aggregate bound. V2 preflights every logical selected byte here.
+        const legacy = try parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{}));
+        legacy.deinit();
+    }
+    value.modern_materials.?.carrier_materials = carrier;
     try std.testing.expectError(error.InvalidDeploymentSelection, parseDeclaration(allocator, try std.json.Stringify.valueAlloc(allocator, value, .{})));
 }
