@@ -15,6 +15,9 @@ load(":codex_fresh_native_receipt_scope_test.bzl", "codex_fresh_native_receipt_s
 load(":codex_fresh_runtime_repository_selector_test.bzl", "codex_fresh_runtime_repository_selector_test")
 load(":codex_fresh_native_package_visibility_test.bzl", "codex_fresh_native_package_visibility_test")
 load(":codex_metadata_query_tools_declaration_test.bzl", "codex_metadata_query_tools_declaration_test")
+# Require the real Bazel parser for declaration models; Python translation is
+# insufficient. Loading defines the rule without instantiating its repository.
+load(":codex_owner_status_persistence_metadata_inputs.bzl", "codex_owner_status_persistence_metadata_inputs")
 
 _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES = [
     "codex_query_registration.py", "guard_query_registration_reserved.py",

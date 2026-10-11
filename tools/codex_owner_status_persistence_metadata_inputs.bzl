@@ -81,7 +81,7 @@ def _implementation(ctx):
     _need(type(plan) == "dict" and sorted(plan.keys()) == ["control_raw", "kind", "plan_sha256", "regularInputs", "selection_sha256", "watchInputs"] and plan["kind"] == _KIND and _sha(plan["plan_sha256"]) and plan["selection_sha256"] == _CONTROL_SHA and type(plan["control_raw"]) == "string" and len(plan["control_raw"]) == 2896, "closed-plan-report")
     regular = plan["regularInputs"]
     watches = plan["watchInputs"]
-    _need(type(regular) == "list" and 0 < len(regular) <= 500000 and type(watches) == "list" and len(regular) <= len(watches) <= 1000000 and regular[:2] == [_CONTROL, _SOURCE + "/source-receipt.json"], "finite-plan-mapping")
+    _need(type(regular) == "list" and 0 < len(regular) and len(regular) <= 500000 and type(watches) == "list" and len(regular) <= len(watches) and len(watches) <= 1000000 and regular[:2] == [_CONTROL, _SOURCE + "/source-receipt.json"], "finite-plan-mapping")
     for path in regular:
         _declared_role(path)
     # Preserve every original individual watch, including duplicates and order.
