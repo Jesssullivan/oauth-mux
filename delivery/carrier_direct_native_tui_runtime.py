@@ -222,7 +222,7 @@ class CarrierDirectReader(direct.DirectReader):
                 and type(row['alias']) is str and row['path'] not in paths and row['alias'] not in aliases)
             root='/'.join(row['path'].split('/')[:4]);require(root in roots)
             relative=row['path'][len(root)+1:]
-            require(bool(relative) and all(part not in ('','.','..') for part in relative.split('/'))
+            require(bool(relative) and all(part not in ('','.','..') for part in relative.split('/')))
             expected='runtime-closure/root-'+str(roots.index(root))+'/'+relative
             require(row['alias']==expected and (self.pin.parent/expected).resolve(strict=True)==Path(row['path']))
             alias=self.pin.parent/expected
