@@ -24,8 +24,8 @@ class DeclaredSet:
 
 
 # Existing unresolved imports are bound to exact module/function sites. They
-# belong to coordinator request/command/cleanup or registration collection,
-# rather than eager imports. No unknown module or newly moved eager import is
+# belong to coordinator request/command/cleanup, installation witness validation
+# or registration collection. No unknown module or newly moved eager import is
 # accepted by this classification.
 DEFERRED_IMPORTS = {
     ('guard_native_seed_plan_reserved', 'request', 'guard_resident_enrollment_profile'),
@@ -43,6 +43,7 @@ DEFERRED_IMPORTS = {
     ('guard_resident_owner_status_persistence_source_reserved', 'command', 'guard_resident_enrollment_profile'),
     ('guard_native_metadata_sdk_reserved', 'request', 'guard_resident_enrollment_profile'),
     ('guard_native_metadata_sdk_reserved', 'command', 'guard_resident_enrollment_profile'),
+    ('guard_resident_observation', 'InstallationWitness.__init__', 'pack'),
 }
 
 
@@ -123,8 +124,8 @@ class SourceClosure(unittest.TestCase):
         cls.environment['native_acquisition_input_targets'](**cls.arguments)
         cls.shared = cls.environment['native_acquisition_source_closure'](
             cls.arguments['source_sources'], cls.arguments['sdk_sources'])
-        cls.portable = functions(tools / 'rules.bzl', ('_portable_python_sources',),
-            {'native': SimpleNamespace(package_name=lambda: 'tools')})['_portable_python_sources']
+        cls.portable = staticmethod(functions(tools / 'rules.bzl', ('_portable_python_sources',),
+            {'native': SimpleNamespace(package_name=lambda: 'tools')})['_portable_python_sources'])
 
     def source_graph(self, selected, overrides=None):
         modules = {}
