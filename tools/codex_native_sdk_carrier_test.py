@@ -4,10 +4,12 @@ The only SDK seam is the synthetic selected JDK root. Existing SDK validators,
 registry/module/link-absence logic, byte readers and canonical NAR run unchanged.
 No model claims a genuine carrier producer, metadata or application qualification.
 """
-from contextlib import closing
+from contextlib import closing, redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import tempfile
@@ -653,6 +655,149 @@ class CarrierModels(unittest.TestCase):
                     with self.assertRaises(OSError):
                         os.fstat(fd)
                 output.root.check()
+
+
+    def extraction_phases(self, raw):
+        rows = []
+        for line in raw.splitlines():
+            match = re.fullmatch(r"sdk-carrier-extract: ([a-z-]+) elapsed_ns=([0-9]+) copied_files=([0-9]+) copied_bytes=([0-9]+)", line)
+            self.assertIsNotNone(match, "only redacted static phase and bounded numeric counters")
+            rows.append((match[1], *(int(value) for value in match.groups()[1:])))
+        self.assertLessEqual(len(rows), 6)
+        self.assertEqual([row[1] for row in rows], sorted(row[1] for row in rows))
+        for _, _, files, size in rows:
+            self.assertLessEqual(files, carrier.MAX_ENTRIES)
+            self.assertLessEqual(size, carrier.MAX_BYTES)
+        return rows
+
+    def test_extract_bound_report_same_owner_full_proofs_and_redacted_phase_order(self):
+        root, original, pin = self.seal()
+        output = self.root / "fused-output"
+        seen, owners = [], []
+        original_binding = carrier.binding
+        def binding(owner, selected_pin, clock):
+            result = original_binding(owner, selected_pin, clock)
+            owners.append(owner)
+            return result
+        def bound(report):
+            self.assertEqual(report, original)
+            self.assertFalse(output.exists())
+            self.assertEqual(len(owners), 1)
+            owners[0].check()
+            seen.append(report)
+        emitted = io.StringIO()
+        with redirect_stderr(emitted), patch.object(carrier, "binding", side_effect=binding) as proofs:
+            result = carrier.extract(root, pin, output, self.deadline, on_bound=bound)
+        self.assertEqual(seen, [original])
+        self.assertEqual(proofs.call_count, 2)
+        self.assertIs(owners[0], owners[1])
+        self.assertEqual(owners[0].chain, [])
+        self.assertEqual(result["carrier_receipt_sha256"], pin)
+        self.assertFalse(result["metadata_qualified"])
+        self.assertEqual((output / "sdk/receipt.json").read_bytes(), self.original)
+        phases = self.extraction_phases(emitted.getvalue())
+        self.assertEqual([row[0] for row in phases], ["initial-start", "initial-bound", "directories-ready",
+            "copy-complete", "final-proof-start", "final-proof-complete"])
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        count = sum(entry["kind"] == "file" for entry in manifest["entries"])
+        self.assertTrue(all(row[2:] == (0, 0) for row in phases[:3]))
+        self.assertTrue(all(row[2:] == (count, original["payload_bytes"]) for row in phases[3:]))
+        for sensitive in (str(root), str(output), pin, original["origin"]["root"], "synthetic"):
+            self.assertNotIn(sensitive, emitted.getvalue())
+
+    def test_extract_bound_refusal_and_same_byte_custody_or_expiry_close_owner(self):
+        for change in ("refusal", "same-byte-root", "same-byte-leaf", "leaf-mode", "deadline", "integer-deadline"):
+            with self.subTest(change=change):
+                root, _, pin = self.seal("bound-" + change)
+                output = self.root / ("out-" + change)
+                original_binding, held = carrier.binding, []
+                now, now_ns = [time.monotonic()], [time.monotonic_ns()]
+                integer_cutoff = now_ns[0] + 10**9
+                def binding(owner, selected_pin, clock):
+                    result = original_binding(owner, selected_pin, clock)
+                    held.extend(fd for _, fd, _ in owner.chain)
+                    if change == "integer-deadline":
+                        owner.clock.until_ns = integer_cutoff
+                    return result
+                def bound(unused):
+                    self.assertFalse(output.exists())
+                    if change == "refusal":
+                        raise ValueError("origin callback refused")
+                    if change == "same-byte-root":
+                        root.rename(root.with_name(root.name + "-detached"))
+                        root.mkdir(mode=0o555)
+                    elif change == "same-byte-leaf":
+                        leaf = root / "payload.bin"
+                        raw = leaf.read_bytes()
+                        leaf.chmod(0o600)
+                        leaf.write_bytes(raw)
+                        leaf.chmod(0o444)
+                    elif change == "leaf-mode":
+                        (root / "payload.bin").chmod(0o400)
+                    elif change == "deadline":
+                        now[0] = self.deadline
+                    else:
+                        now_ns[0] = integer_cutoff
+                emitted = io.StringIO()
+                with redirect_stderr(emitted), patch.object(carrier, "binding", side_effect=binding), \
+                        patch.object(carrier.time, "monotonic", side_effect=lambda: now[0]), \
+                        patch.object(carrier.time, "monotonic_ns", side_effect=lambda: now_ns[0]):
+                    with self.assertRaises(ValueError):
+                        carrier.extract(root, pin, output, self.deadline, on_bound=bound)
+                self.assertFalse(output.exists())
+                self.assertEqual([row[0] for row in self.extraction_phases(emitted.getvalue())],
+                                 ["initial-start", "initial-bound"])
+                for fd in held:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+
+    def test_extract_corrupt_carrier_refuses_before_bound_callback(self):
+        root, _, pin = self.seal()
+        leaf = root / "payload.bin"
+        raw = leaf.read_bytes()
+        leaf.chmod(0o600)
+        leaf.write_bytes(b"!" + raw[1:])
+        leaf.chmod(0o444)
+        output = self.root / "unbound-output"
+        callback, emitted = unittest.mock.Mock(), io.StringIO()
+        with redirect_stderr(emitted), self.assertRaisesRegex(ValueError, "payload-file-digest"):
+            carrier.extract(root, pin, output, self.deadline, on_bound=callback)
+        callback.assert_not_called()
+        self.assertFalse(output.exists())
+        self.assertEqual([row[0] for row in self.extraction_phases(emitted.getvalue())], ["initial-start"])
+
+    def test_extract_failed_copy_reports_only_fully_checked_file_counters(self):
+        for reason in ("refusal", "deadline", "integer-deadline"):
+            with self.subTest(reason=reason):
+                root, _, pin = self.seal("partial-" + reason)
+                output = self.root / ("partial-copy-" + reason)
+                armed, copied_parts = [False], []
+                original_read = carrier.Range.read
+                def bound(unused):
+                    armed[0] = True
+                def fail_second_copy(part, count):
+                    if armed[0] and not any(part is prior for prior in copied_parts):
+                        copied_parts.append(part)
+                        if len(copied_parts) == 2:
+                            if reason == "refusal":
+                                raise ValueError("injected copy refusal")
+                            if reason == "deadline":
+                                with patch.object(carrier.time, "monotonic", return_value=part.clock.deadline):
+                                    return original_read(part, count)
+                            part.clock.until_ns = time.monotonic_ns() + 10**9
+                            with patch.object(carrier.time, "monotonic_ns", return_value=part.clock.until_ns):
+                                return original_read(part, count)
+                    return original_read(part, count)
+                emitted = io.StringIO()
+                with redirect_stderr(emitted), patch.object(carrier.Range, "read", new=fail_second_copy):
+                    with self.assertRaisesRegex(ValueError, "copy refusal" if reason == "refusal" else reason):
+                        carrier.extract(root, pin, output, self.deadline, on_bound=bound)
+                phases = self.extraction_phases(emitted.getvalue())
+                self.assertEqual([row[0] for row in phases],
+                    ["initial-start", "initial-bound", "directories-ready", "copy-refused"])
+                self.assertEqual(phases[-1][2:], (1, len((self.jdk / "ordinary").read_bytes())))
+                self.assertFalse((output / "extraction-receipt.json").exists())
+                self.assertEqual((output / "jdk/ordinary").read_bytes(), (self.jdk / "ordinary").read_bytes())
 
 
 if __name__ == "__main__":

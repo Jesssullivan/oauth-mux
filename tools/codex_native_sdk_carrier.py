@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 import time
 
 import codex_retained_sdk_export as sdk
@@ -1005,11 +1006,27 @@ def publication_report(carrier_dir, pinned_carrier_receipt_sha256, absolute_dead
                 "files": files}
 
 
-def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline):
+def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, *, on_bound=None):
+    """Authenticate then extract on one held owner; callback grants no proof token."""
+    need(on_bound is None or callable(on_bound), "bound-callback")
     clock = Clock(absolute_deadline)
+    # Diagnostic time and counters never participate in a proof allowance.
+    started_ns, copied_files, copied_bytes = time.monotonic_ns(), 0, 0
+    def progress(phase):
+        print("sdk-carrier-extract: " + phase
+              + " elapsed_ns=" + str(max(0, time.monotonic_ns() - started_ns))
+              + " copied_files=" + str(copied_files) + " copied_bytes=" + str(copied_bytes),
+              file=sys.stderr, flush=True)
+    progress("initial-start")
     with ExitStack() as stack:
         carrier = stack.enter_context(Root(carrier_dir, clock))
         report, manifest, rows, files = binding(carrier, pinned_carrier_receipt_sha256, clock)
+        progress("initial-bound")
+        if on_bound is not None:
+            on_bound(report)
+            # Dependent SOURCE IO does not renew the proof or its deadline.
+            # Join held ancestry and all named carrier leaves before output.
+            carrier.check()
         output = Output(output_dir, clock)
         stack.callback(output.close)
         for role in ("sdk", "jdk"):
@@ -1021,31 +1038,39 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
                 clock.tick()
                 if path and rows[(role, path)]["kind"] == "directory":
                     output.mkdir(role + "/" + path)
-            with _ParentHandles(output.root) as parents:
-                for (role, path), entry in files.items():
-                    fd, leaf = parents.parent(role + "/" + path)
-                    try:
-                        target = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                         0o600, dir_fd=fd)
+            progress("directories-ready")
+            copy_complete = False
+            try:
+                with _ParentHandles(output.root) as parents:
+                    for (role, path), entry in files.items():
+                        fd, leaf = parents.parent(role + "/" + path)
                         try:
-                            part = Range(payload, entry["offset"], entry["size"], clock)
-                            h = hashlib.sha256()
-                            while True:
-                                block = part.read(65536)
-                                if not block:
-                                    break
-                                h.update(block)
-                                write_all(target, block, clock)
-                            need(h.hexdigest() == entry["sha256"], "extracted-file-digest")
-                            os.fsync(target)
-                            os.fchmod(target, entry["mode"])
-                            selected = identity(os.fstat(target))
-                            need(selected == identity(os.stat(leaf, dir_fd=fd, follow_symlinks=False)), "extracted-file-name")
-                            output.materialized[role + "/" + path] = selected
+                            target = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                             0o600, dir_fd=fd)
+                            try:
+                                part = Range(payload, entry["offset"], entry["size"], clock)
+                                h = hashlib.sha256()
+                                while True:
+                                    block = part.read(65536)
+                                    if not block:
+                                        break
+                                    h.update(block)
+                                    write_all(target, block, clock)
+                                need(h.hexdigest() == entry["sha256"], "extracted-file-digest")
+                                os.fsync(target)
+                                os.fchmod(target, entry["mode"])
+                                selected = identity(os.fstat(target))
+                                need(selected == identity(os.stat(leaf, dir_fd=fd, follow_symlinks=False)), "extracted-file-name")
+                                output.materialized[role + "/" + path] = selected
+                                copied_files += 1
+                                copied_bytes += entry["size"]
+                            finally:
+                                os.close(target)
                         finally:
-                            os.close(target)
-                    finally:
-                        os.close(fd)
+                            os.close(fd)
+                copy_complete = True
+            finally:
+                progress("copy-complete" if copy_complete else "copy-refused")
             # Literal targets remain inert, including the original absolute JDK.
             for (role, path), row in rows.items():
                 if row["kind"] == "symlink":
@@ -1066,6 +1091,7 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
             if rows[(role, path)]["kind"] == "directory":
                 clock.tick()
                 output.seal_directory(role + ("/" + path if path else ""))
+        progress("final-proof-start")
         fresh = {role: stack.enter_context(Root(output.path / role, clock)) for role in ("sdk", "jdk")}
         observed, witnesses = scan(fresh, rows, clock)
         for (role, path), value in witnesses.items():
@@ -1106,6 +1132,7 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
             need(final_rows == observed and final_witnesses == witnesses, "publication-extracted-custody")
         output.root.check()
         carrier.check()
+        progress("final-proof-complete")
         return receipt
 
 

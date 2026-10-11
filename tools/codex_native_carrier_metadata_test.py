@@ -532,7 +532,7 @@ class CarrierMetadataModels(unittest.TestCase):
 
     def run_bounded_consumer(self, *, mutate_workspace=False, fail_final_custody=False,
             mutate_ready_workspace=False, fail_ready_custody=False, mutate_ready_proof=False,
-            mutate_binding=False):
+            mutate_binding=False, bad_initial_context=False):
         """Actual workspace/output FD writes and root holds; explicit proof seams.
 
         A tiny source/SDK/carrier is a trusted model boundary, never qualification.
@@ -562,6 +562,8 @@ class CarrierMetadataModels(unittest.TestCase):
         origin = {"origin": {"root": str(consumer.legacy.EXPORT_ROOT), "receipt_sha256": consumer.legacy.EXPORT_SHA,
             "baseline_inventory_sha256": consumer.source.BASE_INVENTORY}, "producer_context": self.program["producer_context"],
             "origin_custody": {}}
+        if bad_initial_context:
+            origin["producer_context"] = dict(origin["producer_context"], source_commit="c" * 40)
         extraction = {"kind": "bounded-extraction-model"}
         events = []
 
@@ -570,9 +572,14 @@ class CarrierMetadataModels(unittest.TestCase):
             consumer.legacy.BINDING_SHA = binding_pin
             consumer.legacy.QUERY_REPOSITORY = self.root / "independent-query-tools"
 
-        def extract(root, pin, destination, deadline):
+        def extract(root, pin, destination, deadline, *, on_bound):
             self.assertEqual((root, pin, deadline), (packed, "4" * 64, 601.0))
             events.append("extract")
+            self.assertFalse(output.exists())
+            self.assertFalse(work.exists())
+            on_bound(origin)
+            events.append("bound")
+            self.assertTrue(output.is_dir())
             destination.mkdir(mode=0o700)
             for role in ("sdk", "jdk"):
                 (destination / role).mkdir(mode=0o555)
@@ -637,7 +644,7 @@ class CarrierMetadataModels(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(consumer.legacy, "configure_selection", side_effect=configure))
-            stack.enter_context(patch.object(consumer.carrier, "validate_binding", return_value=origin))
+            final_binding = stack.enter_context(patch.object(consumer.carrier, "validate_binding", return_value=origin))
             stack.enter_context(patch.object(consumer, "recheck_declaration"))
             stack.enter_context(patch.object(consumer.binding, "config", return_value={"binding": {
                 "path": str(binding_path), "sha256": binding_pin}}))
@@ -659,6 +666,8 @@ class CarrierMetadataModels(unittest.TestCase):
             self.assertEqual([call.args[0] for call in hold.call_args_list], [retained, controls])
             self.assertEqual([call.args[0] for call in recheck.call_args_list], [retained, controls, retained, controls])
             self.assertEqual(source_read.call_args_list, [unittest.mock.call(self.original)] * 2)
+            self.assertEqual(final_binding.call_args_list, [unittest.mock.call(packed, "4" * 64, 601.0)])
+        self.assertLess(events.index("bound"), events.index("sdk"))
         self.assertGreater(events.index("fresh", events.index("query-tools")), events.index("query-tools"))
         self.assertTrue(all(result[name] is False for name in consumer.FALSE_FLAGS))
         self.assertEqual(result["kind"], consumer.OUTPUT_KIND)
@@ -669,6 +678,13 @@ class CarrierMetadataModels(unittest.TestCase):
 
     def test_actual_output_workspace_and_root_holds_preserve_v2_scope(self):
         self.run_bounded_consumer()
+
+    def test_authenticated_initial_origin_context_refuses_before_dependent_output(self):
+        with self.assertRaises(ValueError):
+            self.run_bounded_consumer(bad_initial_context=True)
+        self.assertFalse((self.root / "result").exists())
+        self.assertFalse((self.root / "work").exists())
+        self.assertIsNone(consumer._SCOPE.get())
 
     def test_query_workspace_mutation_refuses_before_metadata_receipt(self):
         with self.assertRaises(ValueError):

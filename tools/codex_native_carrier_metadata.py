@@ -418,20 +418,23 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
     qualified = qualify_producer(selected, deadline, proof_inputs)
     with ExitStack() as stack:
         carrier_hold = stack.enter_context(carrier.Root(carrier_root, carrier.Clock(deadline)))
-        origin = carrier.validate_binding(carrier_root, pin, deadline)
-        origin_join(origin)
-        require(origin["producer_context"] == qualified["report"]["producer_context"])
-        recheck_declaration(declaration, qualified, carrier_root, pin, deadline)
-        recheck_aliases(aliases, deadline)
-        source_hold = legacy.hold_root(Path(selected["original_selection"]["source_root"]))
-        stack.callback(os.close, source_hold[0])
-        binding_hold = legacy.hold_root(legacy.INPUT_CONTROL.parent)
-        stack.callback(os.close, binding_hold[0])
-        report, files, parent = legacy.load_retained_candidate(selected["original_selection"])
-        output.mkdir(mode=0o700)
-        output_hold = stack.enter_context(carrier.Root(output, carrier.Clock(deadline), sealed=False, owned=True))
+        origin = report = files = parent = output_hold = source_hold = binding_hold = None
+        def accept_initial(candidate):
+            nonlocal origin, report, files, parent, output_hold, source_hold, binding_hold
+            origin_join(candidate)
+            require(candidate["producer_context"] == qualified["report"]["producer_context"])
+            recheck_declaration(declaration, qualified, carrier_root, pin, deadline)
+            recheck_aliases(aliases, deadline)
+            source_hold = legacy.hold_root(Path(selected["original_selection"]["source_root"]))
+            stack.callback(os.close, source_hold[0])
+            binding_hold = legacy.hold_root(legacy.INPUT_CONTROL.parent)
+            stack.callback(os.close, binding_hold[0])
+            report, files, parent = legacy.load_retained_candidate(selected["original_selection"])
+            output.mkdir(mode=0o700)
+            output_hold = stack.enter_context(carrier.Root(output, carrier.Clock(deadline), sealed=False, owned=True))
+            origin = candidate
         extracted = output / "extracted"
-        extraction = carrier.extract(carrier_root, pin, extracted, deadline)
+        extraction = carrier.extract(carrier_root, pin, extracted, deadline, on_bound=accept_initial)
         extraction_pin = carrier.sha(carrier.encoded(extraction))
         require(carrier.revalidate_extraction(carrier_root, pin, extracted, deadline,
             pinned_extraction_receipt_sha256=extraction_pin) == extraction)
