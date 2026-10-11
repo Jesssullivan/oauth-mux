@@ -230,7 +230,7 @@ class Root:
 
 
 class _ParentHandles:
-    """At most 32 owned directory FDs, scoped to regular extraction writes.
+    """At most 32 owned directory FDs, scoped to creation or regular writes.
 
     Reuse changes open to dup only. Root._parent still performs every external
     and per-component named/before/held/after/custody check on every traversal.
@@ -603,8 +603,10 @@ class Output:
         finally:
             os.close(fd)
 
-    def mkdir(self, name):
-        fd, leaf = self.root.parent(name)
+    def mkdir(self, name, *, parent_handles=None):
+        need(parent_handles is None or (type(parent_handles) is _ParentHandles
+             and parent_handles.root is self.root), "mkdir-parent-owner")
+        fd, leaf = (self.root.parent(name) if parent_handles is None else parent_handles.parent(name))
         try:
             os.mkdir(leaf, mode=0o700, dir_fd=fd)
             before = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
@@ -1011,11 +1013,12 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
     need(on_bound is None or callable(on_bound), "bound-callback")
     clock = Clock(absolute_deadline)
     # Diagnostic time and counters never participate in a proof allowance.
-    started_ns, copied_files, copied_bytes = time.monotonic_ns(), 0, 0
+    started_ns, copied_files, copied_bytes, created_directories = time.monotonic_ns(), 0, 0, 0
     def progress(phase):
         print("sdk-carrier-extract: " + phase
               + " elapsed_ns=" + str(max(0, time.monotonic_ns() - started_ns))
-              + " copied_files=" + str(copied_files) + " copied_bytes=" + str(copied_bytes),
+              + " copied_files=" + str(copied_files) + " copied_bytes=" + str(copied_bytes)
+              + " created_directories=" + str(created_directories),
               file=sys.stderr, flush=True)
     progress("initial-start")
     with ExitStack() as stack:
@@ -1029,15 +1032,27 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
             carrier.check()
         output = Output(output_dir, clock)
         stack.callback(output.close)
-        for role in ("sdk", "jdk"):
-            output.mkdir(role)
+        progress("directories-start")
+        try:
+            for role in ("sdk", "jdk"):
+                output.mkdir(role)
+                created_directories += 1
+        except BaseException:
+            progress("directories-refused")
+            raise
         payload, witness = carrier.open("payload.bin")
         try:
             # All parent directories first; no links exist during writes.
-            for role, path in sorted(rows, key=lambda key: (len(relative(key[1], empty=True)), key)):
-                clock.tick()
-                if path and rows[(role, path)]["kind"] == "directory":
-                    output.mkdir(role + "/" + path)
+            try:
+                with _ParentHandles(output.root) as directory_parents:
+                    for role, path in sorted(rows, key=lambda key: (len(relative(key[1], empty=True)), key)):
+                        clock.tick()
+                        if path and rows[(role, path)]["kind"] == "directory":
+                            output.mkdir(role + "/" + path, parent_handles=directory_parents)
+                            created_directories += 1
+            except BaseException:
+                progress("directories-refused")
+                raise
             progress("directories-ready")
             copy_complete = False
             try:

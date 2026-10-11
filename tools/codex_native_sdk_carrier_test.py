@@ -660,14 +660,15 @@ class CarrierModels(unittest.TestCase):
     def extraction_phases(self, raw):
         rows = []
         for line in raw.splitlines():
-            match = re.fullmatch(r"sdk-carrier-extract: ([a-z-]+) elapsed_ns=([0-9]+) copied_files=([0-9]+) copied_bytes=([0-9]+)", line)
+            match = re.fullmatch(r"sdk-carrier-extract: ([a-z-]+) elapsed_ns=([0-9]+) copied_files=([0-9]+) copied_bytes=([0-9]+) created_directories=([0-9]+)", line)
             self.assertIsNotNone(match, "only redacted static phase and bounded numeric counters")
             rows.append((match[1], *(int(value) for value in match.groups()[1:])))
-        self.assertLessEqual(len(rows), 6)
+        self.assertLessEqual(len(rows), 7)
         self.assertEqual([row[1] for row in rows], sorted(row[1] for row in rows))
-        for _, _, files, size in rows:
+        for _, _, files, size, directories in rows:
             self.assertLessEqual(files, carrier.MAX_ENTRIES)
             self.assertLessEqual(size, carrier.MAX_BYTES)
+            self.assertLessEqual(directories, carrier.MAX_ENTRIES)
         return rows
 
     def test_extract_bound_report_same_owner_full_proofs_and_redacted_phase_order(self):
@@ -696,12 +697,15 @@ class CarrierModels(unittest.TestCase):
         self.assertFalse(result["metadata_qualified"])
         self.assertEqual((output / "sdk/receipt.json").read_bytes(), self.original)
         phases = self.extraction_phases(emitted.getvalue())
-        self.assertEqual([row[0] for row in phases], ["initial-start", "initial-bound", "directories-ready",
+        self.assertEqual([row[0] for row in phases], ["initial-start", "initial-bound", "directories-start", "directories-ready",
             "copy-complete", "final-proof-start", "final-proof-complete"])
         manifest = json.loads((root / "manifest.json").read_bytes())
         count = sum(entry["kind"] == "file" for entry in manifest["entries"])
-        self.assertTrue(all(row[2:] == (0, 0) for row in phases[:3]))
-        self.assertTrue(all(row[2:] == (count, original["payload_bytes"]) for row in phases[3:]))
+        self.assertTrue(all(row[2:4] == (0, 0) for row in phases[:4]))
+        self.assertTrue(all(row[2:4] == (count, original["payload_bytes"]) for row in phases[4:]))
+        directory_count = sum(entry["kind"] == "directory" for entry in manifest["entries"])
+        self.assertTrue(all(row[4] == 0 for row in phases[:3]))
+        self.assertTrue(all(row[4] == directory_count for row in phases[3:]))
         for sensitive in (str(root), str(output), pin, original["origin"]["root"], "synthetic"):
             self.assertNotIn(sensitive, emitted.getvalue())
 
@@ -794,10 +798,187 @@ class CarrierModels(unittest.TestCase):
                         carrier.extract(root, pin, output, self.deadline, on_bound=bound)
                 phases = self.extraction_phases(emitted.getvalue())
                 self.assertEqual([row[0] for row in phases],
-                    ["initial-start", "initial-bound", "directories-ready", "copy-refused"])
-                self.assertEqual(phases[-1][2:], (1, len((self.jdk / "ordinary").read_bytes())))
+                    ["initial-start", "initial-bound", "directories-start", "directories-ready", "copy-refused"])
+                self.assertEqual(phases[-1][2:4], (1, len((self.jdk / "ordinary").read_bytes())))
                 self.assertFalse((output / "extraction-receipt.json").exists())
                 self.assertEqual((output / "jdk/ordinary").read_bytes(), (self.jdk / "ordinary").read_bytes())
+
+
+    def test_mkdir_parent_handles_reduce_real_opens_with_same_named_checks(self):
+        with closing(self.parent_output()) as output:
+            real_open, real_stat = os.open, os.stat
+            with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                for leaf in ("a", "b"):
+                    output.mkdir("sdk/one/two/" + leaf)
+                baseline_opens, baseline_stats = opened.call_count, named.call_count
+            with carrier._ParentHandles(output.root) as parents:
+                with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                        patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                    for leaf in ("c", "d"):
+                        output.mkdir("sdk/one/two/" + leaf, parent_handles=parents)
+                    self.assertEqual(baseline_opens, 8)
+                    self.assertEqual(opened.call_count, 5)
+                    self.assertEqual(named.call_count, baseline_stats)
+                cached = [fd for fd, _ in parents.entries.values()]
+            for leaf in ("a", "b", "c", "d"):
+                name = "sdk/one/two/" + leaf
+                self.assertEqual(output.root.named[name],
+                                 carrier.identity((output.path / name).stat(), True))
+                self.assertEqual(stat.S_IMODE((output.path / name).stat().st_mode), 0o700)
+            for fd in cached:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+            output.root.check()
+
+    def test_mkdir_parent_handles_require_same_owner_and_live_scope(self):
+        with closing(self.parent_output("left")) as left, closing(self.parent_output("right")) as right:
+            with carrier._ParentHandles(right.root) as foreign:
+                with self.assertRaisesRegex(ValueError, "mkdir-parent-owner"):
+                    left.mkdir("sdk/one/two/new", parent_handles=foreign)
+            self.assertFalse((left.path / "sdk/one/two/new").exists())
+            parents = carrier._ParentHandles(left.root)
+            parents.close()
+            with self.assertRaisesRegex(ValueError, "parent-handles-closed"):
+                left.mkdir("sdk/one/two/new", parent_handles=parents)
+            self.assertFalse((left.path / "sdk/one/two/new").exists())
+            left.root.check()
+            right.root.check()
+
+    def test_mkdir_cached_parent_refuses_inode_mode_and_link_changes_without_foreign_write(self):
+        for change in ("inode", "mode", "link"):
+            with self.subTest(change=change), closing(self.parent_output("mkdir-" + change)) as output:
+                with carrier._ParentHandles(output.root) as parents:
+                    output.mkdir("sdk/one/two/seed", parent_handles=parents)
+                    parent = output.path / "sdk/one/two"
+                    foreign = self.root / ("foreign-" + change)
+                    foreign.mkdir(mode=0o700)
+                    self.write(foreign / "marker", b"foreign bytes")
+                    if change == "mode":
+                        parent.chmod(0o500)
+                    else:
+                        parent.rename(parent.with_name("detached"))
+                        if change == "inode":
+                            parent.mkdir(mode=0o700)
+                            (parent / "seed").mkdir(mode=0o700)
+                        else:
+                            parent.symlink_to(foreign, target_is_directory=True)
+                    with self.assertRaises(ValueError):
+                        output.mkdir("sdk/one/two/new", parent_handles=parents)
+                    self.assertNotIn("sdk/one/two/new", output.root.named)
+                    self.assertFalse((foreign / "new").exists())
+                    self.assertEqual((foreign / "marker").read_bytes(), b"foreign bytes")
+                    self.assertEqual(stat.S_IMODE(foreign.stat().st_mode), 0o700)
+
+    def test_mkdir_cached_dup_still_refuses_named_parent_race(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                output.mkdir("sdk/one/two/seed", parent_handles=parents)
+                cached = parents.entries["sdk/one/two"][0]
+                real_dup, borrowed = os.dup, []
+                def replace_after_dup(fd):
+                    child = real_dup(fd)
+                    if fd == cached:
+                        borrowed.append(child)
+                        parent = output.path / "sdk/one/two"
+                        parent.rename(parent.with_name("detached"))
+                        parent.mkdir(mode=0o700)
+                    return child
+                with patch.object(carrier.os, "dup", side_effect=replace_after_dup):
+                    with self.assertRaisesRegex(ValueError, "internal-parent-race"):
+                        output.mkdir("sdk/one/two/new", parent_handles=parents)
+                self.assertEqual(len(borrowed), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(borrowed[0])
+                self.assertNotIn("sdk/one/two/new", output.root.named)
+
+    def test_mkdir_created_child_before_held_after_join_refuses_same_mode_replacement(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                output.mkdir("sdk/one/two/seed", parent_handles=parents)
+                real_open, created_fds = os.open, []
+                def replace_child(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    if name == "new":
+                        created_fds.append(fd)
+                        child = output.path / "sdk/one/two/new"
+                        child.rename(child.with_name("detached-child"))
+                        child.mkdir(mode=0o700)
+                    return fd
+                with patch.object(carrier.os, "open", side_effect=replace_child):
+                    with self.assertRaisesRegex(ValueError, "created-directory-race"):
+                        output.mkdir("sdk/one/two/new", parent_handles=parents)
+                self.assertNotIn("sdk/one/two/new", output.root.named)
+                self.assertEqual(len(created_fds), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(created_fds[0])
+
+    def test_mkdir_scope_bounds_eviction_and_cancellation_descriptor_cleanup(self):
+        with closing(self.parent_output()) as output:
+            for index in range(34):
+                output.mkdir("sdk/d" + str(index))
+            parents = carrier._ParentHandles(output.root)
+            retained = []
+            real_open = os.open
+            def cancelled_child(name, flags, *args, **kwargs):
+                if name == "cancelled":
+                    raise KeyboardInterrupt("model cancellation")
+                return real_open(name, flags, *args, **kwargs)
+            with self.assertRaises(KeyboardInterrupt):
+                with parents:
+                    for index in range(34):
+                        output.mkdir("sdk/d" + str(index) + "/child", parent_handles=parents)
+                        self.assertLessEqual(len(parents.entries), 32)
+                    self.assertNotIn("sdk/d0", parents.entries)
+                    retained = [fd for fd, _ in parents.entries.values()]
+                    with patch.object(carrier.os, "open", side_effect=cancelled_child):
+                        output.mkdir("sdk/d33/cancelled", parent_handles=parents)
+            self.assertEqual(parents.entries, {})
+            for fd in retained:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+            self.assertNotIn("sdk/d33/cancelled", output.root.named)
+            output.root.check()
+
+    def test_extract_directory_refusal_emits_bounded_checked_count_and_closes_scope(self):
+        for reason in ("role-cancel", "cancel", "deadline", "integer-deadline"):
+            with self.subTest(reason=reason):
+                root, _, pin = self.seal("directory-" + reason)
+                output = self.root / ("directory-out-" + reason)
+                original_mkdir, prepared, owners, retained = carrier.Output.mkdir, [0], [], []
+                def refuse_second(directory, name, *, parent_handles=None):
+                    if reason == "role-cancel" and name == "sdk" and parent_handles is None:
+                        raise KeyboardInterrupt("role directory cancellation")
+                    if parent_handles is not None:
+                        prepared[0] += 1
+                        if prepared[0] == 2:
+                            owners.append(parent_handles)
+                            retained.extend(fd for fd, _ in parent_handles.entries.values())
+                            if reason == "cancel":
+                                raise KeyboardInterrupt("directory cancellation")
+                            if reason == "deadline":
+                                with patch.object(carrier.time, "monotonic", return_value=directory.clock.deadline):
+                                    return original_mkdir(directory, name, parent_handles=parent_handles)
+                            directory.clock.until_ns = time.monotonic_ns() + 10**9
+                            with patch.object(carrier.time, "monotonic_ns", return_value=directory.clock.until_ns):
+                                return original_mkdir(directory, name, parent_handles=parent_handles)
+                    return original_mkdir(directory, name, parent_handles=parent_handles)
+                emitted = io.StringIO()
+                expected = KeyboardInterrupt if reason in ("role-cancel", "cancel") else ValueError
+                with redirect_stderr(emitted), patch.object(carrier.Output, "mkdir", new=refuse_second):
+                    with self.assertRaises(expected):
+                        carrier.extract(root, pin, output, self.deadline)
+                phases = self.extraction_phases(emitted.getvalue())
+                self.assertEqual([row[0] for row in phases],
+                    ["initial-start", "initial-bound", "directories-start", "directories-refused"])
+                self.assertEqual(phases[-1][2:], (0, 0, 0 if reason == "role-cancel" else 3))
+                self.assertFalse((output / "extraction-receipt.json").exists())
+                self.assertEqual(len(owners), 0 if reason == "role-cancel" else 1)
+                for owner in owners:
+                    self.assertEqual(owner.entries, {})
+                for fd in retained:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
 
 
 if __name__ == "__main__":
