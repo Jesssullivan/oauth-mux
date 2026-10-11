@@ -28,13 +28,21 @@ const catalog = @import("catalog.zig");
 const git = @import("integrations/git.zig");
 const codex = @import("integrations/codex.zig");
 const paths = @import("paths.zig");
+const file_metadata = @import("platform/file_metadata.zig");
 const setup = @import("integrations/setup.zig");
+const runtime_deployment = @import("integrations/runtime_deployment.zig");
+const runtime_package_installation = @import("integrations/runtime_installation.zig");
+const runtime_selection_writer = @import("integrations/runtime_selection_writer.zig");
+const runtime_selection_producer = @import("integrations/runtime_selection_producer.zig");
 const measured_runtime = @import("integrations/measured_runtime_selection.zig");
 const product = @import("product.zig");
 const discovery = @import("discovery.zig");
 const observer = @import("observer.zig");
 const native_probe = @import("integrations/native_probe.zig");
 const native_inventory = @import("integrations/native_inventory.zig");
+const native_source_context = @import("integrations/native_source_context.zig");
+const native_source_consent = @import("native_source_consent.zig");
+const native_source_acquisition = @import("native_source_acquisition.zig");
 const request_authority = @import("request_authority.zig");
 const mutation_authority = @import("mutation_authority.zig");
 const snapshot_admission = @import("snapshot_admission.zig");
@@ -46,7 +54,50 @@ const sql_api = @import("c");
 
 pub const Channel = control.Channel;
 const Policy = struct { sticky_routes: bool = true, warm_alternatives: bool = true };
-const SourceDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8 = "", path: []const u8 = "" };
+const PublicAccountView = struct {
+    id: []const u8,
+    label: []const u8,
+    account_type: []const u8,
+    lifecycle: domain.AccountLifecycle,
+    identity: struct { provider: []const u8, verified: bool },
+    source_ids: []const []const u8,
+};
+
+fn publicAccountView(account: domain.Account) PublicAccountView {
+    return .{
+        .id = account.id,
+        .label = account.label,
+        .account_type = account.account_type,
+        .lifecycle = account.lifecycle,
+        .identity = .{ .provider = account.identity.provider, .verified = account.identity.verified },
+        .source_ids = account.source_ids,
+    };
+}
+
+const NativeSourceAuthority = struct {
+    // This record is daemon-owned persisted metadata. A discovery hint
+    // or a client-selected context cannot construct this consent record.
+    consent: native_source_consent.Consent,
+    origin: native_source_consent.Handle,
+};
+const QualifiedNativeRuntime = struct {
+    record_sha256: [32]u8,
+    evidence: []const u8,
+    channel: setup.RuntimeChannel,
+    target: setup.RuntimeTarget,
+    adapter_epoch: u64 = 0,
+    registry: ?setup.RegistryWitness = null,
+};
+const SourceDescription = struct {
+    source_id: []const u8,
+    provider: []const u8,
+    label: []const u8 = "",
+    path: []const u8 = "",
+    native_authority: ?NativeSourceAuthority = null,
+    // A private locator copied from an authenticated native publication. It
+    // is never accepted as a control source/profile path or projected to UI.
+    native_endpoint: []const u8 = "",
+};
 const OutcomeIntent = struct {
     key: snapshot_admission.Key,
     owner_id: []const u8,
@@ -199,6 +250,7 @@ const Persisted = struct {
     native_registry: ?setup.RegistryWitness = null,
     // Optional historical metadata. Absence never selects or activates bytes.
     measured_codex_runtime: ?measured_runtime.Committed = null,
+    qualified_native_runtime: ?QualifiedNativeRuntime = null,
 };
 const Invocation = struct {
     allocator: std.mem.Allocator,
@@ -210,6 +262,93 @@ const Invocation = struct {
     finished: bool = false,
     condition: std.Io.Condition = .init,
     peer_context: ?peer.Context = null,
+    // Private in-process installation call; ordinary control parsing has no
+    // constructor or wire representation for this opaque producer authority.
+    qualified_candidate: ?*const runtime_selection_producer.ValidatedSelection = null,
+};
+const NativeRuntimeCommitTask = struct {
+    engine: *Engine,
+    invocation: *Invocation,
+    candidate: ?*const runtime_selection_producer.ValidatedSelection,
+    owned_candidate: ?*runtime_selection_producer.ValidatedSelection = null,
+    deployment: ?runtime_deployment.RegisteredDeployment = null,
+    inputs: ?*runtime_deployment.OwnedInputs = null,
+    installation: ?runtime_package_installation.OwnedInstallation = null,
+    parent: std.c.fd_t = -1,
+    basename: ?[:0]const u8 = null,
+    install_response: ?[]u8 = null,
+    context: runtime_selection_producer.ActorContext,
+    arena: *std.heap.ArenaAllocator,
+    registry: ?setup.RegistryWitness,
+    epoch: u64,
+    job: native_work.Job,
+    prepared: ?*runtime_selection_writer.Prepared = null,
+    failure: ?anyerror = null,
+    handoff_ready: bool = false,
+    fn run(raw: *anyopaque, canceled: bool) void {
+        const self: *NativeRuntimeCommitTask = @ptrCast(@alignCast(raw));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.prepare() catch |err| {
+            self.failure = err;
+            return;
+        };
+        self.handoff_ready = true;
+    }
+    fn prepare(self: *NativeRuntimeCommitTask) !void {
+        const io = self.engine.io;
+        const a = self.engine.allocator;
+        if (self.deployment) |selected| {
+            self.inputs = try runtime_deployment.load(io, a, selected, self.context.deadline);
+            self.installation = try runtime_package_installation.installQualifiedPackage(io, a, self.context, self.inputs.?, self.parent, self.basename.?);
+            try self.installation.?.recheck(io, self.context.deadline, self.parent, self.basename.?);
+            self.owned_candidate = try runtime_selection_producer.acquire(io, a, self.context, self.inputs.?.inputsForInstallation(self.installation.?.directory));
+            self.candidate = self.owned_candidate;
+        }
+        const candidate = self.candidate orelse return error.InvalidRuntimeSelection;
+        self.prepared = try runtime_selection_writer.prepare(io, a, self.context, candidate);
+        try self.prepared.?.recheck(io, self.context);
+        if (self.inputs) |inputs| try inputs.recheck(io);
+        if (self.installation) |*installed| try installed.recheck(io, self.context.deadline, self.parent, self.basename.?);
+    }
+    fn deinit(self: *NativeRuntimeCommitTask) void {
+        const a = self.engine.allocator;
+        if (self.prepared) |prepared| prepared.deinit(a);
+        if (self.owned_candidate) |selected| selected.deinit();
+        if (self.installation) |*installed| installed.deinit();
+        if (self.inputs) |inputs| inputs.deinit();
+        if (self.deployment) |selected| _ = std.c.close(selected.descriptor);
+        if (self.parent >= 0) _ = std.c.close(self.parent);
+        if (self.install_response) |response| self.invocation.allocator.free(response);
+        std.crypto.secureZero(u8, &self.context.options.key);
+        std.crypto.secureZero(u8, &self.context.options.capability);
+        self.arena.deinit();
+        a.destroy(self.arena);
+        a.destroy(self);
+    }
+};
+const OwnedSourceImage = struct {
+    selected: *setup.VerifiedRuntimeSelection,
+    expected: setup.RuntimeSelectionExpectation,
+    fn open(io: std.Io, a: std.mem.Allocator, root: []const u8, retained: QualifiedNativeRuntime, options: setup.Options) !OwnedSourceImage {
+        const directory = try paths.openPrivateRoot(a, root, false);
+        errdefer _ = std.c.close(directory);
+        const expected: setup.RuntimeSelectionExpectation = .{ .record_sha256 = retained.record_sha256, .channel = retained.channel, .target = retained.target, .directory = directory };
+        const selected = try setup.verifyRetainedRuntimeSelection(io, a, options, expected, retained.evidence);
+        errdefer selected.deinit(a);
+        if (selected.launchProfile() != .linux_nix_direct_main_v1) return error.NativeImageUnavailable;
+        return .{ .selected = selected, .expected = expected };
+    }
+    fn view(self: *const OwnedSourceImage, options: setup.Options) native_probe.SourceImage {
+        return .{ .selection = self.selected, .options = options, .expected = self.expected };
+    }
+    fn deinit(self: *OwnedSourceImage, a: std.mem.Allocator) void {
+        self.selected.deinit(a);
+        _ = std.c.close(self.expected.directory);
+        self.* = undefined;
+    }
 };
 // An invocation cannot return while its continuation owns this stack waiter.
 // Protocol arguments, socket context and replies are heap-owned independently
@@ -219,7 +358,7 @@ const NativeTask = struct {
     invocation: *Invocation,
     request: control.Request,
     job: native_work.Job,
-    stage: enum { identify, registration, announcement_identify, announcement, detachment, discovery },
+    stage: enum { identify, registration, announcement_identify, announcement, detachment, discovery, source_prepare, source_acquire },
     operation: native_owner.OperationId,
     native_operation: ?native_owner.OperationId = null,
     removal_operation: ?native_owner.OperationId = null,
@@ -237,6 +376,18 @@ const NativeTask = struct {
     identity: ?native_probe.OwnerIdentity = null,
     acknowledgement: ?native_probe.OwnerAck = null,
     discovered: std.ArrayList(native_probe.OwnerLoadedThreads) = .empty,
+    source_contexts: std.ArrayList(native_probe.SourceContextDeclaration) = .empty,
+    source_context_runtime: ?[]const u8 = null,
+    source_selection: ?native_source_acquisition.ControlSelection = null,
+    source_runtime_root: ?[]const u8 = null,
+    source_runtime_record: ?QualifiedNativeRuntime = null,
+    source_image: ?OwnedSourceImage = null,
+    source_origin: ?native_source_consent.Handle = null,
+    source_authority: ?NativeSourceAuthority = null,
+    source_admission: ?native_source_consent.Admission = null,
+    source_started_at: ?std.Io.Timestamp = null,
+    source_copy_now: i64 = 0,
+    source_copy: ?native_probe.OwnerConnection.AccessCopy = null,
     discovery_context: ?*std.heap.ArenaAllocator = null,
     discovery_options: ?setup.Options = null,
     discovery_until: ?std.Io.Clock.Timestamp = null,
@@ -263,10 +414,113 @@ const NativeTask = struct {
             self.failure = err;
         };
     }
+    fn retainDiscovered(self: *NativeTask, loaded: native_probe.OwnerLoadedThreads) !void {
+        var retained = false;
+        defer if (!retained) loaded.deinit(self.engine.allocator);
+        for (self.discovered.items) |prior| if (std.mem.eql(u8, &prior.owner_id, &loaded.owner_id)) {
+            if (!std.mem.eql(u8, &prior.native_nonce, &loaded.native_nonce) or prior.endpoint_generation != loaded.endpoint_generation or
+                !peer.sameOriginal(prior.witness, loaded.witness) or !eql(prior.socket_path, loaded.socket_path)) return error.NativeOwnerAmbiguous;
+            return;
+        };
+        try self.discovered.append(self.engine.allocator, loaded);
+        retained = true;
+    }
+    fn requireDiscoveryFits(self: *const NativeTask) !void {
+        var arena: std.heap.ArenaAllocator = .init(self.engine.allocator);
+        defer arena.deinit();
+        try requireNativeDiscoveryFits(self.request.id, try nativeDiscoveryResult(arena.allocator(), self, null, false));
+    }
+    fn discoverSourceContexts(self: *NativeTask, budget: *native_inventory.Budget) !void {
+        if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return;
+        const runtime = self.source_context_runtime orelse return;
+        const io = self.engine.io;
+        const allocator = self.engine.allocator;
+        var hints = (try native_source_context.collect(io, allocator, runtime, budget)) orelse return;
+        defer hints.deinit();
+        for (hints.hints) |*hint| {
+            try budget.check(io);
+            try hints.verify(io, budget);
+            // The endpoint-derived home is used only for held socket metadata.
+            // No credential locator, source permission or auth-file read exists.
+            var endpoints = try native_inventory.collect(io, allocator, hint.endpointHome(), budget);
+            defer endpoints.deinit();
+            var selected: ?*const native_inventory.Candidate = null;
+            for (endpoints.candidates) |*candidate| if (eql(candidate.endpoint_path, hint.endpoint_path)) {
+                if (selected != null) return error.NativeOwnerAmbiguous;
+                selected = candidate;
+            };
+            const candidate = selected orelse return error.NativeSourceContextChanged;
+            const loaded = try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until);
+            var transferred = false;
+            defer if (!transferred) loaded.deinit(allocator);
+            if (!std.mem.eql(u8, &loaded.owner_id, &hint.owner_id) or !std.mem.eql(u8, &loaded.native_nonce, &hint.native_nonce) or loaded.endpoint_generation != hint.endpoint_generation) return error.NativeOwnerIdentityMismatch;
+            const declaration = try native_probe.inspectAutomaticSourceContextWithDeadline(io, allocator, candidate, loaded.witness, .{
+                .owner_id = hint.owner_id,
+                .native_nonce = hint.native_nonce,
+                .endpoint_generation = hint.endpoint_generation,
+                // Maintained v8's immutable hint locates this owner endpoint.
+                // Only its freshly authenticated reply names current context.
+                .context = null,
+            }, budget.until);
+            try endpoints.verify(allocator);
+            try hints.verify(io, budget);
+            try budget.check(io);
+            try self.source_contexts.append(allocator, declaration);
+            transferred = true; // retainDiscovered consumes on both success/refusal.
+            try self.retainDiscovered(loaded);
+            try self.requireDiscoveryFits();
+        }
+        try hints.verify(io, budget);
+        try budget.check(io);
+    }
+    fn prepareSource(self: *NativeTask) !void {
+        const selection = self.source_selection orelse return error.InvalidParams;
+        const io = self.engine.io;
+        const a = self.engine.allocator;
+        var declaration: ?native_probe.SourceContextDeclaration = null;
+        for (self.source_contexts.items) |current| {
+            if (!std.meta.eql(current.owner_id, selection.owner_id) or !std.meta.eql(current.native_nonce, selection.nonce) or
+                current.endpoint_generation != selection.endpoint_generation) continue;
+            if (declaration != null) return error.NativeSourceAmbiguous;
+            if (current.status != .available or current.store_present != true) return error.NativeSourceUnavailable;
+            const context = current.context orelse return error.NativeSourceUnavailable;
+            if (!std.meta.eql(context.id, selection.context.id) or context.generation != selection.context.generation) return error.NativeSourceContextChanged;
+            declaration = current;
+        }
+        const current = declaration orelse return error.NativeSourceUnavailable;
+        var endpoint: ?[]const u8 = null;
+        for (self.discovered.items) |loaded| {
+            if (!std.meta.eql(loaded.owner_id, current.owner_id)) continue;
+            if (endpoint != null or !std.meta.eql(loaded.native_nonce, current.native_nonce) or
+                loaded.endpoint_generation != current.endpoint_generation or !peer.sameOriginal(loaded.witness, current.witness)) return error.NativeSourceAmbiguous;
+            endpoint = loaded.socket_path;
+        }
+        const owned_endpoint = try a.dupe(u8, endpoint orelse return error.NativeSourceUnavailable);
+        a.free(self.endpoint);
+        self.endpoint = owned_endpoint;
+        self.expected = current.witness;
+        self.source_image = try OwnedSourceImage.open(io, a, self.source_runtime_root orelse return error.NativeImageUnavailable, self.source_runtime_record orelse return error.NativeImageUnavailable, self.discovery_options.?);
+        var connection = try native_probe.OwnerConnection.open(io, a, self.endpoint, self.expected, self.invocation.until);
+        defer connection.deinit();
+        var key = try native_source_acquisition.capabilityKey(self.discovery_options.?.capability);
+        defer std.crypto.secureZero(u8, &key);
+        self.source_origin = try connection.sourceOrigin(self.operation, .{ .owner_id = selection.owner_id, .native_nonce = selection.nonce, .endpoint_generation = selection.endpoint_generation, .context = .{ .id = selection.context.id, .generation = selection.context.generation } }, key, self.source_image.?.view(self.discovery_options.?));
+        try native_source_acquisition.deadline(io, self.invocation.until);
+    }
     fn perform(self: *NativeTask) !void {
         const io = self.engine.io;
         const allocator = self.engine.allocator;
-        if (self.stage == .discovery) {
+        if (self.stage == .source_acquire) {
+            const admission = self.source_admission orelse return error.NativeSourceConsentRequired;
+            const scope = self.source_authority orelse return error.NativeSourceConsentRequired;
+            const selection = self.source_selection orelse return error.InvalidParams;
+            var key = try native_source_acquisition.capabilityKey(self.discovery_options.?.capability);
+            defer std.crypto.secureZero(u8, &key);
+            self.connection = try native_probe.OwnerConnection.open(io, allocator, self.endpoint, self.expected, self.invocation.until);
+            self.source_copy = try self.connection.?.acquireSource(.{ .admission = admission, .origin = scope.origin, .operation = self.operation, .custody_seconds = selection.custody_seconds, .consent_expires_at = scope.consent.expires_at }, key, self.source_copy_now, self.source_image.?.view(self.discovery_options.?));
+            return;
+        }
+        if (self.stage == .discovery or self.stage == .source_prepare) {
             var budget = try native_inventory.Budget.init(io, self.invocation.until);
             self.discovery_until = budget.until;
             if (self.endpoint.len != 0) {
@@ -285,27 +539,30 @@ const NativeTask = struct {
                 options.deadline = budget.until;
                 const selected_home = try setup.selectedCodexHome(io, allocator, options);
                 defer allocator.free(selected_home);
-                var inventory = try native_inventory.collect(io, allocator, selected_home, &budget);
-                defer inventory.deinit();
-                self.scanned_entries = inventory.scanned_entries;
-                self.ignored_stale_entries = inventory.ignored_stale_entries;
-                for (inventory.candidates) |*candidate| {
-                    try budget.check(io);
-                    const loaded = try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until);
-                    self.discovered.append(allocator, loaded) catch |err| {
-                        loaded.deinit(allocator);
-                        return err;
-                    };
-                    // Refuse the entire query before further probes once the
-                    // exact public aggregate exceeds its response boundary.
-                    var arena: std.heap.ArenaAllocator = .init(allocator);
-                    defer arena.deinit();
-                    try requireNativeDiscoveryFits(self.request.id, try nativeDiscoveryResult(arena.allocator(), self, null, false));
+                var selected_inventory: ?native_inventory.Inventory = native_inventory.collect(io, allocator, selected_home, &budget) catch |err| switch (err) {
+                    error.NativeContextMissing => if (!options.codex_home_explicit and options.config_path == null) null else return err,
+                    else => return err,
+                };
+                defer if (selected_inventory) |*value| value.deinit();
+                if (selected_inventory) |*value| {
+                    self.ignored_stale_entries = value.ignored_stale_entries;
+                    for (value.candidates) |*candidate| {
+                        try budget.check(io);
+                        try self.retainDiscovered(try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until));
+                        try self.requireDiscoveryFits();
+                    }
+                    try value.verify(allocator);
                 }
+                try self.discoverSourceContexts(&budget);
+                // An unpublished default home alone remains an error; a fresh
+                // authenticated per-user hint can discover a different home.
+                if (selected_inventory == null and self.discovered.items.len == 0) return error.NativeContextMissing;
+                self.scanned_entries = budget.scanned_entries;
+                if (selected_inventory) |*value| try value.verify(allocator);
                 try budget.check(io);
-                try inventory.verify(allocator);
             }
             try budget.check(io);
+            if (self.stage == .source_prepare) try self.prepareSource();
             return;
         }
         if (self.stage == .announcement_identify and self.selected_owner) {
@@ -345,7 +602,7 @@ const NativeTask = struct {
             .registration => self.acknowledgement = try self.connection.?.register(.{ .reference = self.reference.?, .thread_id = self.thread_id, .native_nonce = self.nonce, .operation_id = self.operation, .broker_socket = self.broker_socket, .capability_path = self.capability_path }, self.expected.?),
             .announcement => self.acknowledgement = try self.connection.?.announce(self.thread_id, self.operation, .{ .broker_socket = self.broker_socket, .capability_path = self.capability_path }),
             .detachment => self.acknowledgement = try self.connection.?.detach(.{ .reference = self.reference.?, .thread_id = self.thread_id, .native_nonce = self.nonce, .operation_id = self.native_operation orelse self.operation }, self.expected.?),
-            .discovery => unreachable,
+            .discovery, .source_prepare, .source_acquire => unreachable,
         }
     }
     fn deinit(self: *NativeTask) void {
@@ -355,6 +612,10 @@ const NativeTask = struct {
         if (self.connection) |*value| value.deinit();
         for (self.discovered.items) |value| value.deinit(allocator);
         self.discovered.deinit(allocator);
+        self.source_contexts.deinit(allocator);
+        if (self.source_copy) |*copy| copy.deinit();
+        if (self.source_image) |*image| image.deinit(allocator);
+        if (self.source_runtime_record) |record| allocator.free(record.evidence);
         if (self.discovery_options) |*options| {
             std.crypto.secureZero(u8, &options.key);
             std.crypto.secureZero(u8, &options.capability);
@@ -371,6 +632,25 @@ const NativeTask = struct {
         allocator.destroy(self);
     }
 };
+const NativeImportContext = struct {
+    arena: *std.heap.ArenaAllocator,
+    endpoint: []const u8,
+    options: setup.Options,
+    image: OwnedSourceImage,
+    origin: native_source_consent.Handle,
+    until: std.Io.Clock.Timestamp,
+    registry: ?setup.RegistryWitness,
+    epoch: u64,
+    fn deinit(self: *NativeImportContext, a: std.mem.Allocator) void {
+        self.image.deinit(a);
+        std.crypto.secureZero(u8, &self.options.key);
+        std.crypto.secureZero(u8, &self.options.capability);
+        self.arena.deinit();
+        a.destroy(self.arena);
+        a.destroy(self);
+    }
+};
+
 const PendingImport = struct {
     network_id: u64,
     source_id: []u8,
@@ -389,7 +669,13 @@ const PendingImport = struct {
     token: []u8,
     label: []u8,
     expires_at: ?i64,
+    native_admission: ?native_source_consent.Admission = null,
+    native_started_at: ?std.Io.Timestamp = null,
+    native_selection_digest: ?[32]u8 = null,
+    native_context: ?*NativeImportContext = null,
+    native_operation: ?native_owner.OperationId = null,
     fn deinit(self: *PendingImport, allocator: std.mem.Allocator) void {
+        if (self.native_context) |context| context.deinit(allocator);
         std.crypto.secureZero(u8, self.token);
         allocator.free(self.token);
         allocator.free(self.source_id);
@@ -402,10 +688,69 @@ const PendingImport = struct {
         allocator.free(self.label);
     }
 };
+const NativeImportOwnership = struct {
+    admission: native_source_consent.Admission,
+    started_at: std.Io.Timestamp,
+    selection_digest: [32]u8,
+    operation: native_owner.OperationId,
+    context: *NativeImportContext,
+    fresh: NativeImportFresh,
+};
 // Network completions are process-local. Source and job generations are durable
 // fences; restart retains their unresolved outcome credits without adopting or
 // resubmitting the missing completion.
 const ImportSourceAuthority = struct { source_id: []u8, generation: u64 = 1 };
+// Produced only by the supervised native final-check worker after the real
+// peer, selected context, origin proof and qualified executable image checks.
+// The actor never accepts this value from control parameters or persistence.
+const NativeImportFresh = struct {
+    declaration: native_probe.SourceContextDeclaration,
+    origin: native_source_consent.Handle,
+    selection_digest: [32]u8,
+};
+const NativeAdoptionFence = struct { pending: PendingImport, fresh: NativeImportFresh };
+const native_source_description_budget: usize = 8192;
+
+const NativeImportTask = struct {
+    engine: *Engine,
+    pending: PendingImport,
+    completion: transport.Completion,
+    job: native_work.Job,
+    fresh: ?NativeImportFresh = null,
+    failure: ?anyerror = null,
+    fn run(opaque_context: *anyopaque, canceled: bool) void {
+        const self: *NativeImportTask = @ptrCast(@alignCast(opaque_context));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.perform() catch |err| {
+            self.failure = err;
+        };
+    }
+    fn perform(self: *NativeImportTask) !void {
+        const retained = self.pending.native_context orelse return error.NativeSourceFreshCheckRequired;
+        const admission = self.pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const io = self.engine.io;
+        try native_source_acquisition.deadline(io, retained.until);
+        var connection = try native_probe.OwnerConnection.open(io, self.engine.allocator, retained.endpoint, admission.owner.witness, retained.until);
+        defer connection.deinit();
+        const selector: native_probe.SourceContextSelector = .{ .owner_id = admission.owner.id, .native_nonce = admission.owner.nonce, .endpoint_generation = admission.owner.endpoint_generation, .context = .{ .id = admission.context.id, .generation = admission.context.generation } };
+        var key = try native_source_acquisition.capabilityKey(retained.options.capability);
+        defer std.crypto.secureZero(u8, &key);
+        const origin = try connection.sourceOrigin(self.pending.native_operation.?, selector, key, retained.image.view(retained.options));
+        if (!std.crypto.timing_safe.eql([32]u8, origin, retained.origin)) return error.NativeSourceOriginChanged;
+        const current = try connection.sourceContext(self.pending.native_operation.?, selector);
+        try retained.image.view(retained.options).verify(&connection);
+        try native_source_acquisition.deadline(io, retained.until);
+        self.fresh = .{ .declaration = current, .origin = origin, .selection_digest = self.pending.native_selection_digest orelse return error.NativeImageUnavailable };
+    }
+    fn deinit(self: *NativeImportTask) void {
+        self.completion.deinit(self.engine.allocator);
+        self.pending.deinit(self.engine.allocator);
+        self.engine.allocator.destroy(self);
+    }
+};
 const ObservationCredit = struct { network_id: u64, key: snapshot_admission.Key };
 const NativeLease = struct {
     handle: [64]u8,
@@ -440,6 +785,8 @@ const NativeLease = struct {
     }
 };
 
+const StartupCustodyNamespace = storage.OpeningExpectation;
+
 pub const Engine = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -454,7 +801,15 @@ pub const Engine = struct {
     root_key: envelope.Key = @splat(0),
     root_id: ?[:0]u8 = null,
     poisoned: bool = false,
+    // Retained unavailable-startup loop flag; Locked wire compatibility remains.
+    vault_locked: bool = false,
+    // Set only at the wrapping-key IO boundary, never by a generic error name.
+    startup_vault_failure: ?vault.VaultError = null,
+    startup_custody_namespace: ?StartupCustodyNamespace = null,
+    fixture_startup_vault_locked: bool = false,
     test_key: ?envelope.Key = null,
+    test_vault: ?vault.Backend = null,
+    fixture_custody_stage_failure: enum { none, database_open, state_allocation, supervisor_ready } = .none,
     state: domain.State,
     db: ?storage.Store = null,
     network: ?*transport.Client = null,
@@ -477,12 +832,19 @@ pub const Engine = struct {
     active_peer: ?*const peer.Context = null,
     native_registry: ?setup.RegistryWitness = null,
     measured_codex_runtime: ?measured_runtime.Committed = null,
+    qualified_native_runtime: ?QualifiedNativeRuntime = null,
+    runtime_installation: ?*NativeRuntimeCommitTask = null,
     codex_runtime_root: ?[]u8 = null,
+    // Supplied once by the daemon's declared deployment configuration. These
+    // locators select inputs; only the protected reader and genuine constructor
+    // can turn their contents into runtime selection authority.
+    native_deployment_selection: ?NativeDeploymentSelection = null,
     runtime_measurement: ?*RuntimeMeasureTask = null,
     runtime_measurement_requested: bool = false,
     runtime_measurement_failure: ?anyerror = null,
     native_workers: ?*native_work.Supervisor = null,
     native_tasks: std.ArrayList(*NativeTask) = .empty,
+    native_import_tasks: std.ArrayList(*NativeImportTask) = .empty,
     active_credit: ?snapshot_admission.Key = null,
     committed_nonledger_bytes: usize = 0,
     committed_counts: snapshot_admission.Counts = .{},
@@ -490,6 +852,7 @@ pub const Engine = struct {
     fixture_identity_submissions: usize = 0,
     fixture_observation_submissions: usize = 0,
     fixture_force_poll: bool = false,
+    fixture_hold_enrollment_start: bool = false,
     fixture_lifecycle_fault: enum { none, preparation, sqlite_commit, native_preparation_allocation } = .none,
     fixture_native_allocation_failed: bool = false,
     outcome_intents: std.ArrayList(OutcomeIntent) = .empty,
@@ -520,6 +883,15 @@ pub const Engine = struct {
         return create(io, allocator, state_dir, null, selection);
     }
 
+    pub const NativeDeploymentSelection = struct {
+        registered_package_root: []const u8,
+        installation_root: []const u8,
+    };
+
+    pub fn openForInstanceWithDeployment(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, selection: instance.Selection, deployment: NativeDeploymentSelection) !*Engine {
+        return createConfiguredDeployment(io, allocator, state_dir, null, selection, null, false, null, deployment);
+    }
+
     /// Synthetic tests supply keys; production cannot bypass vault custody.
     pub fn openWithKey(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
@@ -527,15 +899,21 @@ pub const Engine = struct {
     }
 
     fn create(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection) !*Engine {
-        return createConfigured(io, allocator, state_dir, key, selection, null);
+        return createConfigured(io, allocator, state_dir, key, selection, null, false, null);
     }
 
     pub fn openWithMeasuredRootForTest(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key, root: []const u8) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
-        return createConfigured(io, allocator, state_dir, key, .default, root);
+        return createConfigured(io, allocator, state_dir, key, .default, root, false, null);
     }
 
-    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8) !*Engine {
+    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool, test_backend: ?vault.Backend) !*Engine {
+        return createConfiguredDeployment(io, allocator, state_dir, key, selection, test_root, locked_fixture, test_backend, null);
+    }
+
+    fn createConfiguredDeployment(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool, test_backend: ?vault.Backend, deployment: ?NativeDeploymentSelection) !*Engine {
+        if (locked_fixture and !builtin.is_test) return error.TestOnly;
+        if (test_backend != null and !builtin.is_test) return error.TestOnly;
         try paths.validateAbsolute(state_dir);
         const self = try allocator.create(Engine);
         errdefer allocator.destroy(self);
@@ -551,6 +929,15 @@ pub const Engine = struct {
             else => .other,
         }, .evidence = if (builtin.is_test) .synthetic else .diagnostic }), .test_key = key };
         errdefer self.release();
+        if (deployment) |configured| {
+            if (configured.registered_package_root.len > setup_collector.max_path_bytes or configured.installation_root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
+            try paths.validateAbsolute(configured.registered_package_root);
+            try paths.validateAbsolute(configured.installation_root);
+            const package = try allocator.dupe(u8, configured.registered_package_root);
+            errdefer allocator.free(package);
+            const installation = try allocator.dupe(u8, configured.installation_root);
+            self.native_deployment_selection = .{ .registered_package_root = package, .installation_root = installation };
+        }
         if (test_root) |root| {
             if (!builtin.is_test) return error.TestOnly;
             if (root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
@@ -587,6 +974,8 @@ pub const Engine = struct {
             self.installation_service_status = observed.service_status;
             self.installation_probe_at = if (collection_timed_out) null else self.now();
         }
+        self.fixture_startup_vault_locked = locked_fixture;
+        self.test_vault = test_backend;
         self.thread = try std.Thread.spawn(.{}, actor, .{self});
         self.mutex.lockUncancelable(io);
         while (!self.startup_complete) self.condition.waitUncancelable(io, &self.mutex);
@@ -616,7 +1005,12 @@ pub const Engine = struct {
 
     fn release(self: *Engine) void {
         self.state.deinit();
+        if (self.qualified_native_runtime) |retained| self.allocator.free(retained.evidence);
         if (self.codex_runtime_root) |root| self.allocator.free(root);
+        if (self.native_deployment_selection) |deployment| {
+            self.allocator.free(deployment.registered_package_root);
+            self.allocator.free(deployment.installation_root);
+        }
         if (self.installation_selection) |selected| {
             self.allocator.free(selected.prefix);
             self.allocator.free(selected.receipt_path);
@@ -634,6 +1028,7 @@ pub const Engine = struct {
             self.allocator.free(item.provider);
             self.allocator.free(item.label);
             self.allocator.free(item.path);
+            self.allocator.free(item.native_endpoint);
         }
         self.descriptions.deinit(self.allocator);
         for (self.pending_imports.items) |*item| item.deinit(self.allocator);
@@ -647,6 +1042,7 @@ pub const Engine = struct {
         self.admission.deinit();
         self.native_owners.deinit();
         self.native_tasks.deinit(self.allocator);
+        self.native_import_tasks.deinit(self.allocator);
         self.observation_credits.deinit(self.allocator);
         for (self.outcome_intents.items) |intent| freeIntent(self.allocator, intent);
         self.outcome_intents.deinit(self.allocator);
@@ -670,6 +1066,24 @@ pub const Engine = struct {
 
     pub fn dispatchUntilWithPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: *const peer.Context) ![]u8 {
         return self.dispatchOwnedPeer(allocator, payload, channel, until, context);
+    }
+
+    // Called by the trusted installation transaction after genuine producer
+    // qualification. No public RPC can supply this opaque argument. The caller
+    // retains the selection until the supervised preparation actually ends.
+    pub fn commitQualifiedNativeRuntime(self: *Engine, selected: *const runtime_selection_producer.ValidatedSelection, until: std.Io.Clock.Timestamp) !void {
+        if (until.clock != .awake or until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        var invocation: Invocation = .{ .allocator = self.allocator, .payload = "", .channel = .control, .until = until, .qualified_candidate = selected };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        self.allocator.free(invocation.response.?);
     }
 
     fn dispatchOwnedPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: ?*const peer.Context) ![]u8 {
@@ -733,9 +1147,21 @@ pub const Engine = struct {
     }
 
     fn actor(self: *Engine) void {
-        self.bootstrap() catch |err| {
+        self.initializeCustody() catch |err| {
+            // Vault loading precedes database/network creation. Preserve a
+            // bounded local control plane for an ordinary platform unlock;
+            // never turn an unavailable wrapping key into fresh custody.
+            if (self.startup_vault_failure != null and self.db == null and self.network == null and self.native_workers == null) {
+                self.vault_locked = true;
+                self.poisoned = true;
+                std.crypto.secureZero(u8, &self.root_key);
+                if (!self.lockedActor()) return;
+                self.normalActor();
+                return;
+            }
             if (self.network) |client| client.deinit();
             if (self.db) |*db| db.close();
+            std.crypto.secureZero(u8, &self.root_key);
             self.mutex.lockUncancelable(self.io);
             self.startup_error = err;
             self.startup_complete = true;
@@ -743,16 +1169,10 @@ pub const Engine = struct {
             self.mutex.unlock(self.io);
             return;
         };
-        self.native_workers = native_work.Supervisor.create(self.io, self.allocator, .{ .context = self, .signal = nativeWake }) catch |err| {
-            self.network.?.deinit();
-            self.db.?.close();
-            self.mutex.lockUncancelable(self.io);
-            self.startup_error = err;
-            self.startup_complete = true;
-            self.condition.broadcast(self.io);
-            self.mutex.unlock(self.io);
-            return;
-        };
+        self.normalActor();
+    }
+
+    fn normalActor(self: *Engine) void {
         defer {
             self.native_workers.?.deinit();
             self.network.?.deinit();
@@ -772,7 +1192,7 @@ pub const Engine = struct {
                 };
             }
             self.mutex.lockUncancelable(self.io);
-            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.runtime_measurement != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
+            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.runtime_measurement != null or self.runtime_installation != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
                 self.condition.waitTimeout(self.io, &self.mutex, .{ .deadline = maintenance_due }) catch |err| switch (err) {
                     error.Timeout => {},
                     // Finish every queued stack reference before exiting. A
@@ -788,7 +1208,7 @@ pub const Engine = struct {
                 self.completeNativeWork();
                 continue;
             }
-            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.runtime_measurement == null) {
+            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.runtime_measurement == null and self.runtime_installation == null) {
                 self.mutex.unlock(self.io);
                 return;
             }
@@ -826,6 +1246,12 @@ pub const Engine = struct {
             // periodic work belongs to the actor's independent clock schedule.
             self.active_until = item.until;
             self.active_peer = if (item.peer_context) |*verified| verified else null;
+            if (item.qualified_candidate != null) {
+                self.startNativeRuntimeCommit(item) catch |err| self.finishInvocation(item, err);
+                self.active_until = null;
+                self.active_peer = null;
+                continue;
+            }
             const deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startNativeInvocation(item) catch |err| blk: {
                 self.restoreCommitted() catch {
                     self.poisoned = true;
@@ -846,6 +1272,14 @@ pub const Engine = struct {
             const response = if (self.stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.execute(item.allocator, item.payload, item.channel);
             self.active_peer = null;
             self.active_until = null;
+            if (response) |success| {
+                const queued = self.startConfiguredRuntimeInstall(item, success) catch |err| {
+                    item.allocator.free(success);
+                    self.finishInvocation(item, err);
+                    continue;
+                };
+                if (queued) continue;
+            } else |_| {}
             self.finishInvocation(item, response);
         }
     }
@@ -855,6 +1289,82 @@ pub const Engine = struct {
         self.mutex.lockUncancelable(self.io);
         self.condition.broadcast(self.io);
         self.mutex.unlock(self.io);
+    }
+    fn lockedActor(self: *Engine) bool {
+        self.mutex.lockUncancelable(self.io);
+        self.startup_complete = true;
+        self.condition.broadcast(self.io);
+        while (true) {
+            while (self.queue_count == 0 and !self.stopping) self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.queue_count == 0 and self.stopping) {
+                self.mutex.unlock(self.io);
+                return false;
+            }
+            const item = self.queue[self.queue_head].?;
+            self.queue[self.queue_head] = null;
+            self.queue_head = (self.queue_head + 1) % self.queue.len;
+            self.queue_count -= 1;
+            const stopping = self.stopping;
+            self.mutex.unlock(self.io);
+            // No maintenance, source reads, provider work, native workers,
+            // mutation ledger admission or database access exists here.
+            self.active_until = item.until;
+            const response = if (stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else if (item.qualified_candidate != null) self.startup_vault_failure orelse error.Locked else self.lockedRequest(item.allocator, item.payload, item.channel);
+            self.active_until = null;
+            self.finishInvocation(item, response);
+            if (!self.vault_locked) return true;
+            self.mutex.lockUncancelable(self.io);
+        }
+    }
+
+    fn vaultRecoveryAction(failure: vault.VaultError) []const u8 {
+        return switch (failure) {
+            error.Locked => "unlock_platform_vault_then_reopen_custody",
+            error.Missing, error.InvalidKey => "restore_original_vault_key_then_reopen_custody",
+            error.Denied, error.Cancelled, error.Unavailable, error.Conflict, error.BackendFailure, error.InvalidRoot => "restore_platform_vault_access_then_reopen_custody",
+        };
+    }
+
+    fn vaultUnavailableCode(self: *const Engine) []const u8 {
+        return if ((self.startup_vault_failure orelse error.Locked) == error.Locked) "VaultLocked" else "VaultUnavailable";
+    }
+
+    fn lockedRequest(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel) ![]u8 {
+        const failure = self.startup_vault_failure orelse error.Locked;
+        const refusal = self.vaultUnavailableCode();
+        if (channel == .browser) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = @as(?[]const u8, null), .@"error" = .{ .code = refusal, .message = if (failure == error.Locked) "Unlock the platform vault, then explicitly reopen custody through local controls." else "Restore access to the original platform vault key, then explicitly reopen custody through local controls." } }, .{});
+        var request = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32600, "InvalidRequest");
+        defer request.deinit();
+        if (channel != .control) return control.failure(allocator, request.id, -32000, refusal);
+        if (eql(request.method, "system.handshake")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .service = "omuxd",
+            .channel = "control",
+            .custody_available = false,
+            .capabilities = .{ .credential_free_control = true, .custody_reopen = true, .native_launch = false, .live_handoff_proven = false },
+        });
+        if (eql(request.method, "custody.reopen")) {
+            if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return control.failure(allocator, request.id, -32602, "InvalidParams");
+            self.initializeCustody() catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+            self.vault_locked = false;
+            self.startup_vault_failure = null;
+            self.poisoned = false;
+            return control.success(allocator, request.id, .{ .reopened = true, .custody_available = true, .metadata_loaded = true, .account_count = self.state.accounts.items.len, .provider_request_initiated = false, .live_handoff_proven = false });
+        }
+        if (eql(request.method, "system.health")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .status = if (failure == error.Locked) "vault_locked" else "vault_unavailable",
+            .custody_error = @errorName(failure),
+            .custody_origin = if (self.startup_custody_namespace) |retained| (if (retained.database == null) "fresh" else "existing") else "unverified",
+            .custody_available = false,
+            .metadata_loaded = false,
+            .account_count = @as(?usize, null),
+            .provider_access = false,
+            .live_handoff_proven = false,
+            .recovery_action = vaultRecoveryAction(failure),
+        });
+        if (eql(request.method, "setup.readiness") or eql(request.method, "setup.evidence") or eql(request.method, "setup.plan")) return self.handleRequest(allocator, request, channel);
+        return control.failure(allocator, request.id, -32000, refusal);
     }
     fn finishInvocation(self: *Engine, item: *Invocation, response: anyerror![]u8) void {
         self.mutex.lockUncancelable(self.io);
@@ -873,8 +1383,13 @@ pub const Engine = struct {
         const announcement = eql(request.method, "integrations.attach");
         const detachment = eql(request.method, "integrations.detach");
         const discovering = eql(request.method, "integrations.discover");
+        const connecting_native_source = eql(request.method, "source.connect") and control.get(request.params, "selected_native_context") != null;
+        const source_selection: ?native_source_acquisition.ControlSelection = if (connecting_native_source)
+            try native_source_acquisition.controlSelection(request.params)
+        else
+            null;
         const removal = eql(request.method, "integrations.remove") and eql((try control.optionalString(request.params, "adapter")) orelse "codex", "codex");
-        if (!registration and !announcement and !detachment and !removal and !discovering) return false;
+        if (!registration and !announcement and !detachment and !removal and !discovering and !connecting_native_source) return false;
         if (registration) {
             if (invocation.channel != .adapter or !eql(try self.authenticate(request.params), "codex")) return error.WrongPurpose;
             const context = self.active_peer orelse return error.NativePeerRequired;
@@ -909,14 +1424,15 @@ pub const Engine = struct {
         if (!cached_registration and (self.native_tasks.items.len >= native_work.capacity or self.native_tasks.items.len + callback_slots + extra > native_work.capacity)) return error.NativeWorkCapacity;
         for (self.native_tasks.items) |task| if (std.mem.eql(u8, &task.operation, &operation) and !(registration and task.stage == .announcement and task.reference != null)) return error.OperationIndeterminate;
         if (removal) return self.startNativeRemoval(invocation, &request, &transferred, operation);
-        const endpoint: []const u8 = if (registration) try control.string(request.params, "owner_endpoint") else if (try control.optionalString(request.params, "owner_endpoint")) |value| value else (try control.optionalString(request.params, "native_socket")) orelse if (discovering) "" else return error.NativeEndpointRequired;
+        const endpoint: []const u8 = if (connecting_native_source) "" else if (registration) try control.string(request.params, "owner_endpoint") else if (try control.optionalString(request.params, "owner_endpoint")) |value| value else (try control.optionalString(request.params, "native_socket")) orelse if (discovering) "" else return error.NativeEndpointRequired;
         if (endpoint.len != 0) try paths.validateAbsolute(endpoint);
         if (endpoint.len > 107) return error.SocketPathTooLong;
-        const thread_id = if (discovering) "discovery" else try control.string(request.params, "thread_id");
+        const thread_id = if (connecting_native_source) "source" else if (discovering) "discovery" else try control.string(request.params, "thread_id");
         if (thread_id.len > native_owner.maximum_thread_bytes) return error.InvalidNativeOwnerThread;
-        const task = try self.newNativeTask(invocation, request, operation, endpoint, thread_id, if (discovering) .discovery else if (registration) .identify else if (announcement) .announcement_identify else .detachment);
+        const task = try self.newNativeTask(invocation, request, operation, endpoint, thread_id, if (connecting_native_source) .source_prepare else if (discovering) .discovery else if (registration) .identify else if (announcement) .announcement_identify else .detachment);
         transferred = true;
         errdefer task.deinit();
+        task.source_selection = source_selection;
         if (announcement or detachment) {
             const selected = control.get(request.params, "owner_id") != null or control.get(request.params, "process_nonce") != null or control.get(request.params, "endpoint_generation") != null or control.get(request.params, "thread_instance_generation") != null;
             if (selected) {
@@ -935,7 +1451,7 @@ pub const Engine = struct {
             task.thread_generation = try parseGeneration(control.get(request.params, "thread_instance_generation") orelse return error.InvalidParams);
             if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
             if (try self.registrationReplay(task)) return true;
-        } else if (!discovering) {
+        } else if (!discovering and !connecting_native_source) {
             if (announcement) {
                 if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
                 if (!task.selected_owner and try self.admitNativeControl(task)) return true;
@@ -976,7 +1492,7 @@ pub const Engine = struct {
         const capability_path = try std.fmt.allocPrint(self.allocator, "{s}/integrations/codex.capability", .{self.state_dir});
         errdefer self.allocator.free(capability_path);
         task.* = .{ .engine = self, .invocation = invocation, .request = request, .operation = operation, .endpoint = owned_endpoint, .thread_id = owned_thread, .broker_socket = broker_socket, .capability_path = capability_path, .stage = stage, .job = .{ .lane = if (stage == .announcement) .announcement else .continuation, .context = task, .run = NativeTask.run } };
-        if (stage == .discovery or stage == .announcement_identify) {
+        if (stage == .discovery or stage == .announcement_identify or stage == .source_prepare) {
             const context = try self.allocator.create(std.heap.ArenaAllocator);
             errdefer self.allocator.destroy(context);
             context.* = .init(self.allocator);
@@ -988,9 +1504,24 @@ pub const Engine = struct {
             captured.config_path = if (options.config_path) |value| try owned.dupe(u8, value) else null;
             captured.xdg_config_home = if (options.xdg_config_home) |value| try owned.dupe(u8, value) else null;
             captured.broker_socket = broker_socket;
+            if ((stage == .discovery or stage == .source_prepare) and builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
+                if (std.c.getenv("XDG_RUNTIME_DIR")) |value| {
+                    const runtime = std.mem.span(value);
+                    if (runtime.len > native_source_context.maximum_runtime_bytes) return error.InvalidNativeSourceContext;
+                    task.source_context_runtime = try owned.dupe(u8, runtime);
+                }
+            }
             task.discovery_context = context;
             task.discovery_options = captured;
             task.selected_registry = self.native_registry;
+            if (stage == .source_prepare) {
+                const retained = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+                if (retained.adapter_epoch != self.adapter_epochs[0] or retained.registry == null or
+                    !std.meta.eql(retained.registry, self.native_registry)) return error.NativeCustodyGenerationMismatch;
+                const deployment = self.native_deployment_selection orelse return error.NativeImageUnavailable;
+                task.source_runtime_root = try owned.dupe(u8, deployment.installation_root);
+                task.source_runtime_record = try copyQualifiedNativeRuntime(self.allocator, retained);
+            }
         }
         return task;
     }
@@ -1130,6 +1661,18 @@ pub const Engine = struct {
 
     fn completeNativeWork(self: *Engine) void {
         const job = self.native_workers.?.takeCompleted() orelse return;
+        for (self.native_import_tasks.items, 0..) |task, index| if (job == &task.job) {
+            _ = self.native_import_tasks.orderedRemove(index);
+            self.completeNativeImport(task) catch |err| {
+                self.poisoned = true;
+                std.log.err("native import terminal persistence failed: {s}", .{@errorName(err)});
+            };
+            return;
+        };
+        if (self.runtime_installation) |installation| if (job == &installation.job) {
+            self.completeNativeRuntimeCommit(installation);
+            return;
+        };
         if (self.runtime_measurement) |measurement| if (job == &measurement.job) {
             self.completeRuntimeMeasurement(measurement);
             return;
@@ -1142,7 +1685,20 @@ pub const Engine = struct {
             self.active_peer = null;
             self.active_credit = null;
         }
-        if (task.failure == null and (task.stage == .identify or task.stage == .announcement_identify) and !self.stopping and !self.poisoned) {
+        if (task.failure == null and task.stage == .source_prepare and !self.stopping and !self.poisoned) {
+            const replayed = self.prepareNativeSourceAcquisition(task) catch |err| blk: {
+                task.failure = err;
+                break :blk false;
+            };
+            if (replayed) {
+                for (self.native_tasks.items, 0..) |candidate, index| if (candidate == task) {
+                    _ = self.native_tasks.orderedRemove(index);
+                    break;
+                };
+                return;
+            }
+            if (task.failure == null) return;
+        } else if (task.failure == null and (task.stage == .identify or task.stage == .announcement_identify) and !self.stopping and !self.poisoned) {
             if (task.stage == .announcement_identify and task.selected_owner and !task.admitted) {
                 // The worker already verified the selected context and fresh
                 // exact identity. A removal fence may have appeared meanwhile.
@@ -1190,6 +1746,173 @@ pub const Engine = struct {
         task.deinit();
     }
 
+    fn prepareNativeSourceAcquisition(self: *Engine, task: *NativeTask) !bool {
+        const selection = task.source_selection orelse return error.NativeSourceConsentRequired;
+        const options = task.discovery_options orelse return error.NativeImageUnavailable;
+        const captured = task.source_runtime_record orelse return error.NativeImageUnavailable;
+        const installed = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+        const started = std.Io.Clock.awake.now(self.io);
+        const remaining = task.invocation.until.durationFromNow(self.io).raw.toNanoseconds();
+        if (remaining <= 0 or remaining > std.math.maxInt(u64)) return error.NativeTimeout;
+        if (!std.crypto.timing_safe.eql([32]u8, captured.record_sha256, installed.record_sha256) or
+            options.native_custody.?.adapter_epoch != self.adapter_epochs[0] or
+            !std.meta.eql(task.selected_registry, self.native_registry)) return error.RuntimeSelectionDrift;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        var declaration: ?native_probe.SourceContextDeclaration = null;
+        for (task.source_contexts.items) |current| {
+            if (!std.meta.eql(current.owner_id, selection.owner_id) or !std.meta.eql(current.native_nonce, selection.nonce) or
+                current.endpoint_generation != selection.endpoint_generation) continue;
+            if (declaration != null) return error.NativeSourceAmbiguous;
+            declaration = current;
+        }
+        const current = declaration orelse return error.NativeSourceUnavailable;
+        const context = current.context orelse return error.NativeSourceUnavailable;
+        if (current.status != .available or current.store_present != true or current.credential_acquisition_authorized or
+            !std.meta.eql(context.id, selection.context.id) or context.generation != selection.context.generation or
+            !peer.sameOriginal(current.witness, task.expected.?)) return error.NativeSourceContextChanged;
+        const source_id = try self.identifier();
+        const consent_id = try self.identifier();
+        var source_handle: [32]u8 = undefined;
+        var consent_handle: [32]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&source_handle, &source_id);
+        _ = try std.fmt.hexToBytes(&consent_handle, &consent_id);
+        const owner: native_source_consent.Owner = .{ .id = current.owner_id, .nonce = current.native_nonce, .endpoint_generation = current.endpoint_generation, .witness = current.witness };
+        const observed_at = self.now();
+        const authority: NativeSourceAuthority = .{ .origin = task.source_origin orelse return error.NativeSourceOriginChanged, .consent = .{ .id = consent_handle, .generation = 1, .source_id = source_handle, .source_generation = 1, .owner = owner, .expires_at = try std.math.add(i64, observed_at, selection.consent_seconds), .purpose = .native_access_copy_for_identity_and_request, .allow_reenrollment = selection.allow_reenrollment, .forget_epoch = self.import_forget_epoch } };
+        const admission = try native_source_consent.admit(.{ .source_id = source_handle, .source_generation = 1, .status = .connected, .consent = authority.consent, .owner = owner, .context = .{ .id = context.id, .generation = context.generation }, .store_present = true, .forget_epoch = self.import_forget_epoch }, observed_at, 0, @intCast(remaining));
+        if (try self.admitNativeControl(task)) return true;
+        self.active_credit = task.credit;
+        _ = try self.connectImportSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex", .label = (try control.optionalString(task.request.params, "label")) orelse "", .authorized_at = observed_at });
+        _ = try self.importSourceGeneration(&source_id);
+        const description: SourceDescription = .{ .source_id = &source_id, .provider = "codex", .label = (try control.optionalString(task.request.params, "label")) orelse "", .path = "", .native_endpoint = task.endpoint, .native_authority = authority };
+        var bounded_description = description;
+        bounded_description.label = ""; // The input label is prepaid separately.
+        if (try snapshot_admission.countJson(bounded_description, storage.maximum_snapshot_bytes) > native_source_description_budget) return error.NativeSourceDescriptionTooLarge;
+        try self.addDescription(description);
+        try self.persist(&.{});
+        task.source_authority = authority;
+        task.source_admission = admission;
+        task.source_started_at = started;
+        task.source_copy_now = observed_at;
+        task.stage = .source_acquire;
+        try self.native_workers.?.enqueue(&task.job);
+        return false;
+    }
+
+    fn startNativeRuntimeCommit(self: *Engine, invocation: *Invocation) !void {
+        const task = try self.captureNativeRuntimeCommit(invocation);
+        errdefer task.deinit();
+        task.candidate = invocation.qualified_candidate;
+        try self.native_workers.?.enqueue(&task.job);
+        self.runtime_installation = task;
+    }
+
+    fn captureNativeRuntimeCommit(self: *Engine, invocation: *Invocation) !*NativeRuntimeCommitTask {
+        if (self.stopping) return error.ServiceStopping;
+        if (self.vault_locked or self.poisoned or self.db == null) return error.Locked;
+        if (!self.integrationInstalled("codex")) return error.AdapterNotInstalled;
+        const registry = self.native_registry orelse return error.NativeCustodyPending;
+        if (registry.phase != .installed) return error.NativeCustodyPending;
+        if (self.runtime_installation != null) return error.OperationIndeterminate;
+        try native_source_acquisition.deadline(self.io, invocation.until);
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        errdefer self.allocator.destroy(arena);
+        arena.* = .init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var options = try self.setupOptions(a, .codex, .null);
+        options.home = try a.dupe(u8, options.home);
+        options.codex_home = if (options.codex_home) |value| try a.dupe(u8, value) else null;
+        options.config_path = if (options.config_path) |value| try a.dupe(u8, value) else null;
+        options.xdg_config_home = if (options.xdg_config_home) |value| try a.dupe(u8, value) else null;
+        options.broker_socket = try a.dupe(u8, options.broker_socket);
+        options.deadline = invocation.until;
+        const task = try self.allocator.create(NativeRuntimeCommitTask);
+        errdefer self.allocator.destroy(task);
+        task.* = .{ .engine = self, .invocation = invocation, .candidate = null, .context = .{ .options = options, .selection = self.instance_selection, .deadline = invocation.until }, .arena = arena, .registry = self.native_registry, .epoch = self.adapter_epochs[0], .job = .{ .lane = .continuation, .context = task, .run = NativeRuntimeCommitTask.run } };
+        return task;
+    }
+
+    fn startConfiguredRuntimeInstall(self: *Engine, invocation: *Invocation, response: []u8) !bool {
+        const selected = self.native_deployment_selection orelse return false;
+        if (invocation.channel != .control) return false;
+        var request = try control.parse(invocation.allocator, invocation.payload);
+        defer request.deinit();
+        if (!eql(request.method, "integrations.install") or !eql(try control.string(request.params, "adapter"), "codex")) return false;
+        var completed = try std.json.parseFromSlice(std.json.Value, invocation.allocator, response, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+        defer completed.deinit();
+        if (completed.value != .object or completed.value.object.get("result") == null or completed.value.object.get("error") != null) return false;
+        // setup.install has already persisted one-time integration ownership.
+        // Keep the original invocation alive through the supervised package
+        // transaction and actor commit; a deadline never abandons its worker.
+        const task = try self.captureNativeRuntimeCommit(invocation);
+        errdefer task.deinit();
+        const a = task.arena.allocator();
+        const root_path = try a.dupe(u8, selected.registered_package_root);
+        const root_fd = try runtime_deployment.openRegisteredRoot(self.io, a, root_path, invocation.until);
+        task.deployment = .{ .path = root_path, .descriptor = root_fd };
+        const parent_path = std.fs.path.dirname(selected.installation_root) orelse return error.InvalidInstallationDestination;
+        task.parent = try paths.openPrivateRoot(a, parent_path, false);
+        task.basename = try a.dupeSentinel(u8, std.fs.path.basename(selected.installation_root), 0);
+        try self.native_workers.?.enqueue(&task.job);
+        task.install_response = response;
+        self.runtime_installation = task;
+        return true;
+    }
+
+    fn completeNativeRuntimeCommit(self: *Engine, task: *NativeRuntimeCommitTask) void {
+        defer {
+            self.runtime_installation = null;
+            task.deinit();
+        }
+        self.active_until = task.invocation.until;
+        defer self.active_until = null;
+        const result = self.commitNativeRuntimePrepared(task) catch |err| {
+            self.finishInvocation(task.invocation, err);
+            return;
+        };
+        self.finishInvocation(task.invocation, result);
+    }
+
+    fn commitNativeRuntimePrepared(self: *Engine, task: *NativeRuntimeCommitTask) ![]u8 {
+        if (task.failure) |err| return err;
+        if (!task.handoff_ready) return error.RuntimeSelectionNotReady;
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.ServiceStopping;
+        try native_source_acquisition.deadline(self.io, task.invocation.until);
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry) or
+            !std.crypto.timing_safe.eql(envelope.Key, task.context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        if (task.installation) |*installed| try installed.recheck(self.io, task.context.deadline, task.parent, task.basename orelse return error.InvalidInstallationDestination);
+        const prepared = task.prepared orelse return error.InvalidRuntimeSelection;
+        const expected = prepared.expectation();
+        if (expected.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
+        const response = if (task.install_response) |installed_response| try task.invocation.allocator.dupe(u8, installed_response) else try control.success(task.invocation.allocator, .null, .{ .record_committed = true });
+        errdefer task.invocation.allocator.free(response);
+        const candidate = try copyQualifiedNativeRuntime(self.allocator, .{ .record_sha256 = prepared.recordDigest(), .evidence = prepared.evidence(), .channel = expected.channel, .target = expected.target, .adapter_epoch = task.epoch, .registry = task.registry });
+        native_source_acquisition.deadline(self.io, task.invocation.until) catch |err| {
+            self.allocator.free(candidate.evidence);
+            return err;
+        };
+        // Worker terminal proves full-byte qualification completed. It cannot
+        // freeze mutable installation names across the handoff. Recheck their
+        // bounded identity witnesses after allocations, immediately at commit;
+        // full stream/hash work stays on the supervised worker.
+        finalRuntimeIdentityFence(self.io, task.context, task.prepared, task.inputs, if (task.installation) |*installed| installed else null, task.parent, task.basename) catch |err| {
+            self.allocator.free(candidate.evidence);
+            return err;
+        };
+        const previous = self.qualified_native_runtime;
+        self.qualified_native_runtime = candidate;
+        self.persistWithRuntimeFence(&.{}, task) catch |err| {
+            self.qualified_native_runtime = previous;
+            self.allocator.free(candidate.evidence);
+            try self.restoreCommitted();
+            return err;
+        };
+        if (previous) |old| self.allocator.free(old.evidence);
+        return response;
+    }
+
     fn failNativeTask(self: *Engine, task: *NativeTask, failure: anyerror) ![]u8 {
         if (task.stage == .discovery) return control.failure(task.invocation.allocator, task.request.id, -32000, @errorName(failure));
         errdefer self.poisoned = true;
@@ -1211,6 +1934,7 @@ pub const Engine = struct {
     }
 
     fn finishNativeTask(self: *Engine, task: *NativeTask) ![]u8 {
+        if (task.stage == .source_acquire) return self.finishNativeSourceCopy(task);
         if (task.stage == .discovery) {
             var arena: std.heap.ArenaAllocator = .init(self.allocator);
             defer arena.deinit();
@@ -1258,6 +1982,46 @@ pub const Engine = struct {
         }
         try self.persist(&.{});
         const decoded = try std.json.parseFromSlice(std.json.Value, arena.allocator(), cached, .{});
+        defer decoded.deinit();
+        return control.success(task.invocation.allocator, task.request.id, decoded.value);
+    }
+
+    fn finishNativeSourceCopy(self: *Engine, task: *NativeTask) ![]u8 {
+        if (self.stopping or self.poisoned or self.vault_locked) return error.ServiceStopping;
+        const copied = task.source_copy orelse return error.NativeSourceFreshCheckRequired;
+        const admission = task.source_admission orelse return error.NativeSourceConsentRequired;
+        const captured = task.source_runtime_record orelse return error.NativeImageUnavailable;
+        const source_id = std.fmt.bytesToHex(admission.source_id, .lower);
+        const fresh: NativeImportFresh = .{ .origin = copied.origin, .selection_digest = captured.record_sha256, .declaration = .{ .owner_id = copied.binding.owner.id, .native_nonce = copied.binding.owner.nonce, .endpoint_generation = copied.binding.owner.endpoint_generation, .witness = copied.binding.owner.witness, .status = .available, .context = .{ .id = copied.binding.context.id, .generation = copied.binding.context.generation }, .store_present = true, .credential_acquisition_authorized = false } };
+        const probe: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"), .credential_kind = .oauth_access, .source_generation = admission.source_generation, .credit_key = undefined, .forget_epoch = admission.forget_epoch, .job_id = @constCast(""), .token = @constCast(""), .label = @constCast(""), .expires_at = null, .native_admission = admission, .native_started_at = task.source_started_at, .native_selection_digest = captured.record_sha256 };
+        try self.nativeImportCheck(probe, fresh);
+        const elapsed = task.source_started_at.?.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+        if (elapsed < 0 or elapsed > std.math.maxInt(u64)) return error.NativeSourceDeadline;
+        try native_source_consent.checkMaterialized(admission, try self.nativeImportCurrent(probe, fresh), copied.binding, self.now(), @intCast(elapsed));
+        if (copied.candidate.provider != .codex or copied.candidate.credential_kind != .oauth_access or
+            copied.candidate.provider_account_id != null) return error.InvalidNativeSourcePayload;
+        const arena = task.discovery_context orelse return error.NativeSourceFreshCheckRequired;
+        const a = arena.allocator();
+        var options = task.discovery_options.?;
+        options.broker_socket = try a.dupe(u8, options.broker_socket);
+        const endpoint = try a.dupe(u8, task.endpoint);
+        const retained = try self.allocator.create(NativeImportContext);
+        var transferred = false;
+        defer if (!transferred) self.allocator.destroy(retained);
+        retained.* = .{ .arena = arena, .endpoint = endpoint, .options = options, .image = task.source_image.?, .origin = copied.origin, .until = task.invocation.until, .registry = task.selected_registry, .epoch = options.native_custody.?.adapter_epoch };
+        self.active_credit = task.credit;
+        const operation = try self.queueImportMode(&source_id, "codex", copied.candidate.access_token, (try control.optionalString(task.request.params, "label")) orelse "", copied.candidate.expires_at_limit, copied.candidate.custody_expires_at, null, .oauth_access, admission.allow_reenrollment, false, true, .{ .admission = admission, .started_at = task.source_started_at.?, .selection_digest = captured.record_sha256, .operation = task.operation, .context = retained, .fresh = fresh });
+        transferred = true;
+        task.discovery_context = null;
+        task.source_image = null;
+        var result_arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer result_arena.deinit();
+        const cached = try std.json.Stringify.valueAlloc(result_arena.allocator(), .{ .source_id = source_id[0..], .operation_id = operation, .status = "verifying_identity", .identity_admission = "verification_required", .renewal_owner = "external", .provider_identity_requested = true }, .{});
+        try self.mutations.complete(task.mutation_slot.?, cached);
+        if (task.credit) |key| try self.releaseOutcome(key);
+        task.credit = null;
+        try self.persist(&.{});
+        const decoded = try std.json.parseFromSlice(std.json.Value, result_arena.allocator(), cached, .{});
         defer decoded.deinit();
         return control.success(task.invocation.allocator, task.request.id, decoded.value);
     }
@@ -1543,29 +2307,127 @@ pub const Engine = struct {
         };
     }
 
-    fn bootstrap(self: *Engine) !void {
-        const database_path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/state.sqlite", .{self.state_dir}, 0);
-        defer self.allocator.free(database_path);
-        const existing = if (std.Io.Dir.cwd().statFile(self.io, database_path, .{ .follow_symlinks = false })) |stat| blk: {
-            if (stat.kind != .file) return error.UnsafeDatabase;
-            break :blk true;
-        } else |err| switch (err) {
-            error.FileNotFound => false,
+    /// Both ordinary startup and explicit locked retry stage all custody state.
+    /// The actor is the single writer; queue/mutex/thread identity never moves.
+    fn initializeCustody(self: *Engine) !void {
+        if (self.db != null or self.network != null or self.native_workers != null) return error.CustodyAlreadyLoaded;
+        errdefer std.crypto.secureZero(u8, &self.root_key);
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        self.metrics_mutex.lockUncancelable(self.io);
+        const metrics = self.metrics;
+        self.metrics_mutex.unlock(self.io);
+        var staged: Engine = .{
+            .allocator = self.allocator,
+            .io = self.io,
+            .state_dir = self.state_dir,
+            .instance_selection = self.instance_selection,
+            .state = domain.State.init(self.allocator),
+            .observers = observer.Coordinator.init(self.allocator),
+            .requests = request_authority.Ledger.init(self.allocator, 4096),
+            .mutations = try mutation_authority.Ledger.init(self.allocator, 4096),
+            .admission = snapshot_admission.Ledger.init(self.allocator),
+            .native_owners = native_owner.Ledger.init(self.allocator),
+            .metrics = metrics,
+            .test_key = self.test_key,
+            .test_vault = self.test_vault,
+            .startup_custody_namespace = self.startup_custody_namespace,
+            .fixture_startup_vault_locked = self.fixture_startup_vault_locked,
+            .fixture_custody_stage_failure = self.fixture_custody_stage_failure,
+            .active_until = self.active_until,
+        };
+        defer {
+            if (staged.network) |client| client.deinit();
+            if (staged.db) |*db| db.close();
+            staged.release();
+        }
+        if (self.codex_runtime_root) |root| staged.codex_runtime_root = try self.allocator.dupe(u8, root);
+        staged.bootstrap() catch |err| {
+            self.startup_custody_namespace = staged.startup_custody_namespace;
+            if (staged.startup_vault_failure) |failure| self.startup_vault_failure = failure;
+            return err;
+        };
+        // Bootstrap verified the storage-owned opening witness. Retain it now,
+        // before timeout, stopping, allocation or supervisor preparation can
+        // fail; a fresh first creation must thereafter retry load-only.
+        self.startup_custody_namespace = staged.startup_custody_namespace;
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        // Create the only supervisor with the final stable Engine callback.
+        const workers = try native_work.Supervisor.create(self.io, self.allocator, .{ .context = self, .signal = nativeWake });
+        errdefer workers.deinit();
+        try self.custodyDeadline();
+        if (builtin.is_test and self.fixture_custody_stage_failure == .supervisor_ready) return error.CustodyStageFailure;
+        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "qualified_native_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts" }) |name| {
+            std.mem.swap(@TypeOf(@field(self.*, name)), &@field(self.*, name), &@field(staged, name));
+        }
+        self.native_workers = workers;
+    }
+
+    /// Retain this actor's checked namespace through failed key IO. A fresh
+    /// install may first-create only while its original absence still holds;
+    /// existing custody cannot become fresh after loss or inode substitution.
+    fn inspectCustodyNamespace(self: *Engine) !StartupCustodyNamespace {
+        const directory = try paths.openPrivateRoot(self.allocator, self.state_dir, false);
+        defer _ = std.c.close(directory);
+        const held = try file_metadata.statFd(directory);
+        const database: ?file_metadata.Metadata = file_metadata.statAt(directory, "state.sqlite", std.c.AT.SYMLINK_NOFOLLOW) catch |err| switch (err) {
+            error.FileNotFound => null,
             else => return err,
         };
-        if (!existing) for ([_][]const u8{ ".authority", ".authority.lock" }) |suffix| {
-            const authority_path = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ database_path, suffix });
-            defer self.allocator.free(authority_path);
-            if (std.Io.Dir.cwd().statFile(self.io, authority_path, .{ .follow_symlinks = false })) |_| return error.RecoveryDatabaseMissing else |err| switch (err) {
-                error.FileNotFound => {},
-                else => return err,
+        if (database) |metadata| {
+            if (metadata.mode & std.c.S.IFMT != std.c.S.IFREG or metadata.uid != std.c.getuid() or metadata.mode & 0o777 != 0o600 or metadata.nlink != 1) return error.UnsafeDatabase;
+        } else {
+            for ([_][:0]const u8{ "state.sqlite.authority", "state.sqlite.authority.lock", "state.sqlite-wal", "state.sqlite-shm", "state.sqlite-journal" }) |sibling| {
+                if (file_metadata.statAt(directory, sibling.ptr, std.c.AT.SYMLINK_NOFOLLOW)) |_| return error.RecoveryDatabaseMissing else |err| switch (err) {
+                    error.FileNotFound => {},
+                    else => return err,
+                }
             }
-        };
+        }
+        return .{ .directory = .{ .dev = held.dev, .ino = held.ino }, .database = if (database) |metadata| .{ .dev = metadata.dev, .ino = metadata.ino } else null };
+    }
+
+    fn bootstrap(self: *Engine) !void {
+        try self.custodyDeadline();
+        const database_path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/state.sqlite", .{self.state_dir}, 0);
+        defer self.allocator.free(database_path);
+        const current_namespace = try self.inspectCustodyNamespace();
+        if (self.startup_custody_namespace) |retained| {
+            if (!std.meta.eql(retained, current_namespace)) return if (retained.database != null and current_namespace.database == null) error.RecoveryDatabaseMissing else error.RecoveryDatabaseChanged;
+        } else self.startup_custody_namespace = current_namespace;
+        const existing = current_namespace.database != null;
         self.root_id = if (existing) try storage.Store.readRootId(self.allocator, database_path) else try self.allocator.dupeSentinel(u8, self.instance_selection.vaultRoot(), 0);
         if (!eql(self.root_id.?, self.instance_selection.vaultRoot())) return error.InstanceCustodyMismatch;
         if (!existing) try validatePersistedAdmission(self.allocator, "{}", 0);
-        self.root_key = self.test_key orelse if (existing) try vault.Vault.loadRoot(self.root_id.?) else try vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false);
-        self.db = try storage.Store.openRootWithSnapshotValidator(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission);
+        if (!std.meta.eql(current_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
+        if (builtin.is_test and self.fixture_startup_vault_locked) {
+            self.startup_vault_failure = error.Locked;
+            return error.Locked;
+        }
+        self.root_key = (if (self.test_vault) |backend| vault.loadOrCreateForTest(backend, self.root_id.?, existing) else if (self.test_key) |key| @as(vault.VaultError!vault.Key, key) else if (existing) vault.Vault.loadRoot(self.root_id.?) else vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false)) catch |err| {
+            // Only this boundary gives errors vault provenance. Store/JSON/IO
+            // errors with the same names cannot retain startup controls.
+            // Test builds expose only VaultError here; production additionally
+            // rejects test backend use with TestOnly, which remains fatal.
+            self.startup_vault_failure = if (builtin.is_test) err else switch (err) {
+                error.Missing, error.Locked, error.Denied, error.Cancelled, error.Unavailable, error.InvalidKey, error.Conflict, error.BackendFailure, error.InvalidRoot => @errorCast(err),
+                else => null,
+            };
+            return err;
+        };
+        try self.custodyDeadline();
+        if (!std.meta.eql(current_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
+        self.db = try storage.Store.openRootExpected(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission, current_namespace);
+        const opening = try self.db.?.openingWitness();
+        const owned_namespace: StartupCustodyNamespace = .{ .directory = opening.directory, .database = opening.database };
+        if (opening.created == existing or !std.meta.eql(current_namespace.directory, opening.directory) or (existing and !std.meta.eql(current_namespace, owned_namespace)) or !std.meta.eql(owned_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
+        // Only the writer's successful O_EXCL/open witness may transition a
+        // fresh namespace to existing custody. Later staging failures retry
+        // this exact database load-only, never an appeared/replaced inode.
+        self.startup_custody_namespace = owned_namespace;
+        if (builtin.is_test and self.fixture_custody_stage_failure == .database_open) return error.CustodyStageFailure;
         var saved = try self.db.?.readSnapshot();
         defer saved.deinit();
         const parsed = try std.json.parseFromSlice(Persisted, self.allocator, saved.json, .{});
@@ -1575,8 +2437,17 @@ pub const Engine = struct {
         }
         try validatePersistedAdmission(self.allocator, saved.json, saved.revision);
         if (parsed.value.browser_attempt_authority) |attempts| self.browser_attempts = try browser_attempt.Ledger.fromSnapshot(self.allocator, attempts);
+        const restored_state = restored: {
+            if (builtin.is_test and self.fixture_custody_stage_failure == .state_allocation) {
+                var failing = std.testing.FailingAllocator.init(self.allocator, .{ .fail_index = 0 });
+                var unexpected = try domain.State.fromSnapshot(failing.allocator(), parsed.value.state);
+                unexpected.deinit();
+                return error.CustodyFixtureDidNotAllocate;
+            }
+            break :restored try domain.State.fromSnapshot(self.allocator, parsed.value.state);
+        };
         self.state.deinit();
-        self.state = try domain.State.fromSnapshot(self.allocator, parsed.value.state);
+        self.state = restored_state;
         self.revision = saved.revision;
         self.policy = parsed.value.policy;
         self.adapter_epochs = parsed.value.adapter_epochs;
@@ -1600,6 +2471,7 @@ pub const Engine = struct {
         self.native_owners.recoverAfterRestart();
         self.native_registry = parsed.value.native_registry;
         self.measured_codex_runtime = parsed.value.measured_codex_runtime;
+        if (parsed.value.qualified_native_runtime) |retained| self.qualified_native_runtime = try copyQualifiedNativeRuntime(self.allocator, retained);
         if (self.measured_codex_runtime) |selected| {
             if (selected.record.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
         }
@@ -1627,6 +2499,7 @@ pub const Engine = struct {
         // or cancellation fence rejects every possible old completion.
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
         _ = try self.snapshotUsage();
+        try self.custodyDeadline();
         try self.persist(&.{});
         self.network = try transport.Client.init(self.allocator);
         if (!builtin.is_test) {
@@ -1640,6 +2513,10 @@ pub const Engine = struct {
             try self.releaseOutcome(key);
             try self.persist(&.{});
         }
+    }
+
+    fn custodyDeadline(self: *Engine) !void {
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
     }
 
     fn captureInstallationSelection(self: *Engine) !void {
@@ -1709,7 +2586,8 @@ pub const Engine = struct {
         try self.reserveOutcome(.{ .key = credit, .owner_id = id, .provider = request.method, .plan_bytes = 1 });
         try self.persist(&.{});
         if (self.installation_refresh != null or self.installation_selection == null) {
-            const result = try setup_verification.makeRefusal(id, self.installation_refresh_generation, self.now(), if (self.installation_refresh != null) .busy else .installation_selection_required);
+            const refusal_elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+            const result = try setup_verification.makeTimedRefusal(id, self.installation_refresh_generation, self.now(), if (self.installation_refresh != null) .busy else .installation_selection_required, if (refusal_elapsed >= 0 and refusal_elapsed <= std.math.maxInt(u64)) @intCast(refusal_elapsed) else null);
             const cached = try setup_verification.serialize(allocator, result);
             defer allocator.free(cached);
             try self.mutations.complete(slot, cached);
@@ -1808,7 +2686,7 @@ pub const Engine = struct {
         if (record.state != .started or record.kind != .external or !eql(record.method[0..record.method_len], "setup.refresh") or !std.crypto.timing_safe.eql([32]u8, record.fingerprint, reference.fingerprint) or !std.meta.eql(reference.credit, creditKey(.mutation, record.id[0..record.id_len], record.expected_revision))) return error.StaleSetupVerification;
         const elapsed = reference.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
         const result = if (task.collection_error) |err| switch (err) {
-            error.Timeout => try setup_verification.makeRefusal(record.id[0..record.id_len], task.generation, task.observed_at, .collection_timed_out),
+            error.Timeout => try setup_verification.makeTimedRefusal(record.id[0..record.id_len], task.generation, task.observed_at, .collection_timed_out, if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @intCast(elapsed) else null),
             else => return err,
         } else try setup_verification.makeCompleted(record.id[0..record.id_len], task.generation, task.observed_at, onboarding.assess(self.setupSnapshot(task.result.probe, false)), if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @intCast(elapsed) else null);
         const cached = try setup_verification.serialize(self.allocator, result);
@@ -1826,9 +2704,26 @@ pub const Engine = struct {
             snapshot.artifact = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
             snapshot.service = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
         }
-        snapshot.vault = .{ .state = if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
+        snapshot.vault = .{ .state = if (self.vault_locked) switch (self.startup_vault_failure orelse error.Locked) {
+            error.Locked => .locked,
+            error.Missing, error.InvalidKey => .key_unavailable,
+            error.Denied, error.Cancelled => .access_denied,
+            error.Unavailable, error.Conflict, error.BackendFailure, error.InvalidRoot => .unavailable,
+        } else if (self.poisoned) .unknown else .ready, .freshness = if (self.vault_locked) .stale else .current, .evidence = .diagnostic };
+        // Unavailable startup has not loaded retained source/account metadata.
+        if (self.vault_locked) return snapshot;
+        // Configuration is an actor-owned fact, not native capability proof.
+        // No current installed adapter has a qualified ordinary-launch gate.
+        // Publish the actionable gap through the shared UI/CLI report without
+        // manufacturing native readiness from a catalog or fixture.
+        if (!self.poisoned) snapshot.native = .{
+            .state = if (self.installed.items.len == 0) .missing else .unverified,
+            .freshness = .current,
+            .evidence = .diagnostic,
+        };
+        const timestamp = self.now();
         var connected = false;
-        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= self.now() and (source.authorized_until == null or source.authorized_until.? > self.now())) {
+        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= timestamp and (source.authorized_until == null or source.authorized_until.? > timestamp)) {
             connected = true;
         };
         snapshot.source = .{ .state = if (connected) .ready else .missing, .freshness = .current, .evidence = .diagnostic };
@@ -1839,9 +2734,18 @@ pub const Engine = struct {
         snapshot.identity = .{ .state = if (verified) .ready else .pending, .freshness = .current, .evidence = .diagnostic };
         var usable = false;
         for (self.state.grants.items) |grant| {
-            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= self.now()) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= self.now())) continue;
+            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= timestamp) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= timestamp)) continue;
             const account = self.state.account(grant.account_id) orelse continue;
             if (!account.identity.verified or account.lifecycle != .active) continue;
+            // The grant's exact source lineage must still authorize requests.
+            // Detached sources keep independently valid non-browser grants.
+            var source_authorized = false;
+            for (self.state.sources.items) |source| if (eql(source.id, grant.source_id)) {
+                source_authorized = source.status != .disconnected and source.authorized_at <= timestamp and
+                    (source.authorized_until == null or source.authorized_until.? > timestamp);
+                break;
+            };
+            if (!source_authorized) continue;
             for (grant.purposes) |purpose| if (purpose == .request) {
                 usable = true;
             };
@@ -1874,7 +2778,33 @@ pub const Engine = struct {
     }
 
     fn persist(self: *Engine, changes: []const storage.GrantChange) !void {
+        return self.persistWithNativeFence(changes, null);
+    }
+
+    fn persistWithNativeFence(self: *Engine, changes: []const storage.GrantChange, native: ?NativeAdoptionFence) !void {
+        return self.persistWithFences(changes, native, null);
+    }
+
+    fn persistWithRuntimeFence(self: *Engine, changes: []const storage.GrantChange, runtime: *NativeRuntimeCommitTask) !void {
+        return self.persistWithFences(changes, null, runtime);
+    }
+
+    fn checkRuntimeWriterFence(self: *Engine, task: *NativeRuntimeCommitTask) !void {
+        if (self.runtime_installation != task or task.engine != self or !task.handoff_ready)
+            return error.RuntimeSelectionNotReady;
+        if (task.failure) |err| return err;
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.ServiceStopping;
+        if (!std.meta.eql(task.context.deadline, task.invocation.until)) return error.InvalidDeadline;
+        try native_source_acquisition.deadline(self.io, task.invocation.until);
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry) or
+            !std.crypto.timing_safe.eql(envelope.Key, task.context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        try finalRuntimeIdentityFence(self.io, task.context, task.prepared, task.inputs, if (task.installation) |*installed| installed else null, task.parent, task.basename);
+    }
+
+    fn persistWithFences(self: *Engine, changes: []const storage.GrantChange, native: ?NativeAdoptionFence, runtime: ?*NativeRuntimeCommitTask) !void {
         if (self.staging_mutation) {
+            if (runtime != null) return error.RuntimeSelectionNotReady;
             try self.staged_changes.appendSlice(self.allocator, changes);
             return;
         }
@@ -1897,6 +2827,11 @@ pub const Engine = struct {
         const committed_growth_bytes = try self.nonledgerBytes();
         const serialized = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
         defer self.allocator.free(serialized);
+        // Serialization and capacity work may consume the remaining lifetime.
+        // Fence native credential adoption at the actual writer call as well
+        // as before the domain mutation. Expiry does not cancel started IO.
+        if (native) |native_fence| try self.nativeImportCheck(native_fence.pending, native_fence.fresh);
+        if (runtime) |task| try self.checkRuntimeWriterFence(task);
         self.revision = self.db.?.commit(self.revision, serialized, changes) catch |err| {
             // Ambiguous storage failure fences all further credential service.
             self.poisoned = true;
@@ -1926,6 +2861,7 @@ pub const Engine = struct {
             .native_owner_authority = self.native_owners.snapshot(),
             .native_registry = self.native_registry,
             .measured_codex_runtime = self.measured_codex_runtime,
+            .qualified_native_runtime = self.qualified_native_runtime,
         };
     }
 
@@ -1993,6 +2929,13 @@ pub const Engine = struct {
             break :blk try measurements.clone(self.allocator);
         } else null;
         var ownership_transferred = false;
+        const restored_runtime: ?QualifiedNativeRuntime = if (parsed.value.qualified_native_runtime) |retained|
+            try copyQualifiedNativeRuntime(self.allocator, retained)
+        else
+            null;
+        errdefer if (!ownership_transferred) {
+            if (restored_runtime) |retained| self.allocator.free(retained.evidence);
+        };
         errdefer if (!ownership_transferred) {
             if (restored_measurements) |measurements| self.allocator.destroy(measurements);
         };
@@ -2062,6 +3005,8 @@ pub const Engine = struct {
         self.native_owners = native;
         self.native_registry = parsed.value.native_registry;
         self.measured_codex_runtime = parsed.value.measured_codex_runtime;
+        if (self.qualified_native_runtime) |retained| self.allocator.free(retained.evidence);
+        self.qualified_native_runtime = restored_runtime;
         for (self.installed.items) |item| self.allocator.free(item);
         self.installed.deinit(self.allocator);
         self.installed = installed;
@@ -2216,7 +3161,7 @@ pub const Engine = struct {
         defer request.deinit();
         // Audit refusals do not restore or rewrite the actor's committed state.
         // Production control ingress already verifies the socket's peer user.
-        if (eql(request.method, "integrations.nativeRequestAudit")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "custody.reopen")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -2229,6 +3174,9 @@ pub const Engine = struct {
         if (eql(request.method, "setup.refresh")) return self.handleRequest(allocator, request, channel);
         const kind = mutationKind(request.method) orelse return self.handleRequest(allocator, request, channel);
         if (channel != .control) return error.WrongChannel;
+        // This is daemon-local request handling, not the user's end-to-end
+        // start or a timestamp that can be subtracted after restart.
+        const lifecycle_local_start: ?std.Io.Timestamp = if (eql(request.method, "source.disconnect")) std.Io.Clock.awake.now(self.io) else null;
         const operation_id = try control.operationId(request.params);
         const expected_revision = try control.expectedRevision(request.params);
         const fingerprint = try mutationFingerprint(allocator, request.method, request.params, self.root_key);
@@ -2247,7 +3195,7 @@ pub const Engine = struct {
         if (eql(request.method, lifecycle_witness.method)) {
             // Optional timing capacity belongs to the original authority row.
             // No clock is restored or started for cached acknowledgments.
-            if (try self.mutations.tryReserveLifecycleWitness(slot)) measurement = try lifecycle_witness.Session.begin(self.io, self.mutations.snapshot().records[slot], .{
+            if (try self.mutations.tryReserveLifecycleWitness(slot)) measurement = try lifecycle_witness.Session.beginOwnedRequest(self.io, self.mutations.snapshot().records[slot], .{
                 .os = switch (builtin.os.tag) {
                     .linux => .linux,
                     .macos => .macos,
@@ -2259,7 +3207,7 @@ pub const Engine = struct {
                     else => .other,
                 },
                 .channel = if (self.instance_selection == .dev) .development else .release,
-            });
+            }, lifecycle_local_start.?);
         }
         if (kind == .external) {
             try self.preflightMutationResult(allocator, request.method, request.params);
@@ -2344,6 +3292,11 @@ pub const Engine = struct {
                 .operation_correlation = std.mem.readInt(u64, correlation[0..8], .little),
                 .phase = .remove,
                 .outcome = .success,
+                .local_elapsed_ns = if (lifecycle_local_start) |started| blk: {
+                    const elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+                    // Missing timing preserves the outcome; never invent zero.
+                    break :blk if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @as(u64, @intCast(elapsed)) else null;
+                } else null,
             }) catch |err| switch (err) {
                 error.ClockAnomaly, error.CounterSaturated => blk: {
                     if (err == error.ClockAnomaly) current.clock_anomaly = true else current.saturated = true;
@@ -2410,7 +3363,9 @@ pub const Engine = struct {
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start")) {
             const job = try std.fmt.allocPrint(allocator, "reconcile-{s}", .{try control.string(params, "source_id")});
             defer allocator.free(job);
-            try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity" });
+            if (try control.boolean(params, "include_operation_generation", false)) {
+                try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity", .operation_generation = std.math.maxInt(u64), .admitted_revision = std.math.maxInt(u64) });
+            } else try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity" });
         } else if (eql(method, "repair.start")) {
             const account = self.state.account(try control.string(params, "account_id")) orelse return error.NotFound;
             var jobs: std.ArrayList([]const u8) = .empty;
@@ -2442,15 +3397,24 @@ pub const Engine = struct {
         // retained label/provider fields and fixed generated handles are prepaid.
         const input_bytes = try snapshot_admission.countJson(params, storage.maximum_snapshot_bytes);
         if (eql(method, "source.connect")) {
+            const selected_native = control.get(params, "selected_native_context") != null;
+            if (selected_native) _ = try native_source_acquisition.controlSelection(params);
             var path_bytes: usize = 0;
             const source_path: []const u8 = (try control.optionalString(params, "source_path")) orelse "";
-            if (source_path.len == 0 and eql(try control.string(params, "kind"), "native_store") and eql(try control.string(params, "provider"), "codex")) {
+            if (!selected_native and source_path.len == 0 and eql(try control.string(params, "kind"), "native_store") and eql(try control.string(params, "provider"), "codex")) {
                 const home = if (std.c.getenv("CODEX_HOME")) |value| std.mem.span(value) else std.mem.span(std.c.getenv("HOME") orelse return error.MissingHome);
                 path_bytes = try snapshot_admission.countJson(home, storage.maximum_snapshot_bytes);
             }
             const handle: [64]u8 = @splat('a');
+            const native_job_id: [74]u8 = @splat('a');
+            const native_job_bytes = if (selected_native) (try snapshot_admission.countJson(domain.Job{
+                .id = &native_job_id,
+                .kind = .enrollment,
+                .status = .completed,
+                .operation_generation = std.math.maxInt(u64),
+            }, storage.maximum_snapshot_bytes)) + 1 else 0;
             const fixed = try snapshot_admission.countJson(domain.Source{ .id = &handle, .kind = .native_store, .provider = "github", .authorized_at = std.math.maxInt(i64), .authorized_until = std.math.minInt(i64) }, storage.maximum_snapshot_bytes);
-            return .{ .bytes = try std.math.add(usize, try std.math.mul(usize, input_bytes, 2), path_bytes + fixed + (try snapshot_admission.countJson(SourceDescription{ .source_id = &handle, .provider = "github", .path = "/.codex/auth.json" }, storage.maximum_snapshot_bytes)) + (try snapshot_admission.countJson(ImportSourceAuthority{ .source_id = @constCast(&handle), .generation = std.math.maxInt(u64) }, storage.maximum_snapshot_bytes))), .slots = .{ .sources = 1, .source_descriptions = 1 } };
+            return .{ .bytes = try std.math.add(usize, try std.math.mul(usize, input_bytes, 2), path_bytes + fixed + native_job_bytes + (if (selected_native) native_source_description_budget else 0) + (try snapshot_admission.countJson(SourceDescription{ .source_id = &handle, .provider = "github", .path = "/.codex/auth.json" }, storage.maximum_snapshot_bytes)) + (try snapshot_admission.countJson(ImportSourceAuthority{ .source_id = @constCast(&handle), .generation = std.math.maxInt(u64) }, storage.maximum_snapshot_bytes))), .slots = .{ .sources = 1, .source_descriptions = 1, .jobs = if (selected_native) 1 else 0 } };
         }
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start") or eql(method, "repair.start")) {
             var bytes: usize = 1;
@@ -2835,6 +3799,7 @@ pub const Engine = struct {
             if (!eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
             if (eql(method, "fixture.importStart")) {
                 const reply = try self.startImportMode(allocator, request.id, params, true);
+                if (try control.boolean(params, "include_operation_generation", false)) return reply;
                 allocator.free(reply);
                 const source_id = try control.string(params, "source_id");
                 for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and self.importJobRunning(pending)) {
@@ -2853,6 +3818,12 @@ pub const Engine = struct {
                     return control.success(allocator, request.id, .{ .operation_id = job.id, .generation = job.operation_generation });
                 };
                 return error.NotFound;
+            }
+            if (eql(method, "fixture.importEnrollmentHold")) {
+                // Actor-owned test transport hold for the ordinary control RPC;
+                // neither a production parameter nor persisted authorization.
+                self.fixture_hold_enrollment_start = true;
+                return control.success(allocator, request.id, .{ .held = true });
             }
             if (eql(method, "fixture.importComplete")) {
                 const source_id = try control.string(params, "source_id");
@@ -2966,11 +3937,16 @@ pub const Engine = struct {
         if (definition == null) return error.MethodNotFound;
         if (definition.?.channel != channel and !eql(method, "system.handshake")) return error.WrongChannel;
         if (channel == .adapter and !eql(method, "system.handshake")) _ = try self.authenticate(params);
+        if (eql(method, "custody.reopen")) {
+            if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
+            if (self.poisoned) return error.RepairRequired;
+            return control.success(allocator, request.id, .{ .reopened = false, .custody_available = true, .metadata_loaded = true, .account_count = self.state.accounts.items.len, .provider_request_initiated = false, .live_handoff_proven = false });
+        }
         if (eql(method, "system.handshake")) return control.success(allocator, request.id, .{
             .protocol_version = control.protocol_version,
             .service = "omuxd",
             .channel = @tagName(channel),
-            .capabilities = .{ .native_launch = true, .credential_free_control = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false },
+            .capabilities = .{ .native_launch = true, .credential_free_control = true, .custody_reopen = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true },
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);
@@ -3046,6 +4022,8 @@ pub const Engine = struct {
                 .protocol_version = control.protocol_version,
                 .revision = self.revision,
                 .custody_available = !self.poisoned,
+                .metadata_loaded = true,
+                .account_count = self.state.accounts.items.len,
                 .status = if (self.poisoned) "repair_required" else "ready",
                 .metrics_available = !metric_failure,
                 .live_handoff_proven = false,
@@ -3068,23 +4046,38 @@ pub const Engine = struct {
                 },
             });
         }
-        if (eql(method, "reliability.lifecycle")) return control.success(allocator, request.id, .{
-            .source_disconnect_timing = try lifecycle_source.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
-            .native_removal_timing = try native_removal_timing.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
-            .setup_verification = try setup_verification.summarize(allocator, self.mutations.snapshot(), self.now()),
-            .terminal_adapter_setup = try terminal_adapter_setup.summarize(allocator, self.mutations.snapshot()),
-            .terminal_removal = try terminal_removal.summarize(allocator, self.mutations.snapshot()),
-            .schema_version = 1,
-            .measurements = self.lifecycle_measurements,
-            .scope = "terminal_source_removal_native_import_and_authorized_browser_refusal",
-            .coverage = if (self.lifecycle_measurements == null) "unmeasured" else "partial",
-            .latency = "partial_native_import_admission_to_terminal",
-            .import_latency_scope = "admission_to_terminal_before_commit_process_local",
-            .browser_refusal_timing = "unknown",
-            .browser_refusal_coverage = if (self.browser_attempts == null or self.lifecycle_measurements == null) "recorder_unavailable" else if (self.browser_attempts.?.count == browser_attempt.max_records) "authority_capacity_exhausted" else "partial_authorized_context_ingress",
-            .browser_refusal_authority = .{ .capacity = browser_attempt.max_records, .retained = if (self.browser_attempts) |ledger| ledger.count else 0, .retirement_supported = false },
-            .achieved_slo = false,
-        });
+        if (eql(method, "reliability.lifecycle")) {
+            // A failed final store commit can leave prepared facts in memory.
+            // Raw diagnostics remain visible; no durable outcome projection is
+            // authorized until the committed custody state is trustworthy.
+            const phase_export: reliability.LifecyclePhaseExport = if (self.poisoned)
+                .{ .phases = null, .unavailable_reason = .custody_unavailable }
+            else
+                reliability.lifecycleExport(self.lifecycle_measurements, self.now());
+            return control.success(allocator, request.id, .{
+                .source_disconnect_timing = try lifecycle_source.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
+                .native_removal_timing = try native_removal_timing.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
+                .setup_verification = try setup_verification.summarize(allocator, self.mutations.snapshot(), self.now()),
+                .terminal_adapter_setup = try terminal_adapter_setup.summarize(allocator, self.mutations.snapshot()),
+                .terminal_removal = try terminal_removal.summarize(allocator, self.mutations.snapshot()),
+                .schema_version = 1,
+                .measurements = self.lifecycle_measurements,
+                .phase_outcomes = phase_export.phases,
+                .phase_outcomes_unavailable_reason = phase_export.unavailable_reason,
+                .source_detachment_local_latency_scope = "daemon_request_to_terminal_before_snapshot_commit",
+                .user_end_to_end_elapsed_measured = false,
+                .supported_demand_readiness_coverage_measured = false,
+                .unobserved_success_phases = .{ "install_and_activate", "adopted_renewal", "ordinary_native_launch_resume", "owned_update_activation" },
+                .scope = "terminal_source_removal_native_import_and_authorized_browser_refusal",
+                .coverage = if (self.lifecycle_measurements == null) "unmeasured" else "partial",
+                .latency = "partial_native_import_admission_to_terminal",
+                .import_latency_scope = "admission_to_terminal_before_commit_process_local",
+                .browser_refusal_timing = "unknown",
+                .browser_refusal_coverage = if (self.browser_attempts == null or self.lifecycle_measurements == null) "recorder_unavailable" else if (self.browser_attempts.?.count == browser_attempt.max_records) "authority_capacity_exhausted" else "partial_authorized_context_ingress",
+                .browser_refusal_authority = .{ .capacity = browser_attempt.max_records, .retained = if (self.browser_attempts) |ledger| ledger.count else 0, .retirement_supported = false },
+                .achieved_slo = false,
+            });
+        }
         if (eql(method, "reliability.export")) {
             self.metrics_mutex.lockUncancelable(self.io);
             defer self.metrics_mutex.unlock(self.io);
@@ -3107,6 +4100,9 @@ pub const Engine = struct {
             return control.success(allocator, request.id, self.policy);
         }
         if (eql(method, "source.connect")) {
+            // Selected native contexts require the supervised authenticated
+            // descriptor path. Never reinterpret them as daemon-default auth.
+            if (control.get(params, "selected_native_context") != null) return error.NativeSourceSupervisionRequired;
             const kind_name = try control.string(params, "kind");
             const kind = std.meta.stringToEnum(domain.SourceKind, kind_name) orelse return error.InvalidParams;
             const provider = try control.string(params, "provider");
@@ -3138,8 +4134,16 @@ pub const Engine = struct {
         }
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start")) {
             const source_id = try control.string(params, "source_id");
-            const operation = try self.reconcileSource(source_id);
-            return control.success(allocator, request.id, .{ .operation_id = operation, .status = if (operation != null) "verifying_identity" else "reconciled" });
+            // Parse before reconciliation can perform external I/O. Generation
+            // is the admitted persisted job, never inferred from a later snapshot.
+            const include_generation = try control.boolean(params, "include_operation_generation", false);
+            // Only a newly admitted explicit enrollment may fence stranded
+            // import ownership. Mutation replay returns before this dispatch.
+            const operation = if (eql(method, "enrollment.start"))
+                try self.reconcileSourceAuthorization(source_id, builtin.is_test and self.fixture_hold_enrollment_start, true)
+            else
+                try self.reconcileSource(source_id);
+            return self.sourceReconcileReply(allocator, request.id, operation, include_generation);
         }
         if (eql(method, "repair.start")) {
             const account_id = try control.string(params, "account_id");
@@ -3261,16 +4265,17 @@ pub const Engine = struct {
     }
 
     fn publicSnapshot(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value) ![]u8 {
-        const AccountView = struct { id: []const u8, label: []const u8, account_type: []const u8, lifecycle: domain.AccountLifecycle, identity: struct { provider: []const u8 }, source_ids: []const []const u8 };
-        const accounts = try allocator.alloc(AccountView, self.state.accounts.items.len);
+        const accounts = try allocator.alloc(PublicAccountView, self.state.accounts.items.len);
         defer allocator.free(accounts);
-        for (self.state.accounts.items, accounts) |account, *view| view.* = .{
-            .id = account.id,
-            .label = account.label,
-            .account_type = account.account_type,
-            .lifecycle = account.lifecycle,
-            .identity = .{ .provider = account.identity.provider },
-            .source_ids = account.source_ids,
+        for (self.state.accounts.items, accounts) |account, *view| view.* = publicAccountView(account);
+        const PublicDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8, path: []const u8 };
+        const descriptions = try allocator.alloc(PublicDescription, self.descriptions.items.len);
+        defer allocator.free(descriptions);
+        for (self.descriptions.items, descriptions) |description, *view| view.* = .{
+            .source_id = description.source_id,
+            .provider = description.provider,
+            .label = description.label,
+            .path = description.path,
         };
         const Capacity = struct { provider: []const u8, issuer: []const u8, complete: bool, resource: domain.Resource, window_start: i64, window_end: i64, remaining: f64, limit: ?f64, buckets: usize, unknown_buckets: usize };
         var capacities: std.ArrayList(Capacity) = .empty;
@@ -3293,7 +4298,7 @@ pub const Engine = struct {
             .custody_available = !self.poisoned,
             .accounts = accounts,
             .sources = self.state.sources.items,
-            .source_descriptions = self.descriptions.items,
+            .source_descriptions = descriptions,
             .grants = self.state.grants.items,
             .leases = self.state.leases.items,
             .bindings = self.state.bindings.items,
@@ -3593,10 +4598,10 @@ pub const Engine = struct {
     }
 
     fn queueImport(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool) ![]const u8 {
-        return self.queueImportMode(source_id, provider, token, label, expires_at, custody_expires_at, provider_account_id, credential_kind, allow_reenrollment, false, false);
+        return self.queueImportMode(source_id, provider, token, label, expires_at, custody_expires_at, provider_account_id, credential_kind, allow_reenrollment, false, false, null);
     }
 
-    fn queueImportMode(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool, fixture_hold: bool, explicit_authorization: bool) ![]const u8 {
+    fn queueImportMode(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool, fixture_hold: bool, explicit_authorization: bool, native: ?NativeImportOwnership) ![]const u8 {
         if (fixture_hold and !builtin.is_test) return error.TestOnly;
         if (!eql(provider, "github") and !eql(provider, "codex")) return error.NeedsProviderAdapterProof;
         if (credential_kind != .oauth_access and credential_kind != .api_key) return error.UnsupportedCredentialKind;
@@ -3611,10 +4616,23 @@ pub const Engine = struct {
         };
         if (!authorized) return error.SourceUnauthorized;
         const source_generation = try self.importSourceGeneration(source_id);
-        for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and pending.source_generation == source_generation and self.importJobRunning(pending) and (!allow_reenrollment or pending.allow_reenrollment) and (!pending.allow_reenrollment or pending.forget_epoch == self.import_forget_epoch)) return pending.job_id;
+        for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and pending.source_generation == source_generation and self.importJobRunning(pending) and (!allow_reenrollment or pending.allow_reenrollment) and (!pending.allow_reenrollment or pending.forget_epoch == self.import_forget_epoch)) {
+            if (native != null or pending.native_admission != null) return error.NativeSourceOperationPending;
+            return pending.job_id;
+        };
         const random_id = try self.identifier();
         var pending: PendingImport = .{ .network_id = 0, .source_id = try self.allocator.dupe(u8, source_id), .provider = undefined, .credential_kind = credential_kind, .allow_reenrollment = allow_reenrollment, .source_generation = source_generation, .forget_epoch = self.import_forget_epoch, .job_id = undefined, .credit_key = undefined, .token = undefined, .label = undefined, .expires_at = expires_at, .custody_expires_at = custody_expires_at };
         errdefer self.allocator.free(pending.source_id);
+        if (native) |scope| {
+            if (scope.admission.source_generation != source_generation or scope.admission.forget_epoch != self.import_forget_epoch) return error.NativeSourceSuperseded;
+            const expected_id = std.fmt.bytesToHex(scope.admission.source_id, .lower);
+            if (!eql(source_id, &expected_id)) return error.NativeSourceSuperseded;
+            pending.native_admission = scope.admission;
+            pending.native_started_at = scope.started_at;
+            pending.native_selection_digest = scope.selection_digest;
+            pending.native_operation = scope.operation;
+            pending.native_context = scope.context;
+        }
         pending.provider = try self.allocator.dupe(u8, provider);
         errdefer self.allocator.free(pending.provider);
         pending.job_id = try std.fmt.allocPrint(self.allocator, "reconcile-{s}", .{source_id});
@@ -3663,6 +4681,11 @@ pub const Engine = struct {
         pending.measurement_started_at = std.Io.Clock.awake.now(self.io);
         // Persist admission intent before issuing an authenticated read.
         try self.persist(&.{});
+        if (native) |scope| self.nativeImportCheck(pending, scope.fresh) catch |err| {
+            try self.failImportJobCause(pending, diagnosticCause(err));
+            try self.persist(&.{});
+            return err;
+        };
         pending.network_id = if (fixture_hold) 0 else self.submitIdentity(provider, source_id, &random_id, token, provider_account_id) catch |err| {
             try self.failImportJobCause(pending, diagnosticCause(err));
             try self.persist(&.{});
@@ -3685,6 +4708,7 @@ pub const Engine = struct {
     }
 
     fn startImportMode(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value, fixture_hold: bool) ![]u8 {
+        const include_generation = try control.boolean(params, "include_operation_generation", false);
         if (!eql(try control.string(params, "application"), "enrollment")) return error.WrongPurpose;
         const provider = try control.string(params, "provider");
         const kind = if (try control.optionalString(params, "credential_kind")) |name| std.meta.stringToEnum(domain.CredentialKind, name) orelse return error.UnsupportedCredentialKind else if (eql(provider, "github")) domain.CredentialKind.api_key else domain.CredentialKind.oauth_access;
@@ -3700,8 +4724,29 @@ pub const Engine = struct {
             .integer => value.integer,
             else => return error.InvalidParams,
         } else null;
-        const operation = try self.queueImportMode(try control.string(params, "source_id"), provider, try control.string(params, "access_token"), (try control.optionalString(params, "label")) orelse "", expiry, self.now() + seconds, try control.optionalString(params, "provider_account_id"), kind, try control.boolean(params, "allow_reenrollment", false), fixture_hold, true);
+        const operation = try self.queueImportMode(try control.string(params, "source_id"), provider, try control.string(params, "access_token"), (try control.optionalString(params, "label")) orelse "", expiry, self.now() + seconds, try control.optionalString(params, "provider_account_id"), kind, try control.boolean(params, "allow_reenrollment", false), fixture_hold, true, null);
+        if (include_generation) {
+            // queueImportMode persisted this exact generation before returning.
+            // Do not make the client infer generation from a later snapshot.
+            for (self.state.jobs.items) |job| if (eql(job.id, operation) and job.kind == .enrollment) {
+                return control.success(allocator, id, .{ .operation_id = operation, .status = "verifying_identity", .operation_generation = job.operation_generation, .admitted_revision = self.revision });
+            };
+            return error.NotFound;
+        }
         return control.success(allocator, id, .{ .operation_id = operation, .status = "verifying_identity" });
+    }
+
+    fn sourceReconcileReply(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, operation: ?[]const u8, include_generation: bool) ![]u8 {
+        if (include_generation) {
+            if (operation) |job_id| {
+                for (self.state.jobs.items) |job| if (eql(job.id, job_id) and job.kind == .enrollment and job.operation_generation > 0) {
+                    return control.success(allocator, id, .{ .operation_id = job.id, .status = "verifying_identity", .operation_generation = job.operation_generation, .admitted_revision = self.revision });
+                };
+                return error.NotFound;
+            }
+            return control.success(allocator, id, .{ .operation_id = operation, .status = "reconciled", .operation_generation = @as(?u64, null), .admitted_revision = self.revision });
+        }
+        return control.success(allocator, id, .{ .operation_id = operation, .status = if (operation != null) "verifying_identity" else "reconciled" });
     }
 
     fn reconcileSource(self: *Engine, source_id: []const u8) !?[]const u8 {
@@ -3709,6 +4754,10 @@ pub const Engine = struct {
     }
 
     fn reconcileSourceMode(self: *Engine, source_id: []const u8, fixture_hold: bool) !?[]const u8 {
+        return self.reconcileSourceAuthorization(source_id, fixture_hold, false);
+    }
+
+    fn reconcileSourceAuthorization(self: *Engine, source_id: []const u8, fixture_hold: bool, explicit_authorization: bool) !?[]const u8 {
         if (fixture_hold and !builtin.is_test) return error.TestOnly;
         var source_value: ?domain.Source = null;
         for (self.state.sources.items) |source| if (eql(source.id, source_id)) {
@@ -3722,6 +4771,7 @@ pub const Engine = struct {
             break;
         };
         const description = description_value orelse return error.SourcePathRequired;
+        if (description.native_authority != null) return error.NativeSourceSupervisionRequired;
         if (description.path.len == 0) return error.SourcePathRequired;
         const provider = std.meta.stringToEnum(discovery.Provider, description.provider) orelse return error.NeedsProviderAdapterProof;
         var result = try discovery.reconcile(self.io, self.allocator, .{ .source = source, .provider = provider, .path = description.path }, self.now());
@@ -3742,7 +4792,9 @@ pub const Engine = struct {
                     source = try self.connectImportSource(restored);
                     try self.persist(&.{});
                 }
-                for (self.state.grants.items) |grant| if (eql(grant.source_id, source_id) and grant.status == .ready) {
+                // Polling may reuse identical usable custody. A fresh explicit
+                // enrollment needs an admitted identity-verification generation.
+                if (!explicit_authorization) for (self.state.grants.items) |grant| if (eql(grant.source_id, source_id) and grant.status == .ready) {
                     var secret = self.db.?.loadGrant(.{ .key_id = self.root_id.?, .account_id = grant.account_id, .grant_id = grant.id, .generation = grant.generation, .purpose = "request", .scope = grant.audience }) catch continue;
                     defer secret.deinit();
                     const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, secret.bytes, .{ .allocate = .alloc_always });
@@ -3757,7 +4809,7 @@ pub const Engine = struct {
                     const same_custody_ceiling = if (grant.custody_expires_at) |retained| retained <= candidate.custody_expires_at else false;
                     if (eql(previous, candidate.access_token) and same_hint and grant.credential_kind == candidate.credential_kind and same_provider_expiry and same_custody_ceiling and (grant.custody_expires_at == null or grant.custody_expires_at.? > self.now() + 300)) return null;
                 };
-                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, false);
+                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, explicit_authorization, null);
             },
         }
     }
@@ -3883,7 +4935,16 @@ pub const Engine = struct {
                 continue;
             };
             var pending = self.pending_imports.orderedRemove(i);
-            defer pending.deinit(self.allocator);
+            var pending_owned = true;
+            defer if (pending_owned) pending.deinit(self.allocator);
+            if (pending.native_context != null) {
+                self.queueNativeImport(pending, completion) catch |err| {
+                    try self.failImport(pending, diagnosticCause(err));
+                    continue;
+                };
+                pending_owned = false;
+                continue;
+            }
             self.finishImport(pending, completion) catch |err| {
                 try self.failImport(pending, diagnosticCause(err));
             };
@@ -3899,7 +4960,100 @@ pub const Engine = struct {
         try self.persist(&.{});
     }
 
+    fn queueNativeImport(self: *Engine, pending: PendingImport, completion: transport.Completion) !void {
+        if (self.stopping or self.poisoned) return error.ServiceStopping;
+        if (self.native_import_tasks.items.len >= 16) return error.ServiceBusy;
+        try self.native_import_tasks.ensureUnusedCapacity(self.allocator, 1);
+        const task = try self.allocator.create(NativeImportTask);
+        errdefer self.allocator.destroy(task);
+        var copied = completion;
+        copied.owner = null;
+        switch (completion.result) {
+            .response => |response| copied.result = .{ .response = .{ .status = response.status, .streaming = response.streaming, .body = try self.allocator.dupe(u8, response.body) } },
+            .failure => {},
+        }
+        errdefer copied.deinit(self.allocator);
+        task.* = .{ .engine = self, .pending = pending, .completion = copied, .job = undefined };
+        task.job = .{ .lane = .continuation, .context = task, .run = NativeImportTask.run };
+        try self.native_workers.?.enqueue(&task.job);
+        self.native_import_tasks.appendAssumeCapacity(task);
+    }
+
+    fn completeNativeImport(self: *Engine, task: *NativeImportTask) !void {
+        defer task.deinit();
+        if (task.failure) |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+            return;
+        }
+        if (self.stopping or self.poisoned) {
+            try self.failImport(task.pending, .other);
+            return;
+        }
+        self.finishImportChecked(task.pending, task.completion, task.fresh) catch |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+        };
+    }
+
     fn finishImport(self: *Engine, pending: PendingImport, completion: transport.Completion) !void {
+        if (pending.native_admission != null) return error.NativeSourceFreshCheckRequired;
+        return self.finishImportChecked(pending, completion, null);
+    }
+
+    fn nativeImportCurrent(self: *Engine, pending: PendingImport, fresh: NativeImportFresh) !native_source_consent.Current {
+        const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const source_id = std.fmt.bytesToHex(admission.source_id, .lower);
+        if (!eql(pending.source_id, &source_id) or pending.source_generation != admission.source_generation or
+            pending.forget_epoch != admission.forget_epoch) return error.NativeSourceSuperseded;
+        var description: ?SourceDescription = null;
+        for (self.descriptions.items) |item| if (eql(item.source_id, pending.source_id)) {
+            if (description != null) return error.NativeSourceAmbiguous;
+            description = item;
+        };
+        const scope = (description orelse return error.NativeSourceConsentRequired).native_authority orelse return error.NativeSourceConsentRequired;
+        if (!std.crypto.timing_safe.eql([32]u8, scope.origin, fresh.origin)) return error.NativeSourceOriginChanged;
+        if (fresh.declaration.status != .available or fresh.declaration.store_present != true or
+            fresh.declaration.credential_acquisition_authorized) return error.NativeSourceUnavailable;
+        const context = fresh.declaration.context orelse return error.NativeSourceUnavailable;
+        var generation: ?u64 = null;
+        for (self.import_sources.items) |authority| if (eql(authority.source_id, pending.source_id)) {
+            if (generation != null) return error.NativeSourceAmbiguous;
+            generation = authority.generation;
+        };
+        var source_status: ?domain.SourceStatus = null;
+        for (self.state.sources.items) |source| if (eql(source.id, pending.source_id)) {
+            if (source.kind != .native_store or !eql(source.provider, "codex")) return error.NativeSourceUnauthorized;
+            if (source.authorized_at > self.now() or (source.authorized_until != null and source.authorized_until.? <= self.now())) return error.NativeSourceUnauthorized;
+            source_status = source.status;
+        };
+        return .{ .source_id = admission.source_id, .source_generation = generation orelse return error.NativeSourceSuperseded, .status = switch (source_status orelse return error.NativeSourceUnauthorized) {
+            .connected => .connected,
+            .detached => .detached,
+            .disconnected => .disconnected,
+        }, .consent = scope.consent, .owner = .{ .id = fresh.declaration.owner_id, .nonce = fresh.declaration.native_nonce, .endpoint_generation = fresh.declaration.endpoint_generation, .witness = fresh.declaration.witness }, .context = .{ .id = context.id, .generation = context.generation }, .store_present = true, .forget_epoch = self.import_forget_epoch };
+    }
+
+    fn nativeImportCheck(self: *Engine, pending: PendingImport, fresh: NativeImportFresh) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.NativeCustodyUnavailable;
+        const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+        if (pending.native_context) |context| {
+            if (!std.crypto.timing_safe.eql(envelope.Key, context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+            if (context.epoch != self.adapter_epochs[0] or !std.meta.eql(context.registry, self.native_registry) or
+                !self.integrationInstalled("codex") or self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null)
+                return error.NativeCustodyGenerationMismatch;
+            try native_source_acquisition.deadline(self.io, context.until);
+        }
+        const selected = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+        const admitted_digest = pending.native_selection_digest orelse return error.NativeImageUnavailable;
+        if (!std.crypto.timing_safe.eql([32]u8, admitted_digest, selected.record_sha256) or
+            !std.crypto.timing_safe.eql([32]u8, admitted_digest, fresh.selection_digest)) return error.RuntimeSelectionDrift;
+        const started = pending.native_started_at orelse return error.NativeSourceDeadline;
+        const elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+        if (elapsed < 0 or elapsed > std.math.maxInt(u64)) return error.NativeSourceDeadline;
+        try native_source_consent.check(admission, try self.nativeImportCurrent(pending, fresh), self.now(), @intCast(elapsed));
+    }
+
+    fn finishImportChecked(self: *Engine, pending: PendingImport, completion: transport.Completion, native_fresh: ?NativeImportFresh) !void {
+        if (pending.native_admission != null) try self.nativeImportCheck(pending, native_fresh orelse return error.NativeSourceFreshCheckRequired) else if (native_fresh != null) return error.NativeSourceConsentRequired;
         if (completion.id != pending.network_id or !self.importJobRunning(pending)) return error.ImportSuperseded;
         var authorized = false;
         const timestamp = self.now();
@@ -3931,6 +5085,10 @@ pub const Engine = struct {
             break :blk .{ .subject = parsed.value.user_id, .tenant = parsed.value.account_id, .issuer = "https://chatgpt.com", .kind = parsed.value.plan_type, .provider_account_id = parsed.value.account_id };
         };
         const identity: domain.Identity = .{ .provider = pending.provider, .issuer = proof.issuer, .subject = proof.subject, .tenant = proof.tenant, .verified = true };
+        // No native read or provider response substitutes for the actor's
+        // current consent/source/forget authority. Fence again immediately
+        // before the first enrollment/tombstone mutation.
+        if (pending.native_admission != null) try self.nativeImportCheck(pending, native_fresh.?);
         if (pending.allow_reenrollment) try self.state.permitReenrollment(identity, pending.source_id, self.now());
         const opaque_id = try self.identifier();
         const enrollment = try self.state.enroll(.{ .account_id = &opaque_id, .source_id = pending.source_id, .identity = identity, .label = if (pending.label.len != 0) pending.label else if (eql(pending.provider, "github")) "GitHub account" else "Codex account", .account_type = proof.kind }, self.now());
@@ -3959,7 +5117,7 @@ pub const Engine = struct {
             try self.recordImportTerminal(pending, previous, job.*, .none);
         };
         try self.releaseOutcome(pending.credit_key);
-        try self.persist(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }});
+        try self.persistWithNativeFence(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }}, if (native_fresh) |fresh| .{ .pending = pending, .fresh = fresh } else null);
     }
 
     fn acquire(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
@@ -4015,7 +5173,7 @@ pub const Engine = struct {
         const grant = self.state.grant(selected.grant_id).?;
         const custody = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse return error.GrantNotReady;
         if (custody.state != .ready or custody.generation != grant.generation) return error.GrantNotReady;
-        const route_generation = if (previous) |old| old.route_generation + @as(u64, @intFromBool(!eql(old.grant_id, grant.id) or old.grant_generation != grant.generation)) else 1;
+        const route_generation = if (previous) |old| std.math.add(u64, old.route_generation, @as(u64, @intFromBool(!eql(old.grant_id, grant.id) or old.grant_generation != grant.generation))) catch return error.GenerationConflict else 1;
         if (previous == null or !selected.sticky) _ = try self.state.bind(.{ .id = binding_id, .application = application, .session_id = session_id, .account_id = grant.account_id, .grant_id = grant.id, .grant_generation = grant.generation, .route_generation = route_generation, .native_ref = native_ref });
         const handle = try self.identifier();
         var expires = self.now() + 300;
@@ -4979,6 +6137,13 @@ const NativeDiscoveryThread = struct {
     attachment_generation: []const u8,
     native_ref: ?NativeRefWire = null,
 };
+const NativeDiscoverySourceContext = struct {
+    status: @FieldType(native_probe.SourceContextDeclaration, "status"),
+    source_context_id: ?[]const u8 = null,
+    source_context_generation: ?[]const u8 = null,
+    store_present: ?bool = null,
+    credential_acquisition_authorized: bool = false,
+};
 const NativeDiscoveryOwner = struct {
     owner_id: []const u8,
     process_nonce: []const u8,
@@ -4987,6 +6152,7 @@ const NativeDiscoveryOwner = struct {
     native_version: []const u8,
     support: codex.Support,
     threads: []NativeDiscoveryThread,
+    source_context: ?NativeDiscoverySourceContext = null,
 };
 const NativeDiscoveryResult = struct {
     adapter: []const u8 = "codex",
@@ -5018,6 +6184,17 @@ fn nativeDiscoveryResult(allocator: std.mem.Allocator, task: *const NativeTask, 
             .native_version = loaded.native_version,
             .support = loaded.support,
             .threads = threads,
+        };
+        for (task.source_contexts.items) |declaration| if (std.mem.eql(u8, &declaration.owner_id, &loaded.owner_id)) {
+            if (!std.mem.eql(u8, &declaration.native_nonce, &loaded.native_nonce) or declaration.endpoint_generation != loaded.endpoint_generation or
+                !peer.sameOriginal(declaration.witness, loaded.witness) or declaration.credential_acquisition_authorized) return error.NativeSourceContextMismatch;
+            if (output.source_context != null) return error.NativeOwnerAmbiguous;
+            var metadata: NativeDiscoverySourceContext = .{ .status = declaration.status, .store_present = declaration.store_present };
+            if (declaration.context) |context| {
+                metadata.source_context_id = try allocator.dupe(u8, &std.fmt.bytesToHex(context.id, .lower));
+                metadata.source_context_generation = try std.fmt.allocPrint(allocator, "{d}", .{context.generation});
+            }
+            output.source_context = metadata;
         };
         if (loaded.support == .compatible_hook) result.hook_compatible = true;
         for (loaded.threads, threads) |input, *thread| {
@@ -5055,6 +6232,7 @@ test "native discovery bounds the combined escaped owner response rather than ea
 test "compatible native discovery mechanism does not promote live support" {
     var task: NativeTask = undefined;
     task.discovered = .empty;
+    task.source_contexts = .empty;
     defer task.discovered.deinit(std.testing.allocator);
     task.scanned_entries = 1;
     task.ignored_stale_entries = 0;
@@ -5539,6 +6717,20 @@ fn validateNativeAttribution(allocator: std.mem.Allocator, saved: Persisted, led
     }
 }
 
+fn finalRuntimeIdentityFence(io: std.Io, context: runtime_selection_producer.ActorContext, prepared: ?*const runtime_selection_writer.Prepared, inputs: ?*const runtime_deployment.OwnedInputs, installation: ?*const runtime_package_installation.OwnedInstallation, parent: std.c.fd_t, basename: ?[:0]const u8) !void {
+    try native_source_acquisition.deadline(io, context.deadline);
+    if (installation) |installed| try installed.recheck(io, context.deadline, parent, basename orelse return error.InvalidInstallationDestination);
+    if (inputs) |selected| try selected.recheckIdentity(io);
+    const selected = prepared orelse return error.InvalidRuntimeSelection;
+    try selected.recheckIdentity(io, context);
+    try native_source_acquisition.deadline(io, context.deadline);
+}
+
+fn copyQualifiedNativeRuntime(a: std.mem.Allocator, input: QualifiedNativeRuntime) !QualifiedNativeRuntime {
+    if (std.mem.allEqual(u8, &input.record_sha256, 0) or input.evidence.len == 0 or input.evidence.len > 32 * 1024) return error.InvalidRuntimeSelection;
+    return .{ .record_sha256 = input.record_sha256, .evidence = try a.dupe(u8, input.evidence), .channel = input.channel, .target = input.target, .adapter_epoch = input.adapter_epoch, .registry = input.registry };
+}
+
 fn copyDescription(allocator: std.mem.Allocator, input: SourceDescription) !SourceDescription {
     const source_id = try allocator.dupe(u8, input.source_id);
     errdefer allocator.free(source_id);
@@ -5547,7 +6739,9 @@ fn copyDescription(allocator: std.mem.Allocator, input: SourceDescription) !Sour
     const label = try allocator.dupe(u8, input.label);
     errdefer allocator.free(label);
     const path = try allocator.dupe(u8, input.path);
-    return .{ .source_id = source_id, .provider = provider, .label = label, .path = path };
+    errdefer allocator.free(path);
+    const native_endpoint = try allocator.dupe(u8, input.native_endpoint);
+    return .{ .source_id = source_id, .provider = provider, .label = label, .path = path, .native_authority = input.native_authority, .native_endpoint = native_endpoint };
 }
 
 fn freeDescription(allocator: std.mem.Allocator, input: SourceDescription) void {
@@ -5555,6 +6749,7 @@ fn freeDescription(allocator: std.mem.Allocator, input: SourceDescription) void 
     allocator.free(input.provider);
     allocator.free(input.label);
     allocator.free(input.path);
+    allocator.free(input.native_endpoint);
 }
 
 fn adapterIndex(application: []const u8) !usize {
@@ -5593,6 +6788,112 @@ fn bindingIdentityForOwner(application: []const u8, session: []const u8, externa
     var digest: [32]u8 = undefined;
     hash.final(&digest);
     return std.fmt.bytesToHex(digest, .lower);
+}
+
+test "public snapshots exclude retained native source authority and private locators" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = try allocator.dupe(u8, "/fixture/no-service"),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer {
+        current.release();
+        allocator.free(current.state_dir);
+    }
+    const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1), .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 }, .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
+    try current.addDescription(.{ .source_id = "opaque-native-source", .provider = "codex", .native_endpoint = "/fixture/private-owner.sock", .native_authority = .{ .origin = @splat(0xAB), .consent = .{
+        .id = @splat(1),
+        .generation = 1,
+        .source_id = @splat(2),
+        .source_generation = 1,
+        .owner = .{ .id = @splat(3), .nonce = @splat(4), .endpoint_generation = 1, .witness = witness },
+        .expires_at = 1,
+        .purpose = .native_access_copy_for_identity_and_request,
+        .forget_epoch = 0,
+    } } });
+    try current.addDescription(.{ .source_id = "explicit-source", .provider = "codex", .path = "/fixture/declared-legacy" });
+    const bytes = try current.publicSnapshot(allocator, .null);
+    defer allocator.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "private-owner.sock") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "native_authority") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "native_endpoint") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    const descriptions = control.get(control.get(parsed.value, "result").?, "source_descriptions").?;
+    try std.testing.expectEqual(@as(usize, 2), descriptions.array.items.len);
+    for (descriptions.array.items) |description| try std.testing.expectEqual(@as(usize, 4), description.object.count());
+    const native_path = control.get(descriptions.array.items[0], "path").?;
+    try std.testing.expect(native_path == .string);
+    try std.testing.expectEqualStrings("", native_path.string);
+    try std.testing.expectEqualStrings("/fixture/declared-legacy", try control.string(descriptions.array.items[1], "path"));
+}
+
+test "native import joins actual source lifecycle with retained consent and fresh context" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    // Threadless metadata model: no qualified image, descriptor, credential,
+    // provider request, encrypted grant adoption or normal vault is simulated.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = try allocator.dupe(u8, "/fixture/no-service"),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer {
+        current.release();
+        allocator.free(current.state_dir);
+    }
+    const source_handle: [32]u8 = @splat(2);
+    const source_id = std.fmt.bytesToHex(source_handle, .lower);
+    const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1), .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 }, .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
+    const owner: native_source_consent.Owner = .{ .id = @splat(3), .nonce = @splat(4), .endpoint_generation = 1, .witness = witness };
+    const context: native_source_consent.Context = .{ .id = @splat(5), .generation = 1 };
+    const permission: native_source_consent.Consent = .{ .id = @splat(1), .generation = 1, .source_id = source_handle, .source_generation = 1, .owner = owner, .expires_at = current.now() + 3600, .purpose = .native_access_copy_for_identity_and_request, .forget_epoch = 0 };
+    const admission: native_source_consent.Admission = .{ .source_id = source_handle, .source_generation = 1, .consent_id = permission.id, .consent_generation = 1, .owner = owner, .context = context, .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 100 };
+    _ = try current.state.connectSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+    _ = try current.importSourceGeneration(&source_id);
+    try current.addDescription(.{ .source_id = &source_id, .provider = "codex", .native_authority = .{ .origin = @splat(6), .consent = permission } });
+    var pending: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"), .credential_kind = .oauth_access, .source_generation = 1, .credit_key = undefined, .forget_epoch = 0, .job_id = @constCast(""), .token = @constCast(""), .label = @constCast(""), .expires_at = null, .native_admission = admission };
+    var fresh: NativeImportFresh = .{ .origin = @splat(6), .selection_digest = @splat(0), .declaration = .{ .owner_id = owner.id, .native_nonce = owner.nonce, .endpoint_generation = 1, .witness = witness, .status = .available, .context = .{ .id = context.id, .generation = 1 }, .store_present = true, .credential_acquisition_authorized = false } };
+    try native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0);
+    fresh.origin = @splat(7);
+    try std.testing.expectError(error.NativeSourceOriginChanged, current.nativeImportCurrent(pending, fresh));
+    fresh.origin = @splat(6);
+    fresh.declaration.context.?.generation = 2;
+    try std.testing.expectError(error.NativeSourceContextChanged, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    fresh.declaration.context.?.generation = 1;
+    pending.source_id = @constCast("different-opaque-source");
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(pending, fresh));
+    pending.source_id = @constCast(&source_id);
+    current.import_sources.items[0].generation = 2;
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    current.import_sources.items[0].generation = 1;
+    current.import_forget_epoch = 1;
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    current.import_forget_epoch = 0;
+    try current.state.detachSource(&source_id);
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    try current.state.disconnectSource(&source_id);
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
 }
 
 fn sameOptionalNativeRef(a: ?native_owner.NativeRef, b: ?native_owner.NativeRef) bool {
@@ -5716,6 +7017,698 @@ fn sameDemand(a: anytype, b: @TypeOf(a)) bool {
         for (b.scopes[0..index]) |previous| if (eql(scope, previous)) return false;
     }
     return true;
+}
+
+test "locked vault startup keeps bounded diagnostics and refuses all custody work" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, true, null);
+    defer current.deinit();
+    try std.testing.expect(current.vault_locked and current.poisoned);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    const cleared_key: envelope.Key = @splat(0);
+    try std.testing.expectEqualSlices(u8, &cleared_key, &current.root_key);
+    for ([_][]const u8{ "system.handshake", "system.health", "setup.readiness", "setup.evidence", "setup.plan" }) |method| {
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, .control);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+        if (eql(method, "system.health")) {
+            try std.testing.expectEqualStrings("vault_locked", try control.string(result, "status"));
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            try std.testing.expect(!try control.boolean(result, "metadata_loaded", true));
+            try std.testing.expectEqualStrings("unlock_platform_vault_then_reopen_custody", try control.string(result, "recovery_action"));
+            try std.testing.expect(control.get(result, "account_count").? == .null);
+        }
+        if (eql(method, "setup.readiness")) {
+            try std.testing.expect(!try control.boolean(result, "ready", true));
+            const findings = control.get(result, "findings").?.array.items;
+            try std.testing.expectEqualStrings("observation_stale", try control.string(findings[2], "reason"));
+            try std.testing.expectEqualStrings("refresh_observation", try control.string(findings[2], "action"));
+            try std.testing.expectEqualStrings("observation_unknown", try control.string(findings[3], "reason"));
+        }
+    }
+    for (control.methods) |method| {
+        if (eql(method.name, "custody.reopen") or eql(method.name, "system.handshake") or eql(method.name, "system.health") or eql(method.name, "setup.readiness") or eql(method.name, "setup.evidence") or eql(method.name, "setup.plan")) continue;
+        // Absent params is a valid envelope. An empty Zig tuple serializes
+        // as [], which the control wire contract correctly refuses first.
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 2, .method = method.name }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, method.channel);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(parsed.value, "error").?, "message"));
+    }
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":true}",
+    }) |malformed| {
+        const refusal = try current.dispatch(allocator, malformed, .control);
+        defer allocator.free(refusal);
+        var result = try std.json.parseFromSlice(std.json.Value, allocator, refusal, .{});
+        defer result.deinit();
+        const failure = control.get(result.value, "error").?;
+        try std.testing.expectEqualStrings("InvalidRequest", try control.string(failure, "message"));
+        try std.testing.expectEqual(@as(i64, -32600), control.get(failure, "code").?.integer);
+    }
+    const native_handshake = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"system.handshake\"}", .adapter);
+    defer allocator.free(native_handshake);
+    var native_result = try std.json.parseFromSlice(std.json.Value, allocator, native_handshake, .{});
+    defer native_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(native_result.value, "error").?, "message"));
+    const browser_reply = try current.dispatch(allocator, "untrusted browser payload", .browser);
+    defer allocator.free(browser_reply);
+    var browser_result = try std.json.parseFromSlice(std.json.Value, allocator, browser_reply, .{});
+    defer browser_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(browser_result.value, "error").?, "code"));
+    try std.testing.expectEqual(@as(usize, 0), current.state.sources.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectError(error.FileNotFound, directory.dir.statFile(io, "state.sqlite", .{ .follow_symlinks = false }));
+}
+
+test "locked existing custody retains its original database and key across explicit restart" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const key: envelope.Key = @splat(0x63);
+    const original = try Engine.openWithKey(io, allocator, path, key);
+    original.deinit();
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_before);
+    const locked = try Engine.createConfigured(io, allocator, path, null, .default, null, true, null);
+    try std.testing.expect(locked.vault_locked and locked.db == null);
+    locked.deinit();
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+    try std.testing.expectError(error.WrongKey, Engine.openWithKey(io, allocator, path, @splat(0x64)));
+    const reopened = try Engine.openWithKey(io, allocator, path, key);
+    defer reopened.deinit();
+    try std.testing.expect(!reopened.vault_locked and !reopened.poisoned);
+    try std.testing.expect(reopened.db != null);
+    // Synthetic supplied key only: this is not a real platform unlock proof.
+}
+
+const ReopenVaultFixture = struct {
+    mode: std.atomic.Value(u8) = .init(0),
+    loads: std.atomic.Value(usize) = .init(0),
+    creates: std.atomic.Value(usize) = .init(0),
+    allow_first_create: bool = false,
+    fn load(context: ?*anyopaque, _: [:0]const u8) vault.VaultError!vault.Key {
+        const self: *ReopenVaultFixture = @ptrCast(@alignCast(context.?));
+        _ = self.loads.fetchAdd(1, .seq_cst);
+        return switch (self.mode.load(.seq_cst)) {
+            0 => error.Locked,
+            1 => @splat(0x63),
+            2 => error.Missing,
+            3 => @splat(0x64),
+            4 => error.InvalidKey,
+            5 => error.Unavailable,
+            6 => error.Denied,
+            7 => error.Cancelled,
+            8 => error.BackendFailure,
+            9 => error.Conflict,
+            else => error.InvalidRoot,
+        };
+    }
+    fn create(context: ?*anyopaque, _: [:0]const u8) vault.VaultError!vault.Key {
+        const self: *ReopenVaultFixture = @ptrCast(@alignCast(context.?));
+        _ = self.creates.fetchAdd(1, .seq_cst);
+        if (self.allow_first_create) {
+            self.mode.store(1, .seq_cst);
+            return @splat(0x63);
+        }
+        return error.Denied;
+    }
+    fn backend(self: *ReopenVaultFixture) vault.Backend {
+        return .{ .context = self, .load_fn = load, .create_fn = create };
+    }
+};
+
+fn reopenTestReply(current: *Engine, method: []const u8, channel: Channel) !std.json.Parsed(std.json.Value) {
+    const allocator = std.testing.allocator;
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+    defer allocator.free(payload);
+    const reply = try current.dispatch(allocator, payload, channel);
+    defer allocator.free(reply);
+    return std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+}
+
+test "typed initial vault failures preserve encrypted history and reopen the same actor with the original key" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const failures = [_]struct { mode: u8, failure: vault.VaultError, reason: []const u8, action: []const u8 }{
+        .{ .mode = 2, .failure = error.Missing, .reason = "vault_key_unavailable", .action = "restore_original_vault_key" },
+        .{ .mode = 4, .failure = error.InvalidKey, .reason = "vault_key_unavailable", .action = "restore_original_vault_key" },
+        .{ .mode = 5, .failure = error.Unavailable, .reason = "vault_unavailable", .action = "restore_vault_access" },
+        .{ .mode = 6, .failure = error.Denied, .reason = "vault_access_denied", .action = "restore_vault_access" },
+        .{ .mode = 7, .failure = error.Cancelled, .reason = "vault_access_denied", .action = "restore_vault_access" },
+        .{ .mode = 8, .failure = error.BackendFailure, .reason = "vault_unavailable", .action = "restore_vault_access" },
+        .{ .mode = 9, .failure = error.Conflict, .reason = "vault_unavailable", .action = "restore_vault_access" },
+        .{ .mode = 10, .failure = error.InvalidRoot, .reason = "vault_unavailable", .action = "restore_vault_access" },
+    };
+    for (failures) |selected| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const database = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite", .{path}, 0);
+        defer allocator.free(database);
+        var model = domain.State.init(allocator);
+        defer model.deinit();
+        _ = try model.connectSource(.{ .id = "fixture-vault-source", .kind = .explicit, .provider = "github" });
+        _ = try model.enroll(.{ .account_id = "fixture-vault-account", .source_id = "fixture-vault-source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "fixture-vault-subject", .verified = true } }, 1);
+        const metadata = try std.json.Stringify.valueAlloc(allocator, Persisted{ .state = model.snapshot() }, .{});
+        defer allocator.free(metadata);
+        const context: envelope.Context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "fixture-vault-account", .grant_id = "fixture-vault-grant", .generation = 1, .purpose = "request", .scope = "fixture" };
+        const plaintext = "synthetic-vault-custody-payload";
+        {
+            var store = try storage.Store.openRootWithSnapshotValidator(io, allocator, database, context.key_id, @splat(0x63), validatePersistedAdmission);
+            defer store.close();
+            _ = try store.commit(0, metadata, &.{.{ .put = .{ .context = context, .plaintext = plaintext, .renewal_owner = .external } }});
+        }
+        const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+        defer allocator.free(before);
+        const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+        defer allocator.free(authority_before);
+        try std.testing.expect(std.mem.indexOf(u8, before, plaintext) == null);
+        var backend: ReopenVaultFixture = .{ .mode = .init(selected.mode) };
+        const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+        var live = true;
+        defer if (live) current.deinit();
+        const actor_id = current.thread.?.getHandle();
+        try std.testing.expect(current.vault_locked and current.poisoned);
+        try std.testing.expectEqual(selected.failure, current.startup_vault_failure.?);
+        try std.testing.expect(current.root_id == null and current.db == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+        const loads = backend.loads.load(.seq_cst);
+        var health = try reopenTestReply(current, "system.health", .control);
+        defer health.deinit();
+        const result = control.get(health.value, "result").?;
+        try std.testing.expectEqualStrings("vault_unavailable", try control.string(result, "status"));
+        try std.testing.expectEqualStrings(@errorName(selected.failure), try control.string(result, "custody_error"));
+        try std.testing.expectEqualStrings("existing", try control.string(result, "custody_origin"));
+        try std.testing.expectEqualStrings(Engine.vaultRecoveryAction(selected.failure), try control.string(result, "recovery_action"));
+        try std.testing.expect(control.get(result, "account_count").? == .null);
+        try std.testing.expect(!try control.boolean(result, "metadata_loaded", true));
+        try std.testing.expect(!try control.boolean(result, "custody_available", true));
+        try std.testing.expect(!try control.boolean(result, "provider_access", true));
+        var readiness = try reopenTestReply(current, "setup.readiness", .control);
+        defer readiness.deinit();
+        const report = control.get(readiness.value, "result").?;
+        const findings = control.get(report, "findings").?.array.items;
+        try std.testing.expect(!try control.boolean(report, "ready", true));
+        try std.testing.expectEqualStrings(selected.reason, try control.string(findings[2], "reason"));
+        try std.testing.expectEqualStrings(selected.action, try control.string(findings[2], "action"));
+        try std.testing.expectEqualStrings("observation_unknown", try control.string(findings[4], "reason"));
+        for ([_][]const u8{ "source.connect", "accounts.list", "integrations.launch", "undeclared.method" }) |method| {
+            var refused = try reopenTestReply(current, method, .control);
+            defer refused.deinit();
+            try std.testing.expectEqualStrings("VaultUnavailable", try control.string(control.get(refused.value, "error").?, "message"));
+        }
+        var foreign = try reopenTestReply(current, "custody.reopen", .adapter);
+        defer foreign.deinit();
+        try std.testing.expectEqualStrings("VaultUnavailable", try control.string(control.get(foreign.value, "error").?, "message"));
+        const browser_reply = try current.dispatch(allocator, "untrusted browser payload", .browser);
+        defer allocator.free(browser_reply);
+        var browser_result = try std.json.parseFromSlice(std.json.Value, allocator, browser_reply, .{});
+        defer browser_result.deinit();
+        try std.testing.expectEqualStrings("VaultUnavailable", try control.string(control.get(browser_result.value, "error").?, "code"));
+        const bad = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\",\"params\":{\"key\":\"synthetic-invalid-authority\"}}", .control);
+        defer allocator.free(bad);
+        var bad_result = try std.json.parseFromSlice(std.json.Value, allocator, bad, .{});
+        defer bad_result.deinit();
+        try std.testing.expectEqualStrings("InvalidParams", try control.string(control.get(bad_result.value, "error").?, "message"));
+        try std.testing.expectError(error.Timeout, current.dispatchUntil(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\"}", .control, .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) })));
+        try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+        var failed_retry = try reopenTestReply(current, "custody.reopen", .control);
+        defer failed_retry.deinit();
+        try std.testing.expectEqualStrings(@errorName(selected.failure), try control.string(control.get(failed_retry.value, "error").?, "message"));
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+        const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+        defer allocator.free(after);
+        const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+        defer allocator.free(authority_after);
+        try std.testing.expectEqualSlices(u8, before, after);
+        try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+        backend.mode.store(1, .seq_cst);
+        var restored = try reopenTestReply(current, "custody.reopen", .control);
+        defer restored.deinit();
+        const restored_result = control.get(restored.value, "result").?;
+        try std.testing.expect(try control.boolean(restored_result, "reopened", false));
+        try std.testing.expectEqual(@as(i64, 1), control.get(restored_result, "account_count").?.integer);
+        try std.testing.expect(!try control.boolean(restored_result, "provider_request_initiated", true));
+        try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+        try std.testing.expect(current.startup_vault_failure == null and !current.vault_locked);
+        const restored_loads = backend.loads.load(.seq_cst);
+        const workers = current.native_workers;
+        var repeated = try reopenTestReply(current, "custody.reopen", .control);
+        defer repeated.deinit();
+        try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+        try std.testing.expectEqual(restored_loads, backend.loads.load(.seq_cst));
+        try std.testing.expect(workers == current.native_workers);
+        try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+        current.deinit();
+        live = false;
+        var retained = try storage.Store.openRoot(io, allocator, database, context.key_id, @splat(0x63));
+        defer retained.close();
+        var secret = try retained.loadGrant(context);
+        defer secret.deinit();
+        try std.testing.expectEqualStrings(plaintext, secret.bytes);
+    }
+}
+
+test "fresh locked installation explicitly creates its first key once in its unchanged namespace" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{ .allow_first_create = true };
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    try std.testing.expect(current.startup_custody_namespace.?.database == null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    const actor_id = current.thread.?.getHandle();
+    backend.mode.store(2, .seq_cst);
+    var first = try reopenTestReply(current, "custody.reopen", .control);
+    defer first.deinit();
+    try std.testing.expect(try control.boolean(control.get(first.value, "result").?, "reopened", false));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    const loads = backend.loads.load(.seq_cst);
+    var repeated = try reopenTestReply(current, "custody.reopen", .control);
+    defer repeated.deinit();
+    try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+}
+
+test "fresh first key creation survives later staged failure then retries its own database load-only" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{ .allow_first_create = true };
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const actor_id = current.thread.?.getHandle();
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .database_open;
+    current.mutex.unlock(io);
+    backend.mode.store(2, .seq_cst);
+    var failed = try reopenTestReply(current, "custody.reopen", .control);
+    defer failed.deinit();
+    try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(failed.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expect(current.startup_custody_namespace.?.database != null);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_before);
+    // Missing original first key must not become another creation attempt.
+    backend.mode.store(2, .seq_cst);
+    var missing = try reopenTestReply(current, "custody.reopen", .control);
+    defer missing.deinit();
+    try std.testing.expectEqualStrings("Missing", try control.string(control.get(missing.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .supervisor_ready;
+    current.mutex.unlock(io);
+    backend.mode.store(1, .seq_cst);
+    var late = try reopenTestReply(current, "custody.reopen", .control);
+    defer late.deinit();
+    try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(late.value, "error").?, "message"));
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    try std.testing.expect(try control.boolean(control.get(reopened.value, "result").?, "reopened", false));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+}
+
+test "fresh first creation retains its own database when supervisor preparation is the first failed stage" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{ .allow_first_create = true };
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const actor_id = current.thread.?.getHandle();
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .supervisor_ready;
+    current.mutex.unlock(io);
+    backend.mode.store(2, .seq_cst);
+    var failed = try reopenTestReply(current, "custody.reopen", .control);
+    defer failed.deinit();
+    try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(failed.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expect(current.startup_custody_namespace.?.database != null);
+    const owned = current.startup_custody_namespace.?;
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    // The original first key is now absent: the existing DB forbids create2.
+    backend.mode.store(2, .seq_cst);
+    var missing = try reopenTestReply(current, "custody.reopen", .control);
+    defer missing.deinit();
+    try std.testing.expectEqualStrings("Missing", try control.string(control.get(missing.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expectEqualDeep(owned, current.startup_custody_namespace.?);
+    backend.mode.store(1, .seq_cst);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    try std.testing.expect(try control.boolean(control.get(reopened.value, "result").?, "reopened", false));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    try std.testing.expectEqualDeep(owned, current.startup_custody_namespace.?);
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    const loads = backend.loads.load(.seq_cst);
+    var repeated = try reopenTestReply(current, "custody.reopen", .control);
+    defer repeated.deinit();
+    try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+}
+
+test "existing unavailable custody refuses disappearance or inode replacement before vault IO" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |replace| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+        seed.deinit();
+        const original = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+        defer allocator.free(original);
+        var backend: ReopenVaultFixture = .{ .mode = .init(6), .allow_first_create = true };
+        const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+        defer current.deinit();
+        const loads = backend.loads.load(.seq_cst);
+        try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "state.sqlite", directory.dir.handle, "original.sqlite"));
+        if (replace) {
+            try directory.dir.writeFile(io, .{ .sub_path = "state.sqlite", .data = original, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        } else {
+            try std.testing.expectEqual(@as(c_int, 0), std.c.unlinkat(directory.dir.handle, "state.sqlite.authority", 0));
+            try std.testing.expectEqual(@as(c_int, 0), std.c.unlinkat(directory.dir.handle, "state.sqlite.authority.lock", 0));
+        }
+        backend.mode.store(2, .seq_cst);
+        var refused = try reopenTestReply(current, "custody.reopen", .control);
+        defer refused.deinit();
+        try std.testing.expectEqualStrings(if (replace) "RecoveryDatabaseChanged" else "RecoveryDatabaseMissing", try control.string(control.get(refused.value, "error").?, "message"));
+        try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+        try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+        try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    }
+}
+
+test "successful vault load with a wrong database key remains a fatal database startup error" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{ .mode = .init(3) };
+    try std.testing.expectError(error.WrongKey, Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend()));
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+test "explicit custody reopen uses actual staged SQLite and preserves the actor through eventual unlock" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const actor_id = current.thread.?.getHandle();
+    var health = try reopenTestReply(current, "system.health", .control);
+    defer health.deinit();
+    try std.testing.expect(control.get(control.get(health.value, "result").?, "account_count").? == .null);
+    var refused = try reopenTestReply(current, "custody.reopen", .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("Locked", try control.string(control.get(refused.value, "error").?, "message"));
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    backend.mode.store(1, .seq_cst);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    const result = control.get(reopened.value, "result").?;
+    try std.testing.expect(try control.boolean(result, "reopened", false));
+    try std.testing.expectEqual(@as(i64, 0), control.get(result, "account_count").?.integer);
+    try std.testing.expect(!try control.boolean(result, "provider_request_initiated", true));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    const workers = current.native_workers;
+    const loads = backend.loads.load(.seq_cst);
+    var repeated = try reopenTestReply(current, "custody.reopen", .control);
+    defer repeated.deinit();
+    try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+    try std.testing.expect(workers == current.native_workers);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    var accounts = try reopenTestReply(current, "accounts.list", .control);
+    defer accounts.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(control.get(accounts.value, "result").?, "accounts").?.array.items.len);
+}
+
+test "missing corrupt and unavailable existing wrapping keys refuse without regeneration or partial adoption" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    for ([_]u8{ 2, 3, 4, 5 }) |mode| {
+        backend.mode.store(mode, .seq_cst);
+        var reply = try reopenTestReply(current, "custody.reopen", .control);
+        defer reply.deinit();
+        try std.testing.expect(control.get(reply.value, "error") != null);
+        try std.testing.expect(current.vault_locked and current.poisoned);
+        try std.testing.expect(current.root_id == null and current.db == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+        try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    }
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    backend.mode.store(1, .seq_cst);
+    var successful = try reopenTestReply(current, "custody.reopen", .control);
+    defer successful.deinit();
+    try std.testing.expect(control.get(successful.value, "result") != null);
+}
+
+test "custody reopen rejects asserted secret authority foreign channels and expired admission" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const loads = backend.loads.load(.seq_cst);
+    const bad = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\",\"params\":{\"key\":\"synthetic-public-invalid\"}}", .control);
+    defer allocator.free(bad);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bad, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("InvalidParams", try control.string(control.get(parsed.value, "error").?, "message"));
+    var foreign = try reopenTestReply(current, "custody.reopen", .adapter);
+    defer foreign.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(foreign.value, "error").?, "message"));
+    try std.testing.expectError(error.Timeout, current.dispatchUntil(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\"}", .control, .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) })));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+}
+
+test "failed custody stage closes real database and permits a clean later retry" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    backend.mode.store(1, .seq_cst);
+    for ([_]@TypeOf(current.fixture_custody_stage_failure){ .database_open, .supervisor_ready }) |fault| {
+        current.mutex.lockUncancelable(io);
+        current.fixture_custody_stage_failure = fault;
+        current.mutex.unlock(io);
+        var failed = try reopenTestReply(current, "custody.reopen", .control);
+        defer failed.deinit();
+        try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(failed.value, "error").?, "message"));
+        try std.testing.expect(current.db == null and current.root_id == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    }
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var successful = try reopenTestReply(current, "custody.reopen", .control);
+    defer successful.deinit();
+    try std.testing.expect(control.get(successful.value, "result") != null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+const ReopenCaller = struct {
+    engine: *Engine,
+    reopened: bool = false,
+    failure: ?anyerror = null,
+    fn run(self: *ReopenCaller) void {
+        self.call() catch |err| {
+            self.failure = err;
+        };
+    }
+    fn call(self: *ReopenCaller) !void {
+        var reply = try reopenTestReply(self.engine, "custody.reopen", .control);
+        defer reply.deinit();
+        const result = control.get(reply.value, "result") orelse return error.UnexpectedRpcFailure;
+        self.reopened = try control.boolean(result, "reopened", false);
+    }
+};
+
+test "concurrent explicit reopen requests adopt one custody owner and one supervisor" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const loads = backend.loads.load(.seq_cst);
+    backend.mode.store(1, .seq_cst);
+    var first: ReopenCaller = .{ .engine = current };
+    var second: ReopenCaller = .{ .engine = current };
+    const one = try std.Thread.spawn(.{}, ReopenCaller.run, .{&first});
+    const two = std.Thread.spawn(.{}, ReopenCaller.run, .{&second}) catch |err| {
+        one.join();
+        return err;
+    };
+    one.join();
+    two.join();
+    try std.testing.expect(first.failure == null and second.failure == null);
+    try std.testing.expect(first.reopened != second.reopened);
+    try std.testing.expectEqual(loads + 1, backend.loads.load(.seq_cst));
+    try std.testing.expect(current.native_workers != null and current.db != null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+test "reopened status counts genuinely retained accounts rather than treating unloaded metadata as zero" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var model = domain.State.init(allocator);
+    defer model.deinit();
+    _ = try model.connectSource(.{ .id = "fixture-count-source", .kind = .explicit, .provider = "github" });
+    _ = try model.enroll(.{ .account_id = "fixture-count-account", .source_id = "fixture-count-source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "fixture-count-subject", .verified = true } }, 1);
+    const metadata = try std.json.Stringify.valueAlloc(allocator, Persisted{ .state = model.snapshot() }, .{});
+    defer allocator.free(metadata);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    {
+        var store = try storage.Store.openRootWithSnapshotValidator(io, allocator, database, instance.Selection.default.vaultRoot(), @splat(0x63), validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, metadata, &.{});
+    }
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    var initial = try reopenTestReply(current, "system.health", .control);
+    defer initial.deinit();
+    try std.testing.expect(control.get(control.get(initial.value, "result").?, "account_count").? == .null);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .state_allocation;
+    current.mutex.unlock(io);
+    backend.mode.store(1, .seq_cst);
+    var refused = try reopenTestReply(current, "custody.reopen", .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("OutOfMemory", try control.string(control.get(refused.value, "error").?, "message"));
+    try std.testing.expect(current.vault_locked and current.db == null and current.root_id == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(reopened.value, "result").?, "account_count").?.integer);
+    var health = try reopenTestReply(current, "system.health", .control);
+    defer health.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(health.value, "result").?, "account_count").?.integer);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
 }
 
 test "snapshot maintenance float reserve covers decimal smallest subnormals" {
@@ -5860,6 +7853,155 @@ test "actor state survives restart and control cannot materialize credentials" {
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "access_token") == null);
 }
 
+test "public account identity exposes only provider and actual verification truth" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ true, false }) |verified| {
+        // Threadless DTO model reports the stored identity bit. The same
+        // projector is used by the actor's actual publicSnapshot serializer.
+        const account: domain.Account = .{
+            .id = "public-account-model",
+            .identity = .{
+                .provider = "codex",
+                .issuer = "private-issuer-model",
+                .subject = "private-subject-model",
+                .tenant = "private-tenant-model",
+                .verified = verified,
+            },
+            .source_ids = &.{"public-source-model"},
+        };
+        const raw = try std.json.Stringify.valueAlloc(allocator, publicAccountView(account), .{});
+        defer allocator.free(raw);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+        defer parsed.deinit();
+        const identity = control.get(parsed.value, "identity").?;
+        try std.testing.expectEqual(@as(usize, 2), identity.object.count());
+        try std.testing.expectEqualStrings("codex", try control.string(identity, "provider"));
+        try std.testing.expectEqual(verified, control.get(identity, "verified").?.bool);
+        for ([_][]const u8{ "issuer", "subject", "tenant" }) |field| try std.testing.expect(control.get(identity, field) == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-issuer-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-subject-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-tenant-model") == null);
+    }
+}
+
+test "setup usable authority follows its own source authorization and actual routing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    // Threadless synthetic state: direct model mutations have one owner.
+    // No actor maintenance, database, platform-vault or provider work exists.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    try std.testing.expect(current.thread == null and current.db == null and current.network == null);
+    const timestamp = current.now();
+    _ = try current.state.connectSource(.{ .id = "first-source", .kind = .native_store, .provider = "codex", .authorized_at = 0, .authorized_until = timestamp + 3600 });
+    _ = try current.state.connectSource(.{ .id = "unrelated-source", .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+    _ = try current.state.enroll(.{ .account_id = "first-account", .source_id = "first-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "fixture-subject", .verified = true } }, timestamp);
+    _ = try current.state.addGrant(.{ .id = "first-grant", .account_id = "first-account", .source_id = "first-source", .credential_kind = .oauth_access, .purposes = &.{.request}, .audience = "https://chatgpt.com", .provider_expires_at = timestamp + 7200, .custody_expires_at = timestamp + 7200, .generation = 7 });
+    const demand: domain.Demand = .{ .provider = "codex", .audience = "https://chatgpt.com", .resource = .{ .kind = "model", .target = "fixture" }, .now = timestamp };
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectEqual(@as(u64, 7), (try current.state.select(demand, null)).generation);
+    // Detachment does not revoke independent, still-authorized access authority.
+    current.state.sources.items[0].status = .detached;
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    _ = try current.state.select(demand, null);
+    // A different connected source cannot renew this grant's expired lineage.
+    current.state.sources.items[0].authorized_until = timestamp;
+    const expired = current.setupSnapshot(.{}, false);
+    try std.testing.expectEqual(onboarding.State.ready, expired.source.state);
+    try std.testing.expectEqual(onboarding.State.ready, expired.identity.state);
+    try std.testing.expectEqual(onboarding.State.missing, expired.grant.state);
+    try std.testing.expect(!onboarding.assess(expired).ready);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    // Future authorization and explicit disconnection use the same routing fence.
+    current.state.sources.items[0].authorized_at = timestamp + 3600;
+    current.state.sources.items[0].authorized_until = timestamp + 7200;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    current.state.sources.items[0].authorized_at = 0;
+    current.state.sources.items[0].status = .disconnected;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    try std.testing.expectEqual(@as(u64, 7), current.state.grants.items[0].generation);
+}
+
+test "shared setup readiness distinguishes absent configuration from unverified native capability" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    // Threadless actor-owned metadata; the production control handler runs
+    // without acquisition, native probing, database or provider work.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    const SharedReport = struct {
+        fn expect(actor: *Engine, reason: onboarding.Reason, action: onboarding.Action) !void {
+            var request = try control.parse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"setup.readiness\",\"params\":null}");
+            defer request.deinit();
+            const bytes = try actor.handleRequest(std.testing.allocator, request, .control);
+            defer std.testing.allocator.free(bytes);
+            const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{});
+            defer parsed.deinit();
+            const result = control.get(parsed.value, "result") orelse return error.MissingReadiness;
+            try std.testing.expect(!control.get(result, "ready").?.bool);
+            try std.testing.expect(!control.get(result, "seamless_handoff_proven").?.bool);
+            const findings = control.get(result, "findings").?.array.items;
+            try std.testing.expectEqual(@as(usize, 7), findings.len);
+            try std.testing.expectEqualStrings("native", try control.string(findings[6], "phase"));
+            try std.testing.expectEqualStrings(@tagName(reason), try control.string(findings[6], "reason"));
+            try std.testing.expectEqualStrings(@tagName(action), try control.string(findings[6], "action"));
+            const verified = try setup_verification.makeCompleted("native-readiness-fixture", 1, actor.now(), onboarding.assess(actor.setupSnapshot(.{}, false)), null);
+            try std.testing.expectEqual(reason, verified.phases[6].reason);
+            try std.testing.expectEqual(setup_verification.classify(reason), verified.phases[6].outcome);
+        }
+    };
+    const revision = current.revision;
+    try SharedReport.expect(&current, .missing, .install_native_adapter);
+    try current.installed.ensureUnusedCapacity(allocator, 1);
+    current.installed.appendAssumeCapacity(try allocator.dupe(u8, "codex"));
+    try SharedReport.expect(&current, .native_evidence_missing, .verify_native_capability);
+    // Untrusted or unloaded retained configuration cannot become a native fact.
+    current.poisoned = true;
+    try SharedReport.expect(&current, .observation_unknown, .refresh_observation);
+    current.poisoned = false;
+    current.vault_locked = true;
+    try SharedReport.expect(&current, .observation_unknown, .refresh_observation);
+    current.vault_locked = false;
+    try SharedReport.expect(&current, .native_evidence_missing, .verify_native_capability);
+    try std.testing.expectEqual(revision, current.revision);
+    try std.testing.expectEqual(@as(usize, 0), current.requests.records.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+    try std.testing.expect(current.thread == null and current.db == null and current.network == null);
+}
+
 test "Git route cache retires oldest idle context while preserving native and leased routes" {
     const allocator = std.testing.allocator;
     var state = domain.State.init(allocator);
@@ -5983,6 +8125,38 @@ test "external source removal counts terminal completion once and skips telemetr
         } else {
             const windows = try current.?.lifecycle_measurements.?.window(current.?.now());
             try std.testing.expectEqual(@as(u64, 1), windows[@backingInt(reliability.Phase.remove)][@backingInt(reliability.LifecycleOutcome.success)].count);
+            const cell = windows[@backingInt(reliability.Phase.remove)][@backingInt(reliability.LifecycleOutcome.success)];
+            try std.testing.expectEqual(@as(u128, 1), cell.local.timedOpportunities());
+            try std.testing.expectEqual(@as(u64, 1), cell.total.missing_latency);
+            try std.testing.expectEqual(@as(u64, 1), cell.user_provider_wait.missing_latency);
+            const summary = reliability.lifecycleSummary(windows);
+            try std.testing.expectEqual(@as(u64, 1), summary[@backingInt(reliability.Phase.remove)].successful_user_outcomes);
+            try std.testing.expect(summary[@backingInt(reliability.Phase.remove)].supported_user_demands == null);
+            // The actual endpoint must still expose its retained diagnostics
+            // when only the new derived window is unavailable.
+            const recorded_at = current.?.lifecycle_measurements.?.last_recorded_at;
+            current.?.lifecycle_measurements.?.last_recorded_at = current.?.now() + 86_400;
+            var diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", null);
+            defer diagnostic.deinit();
+            const exported = control.get(diagnostic.value, "result").?;
+            try std.testing.expect(control.get(exported, "phase_outcomes").? == .null);
+            try std.testing.expectEqualStrings("clock_anomaly", try control.string(exported, "phase_outcomes_unavailable_reason"));
+            try std.testing.expect(control.get(exported, "measurements").? == .object);
+            try std.testing.expect(control.get(exported, "source_disconnect_timing") != null);
+            try std.testing.expect(control.get(exported, "terminal_adapter_setup") != null);
+            current.?.lifecycle_measurements.?.last_recorded_at = recorded_at;
+            // Model a prepared, uncommitted outcome left after a failed final
+            // writer call. The poisoned endpoint must not call it durable.
+            try current.?.lifecycle_measurements.?.record(current.?.now(), .{ .operation_correlation = 99, .phase = .enroll, .outcome = .success });
+            current.?.poisoned = true;
+            var poisoned_diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", null);
+            defer poisoned_diagnostic.deinit();
+            const unavailable = control.get(poisoned_diagnostic.value, "result").?;
+            try std.testing.expect(control.get(unavailable, "phase_outcomes").? == .null);
+            try std.testing.expectEqualStrings("custody_unavailable", try control.string(unavailable, "phase_outcomes_unavailable_reason"));
+            try std.testing.expect(control.get(unavailable, "measurements").? == .object);
+            try std.testing.expect(control.get(unavailable, "terminal_adapter_setup") != null);
+            current.?.poisoned = false;
         }
     }
 }
@@ -6214,7 +8388,8 @@ test "identified setup refresh terminal authority replay busy uncertainty and di
     defer timeout_fact.deinit();
     try std.testing.expectEqual(setup_verification.Outcome.safe_refusal, timeout_fact.value.outcome);
     try std.testing.expectEqual(setup_verification.Refusal.collection_timed_out, timeout_fact.value.refusal.?);
-    try std.testing.expect(timeout_fact.value.elapsed_ns == null);
+    try std.testing.expectEqual(@as(u8, 2), timeout_fact.value.schema_version);
+    try std.testing.expect(timeout_fact.value.elapsed_ns != null);
     const after_timeout = try setup_verification.summarize(allocator, current.mutations.snapshot(), current.now());
     try std.testing.expectEqual(before_timeout.verification_completed, after_timeout.verification_completed);
     try std.testing.expectEqual(before_timeout.collection_timed_out_refusals + 1, after_timeout.collection_timed_out_refusals);
@@ -6276,4 +8451,428 @@ test "identified setup refresh terminal authority replay busy uncertainty and di
     try std.testing.expect((try current.mutations.lookup(failed_params.operation_id)).?.state != .completed);
     const summary_after = try setup_verification.summarize(allocator, current.mutations.snapshot(), current.now());
     try std.testing.expectEqual(summary_before.verification_completed, summary_after.verification_completed);
+}
+
+test "source enrollment generation reply stays bound to the admitted job and preserves legacy shape" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/enrollment-generation.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    // Threadless synthetic writer: the Store and all direct model mutations
+    // have the same real thread owner, as in the setup-refresh fixture above.
+    // Opening an actor would give its Store to a different owner thread.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .root_key = @splat(0x51),
+        .test_key = @splat(0x51),
+        .db = try storage.Store.open(io, allocator, database, @splat(0x51)),
+    };
+    defer {
+        current.db.?.close();
+        current.release();
+    }
+    try std.testing.expect(current.thread == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqual(std.Thread.getCurrentId(), current.db.?.owner_thread);
+    const engine = &current;
+    _ = try engine.state.putJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .running, .operation_generation = 7 });
+    try engine.persist(&.{});
+    const admitted = try engine.sourceReconcileReply(allocator, .{ .integer = 1 }, "reconcile-fixture-source", true);
+    defer allocator.free(admitted);
+    var reply = try std.json.parseFromSlice(std.json.Value, allocator, admitted, .{});
+    defer reply.deinit();
+    const result = control.get(reply.value, "result").?;
+    try std.testing.expectEqual(@as(i64, 7), control.get(result, "operation_generation").?.integer);
+    const admitted_revision = control.get(result, "admitted_revision").?.integer;
+    try std.testing.expectEqual(@as(u64, @intCast(admitted_revision)), engine.revision);
+    _ = try engine.state.putJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .completed, .operation_generation = 7 });
+    _ = try engine.state.reopenJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .running, .operation_generation = 7 });
+    try engine.persist(&.{});
+    // The immutable original result retains generation7 despite later state.
+    try std.testing.expectEqual(@as(i64, 7), control.get(result, "operation_generation").?.integer);
+    const legacy = try engine.sourceReconcileReply(allocator, .{ .integer = 2 }, "reconcile-fixture-source", false);
+    defer allocator.free(legacy);
+    var old = try std.json.parseFromSlice(std.json.Value, allocator, legacy, .{});
+    defer old.deinit();
+    try std.testing.expectEqual(@as(usize, 2), control.get(old.value, "result").?.object.count());
+    var malformed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"source_id\":\"fixture-source\",\"include_operation_generation\":1}", .{});
+    defer malformed.deinit();
+    const before = engine.revision;
+    try std.testing.expectError(error.InvalidParams, engine.preflightMutationResult(allocator, "enrollment.start", malformed.value));
+    try std.testing.expectEqual(before, engine.revision);
+    try std.testing.expectError(error.NotFound, engine.sourceReconcileReply(allocator, .{ .integer = 3 }, "missing-job", true));
+}
+
+test "native context engine joins actual hint and peer metadata without source or credential admission" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |unavailable| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, allocator, .{ .source_context_mode = if (unavailable) .unavailable else .available });
+        defer fixture.destroy();
+        const runtime = try std.fmt.allocPrintSentinel(allocator, "{s}/runtime", .{fixture.root}, 0);
+        defer allocator.free(runtime);
+        if (std.c.mkdir(runtime.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        defer std.Io.Dir.cwd().deleteTree(io, runtime) catch @panic("owned context runtime cleanup failed");
+        const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
+        defer allocator.free(registry);
+        if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        defer allocator.free(hint_path);
+        const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
+        const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .contextGeneration = "1", .ownerId = owner_hex[0..], .processNonce = nonce_hex[0..], .endpointGeneration = "1", .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
+        defer allocator.free(raw);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hint_path, .data = raw, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        var engine: Engine = undefined;
+        engine.io = io;
+        engine.allocator = allocator;
+        engine.revision = 77;
+        engine.state = domain.State.init(allocator);
+        defer engine.state.deinit();
+        engine.db = null;
+        engine.network = null;
+        var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.discover\",\"params\":{}}");
+        defer request.deinit();
+        var task: NativeTask = undefined;
+        task.engine = &engine;
+        task.request = request;
+        task.discovered = .empty;
+        defer {
+            for (task.discovered.items) |loaded| loaded.deinit(allocator);
+            task.discovered.deinit(allocator);
+        }
+        task.source_contexts = .empty;
+        defer task.source_contexts.deinit(allocator);
+        task.source_context_runtime = runtime;
+        task.scanned_entries = 0;
+        task.ignored_stale_entries = 0;
+        var budget = try native_inventory.Budget.init(io, null);
+        try task.discoverSourceContexts(&budget);
+        try std.testing.expectEqual(@as(usize, 1), task.discovered.items.len);
+        try std.testing.expectEqual(@as(usize, 1), task.source_contexts.items.len);
+        try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.state.accounts.items.len);
+        try std.testing.expectEqual(@as(u64, 77), engine.revision);
+        try std.testing.expect(engine.db == null and engine.network == null);
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        const result = try nativeDiscoveryResult(arena.allocator(), &task, null, false);
+        try std.testing.expect(!result.native_support);
+        const context = result.owners[0].source_context.?;
+        try std.testing.expect(!context.credential_acquisition_authorized);
+        if (unavailable) {
+            try std.testing.expectEqual(.unavailable, context.status);
+            try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
+        } else {
+            try std.testing.expectEqual(.available, context.status);
+            try std.testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", context.source_context_id.?);
+            try std.testing.expectEqualStrings("1", context.source_context_generation.?);
+            try std.testing.expectEqual(false, context.store_present.?);
+        }
+        const encoded = try std.json.Stringify.valueAlloc(allocator, context, .{});
+        defer allocator.free(encoded);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "auth.json") == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, fixture.home) == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "access_token") == null);
+    }
+}
+
+test "native discovery perform refuses unsafe homes and permits only absent implicit home fallback" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]u8{ 0, 1, 2, 3 }) |mode| {
+        const unavailable = false;
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, allocator, .{ .source_context_mode = if (mode == 3) .rotated_context else .available });
+        defer fixture.destroy();
+        const runtime = try std.fmt.allocPrintSentinel(allocator, "{s}/runtime", .{fixture.root}, 0);
+        defer allocator.free(runtime);
+        if (std.c.mkdir(runtime.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        defer std.Io.Dir.cwd().deleteTree(io, runtime) catch @panic("owned context runtime cleanup failed");
+        const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
+        defer allocator.free(registry);
+        if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        defer allocator.free(hint_path);
+        const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
+        const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .contextGeneration = "1", .ownerId = owner_hex[0..], .processNonce = nonce_hex[0..], .endpointGeneration = "1", .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
+        defer allocator.free(raw);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hint_path, .data = raw, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        var engine: Engine = undefined;
+        engine.io = io;
+        engine.allocator = allocator;
+        engine.revision = 77;
+        engine.state = domain.State.init(allocator);
+        defer engine.state.deinit();
+        engine.db = null;
+        engine.network = null;
+        var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.discover\",\"params\":{}}");
+        defer request.deinit();
+        var task: NativeTask = undefined;
+        task.engine = &engine;
+        task.request = request;
+        task.discovered = .empty;
+        defer {
+            for (task.discovered.items) |loaded| loaded.deinit(allocator);
+            task.discovered.deinit(allocator);
+        }
+        task.source_contexts = .empty;
+        defer task.source_contexts.deinit(allocator);
+        task.source_context_runtime = runtime;
+        task.scanned_entries = 0;
+        task.ignored_stale_entries = 0;
+        const selected = try std.fmt.allocPrintSentinel(allocator, "{s}/selected-home", .{fixture.root}, 0);
+        defer allocator.free(selected);
+        if (mode == 1) {
+            if (std.c.symlink(fixture.home.ptr, selected.ptr) != 0) return error.FixtureDirectoryFailed;
+        }
+        defer if (mode == 1) {
+            _ = std.c.unlink(selected.ptr);
+        };
+        var invocation: Invocation = undefined;
+        invocation.until = std.Io.Clock.Timestamp.fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) });
+        task.invocation = &invocation;
+        task.stage = .discovery;
+        task.endpoint = @constCast("");
+        task.discovery_options = .{ .state_dir = runtime, .home = fixture.root, .codex_home = selected, .codex_home_explicit = mode == 2, .adapter = .codex, .capability = @splat('a'), .broker_socket = "unused", .omux_version = product.version, .key = @splat(0) };
+        if (mode == 1 or mode == 2) {
+            if (mode == 1) try std.testing.expectError(error.PathOpenFailed, task.perform()) else try std.testing.expectError(error.NativeContextMissing, task.perform());
+            try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+            try std.testing.expectEqual(@as(usize, 0), task.discovered.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+            try std.testing.expectEqual(@as(u64, 77), engine.revision);
+            continue;
+        }
+        try task.perform();
+        try std.testing.expectEqual(@as(usize, 1), task.discovered.items.len);
+        try std.testing.expectEqual(@as(usize, 1), task.source_contexts.items.len);
+        try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.state.accounts.items.len);
+        try std.testing.expectEqual(@as(u64, 77), engine.revision);
+        try std.testing.expect(engine.db == null and engine.network == null);
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        const result = try nativeDiscoveryResult(arena.allocator(), &task, null, false);
+        try std.testing.expect(!result.native_support);
+        const context = result.owners[0].source_context.?;
+        try std.testing.expect(!context.credential_acquisition_authorized);
+        if (unavailable) {
+            try std.testing.expectEqual(.unavailable, context.status);
+            try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
+        } else {
+            try std.testing.expectEqual(.available, context.status);
+            try std.testing.expectEqualStrings(if (mode == 3) "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" else "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", context.source_context_id.?);
+            try std.testing.expectEqualStrings(if (mode == 3) "2" else "1", context.source_context_generation.?);
+            try std.testing.expectEqual(false, context.store_present.?);
+        }
+        const encoded = try std.json.Stringify.valueAlloc(allocator, context, .{});
+        defer allocator.free(encoded);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "auth.json") == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, fixture.home) == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "access_token") == null);
+    }
+}
+
+test "configured native installation completion rejects failures and locked custody before package IO" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var engine: Engine = undefined;
+    engine.io = io;
+    engine.allocator = allocator;
+    engine.native_deployment_selection = .{ .registered_package_root = "/model-unavailable/package", .installation_root = "/model-unavailable/native" };
+    engine.stopping = false;
+    engine.vault_locked = true;
+    engine.runtime_installation = null;
+    var invocation: Invocation = .{ .allocator = allocator, .channel = .control, .payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.install\",\"params\":{\"adapter\":\"codex\"}}", .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) }) };
+    const failed = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"FixtureRefusal\"}}");
+    defer allocator.free(failed);
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, failed));
+    const completed = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+    defer allocator.free(completed);
+    invocation.channel = .browser;
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, completed));
+    invocation.channel = .control;
+    try std.testing.expectError(error.Locked, engine.startConfiguredRuntimeInstall(&invocation, completed));
+    try std.testing.expect(engine.runtime_installation == null);
+    engine.native_deployment_selection = null;
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, completed));
+}
+
+test "actual runtime commit refuses installation namespace replacement after worker handoff" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const prefix = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(prefix);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/handoff.sqlite", .{prefix}, 0);
+    defer allocator.free(database);
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = try allocator.dupe(u8, prefix),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .root_key = @splat(73),
+        .test_key = @splat(73),
+        .db = try storage.Store.open(io, allocator, database, @splat(73)),
+    };
+    defer {
+        current.db.?.close();
+        current.release();
+        allocator.free(current.state_dir);
+    }
+    current.native_registry = .{ .phase = .installed, .transaction = @splat(1), .capability_digest = @splat(2) };
+    current.adapter_epochs[0] = 1;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(directory.dir.handle, "selected", 0o700));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(directory.dir.handle, "replacement", 0o700));
+    const selected = std.c.openat(directory.dir.handle, "selected", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+    try std.testing.expect(selected >= 0);
+    defer _ = std.c.close(selected);
+    var invocation: Invocation = .{ .allocator = allocator, .payload = "", .channel = .control, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) }) };
+    // This refusal-only model supplies real captured installation metadata, not
+    // a fabricated Prepared or producer authority. An intact name still cannot
+    // commit without genuine preparation. Replacement must fail even earlier.
+    var task: NativeRuntimeCommitTask = .{
+        .engine = &current,
+        .invocation = &invocation,
+        .candidate = null,
+        .arena = undefined,
+        .registry = current.native_registry,
+        .epoch = 1,
+        .job = undefined,
+        .handoff_ready = true,
+        .context = .{ .selection = current.instance_selection, .deadline = invocation.until, .options = .{ .state_dir = prefix, .home = prefix, .adapter = .codex, .capability = @splat('a'), .broker_socket = "fixture-unused", .omux_version = product.version, .key = @splat(73), .deadline = invocation.until } },
+        .parent = directory.dir.handle,
+        .basename = "selected",
+        .installation = .{ .directory = selected, .witness = try @import("platform/file_metadata.zig").statFd(selected), .created = true },
+    };
+    // Commit a real baseline first. The following runtime-fenced attempts run
+    // actual snapshot sizing/serialization but must never enter the DB writer.
+    try current.persist(&.{});
+    const before_revision = current.revision;
+    const before_rows = current.state.grants.items.len;
+    task.handoff_ready = false;
+    try std.testing.expectError(error.RuntimeSelectionNotReady, current.commitNativeRuntimePrepared(&task));
+    task.handoff_ready = true;
+    try std.testing.expectError(error.InvalidRuntimeSelection, current.commitNativeRuntimePrepared(&task));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "selected", directory.dir.handle, "retained"));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "replacement", directory.dir.handle, "selected"));
+    try std.testing.expectError(error.RuntimeSelectionDrift, current.commitNativeRuntimePrepared(&task));
+    current.runtime_installation = &task;
+    defer current.runtime_installation = null;
+    // This calls the actual persistence path; its fence is after admission,
+    // nonledger sizing and full JSON allocation immediately before db.commit.
+    // No fabricated Prepared is needed for a replaced-name refusal.
+    try std.testing.expectError(error.RuntimeSelectionDrift, current.persistWithRuntimeFence(&.{}, &task));
+    const expired: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    task.invocation.until = expired;
+    task.context.deadline = expired;
+    try std.testing.expectError(error.NativeSourceDeadline, current.persistWithRuntimeFence(&.{}, &task));
+    try std.testing.expect(current.qualified_native_runtime == null);
+    try std.testing.expectEqual(before_revision, current.revision);
+    try std.testing.expectEqual(before_rows, current.state.grants.items.len);
+    const fresh = std.c.openat(directory.dir.handle, "selected", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+    try std.testing.expect(fresh >= 0);
+    defer _ = std.c.close(fresh);
+    try std.testing.expect((try @import("platform/file_metadata.zig").statFd(fresh)).ino != task.installation.?.witness.ino);
+}
+
+test "actual acquisition refuses exhausted route generation before request or lease adoption" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |account_change| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const database = try std.fmt.allocPrintSentinel(allocator, "{s}/route.sqlite", .{path}, 0);
+        defer allocator.free(database);
+        var current: Engine = .{
+            .allocator = allocator,
+            .io = io,
+            .state_dir = @constCast(path),
+            .state = domain.State.init(allocator),
+            .observers = observer.Coordinator.init(allocator),
+            .requests = request_authority.Ledger.init(allocator, 4096),
+            .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+            .admission = snapshot_admission.Ledger.init(allocator),
+            .native_owners = native_owner.Ledger.init(allocator),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+            .db = try storage.Store.open(io, allocator, database, @splat(0x61)),
+        };
+        defer {
+            current.db.?.close();
+            current.release();
+        }
+        _ = try current.state.connectSource(.{ .id = "source", .kind = .explicit, .provider = "github" });
+        _ = try current.state.enroll(.{ .account_id = "account-a", .source_id = "source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "route-fixture-a", .verified = true } }, 0);
+        _ = try current.state.addGrant(.{ .id = "grant-a", .account_id = "account-a", .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = 1 });
+        const binding_id = bindingIdentityForOwner("git", "session", "session", null);
+        _ = try current.state.bind(.{ .id = &binding_id, .application = "git", .session_id = "session", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1, .route_generation = std.math.maxInt(u64) });
+        const initial = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(initial);
+        const initial_revision = try current.db.?.commit(0, initial, &.{.{ .put = .{ .context = .{ .account_id = "account-a", .grant_id = "grant-a", .generation = 1, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-initial-route-payload", .renewal_owner = .external } }});
+        const selected_account: []const u8 = if (account_change) "account-b" else "account-a";
+        const selected_grant: []const u8 = if (account_change) "grant-b" else "grant-a";
+        const generation: u64 = if (account_change) 1 else 2;
+        if (account_change) {
+            _ = try current.state.enroll(.{ .account_id = selected_account, .source_id = "source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "route-fixture-b", .verified = true } }, 0);
+            try current.state.pause("account-a", true);
+        }
+        _ = try current.state.addGrant(.{ .id = selected_grant, .account_id = selected_account, .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = generation });
+        const before = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(before);
+        const baseline_revision = try current.db.?.commit(initial_revision, before, &.{.{ .put = .{ .context = .{ .account_id = selected_account, .grant_id = selected_grant, .generation = generation, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-route-payload", .renewal_owner = .external } }});
+        const demand: domain.Demand = .{ .allowed_account_ids = &.{ "account-a", "account-b" }, .provider = "github", .audience = "https://github.com", .resource = .{ .kind = "requests" }, .now = current.now() };
+        const selected = try current.state.select(demand, &binding_id);
+        try std.testing.expectEqualStrings(selected_grant, selected.grant_id);
+        try std.testing.expect(!selected.sticky);
+        const params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"application\":\"git\",\"session_id\":\"session\",\"request_id\":\"fresh-request\",\"demand\":{\"provider\":\"github\",\"audience\":\"https://github.com\",\"resource\":{\"kind\":\"requests\"}}}", .{});
+        defer params.deinit();
+        try std.testing.expectError(error.GenerationConflict, current.acquire(allocator, .null, params.value));
+        const after = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(after);
+        try std.testing.expectEqualStrings(before, after);
+        try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+        try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
+        try std.testing.expectEqual(std.math.maxInt(u64), current.state.binding(&binding_id).?.route_generation);
+        var stored = try current.db.?.readSnapshot();
+        defer stored.deinit();
+        try std.testing.expectEqual(baseline_revision, stored.revision);
+        try std.testing.expectEqualStrings(before, stored.json);
+    }
 }

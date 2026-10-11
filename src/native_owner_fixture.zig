@@ -11,9 +11,10 @@ const paths = @import("paths.zig");
 extern "c" fn socket(domain: c_int, kind: c_int, protocol: c_int) posix.fd_t;
 extern "c" fn socketpair(domain: c_int, kind: c_int, protocol: c_int, sockets: *[2]posix.fd_t) c_int;
 
-pub const Method = enum { identify, register, unregister, announce, capabilities, threads };
+pub const Method = enum { identify, register, unregister, announce, capabilities, threads, source_context };
 pub const Mode = enum { normal, wrong_nonce, wrong_operation, wrong_owner, wrong_generation, numeric_generation, duplicate_keys, wrong_thread, false_success, protocol_v1, ambiguous_envelope, server_request, noncanonical_generation, identify_wrong_thread, oversized_packet, drop_reply, stock_capabilities, capabilities_extra, capabilities_missing, capabilities_nonboolean, native_version_oversized, threads_extra, threads_duplicate, threads_numeric_generation, threads_zero_generation, threads_oversized_packet, threads_identity_mismatch };
 pub const Options = struct {
+    source_context_mode: enum { available, rotated_context, unavailable, unavailable_nonnull, acquisition_true, acquisition_nonboolean, extra, missing, partial_null, unknown_status, wrong_owner, wrong_nonce, wrong_endpoint, wrong_context, wrong_context_generation, numeric_context_generation, duplicate_context } = .available,
     mode: Mode = .normal,
     owner_id: ?[32]u8 = null,
     process_nonce: ?[32]u8 = null,
@@ -178,7 +179,7 @@ pub const Fixture = struct {
     failed: std.atomic.Value(bool) = .init(false),
     mode_configuration: std.atomic.Value(u16) = .init(0xff00),
     announcement_engine: std.atomic.Value(usize) = .init(0),
-    counts: [6]std.atomic.Value(usize) = @splat(.init(0)),
+    counts: [7]std.atomic.Value(usize) = @splat(.init(0)),
     mutex: std.Io.Mutex = .init,
 
     pub fn create(io: std.Io, allocator: std.mem.Allocator) !*Fixture {
@@ -452,6 +453,7 @@ pub const Fixture = struct {
         const method = try control.string(request, "method");
         const params = control.get(request, "params") orelse return error.FixtureParamsMissing;
         const id = try control.string(request, "id");
+        if (std.mem.eql(u8, method, "owner/source/context")) return self.answerSourceContext(a, id, params);
         if (std.mem.eql(u8, method, "owner/capabilities") or std.mem.eql(u8, method, "owner/threads")) return self.answerReadOnly(a, method, id, params);
         const thread_id = try control.string(params, "threadId");
         const identified = std.mem.eql(u8, method, "owner/identify");
@@ -467,7 +469,7 @@ pub const Fixture = struct {
             .register => &.{ "protocolVersion", "ownerId", "processNonce", "adapterEpoch", "endpointGeneration", "threadInstanceGeneration", "attachmentGeneration", "threadId", "operationId", "brokerSocket", "capabilityPath" },
             .unregister => &.{ "protocolVersion", "ownerId", "processNonce", "adapterEpoch", "endpointGeneration", "threadInstanceGeneration", "attachmentGeneration", "threadId", "operationId" },
             .announce => &.{ "protocolVersion", "threadId", "operationId", "brokerSocket", "capabilityPath" },
-            .capabilities, .threads => unreachable, // Handled by the read-only branch above.
+            .capabilities, .threads, .source_context => unreachable, // Handled by the read-only branch above.
         };
         if (params != .object or params.object.count() != keys.len) return error.FixtureParamsInvalid;
         for (keys) |name| if (!params.object.contains(name)) return error.FixtureParamsInvalid;
@@ -541,6 +543,40 @@ pub const Fixture = struct {
         if (!identified and mode == .server_request) try root.put(a, "method", .{ .string = "fixture/server-request" });
         const encoded = try std.json.Stringify.valueAlloc(a, std.json.Value{ .object = root }, .{});
         if (!identified and mode == .duplicate_keys) return std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":\"{s}\",\"result\":{s},\"result\":{s}}}", .{ id, try std.json.Stringify.valueAlloc(a, std.json.Value{ .object = result }, .{}), try std.json.Stringify.valueAlloc(a, std.json.Value{ .object = result }, .{}) });
+        return encoded;
+    }
+
+    fn answerSourceContext(self: *Fixture, a: std.mem.Allocator, id: []const u8, params: std.json.Value) ![]u8 {
+        if (id.len != 64 or params != .object or params.object.count() != 4) return error.FixtureParamsInvalid;
+        var operation: native_owner.OperationId = undefined;
+        @memcpy(&operation, id);
+        try native_owner.validateOperation(operation);
+        for ([_][]const u8{ "protocolVersion", "ownerId", "processNonce", "endpointGeneration" }) |key| if (!params.object.contains(key)) return error.FixtureParamsInvalid;
+        const version = params.object.get("protocolVersion").?;
+        const owner_hex = std.fmt.bytesToHex(self.owner_id, .lower);
+        const nonce_hex = std.fmt.bytesToHex(self.native_nonce, .lower);
+        if (version != .integer or version.integer != 2 or !std.mem.eql(u8, try control.string(params, "ownerId"), &owner_hex) or
+            !std.mem.eql(u8, try control.string(params, "processNonce"), &nonce_hex) or try probe.parseOwnerGeneration(params.object.get("endpointGeneration").?) != self.options.endpoint_generation) return error.FixtureParamsInvalid;
+        _ = self.counts[@backingInt(Method.source_context)].fetchAdd(1, .acq_rel);
+        const mode = self.options.source_context_mode;
+        var result: std.json.ObjectMap = .empty;
+        try result.put(a, "protocolVersion", .{ .integer = 2 });
+        try result.put(a, "ownerId", .{ .string = if (mode == .wrong_owner) "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" else try a.dupe(u8, &owner_hex) });
+        try result.put(a, "processNonce", .{ .string = if (mode == .wrong_nonce) "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" else try a.dupe(u8, &nonce_hex) });
+        try result.put(a, "endpointGeneration", .{ .string = try std.fmt.allocPrint(a, "{d}", .{self.options.endpoint_generation + @as(u64, if (mode == .wrong_endpoint) 1 else 0)}) });
+        try result.put(a, "status", .{ .string = if (mode == .unavailable or mode == .unavailable_nonnull) "unavailable" else if (mode == .unknown_status) "ready" else "available" });
+        try result.put(a, "sourceContextId", if (mode == .unavailable or mode == .partial_null) .null else .{ .string = if ((mode == .wrong_context or mode == .rotated_context)) "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" else "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        try result.put(a, "sourceContextGeneration", if (mode == .unavailable) .null else if (mode == .numeric_context_generation) .{ .integer = 1 } else .{ .string = if ((mode == .wrong_context_generation or mode == .rotated_context)) "2" else "1" });
+        try result.put(a, "storePresent", if (mode == .unavailable) .null else .{ .bool = false });
+        try result.put(a, "credentialAcquisitionAuthorized", if (mode == .acquisition_nonboolean) .{ .integer = 0 } else .{ .bool = mode == .acquisition_true });
+        if (mode == .extra) try result.put(a, "authPath", .{ .string = "/synthetic/forbidden" });
+        if (mode == .missing) _ = result.swapRemove("storePresent");
+        const encoded = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = id, .result = std.json.Value{ .object = result } }, .{});
+        if (mode == .duplicate_context) {
+            const needle = "\"sourceContextId\":";
+            const at = std.mem.indexOf(u8, encoded, needle) orelse return error.FixtureParamsInvalid;
+            return std.fmt.allocPrint(a, "{s}\"sourceContextId\":null,{s}", .{ encoded[0..at], encoded[at..] });
+        }
         return encoded;
     }
 

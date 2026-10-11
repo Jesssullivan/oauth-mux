@@ -6,24 +6,32 @@ const envelope = @import("envelope.zig");
 const recovery = @import("recovery.zig");
 const file_metadata = @import("platform/file_metadata.zig");
 
+pub const FileIdentity = struct { dev: u64, ino: u64 };
+pub const OpeningExpectation = struct { directory: FileIdentity, database: ?FileIdentity };
+pub const OpeningWitness = struct { directory: FileIdentity, database: FileIdentity, created: bool };
+
 /// Private creation precedes SQLite; existing files are never repaired/truncated.
 const DatabaseFile = struct {
     allocator: std.mem.Allocator,
     directory: std.c.fd_t,
+    directory_identity: FileIdentity,
+    parent_path: [:0]u8,
     identity: file_metadata.Metadata,
     name: [:0]u8,
     path: [:0]const u8,
     existed: bool,
 
-    fn open(allocator: std.mem.Allocator, path: [:0]const u8, create: bool) !?DatabaseFile {
+    fn open(allocator: std.mem.Allocator, path: [:0]const u8, create: bool, expected_directory: ?FileIdentity) !?DatabaseFile {
         if (std.mem.eql(u8, path, ":memory:")) return null;
         const parent = try allocator.dupeSentinel(u8, std.fs.path.dirname(path) orelse ".", 0);
-        defer allocator.free(parent);
+        errdefer allocator.free(parent);
         const directory = std.c.open(parent.ptr, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
         if (directory < 0) return error.DatabaseDirectoryUnavailable;
         errdefer _ = std.c.close(directory);
         const parent_metadata = try file_metadata.statFd(directory);
         if (parent_metadata.uid != std.c.getuid() or parent_metadata.mode & 0o777 != 0o700) return error.UnsafeRecoveryDirectory;
+        // Refuse a replaced namespace before exclusive creation can touch it.
+        if (expected_directory) |expected| if (parent_metadata.dev != expected.dev or parent_metadata.ino != expected.ino) return error.DatabaseFileChanged;
         const name = try allocator.dupeSentinel(u8, std.fs.path.basename(path), 0);
         errdefer allocator.free(name);
         var existed = true;
@@ -39,12 +47,18 @@ const DatabaseFile = struct {
             if (file >= 0) _ = std.c.close(file);
         }
         const identity = if (file >= 0) try file_metadata.statFd(file) else try file_metadata.statAt(directory, name.ptr, std.c.AT.SYMLINK_NOFOLLOW);
-        const result: DatabaseFile = .{ .allocator = allocator, .directory = directory, .identity = identity, .name = name, .path = path, .existed = existed };
+        const result: DatabaseFile = .{ .allocator = allocator, .directory = directory, .directory_identity = .{ .dev = parent_metadata.dev, .ino = parent_metadata.ino }, .parent_path = parent, .identity = identity, .name = name, .path = path, .existed = existed };
         try result.recheck();
         return result;
     }
 
     fn recheck(self: DatabaseFile) !void {
+        const held_directory = try file_metadata.statFd(self.directory);
+        const resolved_directory = try file_metadata.statAt(std.c.AT.FDCWD, self.parent_path.ptr, std.c.AT.SYMLINK_NOFOLLOW);
+        for ([_]file_metadata.Metadata{ held_directory, resolved_directory }) |directory| {
+            if (directory.mode & std.c.S.IFMT != std.c.S.IFDIR or directory.uid != std.c.getuid() or directory.mode & 0o777 != 0o700) return error.UnsafeRecoveryDirectory;
+            if (directory.dev != self.directory_identity.dev or directory.ino != self.directory_identity.ino) return error.DatabaseFileChanged;
+        }
         const held = self.identity;
         const named = try file_metadata.statAt(self.directory, self.name.ptr, std.c.AT.SYMLINK_NOFOLLOW);
         const resolved = try file_metadata.statAt(std.c.AT.FDCWD, self.path.ptr, std.c.AT.SYMLINK_NOFOLLOW);
@@ -54,9 +68,16 @@ const DatabaseFile = struct {
         if (held.dev != named.dev or held.ino != named.ino or held.dev != resolved.dev or held.ino != resolved.ino) return error.DatabaseFileChanged;
     }
 
+    fn witness(self: DatabaseFile) !OpeningWitness {
+        try self.recheck();
+        const directory = try file_metadata.statFd(self.directory);
+        return .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = .{ .dev = self.identity.dev, .ino = self.identity.ino }, .created = !self.existed };
+    }
+
     fn close(self: DatabaseFile) void {
         _ = std.c.close(self.directory);
         self.allocator.free(self.name);
+        self.allocator.free(self.parent_path);
     }
 };
 
@@ -126,6 +147,7 @@ pub const Store = struct {
     key_id: []u8,
     owner_thread: std.Thread.Id,
     poisoned: bool = false,
+    opening_witness: ?OpeningWitness = null,
     authority: ?recovery.FileAuthority = null,
     checkpoint: recovery.Checkpoint = undefined,
 
@@ -137,21 +159,41 @@ pub const Store = struct {
     }
 
     pub fn openRoot(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key) !Store {
-        return openRootValidated(io, allocator, path, key_id, key, null);
+        return openRootValidated(io, allocator, path, key_id, key, null, null);
     }
 
     /// Validate an existing actor snapshot before rotation recovery can reserve
     /// independent authority or update SQLite. Fresh databases still begin with
     /// '{}'; the actor commits its new typed schema during initial bootstrap.
     pub fn openRootWithSnapshotValidator(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: SnapshotValidator) !Store {
-        return openRootValidated(io, allocator, path, key_id, key, validator);
+        return openRootValidated(io, allocator, path, key_id, key, validator, null);
     }
 
-    fn openRootValidated(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator) !Store {
+    /// Bind actor startup to its previously checked namespace before SQLite IO.
+    /// Fresh means this opening must own O_EXCL creation, never an appeared file.
+    pub fn openRootExpected(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator, expected: OpeningExpectation) !Store {
+        return openRootValidated(io, allocator, path, key_id, key, validator, expected);
+    }
+
+    /// Fixed public inode facts only; no key, grant, path or restored authority.
+    pub fn openingWitness(self: *Store) !OpeningWitness {
+        try self.assertOwner();
+        return self.opening_witness orelse error.OpeningWitnessUnavailable;
+    }
+
+    fn openRootValidated(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator, expected: ?OpeningExpectation) !Store {
         if (key_id.len == 0 or key_id.len > 128) return error.InvalidKeyIdentity;
-        const private_file = try DatabaseFile.open(allocator, path, true);
+        const private_file = try DatabaseFile.open(allocator, path, if (expected) |wanted| wanted.database == null else true, if (expected) |wanted| wanted.directory else null);
         defer if (private_file) |file| file.close();
         const existed = if (private_file) |file| file.existed else false;
+        const opening_witness: ?OpeningWitness = if (private_file) |file| try file.witness() else null;
+        if (expected) |wanted| {
+            const actual = opening_witness orelse return error.OpeningWitnessUnavailable;
+            if (!std.meta.eql(wanted.directory, actual.directory)) return error.DatabaseFileChanged;
+            if (wanted.database) |database| {
+                if (actual.created or !std.meta.eql(database, actual.database)) return error.DatabaseFileChanged;
+            } else if (!actual.created) return error.DatabaseFileChanged;
+        }
         var db: ?*c.sqlite3 = null;
         // SQLite must not recreate a removed disk name with its default mode.
         const result = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READWRITE | (if (private_file == null) c.SQLITE_OPEN_CREATE else 0) | c.SQLITE_OPEN_FULLMUTEX | c.SQLITE_OPEN_NOFOLLOW, null);
@@ -164,7 +206,7 @@ pub const Store = struct {
             _ = c.sqlite3_close(db.?);
             return err;
         };
-        var self: Store = .{ .allocator = allocator, .io = io, .db = db.?, .key = key, .key_id = owned_key_id, .owner_thread = std.Thread.getCurrentId() };
+        var self: Store = .{ .allocator = allocator, .io = io, .db = db.?, .key = key, .key_id = owned_key_id, .owner_thread = std.Thread.getCurrentId(), .opening_witness = opening_witness };
         errdefer self.close();
         if (private_file) |file| try file.recheck();
         // Legacy refusal precedes journal-mode changes as well as schema or
@@ -267,6 +309,7 @@ pub const Store = struct {
         if (version == 0) try self.exec("PRAGMA user_version=3;");
         try self.exec("COMMIT;");
         _ = try self.reconcilePendingRotations();
+        if (private_file) |file| try file.recheck();
         return self;
     }
 
@@ -293,7 +336,7 @@ pub const Store = struct {
     /// OS-vault root. No key is guessed or created for an existing database.
     /// The caller owns the returned sentinel buffer and must free it.
     pub fn readRootId(allocator: std.mem.Allocator, path: [:0]const u8) ![:0]u8 {
-        const private_file = try DatabaseFile.open(allocator, path, false);
+        const private_file = try DatabaseFile.open(allocator, path, false, null);
         defer if (private_file) |file| file.close();
         var db: ?*c.sqlite3 = null;
         const result = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READONLY | c.SQLITE_OPEN_FULLMUTEX | c.SQLITE_OPEN_NOFOLLOW, null);
@@ -1205,6 +1248,86 @@ test "same root does not authorize another installation or a divergent commit no
         store.close();
     }
     try std.testing.expectError(error.RecoveryCheckpointMismatch, Store.open(std.testing.io, allocator, first_path, key));
+}
+
+test "private opening witness rechecks the held directory against its replaced named parent" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(tmp.dir.handle, "live", 0o700));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(tmp.dir.handle, "replacement", 0o700));
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fmt.allocPrintSentinel(allocator, "{s}/live/custody.sqlite3", .{root}, 0);
+    defer allocator.free(path);
+    const file = (try DatabaseFile.open(allocator, path, true, null)).?;
+    defer file.close();
+    try std.testing.expect((try file.witness()).created);
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(tmp.dir.handle, "live", tmp.dir.handle, "retained"));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(tmp.dir.handle, "replacement", tmp.dir.handle, "live"));
+    try std.testing.expectError(error.DatabaseFileChanged, file.recheck());
+}
+
+test "expected directory substitution refuses before even a fresh empty file is created" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var original = std.testing.tmpDir(.{});
+    defer original.cleanup();
+    var replacement = std.testing.tmpDir(.{});
+    defer replacement.cleanup();
+    const original_path = try testPath(allocator, original);
+    defer allocator.free(original_path);
+    const replacement_path = try testPath(allocator, replacement);
+    defer allocator.free(replacement_path);
+    const directory = try file_metadata.statFd(original.dir.handle);
+    const expected: OpeningExpectation = .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = null };
+    try std.testing.expectError(error.DatabaseFileChanged, Store.openRootExpected(io, allocator, replacement_path, envelope.default_key_id, @splat(0x63), null, expected));
+    try std.testing.expectError(error.FileNotFound, replacement.dir.statFile(io, "custody.sqlite3", .{ .follow_symlinks = false }));
+    try std.testing.expectError(error.FileNotFound, replacement.dir.statFile(io, "custody.sqlite3.authority", .{ .follow_symlinks = false }));
+}
+
+test "expected fresh opening rejects a foreign appeared inode before SQLite or custody initialization" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    const directory = try file_metadata.statFd(tmp.dir.handle);
+    const expected: OpeningExpectation = .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = null };
+    const foreign = "foreign-appeared-file-must-stay-unmodified";
+    try tmp.dir.writeFile(io, .{ .sub_path = "custody.sqlite3", .data = foreign, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+    try std.testing.expectError(error.DatabaseFileChanged, Store.openRootExpected(io, allocator, path, envelope.default_key_id, @splat(0x63), null, expected));
+    const after = try tmp.dir.readFileAlloc(io, "custody.sqlite3", allocator, .limited(1024));
+    defer allocator.free(after);
+    try std.testing.expectEqualStrings(foreign, after);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "custody.sqlite3.authority", .{ .follow_symlinks = false }));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "custody.sqlite3-wal", .{ .follow_symlinks = false }));
+}
+
+test "opening witness proves this writer's fresh creation and later exact existing inode" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    const directory = try file_metadata.statFd(tmp.dir.handle);
+    const expected: OpeningExpectation = .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = null };
+    const owned = owned: {
+        var store = try Store.openRootExpected(io, allocator, path, envelope.default_key_id, @splat(0x63), null, expected);
+        defer store.close();
+        const witness = try store.openingWitness();
+        try std.testing.expect(witness.created);
+        try std.testing.expectEqualDeep(expected.directory, witness.directory);
+        break :owned witness;
+    };
+    var reopened = try Store.openRootExpected(io, allocator, path, envelope.default_key_id, @splat(0x63), null, .{ .directory = owned.directory, .database = owned.database });
+    defer reopened.close();
+    const witness = try reopened.openingWitness();
+    try std.testing.expect(!witness.created);
+    try std.testing.expectEqualDeep(owned.database, witness.database);
 }
 
 test "durable metadata and encrypted grants never expose tokens in database WAL or backup" {

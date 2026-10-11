@@ -427,6 +427,9 @@ def inside(args, root, expected):
         return response["result"]
 
     try:
+        # The inner private session independently revalidates all selected
+        # component/Qt bytes before starting even its owned keyring process.
+        select()
         PHASE = "private-keyring"
         keyring_process = subprocess.Popen([str(args.keyring), "--foreground", "--unlock", "--components=secrets"],
                                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -486,6 +489,7 @@ def parser():
     value.add_argument("--receipt-sha256", required=True)
     for name in ("core", "daemon", "extension"):
         value.add_argument("--" + name + "-sha256", required=True)
+    value.add_argument("--control-sha256")
     for name in ("session", "bus", "keyring"):
         value.add_argument("--" + name, type=Path, required=True)
     value.add_argument("--tool-manifest", type=Path, required=True)
@@ -493,11 +497,25 @@ def parser():
     return value
 
 
+def expected_artifacts(args):
+    """Independent input pins, never inferred from the retained receipt/current.
+
+    Omitting control preserves the historical exact three-artifact interface.
+    Selecting control requires the existing selector's complete portable Qt
+    validation before carrier creation, daemon start and each readiness RPC.
+    """
+    expected = {name:getattr(args,name+"_sha256") for name in ("core","daemon","extension")}
+    control = getattr(args,"control_sha256",None)
+    if control is not None:
+        expected["control"] = control
+    require(all(type(value) is str and generation.SHA256.fullmatch(value)
+        for value in expected.values()),"expected-artifact-digest-shape")
+    return expected
+
 def main():
     global PHASE, CHILD_PHASE, CHILD_REASON
     args = parser().parse_args()
-    expected = {name: getattr(args, name + "_sha256") for name in ("core", "daemon", "extension")}
-    require(all(generation.SHA256.fullmatch(value) for value in expected.values()), "expected-artifact-digest-shape")
+    expected = expected_artifacts(args)
     PHASE = "declared-tools"
     qualify_private_tools(args)
     if args.inside is not None:

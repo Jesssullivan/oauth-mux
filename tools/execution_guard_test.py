@@ -21,6 +21,146 @@ from execution_guard import validate_become_metadata, system_identity, selected_
 from execution_guard import await_startup
 
 
+class HomeManagerOwnedRequestModels(unittest.TestCase):
+    def test_only_exact_existing_system_dependency_vector_has_owned_retention(self):
+        import execution_guard as guard
+        from guard_dependency_profile import HOME_MANAGER_FETCH_LABEL,HOME_MANAGER_STATE,COORDINATION_DIRECTORY
+        args=SimpleNamespace(profile='dependency-prefetch',manager='system',source_commit='a'*40,
+            source_dirty='false',state_dir=HOME_MANAGER_STATE,coordination_dir=COORDINATION_DIRECTORY,reuse_owned_cache=False)
+        entry=100*10**9;deadline=entry+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+10**9):
+            self.assertTrue(guard.home_manager_owned_request(args,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline))
+            for arguments in (['run',HOME_MANAGER_FETCH_LABEL],['test',HOME_MANAGER_FETCH_LABEL,HOME_MANAGER_FETCH_LABEL],
+                    ['test',HOME_MANAGER_FETCH_LABEL,'//:docs_check'],['test',HOME_MANAGER_FETCH_LABEL,'--test_arg=x']):
+                with self.assertRaises(ValueError):guard.home_manager_owned_request(args,arguments,entry,deadline)
+            for field,value in (('manager','user'),('source_dirty','true'),('reuse_owned_cache',True),
+                    ('state_dir',Path('/other')),('coordination_dir',None),('nixpkgs_source',Path('/other'))):
+                changed=SimpleNamespace(**{**vars(args),field:value})
+                with self.assertRaises(ValueError):guard.home_manager_owned_request(changed,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline)
+            self.assertFalse(guard.home_manager_owned_request(args,['test','//tools:fetch_codex_archives_bundle'],entry,deadline))
+            args.profile='standard'
+            self.assertFalse(guard.home_manager_owned_request(args,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline))
+
+    def test_exact_original_root_work_cutoff_refuses_without_a_new_clock_or_cleanup_credit(self):
+        import execution_guard as guard
+        from guard_dependency_profile import HOME_MANAGER_FETCH_LABEL,HOME_MANAGER_STATE,COORDINATION_DIRECTORY
+        args=SimpleNamespace(profile='dependency-prefetch',manager='system',source_commit='a'*40,
+            source_dirty='false',state_dir=HOME_MANAGER_STATE,coordination_dir=COORDINATION_DIRECTORY,reuse_owned_cache=False)
+        entry=100*10**9;deadline=entry+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError):guard.home_manager_owned_request(args,['test',HOME_MANAGER_FETCH_LABEL],entry,deadline)
+        summary=guard.cleanup_owned(deadline=15,readback=Mock(),authorize=Mock(),stop=Mock(),observe=lambda:'empty',clock=lambda:0)
+        self.assertEqual(summary,{'state':'empty','stop':'not-requested','ownership':'unproved','readback_attempts':0})
+        self.assertFalse(guard.home_manager_owned_complete(None,summary,None))
+
+
+class CompleteStageDispatchModels(unittest.TestCase):
+    def test_only_exact_standard_system_test_gets_original_entry_marker_without_run_widening(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        selected = ['test',guard.DEV_STAGE_LABEL]
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+10**9):
+            self.assertTrue(guard.dev_stage_request('standard','system',selected,False,entry,deadline))
+            run = Path('/owned/5102699b-2ebf-44f1-a454-62b098e49658')
+            baseline = guard.bazel_command('/bazel',run,selected)
+            command = guard.dev_stage_command(baseline,run,entry,deadline)
+            self.assertEqual([value for value in command if value.startswith('--test_env=OMUX_')],
+                ['--test_env=OMUX_EXECUTION_GUARD='+str(run),
+                 '--test_env=OMUX_DEV_STAGE_ENTRY_NS='+str(entry),
+                 '--test_env=OMUX_DEV_STAGE_DEADLINE_NS='+str(deadline)])
+            self.assertEqual(command[-1],guard.DEV_STAGE_LABEL)
+            self.assertEqual(baseline[-1],guard.DEV_STAGE_LABEL)
+            for profile,manager,args,reuse in (
+                ('standard','user',selected,False),('site','system',selected,False),
+                ('standard','system',['run',guard.DEV_STAGE_LABEL],False),
+                ('standard','system',['build',guard.DEV_STAGE_LABEL],False),
+                ('standard','system',selected+['//:docs_check'],False),
+                ('standard','system',selected+['--root=/arbitrary'],False),
+                ('standard','system',selected,True)):
+                with self.assertRaises(ValueError):
+                    guard.dev_stage_request(profile,manager,args,reuse,entry,deadline)
+            for label in ('//delivery:dev_stage','//delivery:dev_stage_complete'):
+                with self.assertRaises(ValueError): guard.bazel_command('/bazel',run,['run',label])
+            self.assertFalse(guard.dev_stage_request('standard','user',['test','//:docs_check'],True,entry,deadline))
+            self.assertEqual(guard.bazel_command('/bazel',run,['test','//:docs_check'])[-1],'//:docs_check')
+
+    def test_original_remaining_runtime_clamp_and_exclusive_graph_admission(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+100*10**9):
+            self.assertEqual(guard.dev_stage_budget(entry,deadline),1070)
+            with tempfile.TemporaryDirectory() as temporary:
+                run = Path(temporary)
+                guard.dev_stage_admission(run,'f'*64,entry,deadline)
+                raw = (run/'dev-stage-admission.json').read_bytes()
+                value = json.loads(raw)
+                self.assertEqual(value['entryMonotonicNs'],entry)
+                self.assertEqual(value['deadlineMonotonicNs'],deadline)
+                self.assertEqual(value['graphSha256'],'f'*64)
+                self.assertEqual((run/'dev-stage-admission.json').stat().st_mode & 0o777,0o600)
+                with self.assertRaises(FileExistsError): guard.dev_stage_admission(run,'f'*64,entry,deadline)
+                self.assertEqual((run/'dev-stage-admission.json').read_bytes(),raw)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError): guard.dev_stage_budget(entry,deadline)
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+1):
+            with self.assertRaises(ValueError): guard.dev_stage_budget(entry,deadline+1)
+            with self.assertRaises(ValueError): guard.dev_stage_budget(True,deadline)
+
+
+    def test_fractional_stage_budget_produces_integer_service_limit_verified_against_actual_bounds(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        with patch.object(guard.time,'monotonic_ns',return_value=entry+100*10**9+194687000):
+            budget = guard.dev_stage_budget(entry,deadline)
+            maximum = guard.dev_stage_runtime(entry,deadline)
+            self.assertIs(type(maximum),int)
+            self.assertEqual(maximum,1069)
+            self.assertLessEqual(maximum,budget)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                service = FakeService(root)
+                service.actual['TemporaryFileSystem'] = guard.system_masks()
+                service.actual['RuntimeMaxUSec'] = str(maximum)+'s'
+                guard.verify(service.actual,root,manager='system',profile='standard',runtime_seconds=maximum)
+                with self.assertRaisesRegex(ValueError,'delivery-effective-runtime-invalid'):
+                    guard.verify(service.actual,root,manager='system',profile='standard',runtime_seconds=budget)
+                for value in ('1070s','20min','1069.000001s'):
+                    with self.subTest(value=value),self.assertRaises(ValueError):
+                        guard.verify({**service.actual,'RuntimeMaxUSec':value},root,
+                            manager='system',profile='standard',runtime_seconds=maximum)
+                with self.assertRaises(ValueError):
+                    guard.verify({**service.actual,'MemoryMax':'4294967297'},root,
+                        manager='system',profile='standard',runtime_seconds=maximum)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9-1):
+            self.assertGreater(guard.dev_stage_budget(entry,deadline),0)
+            with self.assertRaises(ValueError): guard.dev_stage_runtime(entry,deadline)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9-10**9):
+            self.assertEqual(guard.dev_stage_runtime(entry,deadline),1)
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9):
+            with self.assertRaises(ValueError): guard.dev_stage_runtime(entry,deadline)
+
+    def test_actual_final_source_readback_crossing_original_deadline_refuses(self):
+        import execution_guard as guard
+        entry,deadline = 10,10+1200*10**9
+        expected = ('a'*64,['fixed-source'])
+        calls = []
+        def readback():
+            calls.append('measured')
+            return expected
+        with patch.object(guard.time,'monotonic_ns',side_effect=[deadline-1,deadline]):
+            with self.assertRaises(ValueError):
+                guard.dev_stage_source_after(entry,deadline,expected,readback)
+        self.assertEqual(calls,['measured'])
+        calls.clear()
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline):
+            with self.assertRaises(ValueError):
+                guard.dev_stage_source_after(entry,deadline,expected,readback)
+        self.assertEqual(calls,[])
+        with patch.object(guard.time,'monotonic_ns',return_value=deadline-1):
+            self.assertTrue(guard.dev_stage_source_after(entry,deadline,expected,readback))
+            self.assertFalse(guard.dev_stage_source_after(entry,deadline,expected,lambda:('b'*64,[])))
+
+
 class FakeService:
     def __init__(self, root):
         self.root = root
@@ -33,6 +173,135 @@ class FakeService:
 
     def admit(self):
         verify(self.actual, self.root)
+
+
+class ResidentLifecycleCollectorModels(unittest.TestCase):
+    def test_exact_resident_collector_after_final_verdict_preserves_failed_status_and_legacy_routes(self):
+        import execution_guard as guard
+        calls = []
+        def observe(value,clock):
+            calls.append((value['exit'],clock))
+            return {'state':'recorded','outcome':'failed_admitted'}
+        admission = SimpleNamespace(lifecycle_attempt=observe)
+        receipt = {'profile':'resident-continuity','exit':125,'resident_continuity':{}}
+        guard.record_resident_lifecycle(receipt,admission,clock=lambda:7)
+        self.assertEqual(calls,[(125,7)])
+        self.assertEqual(receipt['exit'],125)
+        self.assertEqual(receipt['resident_continuity']['lifecycle_attempt']['outcome'],'failed_admitted')
+        for profile in ('resident-namespace','standard','codex-live'):
+            legacy = {'profile':profile}
+            guard.record_resident_lifecycle(legacy,admission,clock=lambda: (_ for _ in ()).throw(AssertionError('clock read')))
+            self.assertEqual(legacy,{'profile':profile})
+        self.assertEqual(calls,[(125,7)])
+
+    def test_measurement_failure_is_explicit_missing_and_never_changes_actual_guard_outcome(self):
+        import execution_guard as guard
+        def refused(*arguments): raise ValueError('fixed refusal')
+        admission = SimpleNamespace(lifecycle_attempt=refused)
+        receipt = {'profile':'resident-continuity','exit':0,'resident_continuity':{}}
+        guard.record_resident_lifecycle(receipt,admission,clock=lambda:7)
+        self.assertEqual(receipt['exit'],0)
+        fact = receipt['resident_continuity']['lifecycle_attempt']
+        self.assertEqual(fact['state'],'unavailable')
+        self.assertFalse(fact['native_proof_admitted'])
+        self.assertFalse(fact['complete_supported_demand_coverage'])
+
+class ResidentGuardModels(unittest.TestCase):
+    def test_full_effective_properties_and_cgroup_preserve_complementary_caps(self):
+        import guard_resident_dispatch as resident
+        import guard_resident_namespace_profile as namespace
+        for profile in resident.PROFILES:
+            isolation = {**SANDBOX, **namespace.finite(['run',namespace.LABEL],'system','/public/input.json',False)}
+            if profile == 'resident-continuity': isolation['PrivateNetwork'] = 'no'
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for key,value in CGROUP.items():
+                    (root/key).write_text({'memory.max':'4026531840','pids.max':'480'}.get(key,value))
+                (root/'cpu.max').write_text('190000 100000')
+                actual = {**resident.proof_properties(PROPERTIES),**isolation,
+                    'TemporaryFileSystem':__import__('execution_guard').system_masks(),
+                    'UnsetEnvironment':' '.join(resident.unset_environment(DELEGATION_ENV))}
+                for quota in ('1.900000s','1900ms','1900000us'):
+                    actual['CPUQuotaPerSecUSec'] = quota
+                    verify(actual,root,'system',isolation,profile)
+                for quota in ('1.900001s','1.899999s','NaNs','infs','1900000','-1s'):
+                    with self.assertRaises(ValueError): verify({**actual,'CPUQuotaPerSecUSec':quota},root,'system',isolation,profile)
+                for key,bad in (('memory.max','4026531841'),('memory.swap.max','1'),('pids.max','481'),('cpu.max','190001 100000')):
+                    old=(root/key).read_text(); (root/key).write_text(bad)
+                    with self.assertRaises(ValueError): verify(actual,root,'system',isolation,profile)
+                    (root/key).write_text(old)
+                for key,bad in (('PrivatePIDs','yes'),('NoNewPrivileges','no'),('TasksMax','512'),('MemoryMax','4294967296')):
+                    with self.assertRaises(ValueError): verify({**actual,key:bad},root,'system',isolation,profile)
+                for key in ('SYSTEMD_BUS_ADDRESS','SYSTEMD_HOST','SYSTEMD_MACHINE','DBUS_SYSTEM_BUS_ADDRESS'):
+                    wrong={**actual,'UnsetEnvironment':' '.join(v for v in actual['UnsetEnvironment'].split() if v!=key)}
+                    with self.assertRaises(ValueError): verify(wrong,root,'system',isolation,profile)
+        # Existing standard/native CPU property remains exact 2s.
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for key,value in CGROUP.items(): (root/key).write_text(value)
+            (root/'cpu.max').write_text('200000 100000')
+            actual={**PROPERTIES,**SANDBOX,'TemporaryFileSystem':__import__('execution_guard').system_masks(),
+                'UnsetEnvironment':' '.join(DELEGATION_ENV)}
+            for profile in ('standard','codex-native'):
+                verify(actual,root,'system',SANDBOX,profile,runtime_seconds=1200)
+                with self.assertRaises(ValueError): verify({**actual,'CPUQuotaPerSecUSec':'1.9s'},root,'system',SANDBOX,profile,runtime_seconds=1200)
+
+    def test_actual_standard_command_builder_only_changes_exact_resident_run(self):
+        import guard_resident_dispatch as resident
+        import guard_resident_namespace_profile as namespace
+        import guard_resident_continuity_profile as continuity
+        import guard_codex_fresh_live_profile as fresh
+        run=Path('/private/11111111-1111-4111-8111-111111111111')
+        # Only command assembly is modeled; no installation/runtime admission
+        # or provider capability is inferred from these synthetic fields.
+        for selected in (namespace,continuity):
+            scope=namespace.SCOPE if selected is namespace else 'resident-continuity'
+            admission=SimpleNamespace(facts={'scope':scope},manifest=Path('/public/input.json'),
+                environment=lambda:{'OMUX_RESIDENT_NAMESPACE_EPOCH':run.name},
+                fresh=SimpleNamespace(selection_path=Path('/public/fresh-runtime-selection.json'),
+                    selection_pin={'sha256':'2'*64,'bytes':123}))
+            for cache,nixpkgs in ((None,None),(resident.REPOSITORY_CACHE,resident.NIXPKGS)):
+                with self.subTest(profile=selected.PROFILE,cache=cache):
+                    command=resident.command(bazel_command,'/nix/store/public/bin/bazel',run,
+                        ['run',selected.LABEL],admission,source_commit='1'*40,source_dirty='false',
+                        repository_cache=cache,nixpkgs_source=nixpkgs)
+                    self.assertEqual(command.count('run'),1); self.assertNotIn('build',command)
+                    self.assertEqual(command[-1],selected.LABEL)
+                    self.assertNotIn('--disable_download',command)
+                    self.assertEqual(command.count('--repository_disable_download'),1)
+                    for flag in ('--batch','--spawn_strategy=linux-sandbox','--disk_cache=',
+                            '--sandbox_default_allow_network=false','--run_env=OMUX_RESIDENT_NAMESPACE_EPOCH='+run.name):
+                        self.assertIn(flag,command)
+                    if cache is None:
+                        self.assertNotIn('--repo_contents_cache=',command)
+                    else:
+                        self.assertIn('--repo_contents_cache=',command)
+                        self.assertIn('--repository_cache='+str(cache),command)
+                    for key,value in ((fresh.VARIABLE,str(admission.fresh.selection_path)),
+                            (fresh.SHA_VARIABLE,'2'*64),(fresh.BYTES_VARIABLE,'123')):
+                        rows=[part for part in command if part.startswith('--repo_env='+key+'=')]
+                        self.assertEqual(rows,['--repo_env='+key+'='+(value if selected is continuity else '')])
+            with self.assertRaises(ValueError):
+                resident.command(bazel_command,'/nix/store/public/bin/bazel',run,
+                    ['run',selected.LABEL,'--'],admission,source_commit='1'*40,source_dirty='false')
+            for cache,nixpkgs in ((resident.REPOSITORY_CACHE,None),(None,resident.NIXPKGS),
+                                  (Path('/foreign/cache'),resident.NIXPKGS)):
+                with self.assertRaises(ValueError):
+                    resident.command(bazel_command,'/nix/store/public/bin/bazel',run,
+                        ['run',selected.LABEL],admission,source_commit='1'*40,source_dirty='false',
+                        repository_cache=cache,nixpkgs_source=nixpkgs)
+
+    def test_partial_or_foreign_resident_cli_refuses_before_immutable_tools(self):
+        from execution_guard import main
+        complete=['--profile','resident-namespace','--manager','system','--resident-manifest','/public/input.json',
+            '--resident-epoch','11111111-1111-4111-8111-111111111111','--resident-producer-sha256','1'*64,
+            '--resident-observer-sha256','2'*64,'--source-commit','3'*40,'--source-dirty','false']
+        for command in (complete[:-2],complete+['--reuse-owned-cache'],complete+['--native-mode','cli-opt'],
+            complete+['--resident-runtime-bytes','1'],complete+['--','run','//:unit_tests'],
+            ['--profile','standard','--resident-manifest','/public/input.json','--','test','//:unit_tests']):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError): main(command if command[-1]=='//:unit_tests' else command+['--','run','//delivery:resident_namespace_qualification'])
+                reader.assert_not_called()
 
 
 class FakeClock:
@@ -286,15 +555,20 @@ class GuardTest(unittest.TestCase):
         pin.pids_snapshot.side_effect = snapshot
         observations = PidsObservation(); observations.sample(pin, 'baseline')
         replies = iter([{'ActiveState': 'active'}, {'ActiveState': 'inactive', 'Result': 'success', 'ExecMainStatus': '0'}])
+        read_times = []
+        def read():
+            read_times.append(clock())
+            return next(replies)
         pauses = []
         def pause(seconds): pauses.append(seconds); clock.advance(seconds)
         def iteration(): observations.sample(pin, 'monitor'); sequence.append('iteration')
-        result = monitor_workload(lambda: next(replies), 10, iteration, clock=clock, pause=pause)
+        result = monitor_workload(read, 10, iteration, clock=clock, pause=pause)
         self.assertIsNone(observe_pids_before_cleanup(observations, pin))
         sequence.append('cleanup'); observations.finish(pin)
-        self.assertEqual(result, 0); self.assertEqual(pauses, [0.5])
-        self.assertEqual(sequence, ['sample', 'sample', 'iteration', 'sample', 'iteration', 'sample', 'cleanup'])
-        self.assertEqual(observations.receipt()['monitor_samples'], 2)
+        self.assertEqual(result, 0); self.assertEqual(pauses, [0.5] * 4)
+        self.assertEqual(read_times, [0, 2.0])
+        self.assertEqual(sequence, ['sample'] + ['sample', 'iteration'] * 5 + ['sample', 'cleanup'])
+        self.assertEqual(observations.receipt()['monitor_samples'], 5)
         original = OSError('private-exception-value')
         failed = PidsObservation(); failed.sample(pin, 'baseline')
         with self.assertRaises(OSError) as raised:
@@ -306,6 +580,35 @@ class GuardTest(unittest.TestCase):
         self.assertIs(raised.exception, original)
         self.assertEqual(failed.pre_cleanup['sample_timing'], 'pre-cleanup')
         self.assertNotIn('private-exception-value', json.dumps(failed.receipt()))
+
+    def test_monitor_original_deadline_bounds_samples_queries_and_terminal_result(self):
+        from execution_guard import monitor_workload
+        clock = FakeClock(); sample_times = []; read_times = []; pauses = []
+        def read():
+            read_times.append(clock())
+            return {'ActiveState': 'active'}
+        def pause(seconds):
+            pauses.append(seconds); clock.advance(seconds)
+        result = monitor_workload(read, 1.25, lambda: sample_times.append(clock()),
+                                  clock=clock, pause=pause)
+        self.assertEqual(result, 124)
+        self.assertEqual(sample_times, [0, 0.5, 1.0])
+        self.assertEqual(read_times, [0])
+        self.assertEqual(pauses, [0.5, 0.5, 0.25])
+        self.assertEqual(clock(), 1.25)
+
+        clock = FakeClock(); unread = Mock()
+        def expired_iteration(): clock.advance(1)
+        self.assertEqual(monitor_workload(unread, 1, expired_iteration,
+                                         clock=clock, pause=Mock()), 124)
+        unread.assert_not_called()
+        for terminal in ({'ActiveState': 'inactive', 'Result': 'success', 'ExecMainStatus': '0'},
+                         {'ActiveState': 'failed', 'Result': 'exit-code', 'ExecMainStatus': '3'}):
+            clock = FakeClock(); no_pause = Mock()
+            def late_read(): clock.advance(1); return terminal
+            self.assertEqual(monitor_workload(late_read, 1, lambda: None,
+                                             clock=clock, pause=no_pause), 124)
+            no_pause.assert_not_called()
 
     def test_pids_cleanup_continues_and_deferred_control_flow_keeps_primary(self):
         from execution_guard import PidsObservation, observe_pids_before_cleanup
@@ -1285,12 +1588,17 @@ class GuardTest(unittest.TestCase):
     def test_batch_and_owned_output_base(self):
         command = bazel_command('/nix/store/example/bin/bazel', Path('/private/uuid'), ['test', '//:docs_check'])
         self.assertEqual(command[1], '--batch')
+        private_root = '--output_user_root=/private/uuid/bazel-user-root'
+        self.assertEqual([flag for flag in command if flag.startswith('--output_user_root=')], [private_root])
+        self.assertIn(private_root, command[:command.index('test')])
         self.assertIn('--output_base=/private/uuid/output-base', command)
         self.assertIn('--noworkspace_rc', command)
         self.assertIn('--remote_executor=', command)
         self.assertIn('--host_jvm_args=-Xmx1536m', command[:command.index('test')])
         self.assertIn('--host_jvm_args=-XX:ActiveProcessorCount=2', command[:command.index('test')])
         for args in ([], ['--batch', 'test'], ['test', '--output_base=/shared'],
+                     ['--output_user_root=/shared', 'test', '//:docs_check'],
+                     ['test', '//:docs_check', '--output_user_root=/shared'],
                      ['test', '--config=remote'], ['run', '//:delegate']):
             with self.assertRaises(ValueError):
                 bazel_command('/store/bazel', Path('/private/uuid'), args)
@@ -1406,6 +1714,287 @@ class RetainedRuntimeCommandTests(unittest.TestCase):
         self.assertEqual(delivery.effective_runtime("19min", 1150), 1140 * 1000000)
         with self.assertRaises(ValueError):
             delivery.effective_runtime("20min", 1150)
+
+
+class ResidentEffectiveVerificationModels(unittest.TestCase):
+    isolation = {**SANDBOX, "ProtectSystem":"strict", "PrivateTmp":"yes"}
+
+    def resident_service(self,root,quota="1.900000s"):
+        from system_mask_policy import setting
+        from guard_resident_dispatch import unset_environment
+        service = FakeService(root)
+        service.actual.update(MemoryMax="4026531840",TasksMax="480",CPUQuotaPerSecUSec=quota,
+            RuntimeMaxUSec="19min 30s",ProtectSystem="strict",PrivateTmp="yes",
+            TemporaryFileSystem=setting(profile="standard"),
+            UnsetEnvironment=" ".join(unset_environment(DELEGATION_ENV)))
+        (root/"memory.max").write_text("4026531840")
+        (root/"pids.max").write_text("480")
+        (root/"cpu.max").write_text("190000 100000")
+        return service
+
+    def admit_resident(self,service):
+        verify(service.actual,service.root,manager="system",isolation=self.isolation,
+            profile="resident-enrollment",runtime_seconds=1170)
+
+    def test_resident_full_readback_accepts_exact_equivalent_cpu_duration_units(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for quota in ("1.900000s","1.900s","1.9s","1900ms","1900000us"):
+                with self.subTest(quota=quota):
+                    service = self.resident_service(Path(directory),quota)
+                    self.admit_resident(service)
+                    self.assertEqual(service.actual["MemoryMax"],"4026531840")
+                    self.assertEqual((service.root/"pids.max").read_text(),"480")
+
+    def test_resident_full_readback_refuses_nonexact_nonfinite_malformed_cpu_properties(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for quota in ("1.900001s","1.899999s","2s","1s","1900001us","1899999us",
+                    "NaNs","Infinitys","infinity","max","-1.9s","+1.9s","1.9e0s","1900000",
+                    "1.900000s extra"," 1.900000s","1.900000s ","9"*1000+"s",None,True,1900000):
+                with self.subTest(quota=quota):
+                    service = self.resident_service(Path(directory),quota)
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+
+    def test_resident_full_readback_refuses_kernel_memory_tasks_swap_and_cpu_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for key,value in (("memory.max","4026531841"),("memory.max","4026531839"),
+                    ("pids.max","481"),("pids.max","479"),("memory.swap.max","1"),
+                    ("memory.oom.group","0"),("cpu.max","190001 100000"),
+                    ("cpu.max","200000 100000"),("cpu.max","max 100000"),("cpu.max","0 100000")):
+                with self.subTest(key=key,value=value):
+                    service = self.resident_service(Path(directory))
+                    (service.root/key).write_text(value)
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+
+    def test_resident_normalized_cpu_does_not_bypass_other_properties_or_masks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for key,value in (("MemoryMax","4294967296"),("TasksMax","512"),("MemorySwapMax","1"),
+                    ("PrivateNetwork","no"),("ProtectSystem","no"),("PrivateTmp","no"),
+                    ("NoNewPrivileges","no"),("TemporaryFileSystem",""),
+                    ("UnsetEnvironment",""),("RuntimeMaxUSec","20min")):
+                with self.subTest(key=key,value=value):
+                    service = self.resident_service(Path(directory))
+                    service.actual[key] = value
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+            service = self.resident_service(Path(directory))
+            (service.root/"memory.oom.group").unlink()
+            with self.assertRaises(FileNotFoundError):
+                self.admit_resident(service)
+
+    def test_standard_and_native_existing_two_second_policy_remains_exact(self):
+        self.assertEqual(PROPERTIES["CPUQuotaPerSecUSec"],"2s")
+        self.assertEqual(PROPERTIES["MemoryMax"],"4294967296")
+        self.assertEqual(PROPERTIES["TasksMax"],"512")
+        with tempfile.TemporaryDirectory() as directory:
+            for profile in ("standard","codex-native"):
+                service = FakeService(Path(directory))
+                kwargs = {"profile":profile}
+                if profile == "codex-native":
+                    kwargs["runtime_seconds"] = 1200
+                verify(service.actual,service.root,**kwargs)
+                for quota in ("1.900000s","1900ms","1900000us","1s","2.000000s","2000ms","2.000001s"):
+                    with self.subTest(profile=profile,quota=quota):
+                        changed = {**service.actual,"CPUQuotaPerSecUSec":quota}
+                        with self.assertRaises(ValueError):
+                            verify(changed,service.root,**kwargs)
+
+
+
+class ResidentSetupIsolationModels(unittest.TestCase):
+    def setup_arguments(self, label):
+        import guard_resident_setup_dispatch as setup
+        import guard_resident_vault_profile as vault
+        is_vault = label in (vault.STANDARD_LABEL, vault.STANDARD_UNLOCK_LABEL)
+        return SimpleNamespace(profile=setup.PROFILE, manager="system",
+            resident_manifest=None, resident_enrollment_manifest=None if is_vault else Path("/owned/enrollment/input.json"),
+            resident_vault_manifest=Path("/owned/vault/input.json") if is_vault else None,
+            reuse_owned_cache=False, repository_cache=None, nixpkgs_source=None,
+            source_commit="a"*40, source_dirty="false")
+
+    def test_actual_dispatch_to_guard_isolation_resolves_each_exclusive_selected_manifest(self):
+        import execution_guard as guard
+        import guard_resident_dispatch as dispatch
+        import guard_resident_setup_dispatch as setup
+        for label in setup.LABELS:
+            with self.subTest(label=label):
+                args=self.setup_arguments(label)
+                arguments=["run",label]
+                selected=dispatch.select(args,arguments)
+                actual=guard.resident_isolation(selected,args,arguments)
+                self.assertIsNone(args.resident_manifest)
+                self.assertEqual(actual, {**guard.SANDBOX, "PrivateNetwork":"yes",
+                    "ProtectSystem":"strict", "PrivateTmp":"yes"})
+                with self.assertRaises(ValueError):
+                    selected.finite(arguments,args.manager,None,False)
+                with self.assertRaises(ValueError):
+                    selected.finite(arguments,args.manager,Path("/unrelated/input.json"),False)
+
+    def test_dispatch_refuses_absent_or_cross_profile_setup_authority_and_unselected_labels(self):
+        import guard_resident_dispatch as dispatch
+        import guard_resident_setup_dispatch as setup
+        import guard_resident_vault_profile as vault
+        for label in setup.LABELS:
+            args=self.setup_arguments(label)
+            for field,value in (
+                ("resident_enrollment_manifest",None), ("resident_vault_manifest",None),
+                ("resident_manifest",Path("/other/input.json")),
+                ("resident_enrollment_manifest",Path("/other/enrollment.json")),
+                ("resident_vault_manifest",Path("/other/vault.json")), ("manager","user"),
+                ("reuse_owned_cache",True), ("source_dirty","true")):
+                if getattr(args,field,None)==value or (field in setup.FIELDS
+                        and getattr(args,field,None) is not None and value is not None):
+                    continue
+                changed=SimpleNamespace(**vars(args))
+                setattr(changed,field,value)
+                with self.subTest(label=label,field=field),self.assertRaises(ValueError):
+                    dispatch.select(changed,["run",label])
+            for profile in ("standard","resident-continuity","resident-namespace","native-candidate"):
+                changed=SimpleNamespace(**vars(args))
+                changed.profile=profile
+                with self.subTest(label=label,profile=profile),self.assertRaises(ValueError):
+                    dispatch.select(changed,["run",label])
+        for label in (vault.LABEL,vault.UNLOCK_LABEL,"//delivery:resident_vault_metadata",
+                      "//delivery:resident_enrollment_extra"):
+            args=self.setup_arguments(setup.LABELS[0])
+            with self.subTest(label=label),self.assertRaises(ValueError):
+                dispatch.select(args,["run",label])
+
+
+class InstalledYogaReservedRegistrationModels(unittest.TestCase):
+    def test_exact_new_profiles_refuse_before_tools_or_state_initialization(self):
+        import execution_guard as guard
+        import guard_yoga_installed_reserved as installed
+        with patch.object(guard, 'immutable', side_effect=AssertionError('tool read')) as tools, \
+                patch.object(guard, 'prepare_state', side_effect=AssertionError('state mutation')) as state, \
+                patch.object(installed, 'admit', side_effect=AssertionError('public input read')) as admission:
+            for profile in installed.PROFILES:
+                for arguments in (['test', '//:docs_check'], installed.VECTORS[profile] + ['--untrusted']):
+                    with self.assertRaises(ValueError):
+                        guard.main(['--profile', profile, '--manager', 'system', '--source-commit', 'a' * 40,
+                            '--source-dirty', 'false', '--', *arguments])
+            for profile in ('standard', installed.SELECTION_PROFILE, installed.MODEL_PROFILE):
+                with self.assertRaises(ValueError):
+                    guard.main(['--profile', profile, '--manager', 'system', '--source-commit', 'a' * 40,
+                        '--source-dirty', 'false', '--yoga-installed-producer-selection-sha256', 'b' * 64,
+                        '--', *installed.VECTORS.get(profile, ['test', '//:docs_check'])])
+            tools.assert_not_called()
+            state.assert_not_called()
+            admission.assert_not_called()
+
+    def test_each_profile_reads_back_only_existing_reserved_caps_and_original_runtime(self):
+        import execution_guard as guard
+        import guard_yoga_installed_reserved as installed
+        import guard_native_seed_plan_reserved as kernel
+        for profile in installed.PROFILES:
+            self.assertIn(profile, kernel.WORKLOAD_PROFILES)
+            self.assertNotIn(profile, kernel.PROFILES)
+            self.assertEqual(guard.workload_pids_observation(None, profile).expected_limit, 480)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for name, value in guard.CGROUP.items():
+                    (root / name).write_text({'memory.max': str(installed.MEMORY), 'pids.max': '480'}.get(name, value))
+                (root / 'cpu.max').write_text('190000 100000')
+                actual = {**installed.properties(guard.PROPERTIES), **guard.SANDBOX, 'RuntimeMaxUSec': '17s',
+                    'TemporaryFileSystem': guard.system_masks(profile='standard'),
+                    'UnsetEnvironment': ' '.join(guard.DELEGATION_ENV)}
+                guard.verify(actual, root, 'system', guard.SANDBOX, profile, runtime_seconds=17)
+                for key, value in (('MemoryMax', '4294967296'), ('TasksMax', '512'),
+                        ('CPUQuotaPerSecUSec', '2s'), ('RuntimeMaxUSec', '1200s'), ('PrivateNetwork', 'no')):
+                    with self.assertRaises(ValueError):
+                        guard.verify({**actual, key: value}, root, 'system', guard.SANDBOX, profile, runtime_seconds=17)
+
+class AttendedYogaReservedRegistrationModels(unittest.TestCase):
+    def test_exact_toolbar_and_model_requests_refuse_before_tools_or_state(self):
+        import execution_guard as guard
+        import guard_yoga_toolbar_reserved as reserved
+        with patch.object(guard, 'immutable', side_effect=AssertionError('tool read')) as tools, \
+                patch.object(guard, 'prepare_state', side_effect=AssertionError('state mutation')) as state, \
+                patch.object(reserved, 'preallocate', side_effect=AssertionError('qualification read')) as admission:
+            for profile in reserved.PROFILES:
+                for arguments in (['run', '//delivery:yoga_installed_workspace'],
+                        ['run', reserved.LABEL, '--untrusted'], ['test', '//:docs_check']):
+                    with self.subTest(profile=profile,arguments=arguments),self.assertRaises(ValueError):
+                        guard.main(['--profile',profile,'--manager','system','--',*arguments])
+            tools.assert_not_called()
+            state.assert_not_called()
+            admission.assert_not_called()
+
+    def test_same_derived_runtime_and_reserved_caps_are_required_for_both_profiles(self):
+        import execution_guard as guard
+        import guard_yoga_toolbar_reserved as reserved
+        import guard_native_seed_plan_reserved as kernel
+        import guard_yoga_profile as yoga
+        for profile in reserved.PROFILES:
+            self.assertIn(profile,kernel.WORKLOAD_PROFILES)
+            self.assertNotIn(profile,kernel.PROFILES)
+            self.assertEqual(guard.workload_pids_observation(None,profile).expected_limit,480)
+            with tempfile.TemporaryDirectory() as temporary,patch.object(yoga,'verify_masks'):
+                root=Path(temporary)
+                for name,value in guard.CGROUP.items():
+                    (root/name).write_text({'memory.max':str(reserved.MEMORY),'pids.max':'480'}.get(name,value))
+                (root/'cpu.max').write_text('190000 100000')
+                actual={**reserved.properties(guard.PROPERTIES),**guard.SANDBOX,'RuntimeMaxUSec':'17s',
+                    'TemporaryFileSystem':guard.system_masks(profile='standard'),
+                    'InaccessiblePaths':'/etc/environment',
+                    'UnsetEnvironment':' '.join(guard.DELEGATION_ENV)}
+                guard.verify(actual,root,'system',guard.SANDBOX,profile,runtime_seconds=17)
+                for key,value in (('MemoryMax','4294967296'),('TasksMax','512'),
+                        ('CPUQuotaPerSecUSec','2s'),('RuntimeMaxUSec','1200s'),('PrivateNetwork','no')):
+                    with self.subTest(profile=profile,key=key),self.assertRaises(ValueError):
+                        guard.verify({**actual,key:value},root,'system',guard.SANDBOX,profile,runtime_seconds=17)
+                with self.assertRaises(ValueError):
+                    guard.verify(actual,root,'system',guard.SANDBOX,profile,runtime_seconds=18)
+
+    def test_original_yoga_launcher_identity_cannot_be_substituted_by_guard_worker(self):
+        import execution_guard as guard
+        unit='omux-proof-original.service';run=Path('/owned/epoch');python='/nix/store/fixed/bin/python3'
+        worker='/sealed/tools/yoga_operator_launch.py'
+        actual={'Id':unit,'User':str(os.getuid()),'Group':str(os.getgid()),
+            'Environment':'OMUX_EXECUTION_GUARD='+str(run),
+            'ExecStart':'path='+python+' ; argv[]='+python+' '+worker+' --worker '+str(run)+' -- run'}
+        guard.unit_epoch_identity(actual,unit=unit,manager='system',run=run,python=python,worker=worker)
+        for field,value in (('Id','another.service'),('Environment','OMUX_EXECUTION_GUARD=/other'),
+                ('ExecStart',actual['ExecStart'].replace(worker,'/sealed/tools/execution_guard.py'))):
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                guard.unit_epoch_identity({**actual,field:value},unit=unit,manager='system',run=run,python=python,worker=worker)
+
+
+class InstalledYogaCommandTests(unittest.TestCase):
+    def admission(self):
+        import guard_yoga_profile as yoga
+        return {'receipt': {'scope': yoga.INSTALLED_SCOPE,
+                            'controllerTools': {'bazel': '/store/bazel'}}}
+
+    def test_marker_without_concrete_capture_refuses_before_bazel_construction(self):
+        import execution_guard as guard
+        import guard_yoga_profile as yoga
+        with patch.object(guard, 'bazel_command', side_effect=AssertionError('builder')) as builder:
+            with self.assertRaises(ValueError):
+                guard.yoga_command('/store/bazel', Path('/model/epoch'), ['run', yoga.LABEL],
+                                   self.admission(), manager='system')
+            builder.assert_not_called()
+
+    def test_fixed_mini_graph_flags_and_source_stamp_refusal(self):
+        import execution_guard as guard
+        import guard_yoga_profile as yoga
+        import guard_yoga_installed_workspace as inventory
+        # Authority is synthetic here; concrete held file/alias tests are in
+        # yoga_installed_workspace_test. This exercises actual command policy.
+        with patch.object(inventory, 'verified', return_value=True):
+            command = guard.yoga_command('/store/bazel', Path('/model/epoch'), ['run', yoga.LABEL],
+                                         self.admission(), manager='system')
+            self.assertIn('--repository_disable_download', command)
+            self.assertIn('--repo_contents_cache=', command)
+            self.assertNotIn('--@rules_zig//zig/settings:use_standalone_translate_c', command)
+            self.assertEqual(command[-1], yoga.LABEL)
+            for stamp in ({'source_commit': 'a'*40}, {'source_dirty': 'false'}):
+                with patch.object(guard, 'bazel_command', side_effect=AssertionError('builder')) as builder:
+                    with self.assertRaises(ValueError):
+                        guard.yoga_command('/store/bazel', Path('/model/epoch'), ['run', yoga.LABEL],
+                                           self.admission(), manager='system', **stamp)
+                    builder.assert_not_called()
 
 
 if __name__ == '__main__':

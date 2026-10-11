@@ -24,6 +24,9 @@ LIVE_ENROLLMENT_FILES = ('test.outputs/codex-live-enrollment-proof.json',)
 SOURCE_RECEIPT_LABEL = '//tools:runtime_source_receipt'
 SOURCE_RECEIPT_FILES = ('test.outputs/runtime-source-receipt/receipt.json',
                        'test.outputs/runtime-source-receipt/source-inventory.json')
+WRAPPER_COMPANION_LABEL = '//tools:yoga_wrapper_companion'
+WRAPPER_COMPANION_FILES = ('test.outputs/wrapper-companion.json',
+                           'test.outputs/wrapper-companion-production.json')
 LABEL = re.compile(r'//([A-Za-z0-9_.+/-]*):([A-Za-z0-9_.+-]+)\Z')
 
 
@@ -143,7 +146,7 @@ def capture(output_base, run, labels, bazel_status, epoch_start_ns):
                     directory = descend(testroot, Path(configuration) / 'testlogs' / relative)
                     found = True
                     entries = []
-                    members = FILES + (SOURCE_RECEIPT_FILES if label == SOURCE_RECEIPT_LABEL else ()) + (LIVE_FILES if label == LIVE_LABEL else ()) + (LIVE_ENROLLMENT_FILES if label == LIVE_ENROLLMENT_LABEL else ())
+                    members = FILES + (SOURCE_RECEIPT_FILES if label == SOURCE_RECEIPT_LABEL else ()) + (LIVE_FILES if label == LIVE_LABEL else ()) + (LIVE_ENROLLMENT_FILES if label == LIVE_ENROLLMENT_LABEL else ()) + (WRAPPER_COMPANION_FILES if label == WRAPPER_COMPANION_LABEL else ())
                     for member in members:
                         if copied >= MAX_FILES:
                             entries.append({'source': member, 'state': 'file-budget-exhausted'})

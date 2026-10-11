@@ -6,6 +6,16 @@ manage sources, account lifecycle, enrollment/repair actions and native
 integrations, and display active bindings and compatible capacity totals.
 Credential material is absent from the control protocol and UI.
 
+The Linux Setup view's explicit "Resume after vault unlock" action uses the
+advertised `custody.reopen` capability. Unlock the normal platform vault first;
+the action retries custody initialization in the same daemon, without source
+enrollment, provider requests or a service restart. Older installed services
+without that capability report the required update. Startup-locked health is
+cached daemon state, not a fresh platform-lock observation. Its unloaded account
+count is null; a loaded count comes from the authenticated retained snapshot.
+This source boundary requires separately qualified package and installed proof;
+it supplies no native application continuity or Darwin unlock proof.
+
 The Integrations view asks the daemon to discover native owner endpoints in its
 selected Codex home; the controls do not scan sockets or select the legacy
 WebSocket path. Each loaded thread retains its process identity, endpoint and

@@ -86,6 +86,20 @@ request authority. The existing in-memory diagnostic export is not this durable
 baseline. Baseline receipts identify workload, sample counts, observation window,
 outcome definitions and unrun gates before any achieved-SLO or support claim.
 
+The source-only resident REL-016 collector now defines one observation for each
+selected admitted resident evaluation attempt in the existing immutable guard
+receipt: [collector](../../tools/execution_guard.py),
+[producer and strict reader](../../tools/guard_resident_continuity_profile.py).
+Success requires the actual native/resident proof and successful outer exit,
+source readback and empty owned cleanup; admitted failure and unresolved
+cleanup/controller states remain separate. No safe pre-effect refusal is
+inferred. Stored elapsed time covers only the original same-guardian monotonic
+entry-to-terminal interval before receipt writing, and survives receipt reread
+without subtracting a new process clock. User elapsed, local work, user/provider
+wait, pre-admission refusals, complete supported-demand/lifecycle coverage and
+scheduled baseline remain unmeasured. Source/models and actual outcomes remain
+unqualified; this closes no full REL gate and establishes no achieved SLO/SLA.
+
 Implementation trace: [TIN-2063](https://linear.app/tinyland/issue/TIN-2063) owns
 installation/readiness, [TIN-2720](https://linear.app/tinyland/issue/TIN-2720) owns
 browser acquisition, [TIN-5338](https://linear.app/tinyland/issue/TIN-5338) and
@@ -152,9 +166,22 @@ storage recovery writes. The legacy no-revision decoder refuses witness-bearing
 rows. Older readers may reject the new optional record fields; downgrade must
 not discard those fields or restore earlier credential/replay authority.
 
-The projection reports all retained records without a time window. Local-work
-and user/provider-wait durations, deployment provenance, full demand coverage,
-end-to-end latency and achieved SLO remain explicitly unknown or unproved.
+The projection reports all retained records without a time window. The current
+schema2 source measures daemon-owned local work from optional timing admission
+through the original committed outcome, plus authorized control-handler entry
+through that commit. Handler timing begins after ingress parsing; it excludes
+socket framing and complete user latency. Historical schema1 intervals remain
+unknown. External user/provider wait, deployment provenance, full demand
+coverage, end-to-end latency and achieved SLO remain unknown or unproved.
+
+Setup-verification schema2 adds observed admission-to-terminal-before-commit
+duration to safe refusals and collection timeouts. Successful verification and
+safe refusal retain separate counters and latency populations; a timely refusal
+does not establish installation or enrollment success. Original immutable
+results preserve these measurements across replay and restart. Unknown clocks
+remain unknown. CLI and Qt readers accept the versioned result without treating
+unknown phases as readiness. These source changes require their own current
+runtime and installed receipts; the historical passes below do not qualify them.
 Epoch `8229cb7a-d9d1-4d53-b2e6-793cddfd7cb9` passed 27 helper/ledger predicates
 and all 247 actor/imported predicates, including the five real actor/SQLite
 timing cases. The overall batch failed separately on storage declaration,
@@ -248,8 +275,12 @@ an unmeasured diagnostic. Existing external mutation authority durably records
 started state and prepays terminal space before worker execution. Exact replay
 returns the cached result; changed intent conflicts. Busy or missing installation
 selection is a classified safe refusal. Collection timeout records immutable
-`safe_refusal` / `collection_timed_out`, null duration and seven unknown phase
-facts; its dedicated refusal counter never increments verification completion.
+`safe_refusal` / `collection_timed_out` and seven unknown phase facts. Historical
+schema1 refusals retain null duration; current schema2 source may retain an
+observed process-local admission-to-terminal-before-commit duration, with missing
+duration remaining null. Refusal counters and latency populations remain separate
+from verification completion; optional timing establishes neither successful
+installation/enrollment nor complete coverage or an achieved SLO.
 Shutdown/restart uncertainty never
 authorizes reissue; query `operation.status` using the same ID.
 

@@ -14,7 +14,7 @@ import portable
 import portable_launcher_template as trusted
 import dev_stage_selected
 from dev_generation import GenerationError, select_generation
-from dev_stage import HOST, StagedGeneration, digest, inventory, stage, stage_generation
+from dev_stage import HOST, StageError, StagedGeneration, digest, inventory, stage, stage_generation
 from test_portable import elf
 
 
@@ -121,6 +121,102 @@ class GenerationTest(unittest.TestCase):
         self.assertEqual(selected.receipt_sha256, self.receipt_sha256)
         with self.assertRaises(FrozenInstanceError):
             selected.generation = "a" * 32
+
+    def complete_inputs(self):
+        # Exercise actual stage + portable assembly + selector. Only the ELF
+        # rewriting backend is replaced by the existing structural fixture;
+        # no process, browser, service, Qt UI or provider is launched.
+        from test_portable import AssemblyTest
+        fixture = AssemblyTest(methodName="runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        control, plugins = fixture.configure_qt()
+        return fixture, {"runtime_files":fixture.runtime, "patchelf":fixture.patchelf,
+            "ca_bundle":fixture.ca_bundle, "control":control,
+            "qt_runtime_files":fixture.runtime, "qt_plugins":plugins}
+
+    def complete_stage(self, fixture, inputs):
+        with mock.patch.object(portable, "_patch", side_effect=fixture.patch_fixture):
+            return stage_generation(self.root, fixture.cli, fixture.daemon, self.extension,
+                self.metadata, replace_owned=True, **inputs)
+
+    def test_complete_stage_preserves_legacy_selection_and_binds_qt_loader_control_and_launchers(self):
+        old = self.select()
+        fixture, inputs = self.complete_inputs()
+        outcome = self.complete_stage(fixture, inputs)
+        selected = select_generation(self.root,outcome.generation,outcome.receipt_sha256,
+            expected_artifacts=outcome.receipt["artifacts"],require_portable=True)
+        self.assertEqual(self.select(),old)
+        self.assertIsNone(old.control)
+        self.assertEqual(selected.control,selected.directory / "bin/omux-control")
+        self.assertEqual(dict(selected.artifact_sha256)["control"],digest(inputs["control"].read_bytes()))
+        loader = outcome.receipt["runtime"]["details"]["qt"]["loader"]
+        self.assertEqual((selected.directory / "runtime" / loader).stat().st_mode & 0o777,0o700)
+        metadata_path = self.base / "complete-metadata.json"
+        metadata_path.write_text(json.dumps(self.metadata))
+        with mock.patch.object(portable,"_patch",side_effect=fixture.patch_fixture):
+            facts = dev_stage_selected.produce(self.root,fixture.cli,fixture.daemon,self.extension,
+                metadata_path,replace_owned=True,**inputs)
+        self.assertTrue(facts["controlStaged"])
+        self.assertEqual(set(facts["artifacts"]),{"core","daemon","extension","control"})
+        self.assertFalse(facts["daemonRestarted"])
+        self.assertFalse(facts["chromiumReloaded"])
+        self.assertEqual(select_generation(self.root,facts["generation"],facts["receiptSha256"],
+            expected_artifacts=facts["artifacts"]).control.name,"omux-control")
+        stable = self.root / "bin/omux-control"
+        original = stable.read_bytes()
+        inputs["control"].write_bytes(inputs["control"].read_bytes()+b"changed synthetic ELF tail")
+        successor = self.complete_stage(fixture,inputs)
+        self.assertNotEqual(outcome.generation,successor.generation)
+        self.assertEqual(stable.read_bytes(),original)
+        self.assertEqual(select_generation(self.root,outcome.generation,outcome.receipt_sha256),selected)
+
+    def test_complete_stage_refuses_missing_qt_inputs_and_preserves_current(self):
+        fixture, inputs = self.complete_inputs()
+        original = os.readlink(self.root / "current")
+        for missing in ("qt_runtime_files","qt_plugins"):
+            altered = {**inputs,missing:[]}
+            with self.assertRaisesRegex(StageError,"complete declared Qt"):
+                self.complete_stage(fixture,altered)
+            self.assertEqual(os.readlink(self.root / "current"),original)
+        with self.assertRaisesRegex(StageError,"Qt inputs require"):
+            self.complete_stage(fixture,{**inputs,"control":None})
+
+    def test_complete_stage_refuses_foreign_ui_launcher_and_core_only_downgrade(self):
+        fixture, inputs = self.complete_inputs()
+        launcher = self.root / "bin/omux-control"
+        launcher.write_bytes(b"unrelated user command")
+        launcher.chmod(0o700)
+        original = os.readlink(self.root / "current")
+        with self.assertRaisesRegex(StageError,"stable development command changed"):
+            self.complete_stage(fixture,inputs)
+        self.assertEqual(launcher.read_bytes(),b"unrelated user command")
+        self.assertEqual(os.readlink(self.root / "current"),original)
+        launcher.unlink()
+        self.complete_stage(fixture,inputs)
+        original = os.readlink(self.root / "current")
+        with self.assertRaisesRegex(StageError,"retain the owned development control"):
+            stage(self.root,self.core,self.daemon,self.extension,self.metadata,replace_owned=True)
+        self.assertEqual(os.readlink(self.root / "current"),original)
+
+    def test_complete_selector_refuses_missing_control_artifact_or_nonexecutable_qt_loader(self):
+        fixture, inputs = self.complete_inputs()
+        outcome = self.complete_stage(fixture,inputs)
+        directory = self.root / "generations" / outcome.generation
+        receipt = outcome.receipt
+        path = directory / "receipt.json"
+        expected = receipt["artifacts"].copy()
+        del receipt["artifacts"]["control"]
+        path.write_text(json.dumps(receipt,sort_keys=True)+"\n")
+        with self.assertRaisesRegex(GenerationError,"control-runtime-binding"):
+            select_generation(self.root,outcome.generation,digest(path.read_bytes()))
+        receipt["artifacts"] = expected
+        loader = directory / "runtime" / receipt["runtime"]["details"]["qt"]["loader"]
+        loader.chmod(0o600)
+        receipt["files"] = inventory(directory)
+        path.write_text(json.dumps(receipt,sort_keys=True)+"\n")
+        with self.assertRaisesRegex(GenerationError,"control-runtime-binding"):
+            select_generation(self.root,outcome.generation,digest(path.read_bytes()))
 
     def test_retained_selection_survives_atomic_current_replacement(self):
         before = self.select()

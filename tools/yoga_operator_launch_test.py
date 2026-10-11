@@ -22,6 +22,7 @@ class LaunchTests(unittest.TestCase):
 
     def fresh_coordinator(self):
         self.coordinator = Mock()
+        self.coordinator.reserved_entry = None
         self.coordinator.proof_id = self.proof
         self.coordinator.root = self.root
         self.coordinator.uid = 1000
@@ -96,8 +97,15 @@ class LaunchTests(unittest.TestCase):
                 launch.read_worker_ready(self.coordinator, expected_pid=200)
             reader.assert_not_called(); sleeper.assert_not_called()
 
-    def worker_model(self, *, drift_at=None):
-        self.fresh_coordinator(); self.prepare()
+    def worker_model(self, *, drift_at=None, reserved=False):
+        self.fresh_coordinator()
+        if reserved:
+            self.coordinator.reserved_entry=100*10**9
+            self.coordinator.deadline=1300*10**9
+            self.coordinator.now=lambda:200*10**9
+            import guard_yoga_toolbar_reserved as reservation
+            with patch.object(reservation.kernel.time,'monotonic_ns',return_value=200*10**9):self.prepare()
+        else:self.prepare()
         plan = self.coordinator.launch_plan
         ready = []
         own = {'pid': 200, 'cgroupPath': '/sys/fs/cgroup/' + plan['unit'], 'device': 2, 'inode': 3}
@@ -133,7 +141,7 @@ class LaunchTests(unittest.TestCase):
                 patch.object(launch, 'namespace_snapshot', return_value=own), \
                 patch.object(launch.display, 'inspect_endpoint', return_value=self.snapshot), \
                 patch.object(launch.display, 'pid_start', return_value=300), \
-                patch.object(launch.time, 'monotonic_ns', return_value=1), \
+                patch.object(launch.time, 'monotonic_ns', return_value=200*10**9 if reserved else 1), \
                 patch.object(inputs, 'check_inputs', return_value=self.coordinator.digests), \
                 patch.object(guard, 'wrapper_capture', return_value=held) as capture, \
                 patch.object(launch, '_execute', return_value=0) as execute:
@@ -143,10 +151,20 @@ class LaunchTests(unittest.TestCase):
             held.close.assert_called_once(); closed.assert_called_once_with(7)
             capture.assert_called_once()
             self.assertEqual(capture.call_args.args[1], plan['deadlineNs'])
+            if reserved and ready:
+                self.assertEqual(launch.decode(ready[0])['scope'],'yoga-guard-reserved-worker-ready-v1')
+                self.assertEqual(plan['reservation']['originalEntryMonotonicNs'],100*10**9)
+                self.assertEqual(plan['reservation']['runtimeSeconds'],1070)
+                self.assertEqual(session['scope'],'yoga-operator-local-toolbar-v1')
             return held.check.call_count, execute.call_count, len(ready)
 
     def test_worker_holds_authority_before_ready_before_go_and_after_workload(self):
         self.assertEqual(self.worker_model(), (3, 1, 1))
+
+    def test_reserved_worker_keeps_same_authority_and_old_session_payload(self):
+        self.assertEqual(self.worker_model(reserved=True),(3,1,1))
+        for fence,expected in ((1,(1,0,0)),(2,(2,0,1)),(3,(3,1,1))):
+            self.assertEqual(self.worker_model(reserved=True,drift_at=fence),expected)
 
     def test_worker_authority_drift_refuses_pre_ready_pre_launch_and_post_workload(self):
         for fence, expected in ((1, (1, 0, 0)), (2, (2, 0, 1)), (3, (3, 1, 1))):

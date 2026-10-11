@@ -306,3 +306,141 @@ test "native inventory expired shared deadline refuses before path effects or bu
     try std.testing.expectEqual(@as(usize, 0), budget.scanned_entries);
     try std.testing.expectEqual(@as(usize, 0), budget.retained_hints);
 }
+
+const source_context = @import("integrations/native_source_context.zig");
+const context_name = "4444444444444444444444444444444444444444444444444444444444444444.json";
+const next_context_name = "5555555555555555555555555555555555555555555555555555555555555555.json";
+
+fn contextDocument(fixture: *Fixture, context_id: []const u8) ![]u8 {
+    const endpoint = try fixture.endpointPath(first);
+    defer allocator.free(endpoint);
+    return std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = context_id, .contextGeneration = "1", .ownerId = "1111111111111111111111111111111111111111111111111111111111111111", .processNonce = "2222222222222222222222222222222222222222222222222222222222222222", .endpointGeneration = "1", .ownerEndpoint = endpoint[0..endpoint.len] }, .{});
+}
+fn writeContext(registry: c.fd_t, name: []const u8, document: []const u8) !void {
+    const terminated = try allocator.dupeSentinel(u8, name, 0);
+    defer allocator.free(terminated);
+    const descriptor = c.openat(registry, terminated.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .NOFOLLOW = true, .CLOEXEC = true }, @as(c.mode_t, 0o600));
+    if (descriptor < 0) return error.FixtureFileFailed;
+    defer _ = c.close(descriptor);
+    if (c.write(descriptor, document.ptr, document.len) != @as(isize, @intCast(document.len))) return error.FixtureWriteFailed;
+}
+
+test "native context registry retains exact opaque hint without auth or consent" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const registry = try fixture.directory(source_context.registry_name);
+    defer _ = c.close(registry);
+    const raw = try contextDocument(&fixture, context_name[0..64]);
+    defer allocator.free(raw);
+    try writeContext(registry, context_name, raw);
+    // This unrelated file is neither required nor opened by metadata collection.
+    try fixture.ordinaryFile("auth.json");
+    var budget = try inventory.Budget.init(io, null);
+    var result = (try source_context.collect(io, allocator, fixture.root, &budget)).?;
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.hints.len);
+    try std.testing.expectEqual(@as(u64, 1), result.hints[0].context_generation);
+    try std.testing.expectEqualStrings(fixture.root, result.hints[0].endpointHome());
+    try std.testing.expectEqual(@as(usize, 1), budget.scanned_entries);
+    try std.testing.expectEqual(@as(usize, 1), budget.candidate_count);
+    try result.verify(io, &budget);
+    try std.testing.expectEqual(@as(u32, 0o600), (try metadata.statFd(result.hints[0].descriptor)).mode & 0o777);
+}
+
+test "native context registry absent is unpublished and expired budget reads nothing" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var budget = try inventory.Budget.init(io, null);
+    try std.testing.expect((try source_context.collect(io, allocator, fixture.root, &budget)) == null);
+    const expired = std.Io.Clock.Timestamp.fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    var closed: inventory.Budget = .{ .until = expired };
+    try std.testing.expectError(error.NativeTimeout, source_context.collect(io, allocator, "/tmp/../unread-runtime", &closed));
+    try std.testing.expectEqual(@as(usize, 0), closed.scanned_entries);
+    try std.testing.expectEqual(@as(usize, 0), closed.retained_hints);
+}
+
+test "native context registry refuses aliases unsafe modes oversized and malformed fields" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const registry = try fixture.directory(source_context.registry_name);
+    defer _ = c.close(registry);
+    const raw = try contextDocument(&fixture, context_name[0..64]);
+    defer allocator.free(raw);
+    if (c.symlinkat("../auth.json", registry, context_name) != 0) return error.FixtureSymlinkFailed;
+    var budget = try inventory.Budget.init(io, null);
+    try std.testing.expectError(error.NativeSourceContextChanged, source_context.collect(io, allocator, fixture.root, &budget));
+    if (c.unlinkat(registry, context_name, 0) != 0) return error.FixtureUnlinkFailed;
+    const variants = [_][]const u8{ "{}", "{\"protocolVersion\":1,\"protocolVersion\":1}", "{\"sourcePath\":\"/forbidden\"}" };
+    for (variants) |document| {
+        try writeContext(registry, context_name, document);
+        budget = try inventory.Budget.init(io, null);
+        const before = try openFdCount();
+        if (source_context.collect(io, allocator, fixture.root, &budget)) |unexpected| {
+            if (unexpected) |value| {
+                var owned = value;
+                owned.deinit();
+            }
+            return error.FixtureExpectedRefusal;
+        } else |_| {}
+        try std.testing.expectEqual(before, try openFdCount());
+        if (c.unlinkat(registry, context_name, 0) != 0) return error.FixtureUnlinkFailed;
+    }
+    const oversized: [source_context.maximum_hint_bytes + 1]u8 = @splat('x');
+    try writeContext(registry, context_name, &oversized);
+    budget = try inventory.Budget.init(io, null);
+    try std.testing.expectError(error.UnsafeNativeSourceContext, source_context.collect(io, allocator, fixture.root, &budget));
+    if (c.unlinkat(registry, context_name, 0) != 0) return error.FixtureUnlinkFailed;
+    try writeContext(registry, context_name, raw);
+    if (c.fchmod(registry, 0o755) != 0) return error.FixturePermissionFailed;
+    budget = try inventory.Budget.init(io, null);
+    try std.testing.expectError(error.UnsafeNativeSourceContext, source_context.collect(io, allocator, fixture.root, &budget));
+    if (c.fchmod(registry, 0o700) != 0) return error.FixturePermissionFailed;
+}
+
+test "native context held hint refuses replacement and file mode drift without deleting either" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const registry = try fixture.directory(source_context.registry_name);
+    defer _ = c.close(registry);
+    const raw = try contextDocument(&fixture, context_name[0..64]);
+    defer allocator.free(raw);
+    try writeContext(registry, context_name, raw);
+    var budget = try inventory.Budget.init(io, null);
+    var result = (try source_context.collect(io, allocator, fixture.root, &budget)).?;
+    defer result.deinit();
+    if (c.fchmod(result.hints[0].descriptor, 0o644) != 0) return error.FixturePermissionFailed;
+    try std.testing.expectError(error.UnsafeNativeSourceContext, result.hints[0].verify());
+    if (c.fchmod(result.hints[0].descriptor, 0o600) != 0) return error.FixturePermissionFailed;
+    if (c.renameat(registry, context_name, registry, "retained-old") != 0) return error.FixtureRenameFailed;
+    try writeContext(registry, context_name, raw);
+    try std.testing.expectError(error.NativeSourceContextChanged, result.hints[0].verify());
+    _ = try metadata.statAt(registry, context_name, c.AT.SYMLINK_NOFOLLOW);
+    _ = try metadata.statAt(registry, "retained-old", c.AT.SYMLINK_NOFOLLOW);
+}
+
+test "native context duplicate owner and shared retained capacity refuse with FD cleanup" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const registry = try fixture.directory(source_context.registry_name);
+    defer _ = c.close(registry);
+    const raw = try contextDocument(&fixture, context_name[0..64]);
+    defer allocator.free(raw);
+    const next = try contextDocument(&fixture, next_context_name[0..64]);
+    defer allocator.free(next);
+    try writeContext(registry, context_name, raw);
+    try writeContext(registry, next_context_name, next);
+    var budget = try inventory.Budget.init(io, null);
+    const before = try openFdCount();
+    try std.testing.expectError(error.NativeOwnerAmbiguous, source_context.collect(io, allocator, fixture.root, &budget));
+    try std.testing.expectEqual(before, try openFdCount());
+    if (c.unlinkat(registry, next_context_name, 0) != 0) return error.FixtureUnlinkFailed;
+    budget = try inventory.Budget.init(io, null);
+    budget.candidate_count = inventory.maximum_candidates;
+    try std.testing.expectError(error.NativeInventoryCapacity, source_context.collect(io, allocator, fixture.root, &budget));
+    try std.testing.expectEqual(before, try openFdCount());
+}

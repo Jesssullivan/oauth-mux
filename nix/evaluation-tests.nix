@@ -80,7 +80,34 @@ let
     sourcePath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-modeled-unit/ai.xoxd.omux.dev.service";
     loginPath = "/home/evaluation/.config/systemd/user/default.target.wants/ai.xoxd.omux.dev.service";
   };
+  deploymentConfig = evaluate {
+    programs.omux.instances.development.nativeDeployment = {
+      registeredPackageRoot = "/nix/store/registered-native-package";
+      installationRoot = "/configured/space \"quote\" percent%t dollar$HOME";
+    };
+  };
+  rejectsDeployment = value: !(builtins.tryEval (builtins.deepSeq
+    (evaluate { programs.omux.instances.development.nativeDeployment = lib.mkForce value; })
+    true)).success;
   tests = {
+    explicitNativeDeploymentArguments = lib.hasSuffix
+      '' daemon --native-package-root "/nix/store/registered-native-package" --native-installation-root "/configured/space \"quote\" percent%%t dollar$$HOME"''
+      deploymentConfig.systemd.user.services."ai.xoxd.omux.dev".Service.ExecStart;
+    nativeDeploymentIsInstanceScoped = deploymentConfig.systemd.user.services."ai.xoxd.omux".Service.ExecStart
+      == config.systemd.user.services."ai.xoxd.omux".Service.ExecStart;
+    nativeDeploymentNeverEntersEnvironment = deploymentConfig.systemd.user.services."ai.xoxd.omux.dev".Service.Environment
+      == [ "XDG_RUNTIME_DIR=%t" ];
+    nativeDeploymentDoesNotChangeLaunchers = builtins.map (item: item.omuxLauncherScripts) deploymentConfig.home.packages
+      == builtins.map (item: item.omuxLauncherScripts) config.home.packages;
+    oversizedNativeDeploymentRejected = rejectsDeployment {
+      registeredPackageRoot = "/" + lib.concatStrings (lib.replicate 4096 "a");
+      installationRoot = "/install";
+    };
+    partialNativeDeploymentRejected = rejectsDeployment { registeredPackageRoot = "/package"; };
+    relativeNativeDeploymentRejected = rejectsDeployment { registeredPackageRoot = "relative"; installationRoot = "/install"; };
+    traversalNativeDeploymentRejected = rejectsDeployment { registeredPackageRoot = "/package"; installationRoot = "/install/../other"; };
+    delimiterNativeDeploymentRejected = rejectsDeployment { registeredPackageRoot = "/package"; installationRoot = "/install\nother"; };
+
     literalDaemonServiceRecord = lib.hasInfix
       "export OMUX_INSTALL_SERVICE_RECORD=${lib.escapeShellArg "${literalConfigHome}/omux/instances/development/service.json"}"
       literalScripts.omuxd;

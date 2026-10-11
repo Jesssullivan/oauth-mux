@@ -38,6 +38,8 @@ FIELDS = frozenset(("schemaVersion", "scope", "hostAlias", "proofId", "deadlineM
                     "controllerTools", "controllerInventory", "controllerNarProof", "vaultWrapperAuthority"))
 CLEANUP_RESERVE_NS = 120 * 10**9
 BROWSER_INVENTORY_LIMIT = 8 * 1024 * 1024
+INSTALLED_SCOPE = 'yoga-local-installed-guard-qualification-v1'
+INSTALLED_FIELDS = FIELDS | {'installedWorkspace'}
 
 
 def require_unit_absent(control, proof_id, deadline_ns):
@@ -167,8 +169,9 @@ def decode(payload):
 
 
 def schema(value, deadline_ns, source_root, tools, graph_sha256, uid):
-    require(type(value) is dict and set(value) == FIELDS and type(value["schemaVersion"]) is int
-            and value["schemaVersion"] == 1 and value["scope"] == "yoga-local-guard-qualification-v1"
+    installed = type(value) is dict and value.get('scope') == INSTALLED_SCOPE
+    require(type(value) is dict and set(value) == (INSTALLED_FIELDS if installed else FIELDS) and type(value["schemaVersion"]) is int
+            and value["schemaVersion"] == 1 and value["scope"] == (INSTALLED_SCOPE if installed else "yoga-local-guard-qualification-v1")
             and value["hostAlias"] == "yoga" and isinstance(value["proofId"], str)
             and coordinator.UUID.fullmatch(value["proofId"])
             and type(value["deadlineMonotonicNs"]) is int and value["deadlineMonotonicNs"] == deadline_ns,
@@ -204,6 +207,12 @@ def schema(value, deadline_ns, source_root, tools, graph_sha256, uid):
                 and isinstance(value[name]["sha256"], str) and SHA.fullmatch(value[name]["sha256"]),
                 "invalid yoga controller closure evidence")
     wrapper_envelope_schema(value)
+    if installed:
+        selected = value['installedWorkspace']
+        require(type(selected) is dict and set(selected) == {'path','sha256'}
+                and selected['path'] == str(Path(source_root)/'installed-workspace.json')
+                and type(selected['sha256']) is str and SHA.fullmatch(selected['sha256']),
+                'invalid Yoga installed inventory selector')
     return value
 
 
@@ -261,6 +270,13 @@ def wrapper_capture(value, deadline_ns, *, wrapper_paths=None, native_manifest_p
     selected = wrapper_envelope_schema(value)
     paths = {name: value['inputPaths'][name] for name in ('dbus_session', 'dbus_daemon', 'keyring')}
     shas = {name: value['inputSha256'][name] for name in paths}
+    # Only the current declared generation's physical Python has this alias.
+    # Historical logical-role callers keep their original validator route.
+    import yoga_python_role_alias as python_alias
+    if selected['controllerTools']['python'] == python_alias.PHYSICAL:
+        from yoga_wrapper_companion_capture import Capture
+        return Capture(selected, paths if wrapper_paths is None else wrapper_paths, shas,
+            deadline_ns, validator=validator, custody=custody, native_manifest_path=native_manifest_path)
     return custody.AuthorityCapture(selected, paths if wrapper_paths is None else wrapper_paths, shas,
         deadline_ns, validator=validator, native_manifest_path=native_manifest_path)
 
@@ -373,12 +389,24 @@ def runtime_qualification(value, deadline_ns, *, retain_inventory=False):
 
 def preallocate(path, digest, deadline_ns, *, manager, arguments, state_root, source_root,
                 home, tools, graph_sha256, uid, operator_descriptor):
+    return _preallocate(path, digest, deadline_ns, manager=manager, arguments=arguments,
+        state_root=state_root, source_root=source_root, home=home, tools=tools,
+        graph_sha256=graph_sha256, uid=uid, operator_descriptor=operator_descriptor)
+
+
+def _preallocate(path, digest, deadline_ns, *, manager, arguments, state_root, source_root,
+                 home, tools, graph_sha256, uid, operator_descriptor, reserved=False):
     finite("yoga-toolbar", manager, arguments)
+    validator = schema
+    if reserved:
+        import guard_yoga_toolbar_reserved as reservation
+        validator = reservation.schema
     display.budget(deadline_ns)
     require(deadline_ns - time.monotonic_ns() > CLEANUP_RESERVE_NS, "yoga deadline lacks cleanup reserve")
     selectors(path, state_root, source_root, home)
-    value = schema(decode(file_bytes(path, 65536, deadline_ns, private=True, expected=digest)),
+    value = validator(decode(file_bytes(path, 65536, deadline_ns, private=True, expected=digest)),
                    deadline_ns, source_root, tools, graph_sha256, uid)
+    installed_capture = None
     for selection in value["inputPaths"].values():
         require(not Path(selection).is_relative_to(home), "yoga input is hidden by personal HOME mask")
     proof_root = str(Path(state_root) / value["proofId"])
@@ -391,17 +419,34 @@ def preallocate(path, digest, deadline_ns, *, manager, arguments, state_root, so
     witness, pin = display.capture_pinned(value["sourceSocket"], proof_root + "/wayland.sock", proof_root, uid, deadline_ns)
     try:
         require(witness["snapshot"] == value["compositorSnapshot"], "yoga compositor identity differs")
-        return {"receipt": value, "witness": witness, "pin": pin, "receiptPath": path,
+        if reserved or value['scope'] == INSTALLED_SCOPE:
+            import guard_yoga_installed_workspace as installed
+            installed_capture = installed.Capture(source_root,value['installedWorkspace'],deadline_ns,file_bytes)
+            installed_capture.qualify(value,graph_sha256)
+        result = {"receipt": value, "witness": witness, "pin": pin, "receiptPath": path,
                 "receiptSha256": digest, "operatorDescriptor": operator_descriptor,
                 "browserInventory": browser_inventory}
+        if installed_capture is not None:
+            result['installedCapture'] = installed_capture
+        return result
     except BaseException:
+        if installed_capture is not None:
+            installed_capture.close()
         pin.close()
         raise
 
 
-def refresh(admission, home, graph_sha256):
+def refresh(admission, home, graph_sha256, *, cleanup=False):
     value, witness = admission["receipt"], admission["witness"]
-    require(schema(decode(file_bytes(admission["receiptPath"], 65536, witness["deadline_ns"], private=True,
+    validator = schema
+    if admission.get('reservedToolbar') is True:
+        import guard_yoga_toolbar_reserved as reservation
+        reservation.capture(admission, cleanup=cleanup)
+        validator = lambda *arguments: reservation.schema(*arguments, cleanup=cleanup)
+    if admission.get('reservedToolbar') is True or value['scope'] == INSTALLED_SCOPE:
+        import guard_yoga_installed_workspace as installed
+        require(installed.verified(admission) is True,'Yoga installed inventory changed')
+    require(validator(decode(file_bytes(admission["receiptPath"], 65536, witness["deadline_ns"], private=True,
                                     expected=admission["receiptSha256"])), witness["deadline_ns"], value["sourceRoot"],
                    value["controllerTools"], graph_sha256, witness["uid"]) == value, "yoga receipt changed")
     local_identity(value, witness["deadline_ns"], witness["uid"], admission["operatorDescriptor"])
@@ -429,6 +474,11 @@ def repository_inventory(admission, run):
 
 
 def repository_bindings(admission, run):
+    if admission.get('reservedToolbar') is True or admission['receipt'].get('scope') == INSTALLED_SCOPE:
+        import guard_yoga_installed_workspace as installed
+        require(installed.verified(admission) is True,'Yoga installed inventory is unqualified')
+        # No external project repository selectors enter the closed mini-graph.
+        return {}
     path, inventory = repository_inventory(admission, run)
     expected = {'path': str(path), 'sha256': inventory['sha256']}
     require(admission.get('publishedInventory') == expected, 'Yoga repository inventory is not published')
@@ -444,6 +494,8 @@ def repository_bindings(admission, run):
 
 
 def publish_repository_inventory(admission, run):
+    if admission.get('reservedToolbar') is True or admission['receipt'].get('scope') == INSTALLED_SCOPE:
+        return repository_bindings(admission,run)
     path, inventory = repository_inventory(admission, run)
     deadline = admission['witness']['deadline_ns']
     parent = inputs.open_parent(str(path), os.getuid(), deadline, time.monotonic_ns)

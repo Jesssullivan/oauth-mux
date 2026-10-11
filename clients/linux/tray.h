@@ -1,6 +1,7 @@
 #pragma once
 
 #include "omux_client.h"
+#include "codex_account_acquisition.h"
 #include <QDialog>
 #include <QJsonArray>
 #include <QLabel>
@@ -35,6 +36,8 @@ private:
                    const QStringList &fields);
     void closeEvent(QCloseEvent *event) override;
     OmuxClient client_;
+    std::unique_ptr<CodexAccountAcquisition> acquisition_;
+    QPushButton *sourceSignIn_;
     QSystemTrayIcon tray_;
     QLabel *connection_;
     QLabel *message_;
@@ -46,6 +49,7 @@ private:
     QTableWidget *accounts_;
     QTableWidget *sources_;
     QLabel *sourceNotice_;
+    QLabel *sourceAcquisitionNotice_;
     QPushButton *sourceEnroll_;
     QPushButton *sourceReconcile_;
     QPushButton *sourceDisconnect_;
@@ -66,5 +70,6 @@ private:
     QHash<QString, QString> integrationPaths_;
     QHash<QString, QString> accountLabels_;
     QString nativeSocket_;
+    QString acquisitionSourceSelection_;
     QList<QWidget *> mutationControls_;
 };

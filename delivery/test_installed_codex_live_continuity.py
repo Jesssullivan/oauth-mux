@@ -32,19 +32,26 @@ def checked_owned_endpoint(home, native):
     return endpoint
 
 # Private native reads retain no raw packet or diagnostic output.
-def checked_native_rpc(endpoint, method, params):
+def checked_native_rpc(endpoint, method, params, *, deadline=None):
     identifier = os.urandom(32).hex()
     packet = json.dumps({"jsonrpc": "2.0", "id": identifier, "method": method,
                          "params": params}, separators=(",", ":")).encode()
     require(len(packet) <= tui.FRAME_LIMIT, "live native packet exceeds bound")
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as channel:
-        channel.settimeout(5)
+        def phase_budget():
+            left = 5 if deadline is None else deadline - time.monotonic()
+            require(left > 0, "live native action deadline expired")
+            channel.settimeout(min(5, left))
+        phase_budget()
         channel.connect(str(endpoint))
         pid, uid, gid = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         require(pid == NATIVE_PEERS.get(str(endpoint)) and uid == os.getuid() and gid == os.getgid(),
                 "live native peer differs")
+        phase_budget()
         require(channel.send(packet) == len(packet), "live native packet incomplete")
+        phase_budget()
         raw, _, flags, _ = channel.recvmsg(tui.FRAME_LIMIT)
+        require(deadline is None or time.monotonic() < deadline, "live native action deadline expired")
         require(raw and not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC), "live native reply exceeds bound")
     value = json.loads(raw, object_pairs_hook=tui.strict_object)
     require(isinstance(value, dict) and set(value) == {"jsonrpc", "id", "result"}
@@ -67,7 +74,7 @@ NATIVE_CONTEXT_KINDS = {
 }
 
 def submitted_text_prompt(marker, nonce):
-    require(marker in ("OMUX_A_DONE", "OMUX_B_DONE") and isinstance(nonce, str)
+    require(marker in ("OMUX_INITIAL_DONE", "OMUX_A_DONE", "OMUX_B_DONE") and isinstance(nonce, str)
             and re.fullmatch(r"[0-9a-f]{32}", nonce), "live submitted prompt identity differs")
     return "Reply with exactly " + marker + ". Do not use tools. Proof nonce: " + nonce + "."
 
@@ -195,12 +202,30 @@ def fresh_runtime_bundle(candidate, receipt, pin_path, verifier=None):
             "fresh manifest differs from independently admitted input")
     return manifest, files
 
+# This distinct fourth delta is a public source identity, not a live claim.
+PROTOCOL_HISTORY_PATCHES = ["5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6","3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53","84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5","b4dd868ac11d863f65e9fe3031d83b8fb7164a5551abca20dc46424c0465c48c"]
+
+def validate_fresh_patches(pins):
+    require(type(pins) is list and (
+        len(pins) == 3 and all(type(pin) is str and re.fullmatch(r"[0-9a-f]{64}",pin) for pin in pins)
+        or pins == PROTOCOL_HISTORY_PATCHES),
+        "fresh runtime patch chain differs")
+
 def runtime_identity(manifest, kind):
     if kind == "retained":
         return {"upstream_commit": manifest["candidate"]["upstream_commit"],
                 "candidate_patch_sha256": manifest["candidate"]["patch_sha256"]}
     require(kind == "fresh" and manifest.get("kind") == FRESH_KIND,
             "runtime identity kind differs")
+    validate_fresh_patches(manifest["chain"]["patch_sha256"])
+    if len(manifest["chain"]["patch_sha256"]) == 4:
+        proof = manifest["chain"].get("native_protocol_history")
+        require(type(proof) is dict and set(proof) == {"protocol","schema","cli","artifact_envelopes","artifact_files"}
+                and proof["protocol"]["kind"] == proof["schema"]["kind"] == "omux-protocol-history-native-checks-v1"
+                and proof["protocol"]["stage"] == 1 and type(proof["protocol"]["stage"]) is int
+                and proof["schema"]["stage"] == 2 and type(proof["schema"]["stage"]) is int
+                and proof["cli"]["kind"] == "omux-protocol-history-cli-qualification-v1",
+                "fresh protocol-history runtime omitted its admitted actual chain")
     return {"runtime_kind": FRESH_KIND, "upstream_commit": manifest["chain"]["upstream_commit"],
             "candidate_patch_sha256s": manifest["chain"]["patch_sha256"]}
 
@@ -257,22 +282,30 @@ def minimum_reasoning_effort(catalog, model):
     return min(efforts, key=EFFORT_RANK.__getitem__)
 
 def validate_receipt(value):
+    _validate_receipt(value, accepted_history=True)
+
+def validate_same_process_receipt(value):
+    _validate_receipt(value, accepted_history=False)
+
+def _validate_receipt(value, *, accepted_history):
     fresh = isinstance(value, dict) and value.get("runtime_kind") == FRESH_KIND
     keys = (RECEIPT_KEYS - {"candidate_patch_sha256"}) | {"runtime_kind", "candidate_patch_sha256s"} if fresh else RECEIPT_KEYS
     require(isinstance(value, dict) and set(value) == keys,
             "redacted live receipt shape differs")
     fixed = {"schema_version": 1,
-             "scope": "operator_drain_same_process_completed_turn_substitution",
+             "scope": ("accepted_history_cold_resume_and_operator_drain_same_process_substitution"
+                       if accepted_history else "operator_drain_same_process_completed_turn_substitution"),
              "transition_reason": "operator_drain", "application": "omux-maintained-codex",
              "native_context_mode": "text_transcript_v1", "reasoning_summary": "none",
              "minimum_reasoning_effort_verified": True, "native_detach_proven": False,
              "integration_restoration_proven": False,
-             "accounts": ["account_a", "account_b"], "submitted_turns": 2,
-             "accepted_completed_turns": 2, "tool_calls": 0, "provider_usage_records": 2,
+             "accounts": ["account_a", "account_b"], "submitted_turns": 3 if accepted_history else 2,
+             "accepted_completed_turns": 3 if accepted_history else 2, "tool_calls": 0,
+             "provider_usage_records": 3 if accepted_history else 2,
              "same_process": True, "same_native_owner": True, "same_native_thread": True,
              "native_store_identity_preserved": True, "accepted_history_prefix_preserved": True,
-             "accepted_work_repeated": False, "empty_native_resume_checkpoint_proven": True,
-             "accepted_history_cold_resume_proven": False, "provider_rejection_handoff_proven": False,
+             "accepted_work_repeated": False, "empty_native_resume_checkpoint_proven": not accepted_history,
+             "accepted_history_cold_resume_proven": accepted_history, "provider_rejection_handoff_proven": False,
              "concurrent_handoff_proven": False, "full_native_account_lifecycle_proven": False}
     require(all(type(value[key]) is type(expected) and value[key] == expected
                 for key, expected in fixed.items()), "redacted live receipt predicates differ")
@@ -280,9 +313,7 @@ def validate_receipt(value):
             "redacted reasoning effort differs")
     if fresh:
         pins = value["candidate_patch_sha256s"]
-        require(isinstance(pins, list) and len(pins) == 3
-                and all(isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins),
-                "fresh runtime patch chain differs")
+        validate_fresh_patches(pins)
     for key, width in (("upstream_commit", 40),
                        ("runtime_archive_sha256", 64)):
         require(isinstance(value[key], str)
@@ -312,6 +343,8 @@ class LiveScenario:
         self.runtime_kind = runtime_kind
         self.runtime_pin = runtime_pin
         self.verified_runtime_identity = None
+        self.initial_accepted = None
+        self.accepted_resume_verified = False
 
     def read_runtime_bundle(self, candidate, receipt):
         if self.runtime_kind == "fresh":
@@ -396,21 +429,27 @@ class LiveScenario:
                 "selected native request audit shape differs")
         return value
 
-    def history(self, home, thread, baseline):
+    def history(self, home, thread, baseline=None):
         with closing(sqlite3.connect((home / "state_5.sqlite").as_uri() + "?mode=ro",
                                      uri=True, timeout=1)) as connection:
             rows = connection.execute("SELECT id,rollout_path,source,cwd,history_mode,cli_version,name,"
                                       "tokens_used,has_user_event FROM threads WHERE id=?", (thread,)).fetchall()
-        require(len(rows) == 1 and rows[0][:7] == baseline[0][:7],
+        require(len(rows) == 1 and rows[0][0] == thread
+                and (baseline is None or rows[0][:7] == baseline[0][:7]),
                 "live native metadata identity changed")
         path = Path(rows[0][1])
         require(path.resolve(strict=True) == path and path.is_relative_to(home.resolve(strict=True)),
                 "live native history custody escaped selected home")
         info = path.stat()
         payload = support.private_file(path, MAX_HISTORY)
-        require((info.st_dev, info.st_ino) == baseline[1]
-                and payload.startswith(baseline[3]) and payload.endswith(b"\n"),
+        require((baseline is None or ((info.st_dev, info.st_ino) == baseline[1]
+                and payload.startswith(baseline[3]))) and payload.endswith(b"\n"),
                 "live native history changed accepted prefix or store identity")
+        sessions = [item["payload"] for item in
+                    (json.loads(line, object_pairs_hook=tui.strict_object) for line in payload.splitlines())
+                    if item.get("type") == "session_meta"]
+        require(len(sessions) == 1 and sessions[0].get("id") == thread
+                and sessions[0].get("session_id") == thread, "live native root identity changed")
         return rows[0], (info.st_dev, info.st_ino), hashlib.sha256(payload).digest(), payload
 
     def completed_text(self, current, previous, marker, expected_prompt):
@@ -448,7 +487,81 @@ class LiveScenario:
             and len(completed) == 1 and completed[0].get("error") is None \
             and completed[0].get("last_agent_message", "").strip() == marker and len(usage) == 1
 
+    def first_accepted_history(self, cli, home, thread, terminal, endpoint, observed):
+        require(self.initial_accepted is None, "initial accepted turn cannot repeat")
+        initial = self.audit(cli, thread, observed["nativeRef"])
+        require(initial["records"] == [] and not initial["pending_requests"]
+                and not initial["pending_outcomes"], "initial native authority was not empty")
+        pid, witness = terminal.process.pid, tui.process_witness(terminal.process.pid)
+        marker = "OMUX_INITIAL_DONE"
+        prompt = submitted_text_prompt(marker, os.urandom(16).hex())
+        terminal.send(prompt + "\r")
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline:
+            terminal.alive()
+            audit = self.audit(cli, thread, observed["nativeRef"])
+            require(len(audit["records"]) <= 1, "initial turn exceeded one request allowance")
+            if len(audit["records"]) == 1:
+                record = audit["records"][0]
+                attempt = record["first"]
+                accepted, finished = attempt["accepted_report"], attempt["terminal_report"]
+                require(record["alternate"] is None, "initial turn attempted alternate replay")
+                if attempt["state"] == "completed" and accepted is not None and finished is not None:
+                    require(attempt["account_handle"] in self.accounts
+                            and accepted["event"] == "accepted" and finished["event"] == "completed"
+                            and accepted["response_started"] and not accepted["pre_acceptance"]
+                            and finished["response_started"] and not finished["pre_acceptance"]
+                            and not audit["pending_requests"] and not audit["pending_outcomes"]
+                            and audit["binding"]["account_handle"] == attempt["account_handle"],
+                            "initial turn lacks accepted completed account authority")
+                    # Only genuine accepted native work materializes this history.
+                    # No export, rename, synthetic SessionMeta or seeded rollout.
+                    history = self.history(home, thread)
+                    if self.completed_text(history, ((), (), b"", b""), marker, prompt):
+                        require(terminal.process.pid == pid and tui.process_witness(pid) == witness
+                                and tui.status(endpoint, thread) == observed,
+                                "initial accepted turn changed native authority")
+                        self.initial_accepted = {"account":attempt["account_handle"],
+                            "request_id":record["request_id"], "native_ref":observed["nativeRef"],
+                            "pid":pid, "witness":witness, "history":history,
+                            "record":{**record,"first":{key:value for key,value in attempt.items()
+                                                      if key != "route_generation"}}}
+                        return history
+            terminal.pump(0.05)
+        raise ValueError("initial accepted native text deadline exceeded")
+
+    def verify_accepted_resume(self, before, resumed, thread, terminal, observed):
+        initial = self.initial_accepted
+        require(initial is not None and before[3].startswith(initial["history"][3])
+                and before[1] == initial["history"][1]
+                and terminal.process.pid != initial["pid"]
+                and observed["nativeRef"] != initial["native_ref"],
+                "accepted cold resume lacks distinct process and preserved initial work")
+        tui.resumed_history(before, resumed, thread)
+        self.accepted_resume_verified = True
+
     def prove(self, cli, home, thread, terminal, endpoint, observed, baseline, candidate, receipt):
+        require(self.accepted_resume_verified and self.initial_accepted is not None,
+                "accepted cold resume must precede resumed-process handoff")
+        result, completed = self.prove_same_process(cli, home, thread, terminal, endpoint,
+            observed, baseline, candidate, receipt, initial_account=self.initial_accepted["account"],
+            forbidden_request_id=self.initial_accepted["request_id"])
+        retired = self.audit(cli, thread, self.initial_accepted["native_ref"])
+        require(len(retired["records"]) == 1 and not retired["pending_requests"]
+                and not retired["pending_outcomes"], "retired initial accepted authority changed")
+        initial_record = retired["records"][0]
+        require({**initial_record,"first":{key:value for key,value in initial_record["first"].items()
+                                           if key != "route_generation"}} == self.initial_accepted["record"],
+                "initial accepted record was repeated or changed across resume")
+        result.update(scope="accepted_history_cold_resume_and_operator_drain_same_process_substitution",
+            submitted_turns=3, accepted_completed_turns=3, provider_usage_records=3,
+            empty_native_resume_checkpoint_proven=False, accepted_history_cold_resume_proven=True)
+        validate_receipt(result)
+        return result, completed
+
+    def prove_same_process(self, cli, home, thread, terminal, endpoint, observed, baseline, candidate, receipt,
+                           *, initial_account=None, forbidden_request_id=None):
+        """Two accepted turns under one native ref; no accepted cold-resume claim."""
         checkpoint = json.loads(baseline[3].splitlines()[-1], object_pairs_hook=tui.strict_object)
         settings = checkpoint.get("payload", {}).get("thread_settings", {})
         require(settings.get("model") == self.manifest["model"]
@@ -487,6 +600,9 @@ class LiveScenario:
                             "live proof observed alternate or unauthorized request account")
                     accepted, finished = first["accepted_report"], first["terminal_report"]
                     if first["state"] == "completed" and accepted is not None and finished is not None:
+                        require(current["request_id"] != forbidden_request_id
+                                and (initial_account is None or index != 0 or first["account_handle"] == initial_account),
+                                "resumed initial account differs or repeated accepted request")
                         require(accepted["event"] == "accepted" and finished["event"] == "completed"
                                 and accepted["response_started"] and not accepted["pre_acceptance"]
                                 and finished["response_started"] and not finished["pre_acceptance"]
@@ -531,7 +647,7 @@ class LiveScenario:
                   "accepted_work_repeated": False, "empty_native_resume_checkpoint_proven": True,
                   "accepted_history_cold_resume_proven": False, "provider_rejection_handoff_proven": False,
                   "concurrent_handoff_proven": False, "full_native_account_lifecycle_proven": False}
-        validate_receipt(result)
+        validate_same_process_receipt(result)
         return result, histories[-1]
 
 def main():

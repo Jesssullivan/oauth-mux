@@ -5,18 +5,21 @@ The native reset is experimental and unshipped. Start with the
 continue using ordinary terminal applications. The [authority map](authority-map.md)
 resolves design, implementation, evidence and historical release claims.
 
-The current execution sequence is the [fifteen-hour integrated delivery sprint](plans/omux-integrated-delivery-sprint-2026-10-05.md),
+The original execution sequence is the [fifteen-hour integrated delivery sprint](plans/omux-integrated-delivery-sprint-2026-10-05.md),
 `2026-10-05 04:03:36–19:03:36 UTC`, with [durable workstream notes](agent-notes/2026-10-05-sess-omux-integrated-delivery.md)
 and the [implementation ledger](../.goal/omux-integrated-delivery-2026-10-05.json).
 Omux develops the adapter for each application; a vendor-supplied Codex hook is
 not a dependency. The architecture reset remains the SSOT and all release claims
 remain version-bound to evidence.
 
+The [October 10 implementation checkpoint](agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
+records the current dated source/model/vault scope and remaining operational gates.
+
 The original fifteen-hour checkpoint was incomplete; resumed implementation
-retains that clock. Current ledger rows record five scoped passes: authority,
+retains that clock. The historical ledger records five scoped passes: authority,
 containment, installed Linux channel/setup and local SPA delivery. Actual
 Chromium synthetic recovery and selected-generation daemon restart are partial
-browser/development-loop evidence, with six gates still open. Next proof lanes
+browser/development-loop evidence, with six gates still open at that checkpoint. Its next proof lanes
 are Yoga operator-local Wayland consent, paired Home Manager acquisition and
 evaluation, and complete native dependencies/candidate qualification. Provider
 grants, native continuity and achieved reliability baselines remain unproved.

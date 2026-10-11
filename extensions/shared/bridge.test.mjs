@@ -506,6 +506,75 @@ test("selected disconnect resolves only its unknown connect without new read per
   assert.deepEqual(mock.cookieQueries, []);
 });
 
+test("selected disconnect settles a lost reconcile acknowledgement without reading or disconnecting another context", async () => {
+  const mock = browserMock({ selectedAdapter: "codex" });
+  await mock.service.command({ command: "connect", adapter: "codex" });
+  const independent = structuredClone(mock.persisted.omuxSourceMetadataV1[0]);
+  const independentState = mock.persisted.omuxSourceStatesV1[independent.sourceId];
+  mock.api.tabs.query = async () => [{ id: 7, url: "https://chatgpt.com/settings", cookieStoreId: "second-store", incognito: false }];
+  mock.api.cookies.getAllCookieStores = async () => [{ id: "second-store", tabIds: [7] }];
+  await mock.service.command({ command: "connect", adapter: "codex" });
+  mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages, nativeFailure: true });
+  await assert.rejects(mock.service.command({ command: "reconcile", adapter: "codex" }), fails("native_host_unavailable"));
+  const original = structuredClone(mock.messages.at(-1));
+  assert.equal(original.method, "browser.reconcile");
+  mock.api.permissions.contains = async () => { throw new Error("disconnect must not read or renew browser authority"); };
+  mock.api.cookies = undefined;
+  mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages });
+  const before = mock.messages.length;
+  assert.deepEqual(await mock.service.command({ command: "disconnect", adapter: "codex" }), { ok: true, status: "disconnected" });
+  assert.deepEqual(mock.messages[before], original);
+  assert.equal(mock.messages[before + 1].method, "browser.disconnect");
+  assert.deepEqual(mock.messages[before + 1].params, original.params);
+  assert.notEqual(mock.messages[before + 1].id, original.id);
+  assert.equal(mock.messages.length, before + 2);
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, [independent]);
+  assert.deepEqual(mock.persisted.omuxSourceStatesV1, { [independent.sourceId]: independentState });
+  assert.deepEqual(mock.persisted.omuxSourceRequestsV1, {});
+  assert.deepEqual(mock.removedPermissions, []);
+  assert.deepEqual(mock.cookieQueries, []);
+});
+
+test("unsettled reconcile cannot publish disconnect and keeps its original request across worker restart", async () => {
+  const cases = [
+    { name: "wrong request", code: "invalid_native_response", mutationReply: message => ({ version: 1, id: `${message.id}-wrong`, result: { accepted: true } }) },
+    { name: "false acceptance", code: "invalid_native_response", mutationReply: message => ({ version: 1, id: message.id, result: { accepted: false } }) },
+    { name: "daemon refusal", code: "daemon_rejected_request", mutationReply: message => ({ version: 1, id: message.id, error: { code: "ServiceBusy", message: fakeValue } }) },
+    { name: "unresolved transport", code: "native_host_unavailable", nativeFailure: true },
+    { name: "unqualified channel", code: "incompatible_native_host", channel: "development" },
+  ];
+  for (const scenario of cases) {
+    const mock = browserMock({ selectedAdapter: "codex" });
+    await mock.service.command({ command: "connect", adapter: "codex" });
+    mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages, nativeFailure: true });
+    await assert.rejects(mock.service.command({ command: "reconcile", adapter: "codex" }), fails("native_host_unavailable"));
+    const original = structuredClone(mock.messages.at(-1));
+    const metadata = structuredClone(mock.persisted.omuxSourceMetadataV1);
+    const requests = structuredClone(mock.persisted.omuxSourceRequestsV1);
+    mock.api.cookies = undefined;
+    const attempts = [];
+    mock.api.runtime.connectNative = () => nativePort({ messages: attempts, ...scenario });
+    await assert.rejects(mock.service.permissionsRemoved({ origins: ["https://chatgpt.com/*"] }), fails(scenario.code), scenario.name);
+    assert.deepEqual(attempts, scenario.channel ? [] : [original], scenario.name);
+    assert.deepEqual(mock.persisted.omuxSourceMetadataV1, metadata, scenario.name);
+    assert.deepEqual(mock.persisted.omuxSourceRequestsV1, requests, scenario.name);
+    assert.equal(mock.persisted.omuxSourceStatesV1[original.params.sourceId], "pending_disconnect", scenario.name);
+    const recovered = [];
+    mock.api.runtime.connectNative = () => nativePort({ messages: recovered });
+    mock.api.permissions.contains = async () => { throw new Error("pending disconnect must not require read permission"); };
+    let nextId = 0;
+    const restarted = new BrowserService({ api: mock.api, browserKind: "firefox", randomId: () => `reconcile-restart-${++nextId}` });
+    await restarted.reconcilePermissions();
+    assert.deepEqual(recovered[0], original, scenario.name);
+    assert.equal(recovered[1].method, "browser.disconnect", scenario.name);
+    assert.notEqual(recovered[1].id, original.id, scenario.name);
+    assert.equal(recovered.length, 2, scenario.name);
+    assert.deepEqual(mock.persisted.omuxSourceMetadataV1, [], scenario.name);
+    assert.deepEqual(mock.persisted.omuxSourceRequestsV1, {}, scenario.name);
+    assert.deepEqual(mock.cookieQueries, [], scenario.name);
+  }
+});
+
 test("unknown connect resolution refuses malformed or unresolved replies and preserves disconnect intent for restart", async () => {
   const cases = [
     { name: "wrong request", code: "invalid_native_response", mutationReply: message => ({ version: 1, id: `${message.id}-wrong`, result: { accepted: true } }) },
@@ -570,10 +639,12 @@ test("lost disconnect after resolved connect retains only the new disconnect ide
   assert.deepEqual(mock.persisted.omuxSourceRequestsV1, {});
 });
 
-test("disconnect never erases malformed pending authority or substitutes another pending mutation", async () => {
+test("disconnect never erases malformed pending or superseded authority", async () => {
   for (const [pending, code] of [
     [{ id: "pending-original", method: "browser.connect", extra: true }, "invalid_source_metadata"],
-    [{ id: "pending-original", method: "browser.importGrant" }, "uncertain_operation"],
+    [{ id: "pending-disconnect", method: "browser.disconnect", superseded: { id: "pending-original", method: "browser.connect" } }, "invalid_source_metadata"],
+    [{ id: "pending-original", method: "browser.disconnect", superseded: { id: "pending-original", method: "browser.importGrant" } }, "invalid_source_metadata"],
+    [{ id: "pending-disconnect", method: "browser.disconnect", superseded: { id: "pending-original", method: "browser.importGrant", capsule: {} } }, "invalid_source_metadata"],
   ]) {
     const mock = browserMock({ selectedAdapter: "codex", nativeFailure: true });
     await assert.rejects(mock.service.command({ command: "connect", adapter: "codex" }), fails("native_host_unavailable"));
@@ -587,6 +658,65 @@ test("disconnect never erases malformed pending authority or substitutes another
     assert.equal(mock.persisted.omuxSourceStatesV1[sourceId], "pending_disconnect");
     assert.equal(mock.persisted.omuxSourceMetadataV1.length, 1);
   }
+});
+
+test("explicit disconnect supersedes a lost import reply, preserves removal intent and never replays the capsule after restart", async () => {
+  const mock = browserMock();
+  await mock.service.command({ command: "connect", adapter: "fixture" });
+  const source = structuredClone(mock.persisted.omuxSourceMetadataV1[0]);
+  const independent = { adapter: "fixture", storeId: "independent-store", sourceId: "independent-source" };
+  mock.persisted.omuxSourceMetadataV1.push(independent);
+  mock.persisted.omuxSourceStatesV1[independent.sourceId] = "connected_schema_unproven";
+  let originalPort;
+  mock.api.runtime.connectNative = () => (originalPort = nativePort({ messages: mock.messages, nativeFailure: true }));
+  await assert.rejects(mock.service.cookieScopeChanged({ adapter: "fixture", storeId: source.storeId, removed: false }), fails("native_host_unavailable"));
+  const original = structuredClone(mock.messages.at(-1));
+  assert.equal(original.method, "browser.importGrant");
+  const before = mock.messages.length;
+  mock.api.cookies = undefined;
+  mock.api.permissions.contains = async () => { throw new Error("removal must not acquire provider data"); };
+  mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages, nativeFailure: true });
+  await assert.rejects(mock.service.command({ command: "disconnect", adapter: "fixture" }), fails("native_host_unavailable"));
+  const removal = structuredClone(mock.messages.at(-1));
+  assert.equal(mock.messages.length, before + 1);
+  assert.equal(removal.method, "browser.disconnect");
+  assert.notEqual(removal.id, original.id);
+  assert.equal(removal.params.sourceId, original.params.sourceId);
+  assert.equal(Object.hasOwn(removal.params, "capsule"), false);
+  assert.deepEqual(mock.persisted.omuxSourceRequestsV1[source.sourceId], {
+    id: removal.id, method: "browser.disconnect",
+    superseded: { id: original.id, method: "browser.importGrant" },
+  });
+  const retainedRemoval = structuredClone(mock.persisted.omuxSourceRequestsV1[source.sourceId]);
+  originalPort.onMessage.emit({ version: 1, id: original.id, result: { accepted: true } });
+  assert.deepEqual(mock.persisted.omuxSourceRequestsV1[source.sourceId], retainedRemoval);
+  assert.equal(mock.persisted.omuxSourceStatesV1[source.sourceId], "pending_disconnect");
+  assert.equal(JSON.stringify(mock.persisted).includes(fakeValue), false);
+  const recovered = [];
+  mock.api.runtime.connectNative = () => nativePort({ messages: recovered });
+  // Keep the independent context authorized while recovering only the removal.
+  mock.api.permissions.contains = async () => true;
+  const restarted = new BrowserService({ api: mock.api, browserKind: "firefox", randomId: () => "unused-restart-id", allowFixture: true });
+  await restarted.reconcilePermissions();
+  assert.deepEqual(recovered, [removal]);
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, [independent]);
+  assert.deepEqual(mock.persisted.omuxSourceStatesV1, { [independent.sourceId]: "connected_schema_unproven" });
+  assert.deepEqual(mock.persisted.omuxSourceRequestsV1, {});
+  assert.deepEqual(mock.removedPermissions, []);
+});
+
+test("superseding disconnect refuses an import ID collision before replacing the original request or dispatching", async () => {
+  const mock = browserMock({ selectedAdapter: "codex" });
+  await mock.service.command({ command: "connect", adapter: "codex" });
+  const source = mock.persisted.omuxSourceMetadataV1[0];
+  const pending = { id: "pending-import", method: "browser.importGrant" };
+  mock.persisted.omuxSourceRequestsV1[source.sourceId] = structuredClone(pending);
+  mock.service.randomId = () => pending.id;
+  const before = mock.messages.length;
+  await assert.rejects(mock.service.command({ command: "disconnect", adapter: "codex" }), fails("invalid_source_metadata"));
+  assert.equal(mock.messages.length, before);
+  assert.deepEqual(mock.persisted.omuxSourceRequestsV1[source.sourceId], pending);
+  assert.equal(mock.persisted.omuxSourceStatesV1[source.sourceId], "pending_disconnect");
 });
 
 test("startup unknown-connect resolution and disconnect share the existing eight-mutation budget", async () => {
@@ -659,6 +789,108 @@ test("startup caps item count and leaves remaining sources for an explicit subse
   assert.equal(mock.messages.length, 8, "there is no automatic continuation loop");
   await service.reconcileSources();
   assert.equal(mock.messages[8].params.sourceId, "source-8", "the next explicit event starts with deferred sources");
+});
+
+function cleanupContexts(count) {
+  const mock = browserMock({ selectedAdapter: "codex" });
+  const entries = Array.from({ length: count }, (_, index) => ({ adapter: "codex", storeId: `cleanup-store-${index}`, sourceId: `cleanup-source-${index}` }));
+  mock.persisted.omuxSourceMetadataV1 = structuredClone(entries);
+  mock.persisted.omuxSourceStatesV1 = Object.fromEntries(entries.map(entry => [entry.sourceId, "pending_disconnect"]));
+  mock.persisted.omuxSourceRequestsV1 = Object.fromEntries(entries.map((entry, index) => [entry.sourceId, { id: `original-removal-${index}`, method: "browser.disconnect" }]));
+  mock.api.permissions.contains = async () => { throw new Error("pending removal needs no read permission"); };
+  mock.api.cookies = undefined;
+  let nextId = 0;
+  const restart = (options = {}) => new BrowserService({ api: mock.api, browserKind: "firefox", randomId: () => `cleanup-health-${++nextId}`, monotonicNow: () => 0, ...options });
+  return { ...mock, entries, restart };
+}
+
+test("cleanup continues past repeatedly unaccepted removals after worker restart within the eight-send budget", async () => {
+  const mock = cleanupContexts(12);
+  const blocked = new Set(mock.entries.slice(0, 8).map(entry => entry.sourceId));
+  // These sources initially lost permission, rather than recording removal.
+  mock.persisted.omuxSourceStatesV1 = Object.fromEntries(mock.entries.map(entry => [entry.sourceId, "connected_schema_unproven"]));
+  mock.api.permissions.contains = async () => false;
+  mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages, mutationReply: message => ({ version: 1, id: message.id, result: { accepted: !blocked.has(message.params.sourceId) } }) });
+  const first = mock.restart();
+  await assert.rejects(first.reconcilePermissions(), fails("invalid_native_response"));
+  assert.equal(mock.messages.length, 8);
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, mock.entries);
+  await first.reconcileSources();
+  assert.equal(mock.messages.length, 8, "source reconciliation cannot renew the shared startup budget");
+  await assert.rejects(mock.restart().reconcilePermissions(), fails("invalid_native_response"));
+  assert.equal(mock.messages.length, 16);
+  assert.deepEqual(mock.messages.slice(8, 12).map(message => message.params.sourceId), mock.entries.slice(8).map(entry => entry.sourceId));
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, mock.entries.slice(0, 8), "later revoked contexts complete despite earlier failures");
+  for (const message of mock.messages) {
+    assert.equal(message.method, "browser.disconnect");
+    assert.equal(message.id, `original-removal-${mock.entries.findIndex(entry => entry.sourceId === message.params.sourceId)}`);
+  }
+  assert.equal(mock.messages.some(message => message.method === "browser.importGrant"), false);
+  assert.deepEqual(mock.cookieQueries, []);
+  assert.deepEqual(mock.removedPermissions, [], "startup cleanup does not request or broaden provider permission");
+});
+
+test("cleanup advances after a failed request consumes the original startup deadline", async () => {
+  const mock = cleanupContexts(3);
+  let clock = 0;
+  mock.api.runtime.connectNative = () => {
+    const port = nativePort({ messages: mock.messages, nativeFailure: true });
+    const post = port.postMessage;
+    port.postMessage = message => { if (message.method !== "browser.health") clock = 10000; post(message); };
+    return port;
+  };
+  const first = mock.restart({ monotonicNow: () => clock });
+  await assert.rejects(first.reconcilePermissions(), fails("native_host_unavailable"));
+  await first.reconcileSources();
+  assert.equal(mock.messages.length, 1);
+  mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages });
+  await mock.restart().reconcilePermissions();
+  assert.deepEqual(mock.messages.slice(1).map(message => message.params.sourceId), ["cleanup-source-1", "cleanup-source-2", "cleanup-source-0"]);
+  assert.equal(mock.messages.at(-1).id, "original-removal-0");
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, []);
+  assert.deepEqual(mock.persisted.omuxSourceRequestsV1, {});
+});
+
+test("invalid cleanup cursor refuses before permission reads, metadata changes or native dispatch", async () => {
+  for (const cursor of [null, 0, "", "bad source", "x".repeat(129), { sourceId: "cleanup-source-0" }]) {
+    const mock = cleanupContexts(1);
+    mock.persisted.omuxSourceCleanupCursorV1 = cursor;
+    const before = structuredClone(mock.persisted);
+    await assert.rejects(mock.restart().reconcilePermissions(), fails("invalid_source_metadata"));
+    assert.deepEqual(mock.persisted, before);
+    assert.deepEqual(mock.messages, []);
+  }
+});
+
+test("a removed cursor target does not create source authority or strand remaining cleanup", async () => {
+  const mock = cleanupContexts(2);
+  mock.persisted.omuxSourceCleanupCursorV1 = "already-removed-source";
+  await mock.restart().reconcilePermissions();
+  assert.deepEqual(mock.messages.map(message => message.params.sourceId), mock.entries.map(entry => entry.sourceId));
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, []);
+  assert.equal(mock.messages.some(message => message.method !== "browser.disconnect"), false);
+});
+
+test("cleanup cursor write failure preserves original removal and dispatches no work", async () => {
+  const mock = cleanupContexts(2);
+  const before = structuredClone(mock.persisted);
+  mock.api.storage.local.set = async () => { throw new Error("synthetic-storage-unavailable"); };
+  await assert.rejects(mock.restart().reconcilePermissions(), /synthetic-storage-unavailable/);
+  assert.deepEqual(mock.persisted, before);
+  assert.deepEqual(mock.messages, []);
+});
+
+test("cleanup does not dispatch when persisting its cursor consumes the startup deadline", async () => {
+  const mock = cleanupContexts(2);
+  let clock = 0;
+  const save = mock.api.storage.local.set;
+  mock.api.storage.local.set = async value => { await save(value); clock = 10000; };
+  const service = mock.restart({ monotonicNow: () => clock });
+  await service.reconcilePermissions();
+  await service.reconcileSources();
+  assert.deepEqual(mock.messages, []);
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, mock.entries);
+  assert.equal(mock.persisted.omuxSourceCleanupCursorV1, "cleanup-source-1");
 });
 
 test("ambiguous disconnected-tab selection cannot disconnect multiple authorized contexts", async () => {
@@ -756,7 +988,7 @@ test("generated manifests grant no blanket sites, page scripts, browser debuggin
 });
 
 test("Bazel extension archives contain complete root manifests and local module dependencies", async () => {
-  for (const kind of ["chromium", "firefox"]) {
+  for (const kind of ["chromium", "firefox", "firefoxDev"]) {
     const argument = process.argv.find(value => value.startsWith(`--${kind}Archive=`));
     assert.ok(argument, "Bazel must supply the packaged browser artifact");
     const bytes = await readFile(argument.slice(argument.indexOf("=") + 1));
@@ -781,6 +1013,22 @@ test("Bazel extension archives contain complete root manifests and local module 
     }
     assert.equal(bytes.readUInt32LE(offset), 0x02014b50, "archive must contain a central directory");
     const manifest = JSON.parse(entries.get("manifest.json").toString("utf8"));
+    if (kind.startsWith("firefox")) {
+      const development = kind === "firefoxDev";
+      const source = JSON.parse(await readFile(new URL("../firefox/manifest.json", import.meta.url), "utf8"));
+      const expected = structuredClone(source);
+      if (development) {
+        expected.name += " (development)";
+        expected.browser_specific_settings.gecko.id = "browser-sources-dev@omux.xoxd.ai";
+      }
+      assert.deepEqual(manifest, expected, "channel packaging changes only the name and exact Gecko identity");
+      assert.equal(Object.hasOwn(manifest, "key"), false);
+      const expectedChannel = development
+        ? 'export const CHANNEL = "development";\nexport const INSTANCE = "dev";\nexport const NATIVE_HOST = "ai.xoxd.omux.dev";\n'
+        : await readFile(new URL("./channel.mjs", import.meta.url), "utf8");
+      assert.equal(entries.get("shared/channel.mjs").toString("utf8"), expectedChannel);
+      assert.equal([...entries.keys()].some(name => name.startsWith("META-INF/")), false, "local archives remain unsigned");
+    }
     for (const resource of [manifest.action.default_popup, manifest.background.service_worker, ...(manifest.background.scripts ?? [])].filter(Boolean)) assert.ok(entries.has(resource), `missing extension resource ${resource}`);
     for (const name of ["shared/service.mjs", "shared/protocol.mjs", "shared/adapters.mjs", "shared/acquisition.mjs", "shared/native.mjs", "shared/popup.mjs", "shared/popup.css"]) assert.ok(entries.has(name));
     assert.equal([...entries.keys()].some(name => name.endsWith(".test.mjs")), false);

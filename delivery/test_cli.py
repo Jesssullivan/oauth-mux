@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -253,6 +254,61 @@ class ControlPeer(AdapterPeer):
         else:
             raise ValueError("unexpected control request")
         return json.dumps(reply, separators=(",", ":")).encode() + b"\n"
+
+
+class NativeHostLaunchCliTest(unittest.TestCase):
+    """Built launch admission only; EOF avoids daemon, browser and vault IO."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory(dir=str(Path("/tmp").resolve()))
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.root.chmod(0o700)
+        self.alias = self.root / "omux-native-host"
+        self.alias.symlink_to(OMUX.resolve(strict=True))
+        self.states = {}
+        for selection in ("default", "dev"):
+            state = self.root / selection
+            state.mkdir(mode=0o700)
+            (state / "run").mkdir(mode=0o700)
+            self.states[selection] = state
+
+    def invoke(self, selection: str, caller: list[str]) -> subprocess.CompletedProcess:
+        environment = dict(os.environ)
+        environment.pop("XDG_RUNTIME_DIR", None)
+        environment["OMUX_INSTANCE"] = selection
+        return subprocess.run(
+            [str(self.alias), "--state-dir", str(self.states[selection]), *caller],
+            input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, timeout=10, check=False,
+        )
+
+    def test_firefox_launch_admits_only_its_selected_instance_id(self) -> None:
+        release = [str(self.root / "ai.xoxd.omux.json"), "browser-sources@omux.xoxd.ai"]
+        development = [str(self.root / "ai.xoxd.omux.dev.json"), "browser-sources-dev@omux.xoxd.ai"]
+        for selection, admitted, crossed in (("default", release, development), ("dev", development, release)):
+            with self.subTest(selection=selection):
+                result = self.invoke(selection, admitted)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, b"")
+                result = self.invoke(selection, crossed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"InvalidNativeHostCaller", result.stderr)
+                self.assertEqual(result.stdout, b"")
+        self.assertFalse(any((state / "run" / "browser.sock").exists() for state in self.states.values()))
+
+    def test_launch_shape_and_manual_diagnostics_remain_bounded(self) -> None:
+        for selection in ("default", "dev"):
+            with self.subTest(selection=selection):
+                for caller in ([], ["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]):
+                    self.assertEqual(self.invoke(selection, caller).returncode, 0)
+                identity = "browser-sources-dev@omux.xoxd.ai" if selection == "dev" else "browser-sources@omux.xoxd.ai"
+                for caller in ([str(self.root / "host.txt"), identity],
+                               [str(self.root / "host.json"), identity + ".extra"],
+                               ["https://fixture.invalid"]):
+                    result = self.invoke(selection, caller)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b"InvalidNativeHostCaller", result.stderr)
 
 
 class MutationCliTest(unittest.TestCase):
@@ -573,6 +629,134 @@ class GitHelperCliTest(unittest.TestCase):
             self.assertTrue(value.encode() not in result.stdout + result.stderr, "credential appeared in diagnostics")
         peer.requests.clear()
 
+
+
+class EnrollmentPeer(AdapterPeer):
+    def __init__(self, path: Path, mode: str, *, adapter: bool) -> None:
+        super().__init__(path)
+        self.mode, self.adapter = mode, adapter
+        self.samples = 0
+
+    def reply_payload(self, request: dict) -> bytes:
+        if self.adapter:
+            if request.get("method") != "credential.import":
+                raise ValueError("unexpected enrollment method")
+            if self.mode == "lost-reply":
+                return b""
+            if self.mode == "admission-error":
+                # Deliberately broken peer reflects a runtime-only credential;
+                # the wait route must emit only a fixed closed cause.
+                return json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000,
+                    "message": request["params"]["access_token"]}}).encode() + b"\n"
+            result = {"operation_id": "opaque-enrollment-job", "status": "verifying_identity"}
+            if request.get("params", {}).get("include_operation_generation") is True:
+                result.update(operation_generation=7, admitted_revision=12)
+            if self.mode == "missing-generation":
+                result.pop("operation_generation", None)
+            return json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode() + b"\n"
+        if request.get("method") != "state.snapshot":
+            raise ValueError("wait issued a mutation or outcome replay")
+        self.samples += 1
+        if self.mode == "observation-error":
+            return json.dumps({"jsonrpc": "2.0", "id": 1,
+                "error": {"code": -32000, "message": "CustodyUnavailable"}}).encode() + b"\n"
+        job = {"id": "opaque-enrollment-job", "kind": "enrollment",
+               "operation_generation": 7, "status": "running" if self.samples == 1 or self.mode == "always-pending" else "completed"}
+        if self.mode == "failed": job["status"] = "failed"
+        if self.mode == "superseded": job["operation_generation"] = 8
+        jobs = [] if self.mode == "missing-job" else [job]
+        result = {"protocol_version": 2, "revision": 12, "custody_available": self.mode != "custody",
+                  "jobs": jobs}
+        return json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode() + b"\n"
+
+
+class EnrollmentWaitCliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(directory.cleanup)
+        self.state = Path(directory.name)
+        self.state.chmod(0o700)
+        (self.state / "run").mkdir(mode=0o700)
+        (self.state / "integrations").mkdir(mode=0o700)
+        self.capability = secrets.token_hex(32)
+        cap = self.state / "integrations" / "enrollment.capability"
+        cap.write_text(self.capability)
+        cap.chmod(0o600)
+        self.credential = secrets.token_hex(32)
+        self.environment = dict(os.environ)
+        self.environment.pop("XDG_RUNTIME_DIR", None)
+
+    def invoke(self, wait: bool) -> subprocess.CompletedProcess:
+        args = [str(OMUX), "--state-dir", str(self.state), "enroll"]
+        if wait: args.append("--wait")
+        args.append("opaque-source")
+        return subprocess.run(args, input=json.dumps({"provider": "github", "access_token": self.credential}).encode(),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              env=self.environment, timeout=35, check=False)
+
+    def test_default_keeps_acceptance_and_never_observes(self) -> None:
+        with EnrollmentPeer(self.state / "run" / "adapter.sock", "complete", adapter=True) as adapter:
+            result = self.invoke(False)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["result"],
+                         {"operation_id": "opaque-enrollment-job", "status": "verifying_identity"})
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertFalse("include_operation_generation" in adapter.requests[0]["params"])
+        self.assertFalse(adapter.failure)
+
+    def test_wait_observes_original_generation_without_reimport(self) -> None:
+        with EnrollmentPeer(self.state / "run" / "adapter.sock", "complete", adapter=True) as adapter, \
+             EnrollmentPeer(self.state / "run" / "control.sock", "complete", adapter=False) as control:
+            result = self.invoke(True)
+        self.assertEqual(result.returncode, 0)
+        observed = json.loads(result.stdout)
+        self.assertEqual((observed["status"], observed["operation_generation"]), ("completed", 7))
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertEqual(control.samples, 2)
+        self.assertFalse(adapter.failure or control.failure)
+        self.assertFalse(self.credential.encode() in result.stdout + result.stderr)
+        self.assertFalse(self.capability.encode() in result.stdout + result.stderr)
+
+    def test_pending_observations_exhaust_one_original_budget_without_reimport(self) -> None:
+        with EnrollmentPeer(self.state / "run" / "adapter.sock", "always-pending", adapter=True) as adapter, \
+             EnrollmentPeer(self.state / "run" / "control.sock", "always-pending", adapter=False) as control:
+            started = time.monotonic()
+            result = self.invoke(True)
+            elapsed = time.monotonic() - started
+        self.assertNotEqual(result.returncode, 0)
+        observed = json.loads(result.stdout)
+        self.assertEqual((observed["status"], observed["cause"]), ("unresolved", "deadline_expired"))
+        self.assertEqual((observed["operation_id"], observed["operation_generation"]), ("opaque-enrollment-job", 7))
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertGreater(control.samples, 2)
+        self.assertGreaterEqual(elapsed, 29)
+        self.assertLess(elapsed, 35)
+        self.assertFalse(adapter.failure or control.failure)
+        self.assertFalse(self.credential.encode() in result.stdout + result.stderr)
+        self.assertFalse(self.capability.encode() in result.stdout + result.stderr)
+
+    def test_refusals_keep_original_handle_and_no_retry(self) -> None:
+        for mode, cause, status in (("failed", "job_failed", "failed"),
+                                    ("superseded", "superseded", "unresolved"),
+                                    ("missing-job", "missing_job", "unresolved"),
+                                    ("custody", "custody_unavailable", "unresolved"),
+                                    ("missing-generation", "invalid_reply", "unresolved"),
+                                    ("lost-reply", "admission_unresolved", "unresolved"),
+                                    ("admission-error", "admission_error", "unresolved"),
+                                    ("observation-error", "observation_error", "unresolved")):
+            with self.subTest(mode=mode), \
+                 EnrollmentPeer(self.state / "run" / "adapter.sock", mode, adapter=True) as adapter, \
+                 EnrollmentPeer(self.state / "run" / "control.sock", mode, adapter=False) as control:
+                result = self.invoke(True)
+            self.assertNotEqual(result.returncode, 0)
+            observed = json.loads(result.stdout)
+            self.assertEqual((observed["status"], observed["cause"]), (status, cause))
+            self.assertFalse(observed["retry_import"])
+            self.assertEqual(len(adapter.requests), 1)
+            self.assertEqual(control.samples, 0 if mode in ("lost-reply", "missing-generation", "admission-error") else 1)
+            self.assertFalse(adapter.failure or control.failure)
+            self.assertFalse(self.credential.encode() in result.stdout + result.stderr)
+            self.assertFalse(self.capability.encode() in result.stdout + result.stderr)
 
 if __name__ == "__main__":
     unittest.main()

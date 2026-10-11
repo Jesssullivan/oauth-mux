@@ -1,0 +1,463 @@
+{
+  "kind": "installed_closure_actual_models_partial_result",
+  "recorded_at": "2026-10-08T14:38:23.068355+00:00",
+  "authority": "User integrated implementation; AGENTS.md/R-N13",
+  "source_commit": "1db467d5544d2b0f9a932d8c7182ce7d84516f87",
+  "epoch": "5594643b-2f6a-43a3-ade4-e90c0193bef3",
+  "executor_session": 26709,
+  "exit": 1,
+  "workload_exit": 1,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "receipt": {
+    "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/5594643b-2f6a-43a3-ade4-e90c0193bef3/receipt.json",
+    "sha256": "871286954b7acc038d4b36e6e0baf70ca0900c4dac76b3d1f4fad806c07b3e96",
+    "bytes": 25581
+  },
+  "evidence": {
+    "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/5594643b-2f6a-43a3-ade4-e90c0193bef3/test-evidence.json",
+    "sha256": "0f6a890458a1c4c33fd561962049ef68e0a6a153a98fc7752513ebdb5e93e2ad",
+    "bytes": 9406
+  },
+  "results": [
+    {
+      "target": "//tools:execution_guard_test",
+      "method_count": 89,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 360,
+          "file": "09c5eed91355989a856f889b289cb767a19af74b16e9c613858addb2411f42fe.evidence",
+          "sha256": "91818c1f2d485fba62e619f7e77b87a373af8d1ac809ea0703b5a8a92d6632b5",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 753,
+          "file": "6ed3a6a9f5de6b7bc20b6bb366b0f5b24bcb5cdaf902e9a147b63dd9703e99da.evidence",
+          "sha256": "832d60741aa77e4ccace353808c5d540784dba88585b21e89a3f081b2c77b3c2",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//tools:guard_resident_enrollment_profile_test",
+      "method_count": 38,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 327,
+          "file": "789000ebb3f9fa86952687a141f0581e1ab5b0a55c552d8e836830acfd562db4.evidence",
+          "sha256": "74888f25547b01c0a10374716c05cbc5f5bdbb9799e659f634163f86bb68b2ea",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 756,
+          "file": "98d4267d978ad4ea42a21249cad4deb8e97c1a546a2704557d5a8bf16b444998.evidence",
+          "sha256": "c281c51aa7b050b4d829160b42a20853ca981ef1b3eccf1e849dd20dfe93a724",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//tools:guard_resident_owned_update_test",
+      "method_count": 23,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 306,
+          "file": "39dc1b86f6d69f5abbf2bab07cce2e7f7dbd8a239a7687d9575125665a0cbc4d.evidence",
+          "sha256": "a9a6909994f9fc6838f764c0d85a45bd58115c1efb2d5ab346e11b62b66a0d95",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 723,
+          "file": "ffdda7fe2ad11e653ef2911b8404567b0680ba063f49dac37e8caf2eb9846efe.evidence",
+          "sha256": "9a00e713776132086469ca00ce3dbdfe2a1e8170405821b9459320f47c46edba",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//tools:guard_resident_standard_vault_test",
+      "method_count": 6,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 290,
+          "file": "1bb5e8a3f44f00448c5931b3a0485f8051a657186b1e620e28ce26ba63b1b9b3.evidence",
+          "sha256": "c01251ef45867181d13a26f65a6a1a11cdef8401accb107809653a560f974c73",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 711,
+          "file": "c0e5a9aa599c90c15b0721ad49349e51cf8e2c46bfd6b6416d4982a257263b44.evidence",
+          "sha256": "4e7659752ceb207b757845d478320c2fe454856ab5e49ce530670471d8def4cf",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//tools:native_flake_schedule_test",
+      "method_count": 25,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 302,
+          "file": "6facdbe39b07b6860edb592fb2b0aee61c10466ed8ed1057bea9412bd0a8b98d.evidence",
+          "sha256": "d70a5c81a2ff7e5bb6a820baaae4bd4b7dbd17b561718abf54ed8258f35bd239",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 707,
+          "file": "f2314504e8d56153d57daaccbaa5fc0fbb3a591fbd1207ca42efbc0f5d3bac46.evidence",
+          "sha256": "3fc1ca9024cec6925cf52e9608c10090314311914cbdb0d8e4a62ad93e9d6e74",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//delivery:delivery_test",
+      "method_count": null,
+      "success_XML_verified": null,
+      "verified_files": [],
+      "unpreserved_files": []
+    },
+    {
+      "target": "//delivery:resident_enrollment_contract_test",
+      "method_count": 24,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 311,
+          "file": "5c2ae2bcddc955f176d48ea2627ff6582fef812e78ca7e1c92a6f84695b526ac.evidence",
+          "sha256": "401746e7c06ad7c8ce5eca6a1abb834019b350425dbad888e32fb7db97245d49",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 736,
+          "file": "fd883f87246a93264817702008386909bbe0f538919d3f3f1b6b2d526cf31c04.evidence",
+          "sha256": "f47782a5584b22b5cfafe486e6efa31720c763f6cdf567dfc85de49e5f686134",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//delivery:resident_existing_enrollment_contract_test",
+      "method_count": 5,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 300,
+          "file": "6234de47167d42383ff9540fe81f9d150baaaa9c90c6fbb14bf13e880bf4fd34.evidence",
+          "sha256": "cf1391a3f10353fa181489d63ae36013812124b47c1d5893f24d139b45205335",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 743,
+          "file": "89953c23a8cdf6dd78ee06d9de8c8c92ea8741c7318f45bdad93d617011ba7bc.evidence",
+          "sha256": "1e12840ded44d495351c6054bbcfd0f60aab09c9261654e125c49a34680d8181",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//delivery:resident_owned_lifecycle_contract_test",
+      "method_count": 4,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 295,
+          "file": "2935b1b799c6c7c5b2d7f04ba354b10b22aef71936314e18b7325b11d14ed77a.evidence",
+          "sha256": "db55f6bbe8775fba05402eff4e958f97a0424b27fec3c70d082297ebb4adee9f",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 730,
+          "file": "d06beb11e342878eba43baf45c76734eae3a974ada6beefdd00de042d1019739.evidence",
+          "sha256": "9aa8008e6cd4735441dc51b94d8f15753a7a81efb770c1287afd875b9809ef77",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//delivery:resident_standard_vault_models",
+      "method_count": 12,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 296,
+          "file": "ded425db63e52f7323d9fd8cdceddb1d787a16525d1371cf8e4c8b71707a2a9b.evidence",
+          "sha256": "ae2d332d7a697d0a030279c38687185e948b9ac2bf2f968d423166ec974d96c6",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 715,
+          "file": "d3faca94ac80d7dd041aca0b44771e3cab1f083c06ac6a03da8036e8d4403789.evidence",
+          "sha256": "d55478726124853438f568dc678baed08fa77d89b413d22b7e8953346a0d4b4b",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//delivery:resident_vault_models",
+      "method_count": 18,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 293,
+          "file": "f491c0a5e197afdcc2ad86bcd60a3a18c4a22c8d81951addcfc9f59b70a3a6b0.evidence",
+          "sha256": "6b154f7bd784500e78c3c3a402d2c0c801d375b29ee8a0119a3a90fa77cfc805",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 694,
+          "file": "c718cd0afb6d32b32e0d7cbf570cbb4fd6f09c2f9e97e4d0180fb7435d62676f.evidence",
+          "sha256": "35f1ca969b1eb7f67127303759c337e0643366aa75b659a9c2dcde98768fb45d",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//:format_test",
+      "method_count": null,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 158,
+          "file": "0456fe2c5e11fa8bba3c8d8d0bd349abd6ee34d531da53b3f991e63461b7f4cf.evidence",
+          "sha256": "c034dcd573562dfdfbc13fc7441836daa4a8666b8198a6aa8d0b49df8e50e99d",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 515,
+          "file": "2c8741578bda5870f01a1883a40fbe86aa1e758407e98edd14ad88d7b84cde9e.evidence",
+          "sha256": "282cd033713484761f6cd82e55582c029d17643177526ede37929616cb506481",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    },
+    {
+      "target": "//:docs_check",
+      "method_count": null,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 306,
+          "file": "27caafe748c734183c3fb4fda968788ad19464b64e8a00e7a2e585a53110ffc7.evidence",
+          "sha256": "5c6394ae8cc210bd3cb82c24a72a84b1318d73d411f63b63b75e99a0a79ddfbb",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 667,
+          "file": "fc465fc596729378e6bc65353caac88a7394495de4830ec8806f22851c5f91a4.evidence",
+          "sha256": "308539f0d4781b7f576e8984a6b4a3bfbb7c34022b2ffd7ec44b3b706c513a2d",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ],
+      "unpreserved_files": [
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ]
+    }
+  ],
+  "whole_batch_succeeded": false,
+  "analysis_failure": "target tools:resident_owned_update_sources not visible to delivery:delivery_test",
+  "scope": "12 selected declared targets completed successfully; delivery_test not analyzed. Actual compiled vault argument/model predicates included; no normal OS unlock/real custody/native continuity proof.",
+  "source_change_next": "reviewed one-line delivery-only filegroup visibility",
+  "caps_unchanged": true,
+  "no_clock_reset": true
+}

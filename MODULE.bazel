@@ -7,6 +7,9 @@ module(
 
 bazel_dep(name = "rules_zig", version = "0.0.0")
 
+codex_device_component_repository = use_repo_rule("//tools:codex_device_component_repository.bzl", "codex_device_component_repository")
+codex_device_component_repository(name = "omux_codex_device_component_inputs")
+
 archive_override(
     module_name = "rules_zig",
     urls = ["https://github.com/hermeticbuild/rules_zig/archive/c81e777fe398186c9f0251ba1332a1d56f30d094.tar.gz"],
@@ -80,6 +83,18 @@ host_repository(
 evaluation_source = use_repo_rule("//tools:nix_evaluation_source.bzl", "nix_evaluation_source")
 evaluation_source(name = "omux_eval_source")
 
+# Finite cached source candidates from the qualified read-only locator. This
+# lazy manual repository declares bytes; its action must prove all lock hashes.
+native_flake_sources = use_repo_rule("//tools:native_flake_sources_repository.bzl", "native_flake_sources_repository")
+native_flake_sources(
+    name = "omux_native_flake_sources",
+    sources = {
+        "nixpkgs": "/nix/store/75bkaivfbwq3x8cs7155hag7hs1chjcx-source",
+        "flake-utils": "/nix/store/01x5k4nlxcpyd85nnr0b9gm89rm8ff4x-source",
+        "systems": "/nix/store/yj1wxm9hh8610iyzqnz75kvs6xl8j3my-source",
+    },
+)
+
 site_inputs = use_repo_rule("//tools:site_inputs_repository.bzl", "site_inputs_repository")
 site_inputs(name = "omux_site_inputs")
 
@@ -97,7 +112,14 @@ evaluation_source(
 # Candidate cached inputs are declared without executing them. Separate manual
 # actions must verify NAR bytes and their mapping to the locked site selection.
 cached_site = use_repo_rule("//tools:cached_site_repository.bzl", "cached_site_repository")
-cached_site(name = "omux_cached_site")
+yoga_selection = use_repo_rule("//tools:yoga_selection_inputs.bzl", "yoga_selection_inputs")
+yoga_selection(name = "omux_yoga_selection_inputs")
+cached_site(
+    name = "omux_cached_site",
+    inventory_path = "/home/jess/.local/state/omux-execution-20261005/cache-bc988dbbbbc771e13245d8d338d52eed07f226e2f4dc71dcae1e46246cbbef88/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/cached_site_inventory_probe/test.outputs/inventory.json",
+    inventory_sha256 = "1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931",
+    bootstrap_closure = "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
+)
 
 cached_nar = use_repo_rule("//tools:cached_nar_repository.bzl", "cached_nar_repository")
 cached_nar(name = "omux_cached_nars")
@@ -107,12 +129,18 @@ retained_hm = use_repo_rule("//tools:home_manager_retained_repository.bzl", "hom
 retained_hm(name = "omux_retained_hm")
 # Separate selected compact output; no dependency on the bundle producer.
 hm_bundle = use_repo_rule("//tools:home_manager_bundle_repository.bzl", "home_manager_bundle_repository")
-hm_bundle(name = "omux_hm_bundle")
+hm_bundle(name = "omux_hm_bundle", manifest = "//tools:home_manager_bundle_inputs.json")
 
 # Independently selected controller/vault-backend registry export. This
 # repository supplies inert byte-proof inputs, never execution authority.
 cached_nar(
     name = "omux_yoga_controller_nars",
+    ui_roots = [
+        "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12",
+        "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3",
+        "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0",
+        "/nix/store/l1nqjg1yx6q6vx6zwsnd3ky0s7a0kfk8-qtwayland-6.11.0",
+    ],
     inventory_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/8b6bd81f-786e-49c1-b8de-ac1103e986b1/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/yoga_controller_inventory_producer/test.outputs/yoga-controller-inputs/controller-inventory.json",
     inventory_sha256 = "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
     bootstrap_closure = "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
@@ -142,6 +170,43 @@ apple_repository(name = "omux_apple")
 codex_live_inputs = use_repo_rule("//tools:codex_live_source_inputs.bzl", "codex_live_source_inputs")
 codex_live_inputs(name = "omux_codex_live_source_inputs")
 
+# Exact successful C11 source and reviewed protocol-history dependency delta.
+# No native selector, compile output or cache admission is instantiated here.
+codex_protocol_history_inputs = use_repo_rule("//tools:codex_protocol_history_source_inputs.bzl", "codex_protocol_history_source_inputs")
+codex_protocol_history_inputs(name = "omux_codex_protocol_history_source_inputs")
+
+# Distinct fifth source composition only; no metadata/SDK/native selector.
+codex_owner_status_inputs = use_repo_rule("//tools:codex_owner_status_source_inputs.bzl", "codex_owner_status_source_inputs")
+codex_owner_status_inputs(name = "omux_codex_owner_status_source_inputs")
+
+# Exact actual N1 source binding only; no selected SDK/native chain admission.
+codex_owner_status_binding_inputs = use_repo_rule("//tools:codex_owner_status_binding_inputs.bzl", "codex_owner_status_binding_inputs")
+codex_owner_status_binding_inputs(name = "omux_codex_owner_status_binding_inputs")
+
+codex_owner_status_persistence_inputs = use_repo_rule("//tools:codex_owner_status_persistence_source_inputs.bzl", "codex_owner_status_persistence_source_inputs")
+codex_owner_status_persistence_inputs(name = "omux_codex_owner_status_persistence_source_inputs")
+
+# Actual N3 source binding only, separate from all SDK/runtime selectors.
+codex_owner_status_persistence_binding_inputs = use_repo_rule("//tools:codex_owner_status_persistence_binding_inputs.bzl", "codex_owner_status_persistence_binding_inputs")
+codex_owner_status_persistence_binding_inputs(name = "omux_codex_owner_status_persistence_binding_inputs")
+
+# Actual N4 binding and retained material inputs; no SDK output selection.
+owner_status_persistence_metadata_inputs = use_repo_rule("//tools:codex_owner_status_persistence_metadata_inputs.bzl", "codex_owner_status_persistence_metadata_inputs")
+owner_status_persistence_metadata_inputs(
+    name = "omux_owner_status_persistence_metadata_inputs",
+    selection = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/32da88ee-f894-4453-8371-3cc4719c8ade/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_owner_status_persistence_metadata_binding_producer/test.outputs/owner-status-persistence-metadata-binding.json",
+    sha256 = "19903dbf0c939fe88522f3ee45dfb9049739abc12ad68bdb890b04867d2b08fe",
+)
+
+# Actual successful source output and independently read public operator control.
+# This declares inputs only; metadata/SDK/native success remains unproved.
+codex_protocol_history_metadata_inputs = use_repo_rule("//tools:codex_protocol_history_metadata_inputs.bzl", "codex_protocol_history_metadata_inputs")
+codex_protocol_history_metadata_inputs(
+    name = "omux_protocol_history_metadata_inputs",
+    selection = "/srv/fast-local/jess/state/codex/omux-native-candidate-20261007/protocol-history-metadata-input.json",
+    sha256 = "03e39d666a4122478e951ae90049c776f97b2f6ada079168cdd261bb94e25731",
+)
+
 # Exact successful, independently selected public SDK qualification output.
 sdk_selection = use_repo_rule("//tools:codex_sdk_selection_repository.bzl", "codex_sdk_selection_repository")
 sdk_selection(
@@ -155,3 +220,68 @@ fresh_native_package = use_repo_rule("//tools:codex_fresh_native_package_inputs.
 
 # Instantiate only after a successful independently pinned package run.
 fresh_live_runtime_inputs = use_repo_rule("//tools:codex_live_fresh_runtime_repository.bzl", "codex_live_fresh_runtime_repository")
+
+
+# Independent Linux private-store proof; ordinary evaluator capabilities unchanged.
+host_repository(
+    name = "omux_private_store_host",
+    requested_tools = ["python", "bash", "nix", "nix_store"],
+    require_ca = False,
+)
+
+# Exact selected retained009 acquisition bytes only; fresh candidates unchanged.
+native_enrollment_inputs = use_repo_rule("//tools:native_enrollment_repository.bzl", "native_enrollment_repository")
+native_enrollment_inputs(name = "omux_native_enrollment")
+
+# Inert exact public artifact bytes; no native/rebuild/store-import edge.
+yoga_public_install_inputs=use_repo_rule("//tools:yoga_public_install_inputs_repository.bzl","yoga_public_install_inputs")
+yoga_public_install_inputs(name="omux_yoga_public_install_inputs")
+
+
+# Independently pinned successful target-obligation data only; not a complete
+# native seed or runtime. The exact manual consumer qualifies this selection.
+native_flake_seed_plan = use_repo_rule("//tools:native_flake_seed_plan_repository.bzl", "native_flake_seed_plan_repository")
+native_flake_seed_plan(
+    name = "omux_native_flake_seed_plan",
+    selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/4c3aa2a9-9421-411d-bd6e-74ecc5f6290c/native-flake-seed-plan-selection.json",
+    selection_sha256 = "e7c50f1a6d5392bb99e7d4b24e1a561ba61eb6ce32d39e0c5ef184d2b8386e07",
+)
+
+# No future successful plan or ready tool byte pins are invented here.
+protocol_history_query_tools = use_repo_rule("//tools:protocol_history_query_tools_repository.bzl", "protocol_history_query_tools_repository")
+protocol_history_query_tools(
+    name = "omux_protocol_history_query_tools",
+    selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/63e7246e-a500-40d4-a5e1-d95c48d6e8dc/protocol-history-query-tools-selection.json",
+    selection_sha256 = "ed817319b75fcc973b21ddddff176169ba2d43aff1cd485f11d8196c3e79f290",
+)
+
+# Exact actual seventh-source input; eighth output remains independently unqualified.
+codex_native_source_context_refresh_inputs = use_repo_rule("//tools:codex_native_source_context_refresh_inputs.bzl", "codex_native_source_context_refresh_inputs")
+codex_native_source_context_refresh_inputs(name="omux_codex_native_source_context_refresh_inputs", manifest="//integrations/codex-upstream:native-source-context-seventh-input.json")
+# New namespace; the old persistence metadata repository remains unchanged.
+# Pending configuration declares no future source/binding outputs.
+# Actual source/binding fills must retain successful guardian/evidence pins.
+codex_native_acquisition_inputs = use_repo_rule("//tools:codex_native_acquisition_inputs.bzl", "codex_native_acquisition_inputs")
+codex_native_acquisition_inputs(
+    name = "omux_native_acquisition_metadata_inputs",
+    manifest = "//integrations/codex-upstream:native-acquisition-inputs.json",
+)
+
+native_acquisition_package_inputs = use_extension("//tools:codex_native_acquisition_package_inputs.bzl", "native_acquisition_package_inputs")
+native_acquisition_package_inputs.configuration(manifest="//integrations/codex-upstream:native-acquisition-package-inputs.json")
+use_repo(native_acquisition_package_inputs, "omux_native_acquisition_package_data")
+
+# Distinct ordinary direct-main package evaluation; null selection is refusal.
+ordinary_direct_native_inputs = use_repo_rule("//tools:direct_native_tui_inputs.bzl", "ordinary_direct_native_inputs")
+ordinary_direct_native_inputs(name="omux_codex_ordinary_direct_runtime",
+    manifest="//integrations/codex-upstream:native-acquisition-ordinary-inputs.json")
+
+# Independently selected current Omux artifact; null until genuine production.
+hm_current = use_repo_rule("//tools:home_manager_current_repository.bzl", "home_manager_current_repository")
+hm_current(name = "omux_hm_current")
+
+# Source-pair-only current HM transport; no legacy artifact declaration edge.
+current_hm_pair = use_repo_rule("//tools:home_manager_current_pair_repository.bzl", "current_home_manager_pair_repository")
+current_hm_pair(name="omux_current_hm_pair")
+current_hm_pair_bundle = use_repo_rule("//tools:home_manager_current_pair_bundle_repository.bzl", "current_home_manager_pair_bundle_repository")
+current_hm_pair_bundle(name="omux_current_hm_pair_bundle")

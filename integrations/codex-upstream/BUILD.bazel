@@ -67,3 +67,29 @@ python_binary(
     data = ["codex-0.157-auth-broker.patch", "upstream-base.tar.gz", "binary-overlay.tar.gz", "manifest.json"],
     args = ["--artifact-dir", "$(location manifest.json)"],
 )
+
+filegroup(name = "native_source_context_patch", srcs = ["native-source-context-v1.patch"])
+filegroup(name = "native_source_context_preimages", srcs = glob(["source-context-preimages/**/*.rs"]))
+exports_files(["native-source-context-seventh-input.json"])
+filegroup(name = "native_source_context_readonly_refresh_patch", srcs = ["native-source-context-readonly-refresh-v1.patch"])
+filegroup(name = "native_source_context_refresh_preimages", srcs = glob(["refresh-preimages/**/*.rs"]))
+filegroup(name = "native_source_context_seventh_input", srcs = ["native-source-context-seventh-input.json"])
+
+filegroup(name = "native_source_acquisition_patch", srcs = ["native-source-acquisition-v3.patch"])
+filegroup(name = "native_source_acquisition_n5_binding", srcs = ["native-source-acquisition-n5-binding.json"])
+filegroup(name = "native_source_acquisition_preimages", srcs = glob(["acquisition-preimages/**/*"], exclude_directories = 1))
+
+exports_files(["native-acquisition-inputs.json", "native-acquisition-n9-binding.json"])
+filegroup(name="native_acquisition_input_configuration", srcs=["native-acquisition-inputs.json"], visibility=["//visibility:public"])
+filegroup(name="native_acquisition_n9_binding", srcs=["native-acquisition-n9-binding.json"], visibility=["//visibility:public"])
+
+# Explicit runtime selections stay closed until independently qualified outputs exist.
+exports_files(["native-acquisition-package-inputs.json"])
+exports_files(["native-acquisition-runtime-inputs.json"])
+filegroup(
+    name = "native_acquisition_runtime_configuration",
+    srcs = ["native-acquisition-runtime-inputs.json"],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["native-acquisition-ordinary-inputs.json"])

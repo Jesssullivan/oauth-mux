@@ -6,8 +6,22 @@ import { sendNativeRequest, requestNativeHealth } from "./native.mjs";
 const STORAGE_KEY = "omuxSourceMetadataV1";
 const STATE_KEY = "omuxSourceStatesV1";
 const REQUEST_KEY = "omuxSourceRequestsV1";
+const CLEANUP_CURSOR_KEY = "omuxSourceCleanupCursorV1";
 const STATES = new Set(["pending_connection", "connected_schema_unproven", "grant_submitted", "completion_unknown", "pending_disconnect"]);
 const COMMANDS = new Set(["connect", "reconcile", "disconnect", "status"]);
+const REQUEST_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+
+function validPendingRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.id !== "string" || !REQUEST_ID.test(value.id) || !["browser.connect", "browser.disconnect", "browser.reconcile", "browser.importGrant"].includes(value.method)) return false;
+  const keys = Object.keys(value).sort().join(",");
+  if (keys === "id,method") return true;
+  if (keys !== "id,method,superseded" || value.method !== "browser.disconnect") return false;
+  const previous = value.superseded;
+  return previous !== null && typeof previous === "object" && !Array.isArray(previous) &&
+    Object.keys(previous).sort().join(",") === "id,method" &&
+    typeof previous.id === "string" && REQUEST_ID.test(previous.id) &&
+    previous.id !== value.id && previous.method === "browser.importGrant";
+}
 
 export class BrowserService {
   constructor({ api, browserKind, randomId, now = () => Date.now() / 1000, monotonicNow = () => performance.now(), readStorage = async () => { throw new AcquisitionError("storage_reader_unproven"); }, allowFixture = false, nativeOptions }) {
@@ -110,21 +124,26 @@ export class BrowserService {
     const remaining = budget ? Math.floor(budget.deadline - this.monotonicNow()) : 10000;
     if (budget && (remaining < 1 || budget.items >= 8)) throw new AcquisitionError("startup_budget_exhausted");
     const requests = (await this.api.storage.local.get(REQUEST_KEY))[REQUEST_KEY] ?? {};
-    if (!requests || typeof requests !== "object" || Array.isArray(requests) || Object.keys(requests).length > 64 || Object.entries(requests).some(([id, value]) => !/^[A-Za-z0-9._:-]{1,128}$/.test(id) || !value || Object.keys(value).sort().join(",") !== "id,method" || !/^[A-Za-z0-9._:-]{1,64}$/.test(value.id) || !["browser.connect", "browser.disconnect", "browser.reconcile", "browser.importGrant"].includes(value.method))) throw new AcquisitionError("invalid_source_metadata");
+    if (!requests || typeof requests !== "object" || Array.isArray(requests) || Object.keys(requests).length > 64 || Object.entries(requests).some(([id, value]) => !/^[A-Za-z0-9._:-]{1,128}$/.test(id) || !validPendingRequest(value))) throw new AcquisitionError("invalid_source_metadata");
     const entries = await this.metadata();
     for (const id of Object.keys(requests)) if (!entries.some(entry => entry.sourceId === id)) delete requests[id];
     const pending = requests[source.sourceId];
-    if (pending?.method === "browser.connect" && method === "browser.disconnect") {
+    if (["browser.connect", "browser.reconcile"].includes(pending?.method) && method === "browser.disconnect") {
       // Disconnect intent is already durable. Resolve only the original metadata
-      // connection with its retained ID before admitting a new disconnect. This
+      // operation with its retained ID before admitting a new disconnect. This
       // does not acquire provider data, renew consent or run grant capture.
-      await this.send(source, adapter, "browser.connect");
+      await this.send(source, adapter, pending.method);
       return this.send(source, adapter, method, extra);
     }
-    if (pending && (pending.method !== method || method === "browser.importGrant")) throw new AcquisitionError("uncertain_operation");
-    const requestId = pending?.id ?? this.randomId();
+    // Explicit removal supersedes an unknown import without replaying its
+    // credential capsule. Keep its opaque unresolved identity until removal ACK.
+    const supersedesImport = pending?.method === "browser.importGrant" && method === "browser.disconnect";
+    if (pending && (pending.method !== method || method === "browser.importGrant") && !supersedesImport) throw new AcquisitionError("uncertain_operation");
+    const requestId = supersedesImport ? this.randomId() : pending?.id ?? this.randomId();
+    if (supersedesImport && requestId === pending.id) throw new AcquisitionError("invalid_source_metadata");
     const envelope = makeEnvelope({ requestId, sourceId: source.sourceId, adapter, method, extra: { ...extra, provenance: { browser: this.browserKind, extensionId: this.api.runtime.id } } }, { allowFixture: this.allowFixture });
-    requests[source.sourceId] = { id: requestId, method };
+    const superseded = supersedesImport ? { id: pending.id, method: pending.method } : pending?.superseded;
+    requests[source.sourceId] = { id: requestId, method, ...(superseded ? { superseded } : {}) };
     await this.api.storage.local.set({ [REQUEST_KEY]: requests });
     if (budget && this.monotonicNow() >= budget.deadline) throw new AcquisitionError("startup_budget_exhausted");
     if (budget) budget.items++;
@@ -252,9 +271,18 @@ export class BrowserService {
       try {
       const entries = await this.metadata();
       const states = await this.states();
+      const cursor = (await this.api.storage.local.get(CLEANUP_CURSOR_KEY))[CLEANUP_CURSOR_KEY];
+      if (cursor !== undefined && (typeof cursor !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(cursor))) throw new AcquisitionError("invalid_source_metadata");
+      const offset = Math.max(0, entries.findIndex(entry => entry.sourceId === cursor));
+      const ordered = [...entries.slice(offset), ...entries.slice(0, offset)];
       let failure;
-      for (const entry of entries) {
+      for (const [index, entry] of ordered.entries()) {
         if (this.monotonicNow() >= this.activeBudget.deadline || this.activeBudget.items >= 8) break;
+        // Persist only the next opaque source ID before work. A worker restart
+        // must not strand later removals behind repeatedly failing contexts.
+        // This hint confers no source, permission or mutation authority.
+        await this.api.storage.local.set({ [CLEANUP_CURSOR_KEY]: ordered[(index + 1) % ordered.length].sourceId });
+        if (this.monotonicNow() >= this.activeBudget.deadline) break;
         const adapter = getAdapter(entry.adapter, { allowFixture: this.allowFixture });
         if (states[entry.sourceId] === "pending_disconnect" || !await this.api.permissions.contains({ permissions: ["cookies"], origins: [hostPermission(adapter)] })) {
           try { await this.disconnectSource(entry, adapter); } catch (error) { failure ??= error; }

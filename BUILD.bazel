@@ -8,6 +8,13 @@ load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
 
 package(default_visibility = ["//visibility:public"])
 
+# Public invocation-scoped evidence linked by the installed runtime checkpoint.
+INSTALLED_RUNTIME_RECORDS = [
+    "docs/agent-notes/2026-10-08-current-flake93-actual-evaluation-result.json",
+    "docs/agent-notes/2026-10-08-installed-closure-models-partial-result.json",
+    "docs/agent-notes/2026-10-08-runtime-custody-qualification-result.json",
+]
+
 # Current declared code/build inputs; excludes docs, checkpoints and artifacts.
 filegroup(
     name = "selected_runtime_source_inputs",
@@ -21,14 +28,17 @@ filegroup(
 )
 
 exports_files([
+    "src/platform/native_peer_runtime_bridge.c",
+    "src/platform/native_peer.c",
+    "src/platform/native_peer.h",
     "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
     "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
     "nix/home-manager-qualified-evaluation.nix", "nix/consume-bazel-artifact.nix",
     "nix/home-manager.nix", "nix/ownership-witness.nix", "nix/service-witness.nix",
     "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
     "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
-    "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py",
-    "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
+    "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py", "nix/home_manager_source_pack.py",
+    "nix/home_manager_current_retained_artifact.py", "nix/home_manager_current_retained_artifact_test.py", "nix/home_manager_current_pair_bundle.py", "nix/home_manager_current_pair_bundle_test.py", "nix/home_manager_current_artifact.py", "nix/home_manager_current_evaluation.py", "nix/home_manager_current_artifact_test.py", "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
     "nix/home_manager_acquired_evaluation.py", "nix/home_manager_acquired_evaluation_test.py",
     "nix/home_manager_bundle.py", "nix/home_manager_bundle_test.py",
     "nix/home_manager_evaluation_runner.py", "nix/home_manager_evaluation_runner_test.py",
@@ -46,12 +56,12 @@ zig_test(
 # Git metadata, operator state, captured browser data or credential fixtures.
 source_archive(
     name = "public_source_archive",
-    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + [
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/agent-notes/2026-10-11-estate-review-index.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + INSTALLED_RUNTIME_RECORDS + [
         "clients/README.md", "nix/README.md", "nix/evaluation_runner.py", "nix/evaluation_runner_test.py",
         "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
         "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
-        "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py",
-        "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
+        "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py", "nix/home_manager_source_pack.py",
+        "nix/home_manager_current_retained_artifact.py", "nix/home_manager_current_retained_artifact_test.py", "nix/home_manager_current_pair_bundle.py", "nix/home_manager_current_pair_bundle_test.py", "nix/home_manager_current_artifact.py", "nix/home_manager_current_evaluation.py", "nix/home_manager_current_artifact_test.py", "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
         "nix/home_manager_acquired_evaluation.py", "nix/home_manager_acquired_evaluation_test.py",
         "nix/home_manager_bundle.py", "nix/home_manager_bundle_test.py",
         "nix/home_manager_evaluation_runner.py", "nix/home_manager_evaluation_runner_test.py",
@@ -112,13 +122,14 @@ python_test(
     data = glob([
         "docs/**/*.md",
         "docs/authority.json",
+        "docs/agent-notes/2026-10-11-estate-review-index.json",
         "docs/tracker-updates/*.json",
         ".goal/*.json",
         "src/**/*.c",
         "src/**/*.h",
         "nix/**/*.nix",
         "nix/**/*.md",
-    ]) + [
+    ]) + INSTALLED_RUNTIME_RECORDS + [
         "AGENTS.md", "README.md", "CHANGELOG.md", "BUILD.bazel", "flake.nix", "flake.lock",
         "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
         "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
@@ -138,6 +149,8 @@ python_test(
 ZIG_NATIVE_LINKOPTS = ["-lc"] + NIX_ZIG_LINKOPTS
 ZIG_RUNTIME_DATA = ["@omux_nix//:runtime_libraries"]
 ZIG_SOURCES = glob(["src/**/*.zig"])
+
+zig_test(name = "native_deployment_arguments_test", main = "src/native_deployment_arguments.zig")
 
 zig_test(
     name = "toolchain_test",
@@ -166,6 +179,15 @@ zig_test(
 )
 
 zig_test(name = "snapshot_admission_test", main = "src/snapshot_admission.zig")
+
+zig_test(
+    name = "native_source_consent_test",
+    main = "src/native_source_consent_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
 
 zig_test(
     name = "native_owner_test",
@@ -247,6 +269,7 @@ zig_test(
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
 )
+zig_test(name = "enrollment_wait_test", main = "src/enrollment_wait.zig")
 zig_test(name = "reliability_test", main = "src/reliability.zig")
 zig_test(name = "reliability_lifecycle_test", main = "src/reliability_lifecycle_tests.zig", srcs = ["src/reliability.zig"])
 zig_test(name = "onboarding_test", main = "src/onboarding_tests.zig", srcs = ["src/onboarding.zig"])
@@ -429,8 +452,21 @@ zig_test(
 
 cc_test(
     name = "native_peer_bridge_test",
-    srcs = ["src/platform/native_peer_test.c"],
-    deps = [":native_api"],
+    # Exercise the exact production bridge without unrelated vault/SQL DSOs.
+    # Copied primary-image fixtures retain the toolchain's dynamic libc loader.
+    srcs = [
+        "src/platform/native_peer_test.c",
+        "src/platform/native_peer.c",
+        "src/platform/native_peer.h",
+    ],
+)
+
+# Direct-main image attribution is independent of native resume authority.
+cc_binary(
+    name = "native_peer_runtime_bridge.so",
+    srcs = ["src/platform/native_peer_runtime_bridge.c", "src/platform/native_peer.c", "src/platform/native_peer.h"],
+    linkshared = True,
+    linkstatic = False,
 )
 
 zig_test(
@@ -582,6 +618,35 @@ zig_format_test(
 )
 
 zig_test(
+    name = "control_test",
+    main = "src/control.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+# Source-only proposal declarations; finite guard admission is separate.
+zig_test(
+    name = "native_source_acquisition_test",
+    main = "src/native_source_acquisition_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "qualified_runtime_delivery_test",
+    main = "src/qualified_runtime_delivery_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+zig_test(
     name = "engine_test",
     main = "src/engine.zig",
     srcs = ZIG_SOURCES,
@@ -661,6 +726,9 @@ zig_test(
     # permit concurrent sandbox contention without changing runtime deadlines.
     timeout = "long",
     main = "src/snapshot_import_tests.zig",
+    # All root cases remain here; engine_test and enrollment_wait_test own
+    # the imported suites, including the real saturated actor restart case.
+    zigopts = ["--test-filter", "snapshot_import_tests.test."],
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,

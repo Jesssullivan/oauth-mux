@@ -777,7 +777,107 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
     require(registrations[0] != registrations[1], "legacy cold resume reused registration operation")
 
 
-def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None):
+ORDINARY_MARKER = b"OMUX_INSTALLED_RETAINED_ORDINARY_NATIVE_TUI_OK\n"
+ORDINARY_FAILURE_MARKER = "installed legacy ordinary native refusal "
+ORDINARY_FAILURE_MESSAGES = {
+    "retained ordinary export changed process or committed attachment": "ordinary-export-preservation",
+    "legacy native discovery lacks exact installed owner": "ordinary-discovery-installed-owner",
+    "legacy discovery owner identity differs": "ordinary-discovery-owner-identity",
+    "legacy native thread identity differs": "ordinary-discovery-thread-identity",
+    "legacy committed reference differs": "ordinary-discovery-reference",
+    "legacy discovery disagrees with committed attached ledger": "ordinary-discovery-ledger",
+}
+ORDINARY_FAILURES = (*RESUME_FAILURES, *ORDINARY_FAILURE_MESSAGES.values())
+ORDINARY_METADATA_DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
+    "metadata-database-busy", "metadata-database-query", "metadata-database-error",
+    "rollout-file-absent", "rollout-json", "metadata-other-predicate")
+ORDINARY_PHASES = ("private-context", "runtime-verification", "keyring-startup", "daemon-startup",
+    "bootstrap-native", "integration-install", "ordinary-tui-startup",
+    "native-history-materialization", "native-rename", "selected-detach",
+    "native-preservation", "ordinary-clean-exit", "cold-native-resume",
+    "resumed-preservation", "resumed-detach", "durable-inspection", "owned-cleanup")
+
+
+def emit_ordinary_metadata_failure(error):
+    # Emit only the retained finite reason from this exact timeout and phase.
+    # No history read, terminal pump or inference from a generic ValueError.
+    if (PHASE == "native-history-materialization" and isinstance(error, ValueError)
+            and len(error.args) == 1 and type(error.args[0]) is str
+            and error.args[0] == "ordinary native metadata did not flush"
+            and DIAGNOSTIC in ORDINARY_METADATA_DIAGNOSTICS):
+        sys.stderr.write("installed legacy native terminal diagnostic " + DIAGNOSTIC + "\n")
+
+
+def ordinary_first_history(binary, environment, work, home, cli, config, configured,
+                           capability_path, capability, failure_observer):
+    """Real terminal commands and actual committed daemon discovery only.
+
+    Own the first terminal through partial failure; no status normalization,
+    app-server history call, submitted turn or accepted work replay is possible.
+    """
+    global PHASE
+    PHASE = "ordinary-tui-startup"
+    terminal = None
+    try:
+        terminal = tui.TerminalProcess(binary, environment, work, failure_observer=failure_observer)
+        first_pid = terminal.process.pid
+        endpoint, thread, first = wait_attached(cli, home, terminal)
+        witness = tui.process_witness(first_pid)
+        PHASE = "native-history-materialization"
+        terminal.send("/export omux-native-resume-fixture.md\r")
+        wait_metadata(home, thread, terminal, expected_name=None)
+        terminal.alive()
+        require(terminal.process.pid == first_pid and tui.process_witness(first_pid) == witness
+                and discovered_attachment(cli, endpoint) == first,
+                "retained ordinary export changed process or committed attachment")
+        PHASE = "native-rename"
+        terminal.send("/rename " + tui.FIXTURE_NAME + "\r")
+        before = wait_metadata(home, thread, terminal)
+        require(before[0][4] == "paginated", "retained ordinary history mode differs")
+        support.HISTORY_MODE = "paginated"
+        PHASE = "selected-detach"
+        operation = detach(cli, endpoint, first)
+        PHASE = "native-preservation"
+        terminal.alive()
+        require(terminal.process.pid == first_pid and tui.process_witness(first_pid) == witness
+                and tui.metadata(home, thread) == before,
+                "retained ordinary detach changed process or native history")
+        require(support.private_file(config, 1024 * 1024) == configured
+                and support.private_file(capability_path, 128) == capability,
+                "retained ordinary detach changed native configuration")
+        support.check_empty_domain(cli("state.snapshot"))
+        PHASE = "ordinary-clean-exit"
+        terminal.close(require_success=True)
+        require(tui.metadata(home, thread) == before and not endpoint.exists(),
+                "retained ordinary clean exit changed history or retained endpoint")
+        return {"pid": first_pid, "endpoint": endpoint, "witness": witness,
+                "thread": thread, "attachment": first, "before": before, "operation": operation}
+    except BaseException as primary:
+        # Collect finite recognition before cleanup, without pumping output.
+        try:
+            category = classify_resume_failure(primary)
+            if isinstance(primary, ValueError) and len(primary.args) == 1 and type(primary.args[0]) is str:
+                category = ORDINARY_FAILURE_MESSAGES.get(primary.args[0], category)
+            if category in ORDINARY_FAILURES:
+                sys.stderr.write(ORDINARY_FAILURE_MARKER + category + "\n")
+            emit_ordinary_metadata_failure(primary)
+        except BaseException:
+            pass
+        if terminal is not None and failure_observer is not None:
+            try:
+                sys.stderr.write(failure_observer.record(terminal))
+            except BaseException:
+                pass
+        try:
+            if terminal is not None:
+                terminal.close()
+        except BaseException:
+            primary.add_note("retained ordinary owned terminal cleanup refused")
+        raise
+
+
+def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None,
+           ordinary_first=False):
     global PHASE, DIAGNOSTIC
     require(os.environ.get("OMUX_ISOLATED_VAULT_PROOF") == "private-bus-private-xdg",
             "disposable genuine vault context required")
@@ -892,75 +992,91 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
         capability_path = state / "integrations/codex.capability"
         capability = support.private_file(capability_path, 128)
         require(len(capability) == 64 and b"[omux_broker]" in configured, "legacy installed native custody changed")
-        PHASE = "native-seed-start"
-        # The native APIs own every history write. Reuse the exact retained
-        # candidate's observed empty-history initialization sequence; the failed
-        # full read is required, not an inferred successful checkpoint.
-        started = native_call(bootstrap_native, "thread/start", {"cwd": str(work), "ephemeral": False})
-        seed = started.get("thread")
-        require(isinstance(seed, dict) and isinstance(seed.get("id"), str)
-                and seed.get("sessionId") == seed["id"] and seed.get("historyMode") == "paginated"
-                and seed.get("ephemeral") is False and seed.get("status", {}).get("type") == "idle",
-                "legacy native empty seed identity or history mode differs")
-        support.HISTORY_MODE = "paginated"
-        first_pid = bootstrap_native.process.pid
-        endpoint, thread, first = wait_attached(cli, codex_home, bootstrap_native)
-        require(thread == seed["id"], "legacy seed discovery did not match actual native UUID")
-        first_endpoint, first_witness = endpoint, tui.process_witness(first_pid)
-        PHASE = "native-seed-uninitialized-history"
-        try:
-            native_call(bootstrap_native, "thread/read", {"threadId": thread, "includeTurns": True})
-        except ValueError:
-            require(support.FAILURE == "native-list-turns-unsupported",
-                    "legacy uninitialized native history rejection differs")
+        if ordinary_first:
+            # Setup bootstrap never creates/names/reads the tested thread.
+            bootstrap_native.close(require_success=True)
+            native_threads.retire(census, "native-bootstrap")
+            bootstrap_native = None
+            require(not endpoint.exists(), "retained setup bootstrap endpoint remained")
+            first_checkpoint = ordinary_first_history(binary, environment, work, codex_home, cli,
+                config, configured, capability_path, capability, terminal_failure)
+            first_pid = first_checkpoint["pid"]
+            first_endpoint = endpoint = first_checkpoint["endpoint"]
+            first_witness = first_checkpoint["witness"]
+            thread = first_checkpoint["thread"]
+            first = first_checkpoint["attachment"]
+            before = first_checkpoint["before"]
+            first_operation = first_checkpoint["operation"]
         else:
-            raise ValueError("legacy uninitialized native history unexpectedly succeeded")
-        support.FAILURE = DIAGNOSTIC = "unclassified"
-        PHASE = "native-seed-name"
-        native_call(bootstrap_native, "thread/name/set", {"threadId": thread, "name": tui.FIXTURE_NAME})
-        PHASE = "native-seed-full-read"
-        full = native_call(bootstrap_native, "thread/read", {"threadId": thread, "includeTurns": True}).get("thread")
-        require(isinstance(full, dict) and full.get("id") == thread and full.get("sessionId") == thread
-                and full.get("historyMode") == "paginated" and full.get("ephemeral") is False
-                and full.get("cwd") == str(work) and full.get("turns") == []
-                and full.get("name") == tui.FIXTURE_NAME and full.get("status", {}).get("type") == "idle",
-                "legacy native full read did not retain actual provider-free seed")
-        PHASE = "native-seed-history"
-        seed_history = diagnostic_history_witness(codex_home, full, phase_prefix="first-native-history")
-        DIAGNOSTIC = "seed-history-metadata"
-        before = wait_metadata(codex_home, thread, bootstrap_native)
-        DIAGNOSTIC = "seed-history-sql-match"
-        require(before[0][1] == str(seed_history[0]) and before[1:3] == seed_history[1:]
-                and before[0][4] == "paginated",
-                "legacy seed full-read history and native SQL witnesses disagree")
-        DIAGNOSTIC = "seed-history-liveness"
-        bootstrap_native.alive()
-        DIAGNOSTIC = "seed-history-process"
-        require(bootstrap_native.process.pid == first_pid and seed_history_attachment(cli, endpoint, first),
-                "legacy seed initialization changed process or attachment")
-        DIAGNOSTIC = "unclassified"
-        PHASE = "selected-detach"
-        first_operation = detach(cli, endpoint, first)
-        PHASE = "native-preservation"
-        bootstrap_native.alive()
-        detached = native_call(bootstrap_native, "thread/read", {"threadId": thread, "includeTurns": True}).get("thread")
-        require(isinstance(detached, dict) and all(detached.get(field) == full.get(field) for field in
-                ("id", "sessionId", "path", "cwd", "historyMode", "cliVersion", "source", "turns", "name", "ephemeral"))
-                and detached.get("status", {}).get("type") == "idle"
-                and diagnostic_history_witness(codex_home, detached, phase_prefix="second-native-history") == seed_history
-                and bootstrap_native.process.pid == first_pid and tui.metadata(codex_home, thread) == before,
-                "legacy detach changed native process or persistent state")
-        require(support.private_file(config, 1024 * 1024) == configured
-                and support.private_file(capability_path, 128) == capability,
-                "legacy selected detach removed installed configuration")
-        support.check_empty_domain(cli("state.snapshot"))
-        PHASE = "native-seed-clean-exit"
-        bootstrap_native.close(require_success=True)
-        native_threads.retire(census, "native-bootstrap")
-        bootstrap_native = None
-        support.inspect_native_history(codex_home, full, seed_history[0])
-        require(tui.metadata(codex_home, thread) == before and not endpoint.exists(),
-                "legacy seed EOF changed persistent metadata or retained writer endpoint")
+            PHASE = "native-seed-start"
+            # The native APIs own every history write. Reuse the exact retained
+            # candidate's observed empty-history initialization sequence; the failed
+            # full read is required, not an inferred successful checkpoint.
+            started = native_call(bootstrap_native, "thread/start", {"cwd": str(work), "ephemeral": False})
+            seed = started.get("thread")
+            require(isinstance(seed, dict) and isinstance(seed.get("id"), str)
+                    and seed.get("sessionId") == seed["id"] and seed.get("historyMode") == "paginated"
+                    and seed.get("ephemeral") is False and seed.get("status", {}).get("type") == "idle",
+                    "legacy native empty seed identity or history mode differs")
+            support.HISTORY_MODE = "paginated"
+            first_pid = bootstrap_native.process.pid
+            endpoint, thread, first = wait_attached(cli, codex_home, bootstrap_native)
+            require(thread == seed["id"], "legacy seed discovery did not match actual native UUID")
+            first_endpoint, first_witness = endpoint, tui.process_witness(first_pid)
+            PHASE = "native-seed-uninitialized-history"
+            try:
+                native_call(bootstrap_native, "thread/read", {"threadId": thread, "includeTurns": True})
+            except ValueError:
+                require(support.FAILURE == "native-list-turns-unsupported",
+                        "legacy uninitialized native history rejection differs")
+            else:
+                raise ValueError("legacy uninitialized native history unexpectedly succeeded")
+            support.FAILURE = DIAGNOSTIC = "unclassified"
+            PHASE = "native-seed-name"
+            native_call(bootstrap_native, "thread/name/set", {"threadId": thread, "name": tui.FIXTURE_NAME})
+            PHASE = "native-seed-full-read"
+            full = native_call(bootstrap_native, "thread/read", {"threadId": thread, "includeTurns": True}).get("thread")
+            require(isinstance(full, dict) and full.get("id") == thread and full.get("sessionId") == thread
+                    and full.get("historyMode") == "paginated" and full.get("ephemeral") is False
+                    and full.get("cwd") == str(work) and full.get("turns") == []
+                    and full.get("name") == tui.FIXTURE_NAME and full.get("status", {}).get("type") == "idle",
+                    "legacy native full read did not retain actual provider-free seed")
+            PHASE = "native-seed-history"
+            seed_history = diagnostic_history_witness(codex_home, full, phase_prefix="first-native-history")
+            DIAGNOSTIC = "seed-history-metadata"
+            before = wait_metadata(codex_home, thread, bootstrap_native)
+            DIAGNOSTIC = "seed-history-sql-match"
+            require(before[0][1] == str(seed_history[0]) and before[1:3] == seed_history[1:]
+                    and before[0][4] == "paginated",
+                    "legacy seed full-read history and native SQL witnesses disagree")
+            DIAGNOSTIC = "seed-history-liveness"
+            bootstrap_native.alive()
+            DIAGNOSTIC = "seed-history-process"
+            require(bootstrap_native.process.pid == first_pid and seed_history_attachment(cli, endpoint, first),
+                    "legacy seed initialization changed process or attachment")
+            DIAGNOSTIC = "unclassified"
+            PHASE = "selected-detach"
+            first_operation = detach(cli, endpoint, first)
+            PHASE = "native-preservation"
+            bootstrap_native.alive()
+            detached = native_call(bootstrap_native, "thread/read", {"threadId": thread, "includeTurns": True}).get("thread")
+            require(isinstance(detached, dict) and all(detached.get(field) == full.get(field) for field in
+                    ("id", "sessionId", "path", "cwd", "historyMode", "cliVersion", "source", "turns", "name", "ephemeral"))
+                    and detached.get("status", {}).get("type") == "idle"
+                    and diagnostic_history_witness(codex_home, detached, phase_prefix="second-native-history") == seed_history
+                    and bootstrap_native.process.pid == first_pid and tui.metadata(codex_home, thread) == before,
+                    "legacy detach changed native process or persistent state")
+            require(support.private_file(config, 1024 * 1024) == configured
+                    and support.private_file(capability_path, 128) == capability,
+                    "legacy selected detach removed installed configuration")
+            support.check_empty_domain(cli("state.snapshot"))
+            PHASE = "native-seed-clean-exit"
+            bootstrap_native.close(require_success=True)
+            native_threads.retire(census, "native-bootstrap")
+            bootstrap_native = None
+            support.inspect_native_history(codex_home, full, seed_history[0])
+            require(tui.metadata(codex_home, thread) == before and not endpoint.exists(),
+                    "legacy seed EOF changed persistent metadata or retained writer endpoint")
         PHASE = "cold-native-resume"
         DIAGNOSTIC = "resume-terminal-spawn"
         terminal = tui.TerminalProcess(binary, environment, work, resume=thread,
@@ -1007,7 +1123,7 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
         uninstalled = support.install.uninstall(prefix, records)
         require(uninstalled["preserved"] == [] and len(uninstalled["removed"]) == len(record["files"]),
                 "legacy owned distribution uninstall failed")
-        print((OBSERVER_MARKER if FD2_OBSERVER else MARKER).decode("ascii"), end="")
+        print((ORDINARY_MARKER if ordinary_first else (OBSERVER_MARKER if FD2_OBSERVER else MARKER)).decode("ascii"), end="")
     except BaseException:
         # This hook runs once before the original cleanup. Diagnostic failures,
         # cancellation or exit never replace the primary exception or predicates.
@@ -1046,8 +1162,11 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
             native_threads.close(census, primary=sys.exc_info()[0] is not None)
 
 
-def main():
+def main(*, ordinary_first=False, entrypoint=None):
     global FD2_OBSERVER
+    require(type(ordinary_first) is bool and (not ordinary_first or
+            (entrypoint is not None and FD2_OBSERVER is None and "--fd2-observer" not in sys.argv[1:])),
+            "retained ordinary mode cannot select diagnostic observer")
     census_deadline_ns = None
     if len(sys.argv) > 2 and sys.argv[1] == "--census-deadline-ns":
         value = sys.argv[2]
@@ -1059,8 +1178,12 @@ def main():
         FD2_OBSERVER = Path(sys.argv[2]).resolve(strict=True)
         del sys.argv[1:3]
     if len(sys.argv) == 7 and sys.argv[1] == "--inside":
-        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]),
-               census_deadline_ns=census_deadline_ns)
+        if ordinary_first:
+            inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]),
+                   census_deadline_ns=census_deadline_ns, ordinary_first=True)
+        else:
+            inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]),
+                   census_deadline_ns=census_deadline_ns)
         return 0
     require(len(sys.argv) == 7, "declared Omux/runtime009 archives, receipt and vault tools required")
     bundle, candidate, receipt, session, bus, keyring = (Path(value).resolve(strict=True) for value in sys.argv[1:])
@@ -1084,7 +1207,7 @@ def main():
         # bounds diagnostics; support still applies its unchanged 90s timeout.
         census_deadline_ns = time.monotonic_ns() + 90_000_000_000
         process = subprocess.Popen([str(session), "--dbus-daemon=" + str(bus), "--config-file=" + str(configuration),
-                                    "--", sys.executable, "-I", "-B", "-c", bootstrap, str(Path(__file__).absolute()),
+                                    "--", sys.executable, "-I", "-B", "-c", bootstrap, str(Path(entrypoint or __file__).absolute()),
                                     "--census-deadline-ns", str(census_deadline_ns),
                                     *(["--fd2-observer", str(FD2_OBSERVER)] if FD2_OBSERVER else []),
                                     "--inside", str(bundle), str(candidate), str(receipt), str(keyring), str(root)],
@@ -1092,7 +1215,7 @@ def main():
                                    stderr=subprocess.PIPE, umask=0o077)
         code, output, diagnostics = support.bounded_private_session(process)
         if code == 0:
-            expected_marker = OBSERVER_MARKER if FD2_OBSERVER else MARKER
+            expected_marker = ORDINARY_MARKER if ordinary_first else (OBSERVER_MARKER if FD2_OBSERVER else MARKER)
             require(output == expected_marker, "legacy ordinary TUI proof marker missing")
             print(expected_marker.decode("ascii"), end="")
         else:
@@ -1114,6 +1237,14 @@ def main():
                 if role not in seen_thread_roles and len(seen_thread_roles) < len(native_threads.ROLES):
                     seen_thread_roles.add(role)
                     print(projected.decode("ascii"), end="", file=sys.stderr)
+            if ordinary_first:
+                for line in diagnostics.splitlines():
+                    if not line.startswith(ORDINARY_FAILURE_MARKER.encode("ascii")):
+                        continue
+                    category = line[len(ORDINARY_FAILURE_MARKER):]
+                    if category in tuple(value.encode("ascii") for value in ORDINARY_FAILURES):
+                        print(line.decode("ascii"), file=sys.stderr)
+                        break
             if FD2_OBSERVER:
                 fixed_detach = b"installed legacy native detach cli observation "
                 for line in diagnostics.splitlines():
@@ -1132,7 +1263,7 @@ def main():
                             continue
                         print(fixed.decode("ascii") + native_fd2_observer.PREFIX.decode("ascii")
                               + "/" + value, file=sys.stderr)
-            for phase in PHASES:
+            for phase in (ORDINARY_PHASES if ordinary_first else PHASES):
                 marker = "installed legacy native terminal proof failed at " + phase
                 if marker.encode() + b"\n" in diagnostics:
                     print(marker, file=sys.stderr)

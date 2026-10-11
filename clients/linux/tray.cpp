@@ -28,8 +28,24 @@
 #include <QUuid>
 #include <QVariant>
 #include <QVBoxLayout>
+#include <cmath>
 
 namespace {
+bool reopenedCustody(const QJsonObject &result) {
+    const QStringList fields {"reopened", "custody_available", "metadata_loaded", "account_count",
+        "provider_request_initiated", "live_handoff_proven"};
+    if (result.size() != fields.size()) return false;
+    for (const auto &field : fields) if (!result.contains(field)) return false;
+    const auto count = result.value("account_count");
+    return result.value("reopened").isBool()
+        && result.value("custody_available").isBool() && result.value("custody_available").toBool()
+        && result.value("metadata_loaded").isBool() && result.value("metadata_loaded").toBool()
+        && count.isDouble() && std::isfinite(count.toDouble())
+        && std::floor(count.toDouble()) == count.toDouble() && count.toInteger(-1) >= 0
+        && result.value("provider_request_initiated").isBool() && !result.value("provider_request_initiated").toBool()
+        && result.value("live_handoff_proven").isBool() && !result.value("live_handoff_proven").toBool();
+}
+
 QString text(const QJsonObject &object, const QString &field) {
     QJsonValue value = object;
     for (const auto &part : field.split('.')) value = value.toObject().value(part);
@@ -226,6 +242,36 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     setupNotice_->setTextFormat(Qt::PlainText);
     static_cast<QVBoxLayout *>(setupPage->layout())->insertWidget(0, setupNotice_);
     button(actions, "Check setup", this, [this] { refreshReadiness(); });
+    button(actions, "Resume after vault unlock", this, [this] {
+        if (!client_.ready()) { setupNotice_->setText("Connect to the service first."); return; }
+        if (!client_.supportsCustodyReopen()) { setupNotice_->setText("This installed service requires an update before it can resume custody without restarting."); return; }
+        if (client_.hasUncertainOperations()) { setupNotice_->setText(client_.uncertaintyMessage()); return; }
+        client_.request("custody.reopen", {}, [this](const QJsonObject &result, const QString &error) {
+            if (!error.isEmpty()) {
+                custodyAvailable_ = false;
+                updateMutationControls();
+                if (error == "Locked" || error == "VaultLocked" || error == "CustodyLocked")
+                    setupNotice_->setText("Custody could not be reopened. Check the normal OS Secret Service vault and unlock it through your desktop if needed, then choose Resume after vault unlock. Existing encrypted account data remains preserved; enrollment is still unavailable. This refusal does not establish the current OS vault lock state.");
+                else if (error == "Missing" || error == "InvalidKey")
+                    setupNotice_->setText("The existing vault key is missing or invalid. Existing encrypted account data remains preserved; enrollment is unavailable. Repair access to the original key before resuming custody. A replacement key cannot open these accounts.");
+                else
+                    setupNotice_->setText("Custody could not be verified. Existing encrypted account data remains preserved; enrollment is unavailable. Restore access to the normal platform vault or service, then explicitly resume custody. The current OS vault lock state is unverified.");
+                setupNotice_->setProperty("custodyFeedback", setupNotice_->text());
+                return;
+            }
+            if (!reopenedCustody(result)) {
+                custodyAvailable_ = false;
+                updateMutationControls();
+                setupNotice_->setText("The service returned an unverified custody result. Account enrollment remains unavailable until compatible custody and loaded-metadata evidence is available. Existing encrypted account data remains preserved.");
+                setupNotice_->setProperty("custodyFeedback", setupNotice_->text());
+                return;
+            }
+            setupNotice_->setProperty("custodyFeedback", QVariant());
+            setupNotice_->setText("Custody is ready. Source connection, verified identity and usable authority are separate enrollment steps.");
+            refresh();
+            refreshReadiness();
+        });
+    });
     setupVerify_ = button(actions, "Verify setup", this, [this] {
         if (!client_.ready() || client_.hasUncertainOperations()) return;
         client_.request("setup.refresh", {{"operation_id", QUuid::createUuid().toString(QUuid::WithoutBraces)}},
@@ -255,11 +301,21 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
 
     sources_ = makeTable({"Source", "Provider", "Kind", "State", "ID"});
     auto *sourcePage = page(sources_, &actions);
-    sourceNotice_ = new QLabel("Select a connected source to request identity verification. This does not open a provider sign-in flow.");
+    sourceNotice_ = new QLabel("Connect an existing source, or sign in to a new Codex account using the separately qualified acquisition component.");
     sourceNotice_->setWordWrap(true);
     static_cast<QVBoxLayout *>(sourcePage->layout())->insertWidget(1, sourceNotice_);
+    sourceAcquisitionNotice_ = new QLabel("New-account sign-in needs a separately qualified acquisition component and available OS credential custody.");
+    sourceAcquisitionNotice_->setObjectName("codexAccountAcquisitionStatus");
+    sourceAcquisitionNotice_->setWordWrap(true);
+    sourceAcquisitionNotice_->setTextFormat(Qt::PlainText);
+    static_cast<QVBoxLayout *>(sourcePage->layout())->insertWidget(2,sourceAcquisitionNotice_);
     tabs->addTab(sourcePage, "Sources");
     mutationButton(actions, "Connect source…", [this] { connectSource(); });
+    sourceSignIn_ = mutationButton(actions, "Sign in to a Codex account…", [this] {
+        acquisition_->start(custodyAvailable_);
+    });
+    sourceSignIn_->setObjectName("codexAccountSignIn");
+    button(actions, "Cancel sign-in observation", this, [this] { acquisition_->cancel(); })->setObjectName("codexAccountCancel");
     sourceEnroll_ = mutationButton(actions, "Enroll from source", [this] { enroll(); });
     sourceReconcile_ = mutationButton(actions, "Reconcile", [this] { sourceAction("source.reconcile"); });
     sourceDisconnect_ = mutationButton(actions, "Disconnect", [this] { sourceAction("source.disconnect"); });
@@ -374,7 +430,12 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
             refresh();
         }
     };
+    acquisition_ = std::make_unique<CodexAccountAcquisition>(client_,this);
+    acquisition_->onStatus = [this](const QString &message) { sourceAcquisitionNotice_->setText(message); };
+    acquisition_->onChanged = [this] { updateMutationControls(); refresh(); };
+    acquisition_->onSourceConnected = [this](const QString &id) { acquisitionSourceSelection_=id; };
     client_.onEvent = [this](const QJsonObject &event) {
+        if (acquisition_->operationEvent(event)) { updateMutationControls(); refresh(); return; }
         const auto status = event.value("operation_status").toString();
         if (event.value("operation_kind").toString() == "setup_verification") {
             const auto terminal = event.value("operation_result").toObject();
@@ -465,13 +526,16 @@ void OmuxTray::refreshReadiness() {
         return;
     }
     client_.request("setup.readiness", {}, [this](const QJsonObject &result, const QString &error) {
+        const auto custodyFeedback = setupNotice_->property("custodyFeedback").toString();
         if (!error.isEmpty()) {
             setupNotice_->setText("Shared setup readiness unavailable. No installation or continuity claim can be inferred from this connection. " + error);
+            if (!custodyFeedback.isEmpty()) setupNotice_->setText(setupNotice_->text() + "\n" + custodyFeedback);
             return;
         }
         QJsonArray rows;
         QSet<QString> seen;
         bool valid = true;
+        bool allReady = true;
         const QHash<QString, QString> phases {{"artifact", "Installed artifacts"}, {"service", "Service activation"},
             {"vault", "Credential custody"}, {"source", "Source connection"}, {"identity", "Verified identity"},
             {"grant", "Usable authority"}, {"native", "Native application capability"}};
@@ -482,14 +546,22 @@ void OmuxTray::refreshReadiness() {
                 || !finding.value("reason").isString() || finding.value("reason").toString().isEmpty()
                 || !finding.value("action").isString() || finding.value("action").toString().isEmpty()) valid = false;
             seen.insert(phase);
+            allReady = allReady && finding.value("reason").toString() == "ready";
             rows.append(QJsonObject{{"requirement", phases.value(phase, phase)},
                 {"state", finding.value("reason")}, {"next_action", finding.value("action")}});
         }
         fillTable(readiness_, rows, {"requirement", "state", "next_action"});
         if (!valid || result.value("schema_version").toInt() != 1 || rows.size() != 7
-            || !result.value("ready").isBool() || result.value("seamless_handoff_proven").toBool(true)) {
+            || !result.value("ready").isBool() || result.value("ready").toBool() != allReady
+            || !result.value("seamless_handoff_proven").isBool()
+            || result.value("seamless_handoff_proven").toBool(true)) {
             setupNotice_->setText("The daemon returned an unsupported readiness report. Requirements remain unknown until a compatible report is available.");
+            if (!custodyFeedback.isEmpty()) setupNotice_->setText(setupNotice_->text() + "\n" + custodyFeedback);
             readiness_->setRowCount(0);
+            return;
+        }
+        if (!custodyFeedback.isEmpty()) {
+            setupNotice_->setText(custodyFeedback);
             return;
         }
         setupNotice_->setText(result.value("ready").toBool(false)
@@ -500,7 +572,9 @@ void OmuxTray::refreshReadiness() {
 
 void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
     snapshot_ = snapshot;
-    custodyAvailable_ = snapshot.value("custody_available").toBool(false);
+    custodyAvailable_ = snapshot.value("custody_available").toBool(false)
+        && setupNotice_->property("custodyFeedback").toString().isEmpty();
+    acquisition_->observe(snapshot);
     updateMutationControls();
     connection_->setText(custodyAvailable_ ? "Connected" : "Connected; credential custody unavailable");
     accountLabels_.clear();
@@ -522,6 +596,12 @@ void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
         + (custodyAvailable_ ? QString() : "\nCredential custody is unavailable; the action outcome cannot be resolved."));
     fillTable(accounts_, snapshot.value("accounts").toArray(), {"label", "identity.provider", "account_type", "lifecycle", "id"});
     fillTable(sources_, snapshot.value("sources").toArray(), {"label", "provider", "kind", "status", "id"});
+    if (!acquisitionSourceSelection_.isEmpty()) {
+        for (int row=0;row<sources_->rowCount();++row)
+            if (sources_->item(row,4) && sources_->item(row,4)->text()==acquisitionSourceSelection_) {
+                sources_->selectRow(row); acquisitionSourceSelection_.clear(); break;
+            }
+    }
     updateMutationControls();
     fillTable(grants_, snapshot.value("grants").toArray(), {"account_id", "credential_kind", "ownership", "purposes", "audience", "provider_expires_at", "custody_expires_at", "generation"});
     fillTable(capacity_, capacityRows(capacityDisplayRows(snapshot), connected_ && custodyAvailable_),
@@ -627,7 +707,8 @@ QString OmuxTray::sourceReconcileIssue(bool forEnrollment) const {
 
 void OmuxTray::updateMutationControls() {
     setupVerify_->setEnabled(connected_ && !client_.hasUncertainOperations());
-    const bool allowed = connected_ && custodyAvailable_ && !client_.hasUncertainOperations();
+    const bool allowed = connected_ && custodyAvailable_ && !client_.hasUncertainOperations() && (!acquisition_ || !acquisition_->busy());
+    if (auto *cancel = findChild<QPushButton *>("codexAccountCancel")) cancel->setEnabled(acquisition_ && acquisition_->busy());
     for (auto *control : mutationControls_) control->setEnabled(allowed);
     const auto selected = nativeThreads_->selectionModel()->selectedRows();
     const auto *nativeItem = selected.isEmpty() ? nullptr : nativeThreads_->item(selected.first().row(), 0);
@@ -645,7 +726,7 @@ void OmuxTray::updateMutationControls() {
         : source.value("status").toString() == "detached"
             ? "This source is detached. Reconcile rechecks its authorized file and may reconnect it when available. Enrollment requires a connected source. The daemon validates acquisition authorization."
             : "Enroll from source requests identity verification for " + source.value("provider").toString()
-                + " using this connected source. Reconcile refreshes the same source; neither opens a provider sign-in flow. The daemon validates acquisition authorization.");
+                + " using this connected source. Sign in creates a separate private Codex context without asking for profile paths. The daemon independently verifies identity and grant authority.");
 }
 
 void OmuxTray::connectSource() {

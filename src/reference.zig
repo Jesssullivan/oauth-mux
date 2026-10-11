@@ -23,7 +23,7 @@ pub const cli = [_]Cli{
     .{ .name = "source reconcile", .summary = "Request reconciliation of an authorized source.", .usage = "omux source reconcile <opaque-source-id>" },
     .{ .name = "account", .summary = "Apply distinct pause, resume, drain or forget lifecycle actions.", .usage = "omux account <pause|resume|drain|forget> <opaque-account-id>" },
     .{ .name = "repair", .summary = "Reconcile an account's authorized sources and inspect readiness without restoring spent credentials.", .usage = "omux repair <opaque-account-id>" },
-    .{ .name = "enroll", .summary = "Verify a supported provider credential received as JSON on stdin.", .usage = "omux enroll <opaque-source-id>" },
+    .{ .name = "enroll", .summary = "Submit a supported provider credential as JSON on stdin. --wait observes only the original enrollment job for up to 30 seconds after input validation; unresolved outcomes never retry import.", .usage = "omux enroll [--wait] <opaque-source-id>" },
     .{ .name = "integration status", .summary = "Inspect native integration readiness and proof limitations.", .usage = "omux integration status" },
     .{ .name = "integration install", .summary = "Install a reversible integration after proving its prerequisites.", .usage = "omux integration install <adapter> [config-path]" },
     .{ .name = "integration discover", .summary = "Inspect bounded authenticated native owner inventory in the selected integration context; hook compatibility is experimental, not native support.", .usage = "omux integration discover [codex [config-path]]" },
@@ -154,5 +154,5 @@ test "CLI help and generated commands share the same catalog" {
     const bytes = try commandHelp(std.testing.allocator);
     defer std.testing.allocator.free(bytes);
     for (cli) |command| try std.testing.expect(std.mem.indexOf(u8, bytes, command.usage["omux ".len..]) != null);
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "enroll <opaque-source-id>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "enroll [--wait] <opaque-source-id>") != null);
 }

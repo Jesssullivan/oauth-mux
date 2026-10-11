@@ -7,6 +7,7 @@ Stored NAR hashes are metadata, not a fresh content-integrity attestation.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -44,17 +45,41 @@ def roots_from_input(value):
     return roots
 
 
-def snapshot_inventory(database, roots, exists=os.path.exists):
-    deadline = time.monotonic() + MAX_SECONDS
+def snapshot_inventory(database, roots, exists=os.path.exists, *, absolute_deadline=None):
+    now = time.monotonic()
+    if absolute_deadline is None:
+        deadline = now + MAX_SECONDS
+    else:
+        if (type(absolute_deadline) is not float or not math.isfinite(absolute_deadline)
+                or not 0 < absolute_deadline-now <= MAX_SECONDS):
+            raise ValueError('inventory-deadline')
+        deadline = absolute_deadline
     rows = {}
     refs_count = 0
     # mode=ro prevents creation/writes; unlike immutable, SQLite retains locking
     # and observes a consistent read transaction even while the daemon writes.
-    connection = sqlite3.connect(Path(database).absolute().as_uri() + '?mode=ro', uri=True, timeout=2)
-    connection.execute('PRAGMA query_only=ON')
-    connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+    def check_optional():
+        if absolute_deadline is not None:
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise ValueError('inventory-deadline')
+            return remaining
+        return 2
+    def busy_budget():
+        if absolute_deadline is not None:
+            remaining = check_optional()
+            connection.execute('PRAGMA busy_timeout=' + str(int(min(2, remaining)*1000)))
+            check_optional()
+    connection = sqlite3.connect(Path(database).absolute().as_uri() + '?mode=ro', uri=True,
+                                 timeout=min(2, check_optional()))
     try:
+        check_optional()
+        connection.execute('PRAGMA query_only=ON')
+        check_optional()
+        connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+        busy_budget()
         connection.execute('BEGIN')
+        check_optional()
         pending = list(roots)
         while pending:
             if time.monotonic() > deadline:
@@ -64,12 +89,16 @@ def snapshot_inventory(database, roots, exists=os.path.exists):
                 continue
             if len(rows) >= MAX_PATHS or not STORE.fullmatch(path) or not exists(path):
                 raise ValueError('missing-or-bounded-path')
+            busy_budget()
             metadata = connection.execute('SELECT id, hash, narSize FROM ValidPaths WHERE path = ?', (path,)).fetchone()
+            check_optional()
             if metadata is None or not isinstance(metadata[1], str) or not HASH.fullmatch(metadata[1]) or not isinstance(metadata[2], int) or metadata[2] < 0:
                 raise ValueError('invalid-registration')
             references = []
+            busy_budget()
             cursor = connection.execute('SELECT v.path FROM Refs r LEFT JOIN ValidPaths v ON v.id = r.reference WHERE r.referrer = ? ORDER BY v.path', (metadata[0],))
             for (reference,) in cursor:
+                check_optional()
                 refs_count += 1
                 if refs_count > MAX_REFS or not isinstance(reference, str) or not STORE.fullmatch(reference):
                     raise ValueError('reference-bound')
@@ -79,9 +108,12 @@ def snapshot_inventory(database, roots, exists=os.path.exists):
         # Roots are mandatory, and every traversed reference must be resolved.
         if any(ref not in rows for row in rows.values() for ref in row['references']):
             raise ValueError('incomplete-reference-graph')
-        return [rows[path] for path in sorted(rows)]
+        check_optional()
+        result = [rows[path] for path in sorted(rows)]
     finally:
         connection.close()
+    check_optional()
+    return result
 
 
 def produce(roots_path, lock_path, expected_roots, expected_lock, database):

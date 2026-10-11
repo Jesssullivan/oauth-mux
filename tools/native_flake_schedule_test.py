@@ -1,0 +1,1215 @@
+"""Actual FD/NAR/copy/schedule joins; only external Nix child work is injected."""
+import copy
+import io
+import json
+import os
+from pathlib import Path
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+import native_flake_schedule as schedule
+import native_flake_sources_test as source_models
+import nix_private_store_qualification_test as runtime_models
+import nar_descriptor as nar
+import nix_private_store_seed as seed
+
+DRV = "/nix/store/"+"d"*32+"-omux-bazel-closure.drv"
+CHILD = "/nix/store/"+"b"*32+"-dependency.drv"
+OUT = "/nix/store/"+"f"*32+"-omux-bazel-closure"
+DEPENDENCY = "/nix/store/"+"b"*32+"-dependency"
+SCRIPT = "/nix/store/"+"c"*32+"-builder.sh"
+
+
+def encoded(value):
+    return seed.encoded(value)
+
+
+def row(name, out, *, children=None, srcs=None):
+    return {"version": 4, "name": name, "outputs": {"out": {"path": out.rsplit("/",1)[1]}},
+        "inputs": {"srcs": [path.rsplit("/",1)[1] for path in srcs or []],
+            "drvs": {path.rsplit("/",1)[1]: {"outputs": ["out"], "dynamicOutputs": {}}
+                for path in children or []}},
+        "system": "x86_64-linux", "builder": "builtin:synthetic-model", "args": [],
+        "env": {"out": out}}
+
+
+class Fixture:
+    def __init__(self, directory):
+        self.root = Path(directory)
+        (self.root/"runtime").mkdir()
+        self.runtime = runtime_models.Fixture(self.root/"runtime")
+        source_model = source_models.NativeFlakeSourcesTest()
+        self.lock, self.bundle, self.data, _ = source_model.fixture()
+        self.descriptors = encoded(self.bundle)
+        self.labels = self.root/"labels"
+        self.labels.mkdir()
+        source_model.materialize(self.labels, self.data)
+        self.descriptor_path = self.labels/"source-descriptors.json"
+        self.descriptor_path.write_bytes(self.descriptors)
+        self.project = {name: b"public-fixed-input" for name in schedule.PROJECT_FILES}
+        self.project["flake.lock"] = self.lock
+        self.imports = {}
+        self.calls = []
+        self.extra = {}
+        self.raw_graph = encoded({"version": 4, "derivations": {
+            DRV.rsplit("/",1)[1]: row("omux-bazel-closure", OUT, children=[CHILD], srcs=[SCRIPT]),
+            CHILD.rsplit("/",1)[1]: row("dependency", DEPENDENCY)}})
+
+    def registration(self, private):
+        text = runtime_models.dump_db_wire(self.runtime.value).decode("ascii")
+        for logical, refs in sorted(self.extra.items()):
+            physical = private/"nix/store"/logical.rsplit("/",1)[1]
+            descriptor = schedule.proof.describe_root(logical, physical)
+            hashed = nar.hash_descriptor(descriptor,
+                opener=lambda _, relative: nar.open_regular(str(physical), relative))
+            text += "\n".join([logical, hashed["narHash"][7:], str(hashed["narSize"]), "",
+                              str(len(refs)), *refs])+"\n"
+        return text.encode()
+
+    def runner(self, command, environment, root, deadline, *, tool_fd, input_file=None, output_limit=None, diagnostics=None):
+        self.calls.append((command, deadline, output_limit))
+        assert os.fstat(tool_fd).st_mode & 0o100
+        assert environment["NIX_REMOTE"] == "" and environment["PATH"] == ""
+        private = Path(command[command.index("--store")+1].removeprefix("local?root="))
+        if command[-1] == "--load-db":
+            assert input_file.read() == self.runtime.value["registration"].encode()
+            return b""
+        if command[-1] == "--dump-db":
+            raw = self.registration(private)
+            if diagnostics is not None:
+                diagnostics.update({"child_exit": 0, "stdout_bytes": len(raw), "stderr_bytes": 0,
+                    "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                    "transport_reason": "child-zero", "stderr_reason": "unclassified",
+                    "stderr_classification_truncated": False})
+            return raw
+        if "--add-fixed" in command:
+            physical = Path(command[-1])
+            role = physical.parent.name
+            logical = "/nix/store/"+str(len(self.imports)+1)*32+"-source"
+            destination = private/"nix/store"/logical.rsplit("/",1)[1]
+            descriptor = nar.describe(physical)
+            schedule.copy_tree(descriptor, destination,
+                lambda _, relative: nar.open_regular(str(physical), relative), deadline)
+            self.imports[role] = logical
+            self.extra[logical] = []
+            return (logical+"\n").encode()
+        if "eval" in command:
+            for logical in (DRV, CHILD, SCRIPT):
+                physical = private/"nix/store"/logical.rsplit("/",1)[1]
+                physical.write_bytes(b"public-generated-"+logical.rsplit("/",1)[1].encode())
+                os.chmod(physical,0o444)
+            self.extra.update({DRV: [CHILD,SCRIPT], CHILD: [], SCRIPT: []})
+            raw = encoded({"drvPath": DRV, "outputPath": OUT, "system": "x86_64-linux",
+                           "sourcePaths": self.imports})
+            if diagnostics is not None:
+                diagnostics.update({"child_exit": 0, "stdout_bytes": len(raw), "stderr_bytes": 0,
+                    "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                    "transport_reason": "child-zero", "stderr_reason": "unclassified",
+                    "stderr_classification_truncated": False})
+            return raw
+        if "derivation" in command:
+            assert "--recursive" in command
+            if diagnostics is not None:
+                diagnostics.update({"child_exit": 0, "stdout_bytes": len(self.raw_graph), "stderr_bytes": 0,
+                    "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                    "transport_reason": "child-zero", "stderr_reason": "unclassified",
+                    "stderr_classification_truncated": False})
+            return self.raw_graph
+        raise AssertionError("unexpected operation")
+
+    def operate(self, runner=None, deadline=None, entry=None):
+        def describe(logical, physical=None):
+            actual = self.runtime.physical[logical] if physical is None else physical
+            value = nar.describe(actual)
+            value["root"] = logical
+            return value
+        with patch.object(schedule.proof, "source_opener", return_value=self.runtime.opener), \
+             patch.object(schedule.proof, "describe_root", side_effect=describe):
+            return schedule.operate(self.runtime.value, encoded(self.runtime.value), self.descriptors,
+                self.descriptor_path, self.project, "{ projectSource, nixpkgsSource, utilsSource, systemsSource }: {}",
+                self.root, float(time.monotonic()+60) if deadline is None else deadline,
+                runner=self.runner if runner is None else runner, entry=entry)
+
+
+class ScheduleModels(unittest.TestCase):
+
+    def test_failed_target_json_is_separate_from_actual_zero_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "eval" in args[0]:
+                    kwargs["diagnostics"]["stdout_bytes"] = len(b"not JSON")
+                    return b"not JSON"
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "target-document")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(schedule.DIAGNOSTICS["transport_reason"], "child-zero")
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_imported_role_join_is_separate_from_valid_target_document(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "eval" in args[0]:
+                    value = json.loads(raw)
+                    value["sourcePaths"]["systems"] = SCRIPT
+                    raw = encoded(value)
+                    if kwargs.get("diagnostics") is not None:
+                        kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                    return raw
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "imported-source-join")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_fixed_elapsed_witness_uses_entry_without_changing_original_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            entry = float(time.monotonic()-1)
+            deadline = float(time.monotonic()+60)
+            model.operate(deadline=deadline, entry=entry)
+            self.assertEqual({call[1] for call in model.calls}, {deadline})
+            report = schedule.diagnostic_summary()
+            phases = {row["phase"] for row in report["phase_elapsed"]}
+            self.assertTrue({"source-verify", "source-copy", "source-store-import",
+                             "current-flake-evaluation", "target-document", "imported-source-join"} <= phases)
+            ticks = [row["elapsed_ms"] for row in report["phase_elapsed"]]
+            self.assertEqual(ticks, sorted(ticks))
+            self.assertGreaterEqual(ticks[0], 1000)
+            self.assertTrue(all(type(tick) is int and 0 <= tick <= schedule.MAX_WITNESS_MS for tick in ticks))
+            self.assertNotIn(str(model.root), json.dumps(report))
+
+    def test_disposable_source_copy_rehashes_without_per_file_fsync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.mkdir()
+            (original / "payload").write_bytes(b"declared-copy-bytes\n")
+            descriptor = nar.describe(original)
+            with patch.object(schedule.os, "fsync", side_effect=AssertionError("disposable copy fsync")):
+                result = schedule.copy_tree(descriptor, Path(directory) / "copied",
+                    nar.open_regular, float(time.monotonic() + 10), durable=False)
+            self.assertEqual(result, nar.hash_descriptor(descriptor))
+            self.assertEqual((Path(directory) / "copied/payload").read_bytes(), b"declared-copy-bytes\n")
+
+    def test_published_generated_copy_retains_payload_and_receipt_fsync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.write_bytes(b"generated")
+            descriptor = nar.describe(original)
+            proof = nar.hash_descriptor(descriptor)
+            output = Path(directory) / "output"
+            output.mkdir()
+            item = {"descriptor": descriptor, "artifact_root": "generated/00000000", **proof}
+            with patch.object(schedule.os, "fsync", wraps=schedule.os.fsync) as sync:
+                schedule.persist({"generated": {str(original): item}},
+                    {("generated/00000000", ""): b"generated"}, output,
+                    float(time.monotonic() + 10))
+            self.assertEqual(sync.call_count, 2)
+            self.assertEqual((output / "generated/00000000").read_bytes(), b"generated")
+            self.assertTrue((output / "native-flake-obligations.json").is_file())
+
+    def test_disposable_source_copy_flush_failure_propagates(self):
+        class FlushFailure:
+            def __init__(self, stream):
+                self.stream = stream
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.stream.close()
+            def write(self, data):
+                return self.stream.write(data)
+            def flush(self):
+                raise OSError("modeled public flush failure")
+            def fileno(self):
+                return self.stream.fileno()
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.write_bytes(b"copy")
+            descriptor = nar.describe(original)
+            fdopen = schedule.os.fdopen
+            with patch.object(schedule.os, "fdopen", side_effect=lambda *args: FlushFailure(fdopen(*args))), self.assertRaises(OSError):
+                schedule.copy_tree(descriptor, Path(directory) / "copied",
+                    lambda *_: io.BytesIO(b"copy"), float(time.monotonic() + 10),
+                    durable=False)
+
+    def test_actual_copy_import_graph_generated_nars_and_cleanup_preserve_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, payloads = model.operate()
+            self.assertTrue(result["source_rechecked"])
+            self.assertTrue(result["runtime_seed_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+            self.assertFalse(result["realized"])
+            self.assertFalse(result["complete_build_seed_verified"])
+            self.assertFalse(result["scheduler_pruned_plan"])
+            self.assertEqual(set(result["derivations"]), {DRV, CHILD})
+            self.assertIn(DRV, result["generated"])
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+            self.assertTrue(all(call[1] == model.calls[0][1] for call in model.calls))
+            self.assertEqual(sum("--add-fixed" in call[0] for call in model.calls),4)
+            self.assertFalse(any("build" in call[0] for call in model.calls))
+            output = model.root/"output"
+            output.mkdir()
+            schedule.persist(result,payloads,output,float(time.monotonic()+60))
+            retained = json.loads((output/"native-flake-obligations.json").read_bytes())
+            self.assertEqual(retained,result)
+            for logical in (DRV,CHILD,SCRIPT):
+                item = retained["generated"][logical]
+                path = output/item["artifact_root"]
+                hashed = nar.hash_descriptor(nar.describe(path))
+                self.assertEqual(hashed["narHash"],item["narHash"])
+
+
+    def test_both_actual_dump_joins_use_the_pinned_barehex_adapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            adapter = schedule.proof.readback_records
+            with patch.object(schedule.proof, "readback_records", wraps=adapter) as parsed:
+                result, _ = model.operate()
+            self.assertEqual(parsed.call_count, 2)
+            for call in parsed.call_args_list:
+                wire = call.args[0].decode("ascii").splitlines()
+                self.assertEqual(len(wire[1]), 64)
+                self.assertNotIn("sha256:", wire[1])
+            self.assertTrue(result["runtime_seed_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"])
+
+    def test_wrong_wire_at_each_dump_stops_and_removes_only_owned_root(self):
+        for refused_dump in (1, 2):
+            with self.subTest(dump=refused_dump), tempfile.TemporaryDirectory() as directory:
+                model = Fixture(directory)
+                seen = 0
+                def runner(*args, **kwargs):
+                    nonlocal seen
+                    raw = model.runner(*args, **kwargs)
+                    if args[0][-1] == "--dump-db":
+                        seen += 1
+                        if seen == refused_dump:
+                            return raw.replace(b"\n", b"\nsha256:", 1)
+                    return raw
+                with self.assertRaises(ValueError):
+                    model.operate(runner)
+                self.assertEqual(seen, refused_dump)
+                self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+                self.assertEqual(any("eval" in call[0] for call in model.calls), refused_dump == 2)
+
+    def test_post_graph_dump_uses_fresh_child_witness_on_transport_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            dumps = 0
+            def runner(*args, **kwargs):
+                nonlocal dumps
+                if args[0][-1] == "--dump-db":
+                    dumps += 1
+                    if dumps == 2:
+                        self.assertEqual(kwargs["diagnostics"], {})
+                        kwargs["diagnostics"].update({"child_exit": 1, "stdout_bytes": 0,
+                            "stderr_bytes": 0, "stderr_sha256": seed.sha(b""), "streams_complete": True,
+                            "transport_reason": "child-nonzero", "stderr_reason": "unclassified",
+                            "stderr_classification_truncated": False})
+                        raise OSError("unselected-private-child-error")
+                return model.runner(*args, **kwargs)
+            with self.assertRaises(OSError):
+                model.operate(runner)
+            report = schedule.diagnostic_summary()
+            self.assertEqual(report["phase"], "generated-registration-dump")
+            self.assertEqual(report["child"]["child_exit"], 1)
+            self.assertEqual(report["child"]["stdout_bytes"], 0)
+            self.assertIsNone(report["graph_document_reason"])
+            self.assertIsNone(report["registration_readback_phase"])
+            self.assertIsNone(report["registration_join_reason"])
+            self.assertNotIn("unselected-private-child-error", json.dumps(report))
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_actual_post_graph_wire_parser_membership_and_retained_joins_have_finite_phases(self):
+        cases = (
+            ("ascii", "generated-registration-ascii", None, None),
+            ("wire", "generated-registration-roots", None, None),
+            ("wire-hash", "generated-registration-records", "registration-readback-wire-hash", None),
+            ("record", "generated-registration-records", "registration-readback-parse", None),
+            ("missing-root", "runtime-registration-roots", None, None),
+            ("nar-hash", "runtime-registration-join", None, "nar-hash"),
+            ("nar-size", "runtime-registration-join", None, "nar-size"),
+            ("deriver", "runtime-registration-join", None, "deriver"),
+            ("references", "runtime-registration-join", None, "references"))
+        for refused, phase, readback_phase, join_reason in cases:
+            with self.subTest(refused=refused), tempfile.TemporaryDirectory() as directory:
+                model = Fixture(directory)
+                dumps = 0
+                def runner(*args, **kwargs):
+                    nonlocal dumps
+                    raw = model.runner(*args, **kwargs)
+                    if args[0][-1] != "--dump-db":
+                        return raw
+                    dumps += 1
+                    if dumps != 2:
+                        return raw
+                    lines = raw.decode("ascii").splitlines()
+                    if refused == "ascii":
+                        changed = b"\xff"
+                    elif refused == "wire":
+                        changed = b"not-a-registration\n"
+                    else:
+                        if refused == "wire-hash":
+                            lines[1] = "sha256:"+lines[1]
+                        elif refused == "record":
+                            lines[2] = "0"
+                        elif refused == "missing-root":
+                            lines = lines[5+int(lines[4]):]
+                        elif refused == "nar-hash":
+                            lines[1] = "0"*64
+                        elif refused == "nar-size":
+                            lines[2] = str(int(lines[2])+1)
+                        elif refused == "deriver":
+                            lines[3] = CHILD
+                        else:
+                            self.assertEqual(lines[4], "1")
+                            lines[5] = CHILD
+                        changed = ("\n".join(lines)+"\n").encode("ascii")
+                    kwargs["diagnostics"]["stdout_bytes"] = len(changed)
+                    return changed
+                with self.assertRaises((ValueError, UnicodeError)):
+                    model.operate(runner)
+                report = schedule.diagnostic_summary()
+                self.assertEqual(report["phase"], phase)
+                self.assertEqual(report["registration_readback_phase"], readback_phase)
+                self.assertEqual(report["registration_join_reason"], join_reason)
+                if refused == "record":
+                    self.assertEqual(report["registration_parse"],
+                        {"family": "nar-size", "site": "nar-size", "path_refusal": None,
+                         "declared_roots": len(model.runtime.value["roots"])+len(model.extra),
+                         "declared_roots_clamped": False})
+                else:
+                    self.assertIsNone(report["registration_parse"])
+                self.assertEqual(report["child"]["child_exit"], 0)
+                self.assertIsNone(report["graph_document_reason"])
+                self.assertIsNone(report["graph_path_site"])
+                self.assertIsNone(report["graph_path_refusal"])
+                self.assertLessEqual(len(report["phase_elapsed"]), 24)
+                self.assertNotIn(str(model.root), json.dumps(report))
+                self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, _ = model.operate()
+            report = schedule.diagnostic_summary()
+            self.assertIsNone(report["registration_join_reason"])
+            self.assertIsNone(report["registration_readback_phase"])
+            self.assertLessEqual(len(report["phase_elapsed"]), 24)
+            self.assertTrue(result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"])
+            self.assertFalse(result["realized"])
+
+    def test_old_json_or_bool_version_rejected(self):
+        for value in ({"inputDrvs": {}, "inputSrcs":[]}, {"version": True,"derivations": {}}):
+            with self.assertRaises(ValueError):
+                schedule.derivations(encoded(value),{"drvPath":DRV,"outPath":OUT})
+            self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
+
+    def test_incomplete_extra_or_output_substituted_recursive_graph_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Fixture(directory).raw_graph
+            for kind in ("missing","extra","output","edge-output"):
+                graph = json.loads(original)
+                if kind == "missing":
+                    graph["derivations"].pop(CHILD.rsplit("/",1)[1])
+                elif kind == "extra":
+                    graph["derivations"]["a"*32+"-unused.drv"] = row("unused",DEPENDENCY)
+                elif kind == "output":
+                    graph["derivations"][DRV.rsplit("/",1)[1]]["env"]["out"] = DEPENDENCY
+                else:
+                    graph["derivations"][DRV.rsplit("/",1)[1]]["inputs"]["drvs"][CHILD.rsplit("/",1)[1]]["outputs"] = ["wrong"]
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph),{"drvPath":DRV,"outPath":OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON,
+                    "env" if kind == "output" else "reachability")
+
+    def test_dynamic_or_impure_obligations_not_silently_dropped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Fixture(directory).raw_graph
+            for kind in ("dynamic","impure"):
+                graph = json.loads(original)
+                row_value = graph["derivations"][DRV.rsplit("/",1)[1]]
+                if kind == "dynamic":
+                    row_value["inputs"]["drvs"][CHILD.rsplit("/",1)[1]]["dynamicOutputs"] = {"out":{}}
+                else:
+                    row_value["outputs"]["out"] = {"method":"nar","hashAlgo":"sha256","impure":True}
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph),{"drvPath":DRV,"outPath":OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "inputs" if kind == "dynamic" else "output")
+
+    def test_failed_evaluation_preserves_phase_and_removes_only_owned_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args,**kwargs):
+                if "eval" in args[0]:
+                    raise ValueError("modeled evaluator failure")
+                return model.runner(*args,**kwargs)
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE,"current-flake-evaluation")
+            self.assertEqual(list(model.root.glob("nix-private-build-*")),[])
+
+    def test_imported_role_substitution_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args,**kwargs):
+                raw = model.runner(*args,**kwargs)
+                if "eval" in args[0]:
+                    value = json.loads(raw)
+                    value["sourcePaths"]["systems"] = SCRIPT
+                    raw = encoded(value)
+                    if kwargs.get("diagnostics") is not None:
+                        kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                    return raw
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+
+    def test_changed_declared_source_before_child_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            (model.labels/"regular/00000000").write_bytes(b"BAD")
+            with self.assertRaisesRegex(ValueError, "native-source-nar-mismatch"):
+                model.operate()
+            self.assertEqual(model.calls,[])
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_non_declared_source_alias_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            alias = model.labels/"regular/00000000"
+            alias.unlink()
+            alias.symlink_to("/unselected/private-input")
+            with self.assertRaises(ValueError):
+                model.operate()
+            self.assertEqual(model.calls,[])
+
+    def test_original_deadline_before_owned_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            with self.assertRaises(ValueError), patch.object(schedule.proof,"OwnedRoot",side_effect=AssertionError("created")):
+                model.operate(deadline=float(time.monotonic()-1))
+
+    def test_fixed_query_argv_no_realization_or_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory)
+            tools={"nix":runtime_models.NIX+"/bin/nix"}
+            for leaf, command in (
+                    ("eval", schedule.plan(tools,private,"fixed")),
+                    ("show", schedule.plan(tools,private,"fixed",DRV))):
+                self.assertIn("--offline",command)
+                self.assertEqual(command.count("--eval-store"),1)
+                # Pinned Nix selects MixEvalArgs only after the leaf token.
+                # Presence anywhere in argv did not catch the real root rejection.
+                index = command.index(leaf)
+                self.assertNotIn("--eval-store",command[:index+1])
+                self.assertEqual(command[index+1:index+3],
+                    ["--eval-store",command[command.index("--store")+1]])
+                self.assertEqual(command[:command.index("eval" if leaf == "eval" else "derivation")],
+                    schedule.proof.common(tools["nix"], private) +
+                    ["--extra-experimental-features","nix-command",
+                     "--offline","--option","pure-eval","true"])
+                if leaf == "eval":
+                    self.assertEqual(command[index+3:],["--json","--expr","fixed"])
+                else:
+                    self.assertEqual(command[index-1],"derivation")
+                    self.assertEqual(command[index+3:],["--recursive",DRV])
+                self.assertNotIn("build",command)
+                self.assertNotIn("--impure",command)
+                self.assertEqual(command[command.index("builders")+1],"")
+                self.assertEqual(command[command.index("substituters")+1],"")
+            paths = {role:Path("/nix/store/"+"a"*32+"-"+role) for role in ("project",*schedule.sources.ROLES)}
+            expression = schedule.expression("fixed",paths,{role:"b"*64 for role in paths})
+            self.assertEqual(expression.count("sha256 ="),4)
+            self.assertEqual(expression.count("builtins.path"),4)
+
+    def test_source_changed_during_evaluation_refused_after_actual_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "derivation" in args[0]:
+                    (model.labels/"regular/00000000").write_bytes(b"changed-public-source")
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertTrue(any("derivation" in call[0] for call in model.calls))
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_copied_runtime_changed_by_child_refuses_after_actual_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "derivation" in args[0]:
+                    private = Path(args[0][args[0].index("--store")+1].removeprefix("local?root="))
+                    leaf = private/"nix/store"/runtime_models.LIB.rsplit("/", 1)[1]/"lib/libc.so"
+                    original = leaf.read_bytes()
+                    os.chmod(leaf, 0o600)
+                    leaf.write_bytes(bytes([original[0]^1])+original[1:])
+                    os.chmod(leaf, 0o555)
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertTrue(any("derivation" in call[0] for call in model.calls))
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_generated_payload_substitution_fails_real_nar_readback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, payloads = model.operate()
+            item = result["generated"][DRV]
+            key = (item["artifact_root"], "")
+            payloads[key] = bytes([payloads[key][0] ^ 1]) + payloads[key][1:]
+            output = model.root/"output"
+            output.mkdir()
+            with self.assertRaises(ValueError):
+                schedule.persist(result, payloads, output, float(time.monotonic()+60))
+            self.assertFalse((output/"native-flake-obligations.json").exists())
+
+    def test_realized_target_in_registration_is_not_an_obligations_only_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "eval" in args[0]:
+                    private = Path(args[0][args[0].index("--store")+1].removeprefix("local?root="))
+                    (private/"nix/store"/OUT.rsplit("/", 1)[1]).write_bytes(b"unexpected-built-output")
+                    model.extra[OUT] = []
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_oversized_generated_payload_refuses_before_payload_open(self):
+        # External NAR qualification is injected here to isolate the payload IO bound.
+        with tempfile.TemporaryDirectory() as directory:
+            digest = "a"*64
+            descriptor = {"root": DRV, "nodes": [{"path": "", "type": "regular",
+                "size": schedule.MAX_ARTIFACT_BYTES+1, "executable": False}]}
+            records = {DRV: {"record": [DRV, "sha256:"+digest, "1", ""], "references": []}}
+            with patch.object(schedule.proof, "describe_root", return_value=descriptor), \
+                 patch.object(schedule.nar, "hash_descriptor", return_value={"narHash": "sha256:"+digest, "narSize": 1}), \
+                 patch.object(schedule.nar, "open_regular") as opener:
+                with self.assertRaises(ValueError):
+                    schedule.generated_objects(Path(directory), records, [],
+                        {"sourcePaths": {}, "outPath": OUT}, {DRV: {"inputSrcs": []}},
+                        float(time.monotonic()+10))
+            opener.assert_not_called()
+
+    def test_persist_expiry_does_not_create_new_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                schedule.persist({"generated":{}},{},directory,float(time.monotonic()-1))
+            self.assertEqual(list(Path(directory).iterdir()),[])
+
+    def test_transport_output_limit_is_literal_bounded_before_spawn(self):
+        with patch.object(schedule.proof.subprocess,"Popen") as spawn:
+            for limit in (True,0,32*1024**2+1):
+                with self.assertRaises(ValueError):
+                    schedule.proof.run(["fixed"],{},Path("/"),float(time.monotonic()+10),
+                                       tool_fd=777,output_limit=limit)
+        spawn.assert_not_called()
+
+
+    def test_fused_source_proof_and_copy_complete_before_first_child_same_original_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            deadline = float(time.monotonic()+60)
+            opens = []
+            original = schedule.sources.open_declared
+            def opened(*args):
+                opens.append(str(args[0]))
+                return original(*args)
+            def runner(command, environment, root, selected_deadline, **kwargs):
+                self.assertEqual(selected_deadline, deadline)
+                if not model.calls:
+                    self.assertEqual(len(opens), len(model.data))
+                    for item in model.bundle["sources"]:
+                        leaf = root/"sources"/item["role"]/"source/data"
+                        self.assertEqual(leaf.read_bytes(), model.data[item["regularInputs"]["data"]])
+                        self.assertEqual(os.lstat(leaf).st_mode & 0o777, 0o444)
+                return model.runner(command, environment, root, selected_deadline, **kwargs)
+            with patch.object(schedule.sources, "open_declared", side_effect=opened):
+                result, _ = model.operate(runner, deadline)
+            self.assertEqual(len(opens), 2*len(model.data))  # Fused before + unchanged final original proof.
+            self.assertTrue(result["source_rechecked"])
+            self.assertTrue(result["private_root_removed"])
+
+    def test_source_metadata_admission_precedes_owned_root_and_runtime_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            model.bundle["sources"][1]["regularInputs"]["data"] = "regular/00000000"
+            model.descriptors = encoded(model.bundle)
+            with patch.object(schedule.proof, "OwnedRoot", side_effect=AssertionError("root")), \
+                 patch.object(schedule.proof, "verify_nars", side_effect=AssertionError("runtime bytes")):
+                with self.assertRaises(ValueError):
+                    model.operate()
+            self.assertEqual(model.calls, [])
+
+
+    def test_exact_nonreserved_wire_preserves_full_internal_target_document(self):
+        paths = {role: "/nix/store/"+str(index+1)*32+"-source"
+                 for index, role in enumerate(("project", *schedule.sources.ROLES))}
+        wire = {"drvPath": DRV, "outputPath": OUT, "system": "x86_64-linux",
+                "sourcePaths": paths}
+        self.assertEqual(schedule.target_document(encoded(wire)),
+            {"drvPath": DRV, "outPath": OUT, "system": "x86_64-linux", "sourcePaths": paths})
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, _ = model.operate()
+            self.assertEqual(set(result["target"]), {"drvPath", "outPath", "system", "sourcePaths"})
+            self.assertEqual(result["target"]["outPath"], OUT)
+            self.assertEqual(result["target"]["sourcePaths"], model.imports)
+            self.assertEqual(set(result["derivations"]), {DRV, CHILD})
+            self.assertTrue(result["source_rechecked"] and result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"])
+
+    def test_scalar_ambiguous_missing_and_extra_wire_members_are_refused(self):
+        paths = {role: "/nix/store/"+str(index+1)*32+"-source"
+                 for index, role in enumerate(("project", *schedule.sources.ROLES))}
+        valid = {"drvPath": DRV, "outputPath": OUT, "system": "x86_64-linux",
+                 "sourcePaths": paths}
+        cases = [OUT, {**valid, "outPath": OUT}, {**valid, "extra": 0},
+                 {**valid, "system": "aarch64-linux"}, {**valid, "outputPath": SCRIPT},
+                 {**valid, "sourcePaths": list(paths)}, {**valid, "sourcePaths": []},
+                 {key: value for key, value in valid.items() if key != "sourcePaths"},
+                 {**{key: value for key, value in valid.items() if key != "outputPath"}, "outPath": OUT},
+                 {**valid, "sourcePaths": {**paths, "systems": paths["project"]}},
+                 {**valid, "sourcePaths": {**paths, "unexpected": SCRIPT}},
+                 {**valid, "sourcePaths": {**paths, "systems": "/unselected/source"}}]
+        for case in cases:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                schedule.target_document(encoded(case))
+        # The unique-key decoder still rejects a duplicate even if both values agree.
+        duplicate = b'{"outputPath":'+encoded(OUT)+b','+encoded(valid)[1:]
+        with self.assertRaises(ValueError):
+            schedule.target_document(duplicate)
+
+    def test_zero_exit_scalar_wire_is_refused_before_graph_and_owned_root_is_cleaned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "eval" in args[0]:
+                    raw = encoded(OUT)
+                    kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "target-document")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertTrue(schedule.DIAGNOSTICS["streams_complete"])
+            self.assertFalse(any("derivation" in call[0] for call in model.calls))
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+
+    def test_recursive_child_refusal_replaces_successful_evaluation_witness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            deadline = float(time.monotonic()+60)
+            seen = []
+            def runner(command, environment, root, selected_deadline, **kwargs):
+                self.assertEqual(selected_deadline, deadline)
+                if "derivation" in command:
+                    witness = kwargs["diagnostics"]
+                    self.assertEqual(witness, {})
+                    self.assertIsNot(witness, seen[0])
+                    self.assertGreater(seen[0]["stdout_bytes"], 0)
+                    witness.update({"child_exit": 1, "stdout_bytes": 0, "stderr_bytes": 7,
+                        "stderr_sha256": seed.sha(b"refused"), "streams_complete": True,
+                        "transport_reason": "child-exit", "stderr_reason": "unclassified",
+                        "stderr_classification_truncated": False})
+                    raise ValueError("modeled actual recursive child refusal")
+                raw = model.runner(command, environment, root, selected_deadline, **kwargs)
+                if "eval" in command:
+                    seen.append(kwargs["diagnostics"])
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner, deadline)
+            self.assertEqual(schedule.PHASE, "recursive-obligations")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 1)
+            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], 0)
+            self.assertEqual(schedule.DIAGNOSTICS["stderr_bytes"], 7)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_zero_recursive_child_bad_document_has_its_own_phase_and_witness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                raw = model.runner(*args, **kwargs)
+                if "derivation" in args[0]:
+                    raw = b"{}"
+                    kwargs["diagnostics"]["stdout_bytes"] = len(raw)
+                return raw
+            with self.assertRaises(ValueError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "recursive-document")
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], 2)
+            self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
+            self.assertTrue(schedule.DIAGNOSTICS["streams_complete"])
+            self.assertEqual(schedule.DIAGNOSTICS["stderr_bytes"], 0)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_recursive_transport_refusal_cannot_retain_eval_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            def runner(*args, **kwargs):
+                if "derivation" in args[0]:
+                    self.assertEqual(kwargs["diagnostics"], {})
+                    raise OSError("modeled pre-child held transport refusal")
+                return model.runner(*args, **kwargs)
+            with self.assertRaises(OSError):
+                model.operate(runner)
+            self.assertEqual(schedule.PHASE, "recursive-obligations")
+            self.assertEqual(schedule.DIAGNOSTICS, {})
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+    def test_successful_final_dump_witness_is_bounded_and_no_recursive_child_carryover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Fixture(directory)
+            result, _ = model.operate()
+            self.assertEqual(schedule.DIAGNOSTICS["stdout_bytes"], len(result["registration"].encode("ascii")))
+            self.assertIn("generated-registration-dump", {row["phase"] for row in schedule.PHASE_ELAPSED})
+            self.assertEqual(schedule.DIAGNOSTICS["child_exit"], 0)
+            self.assertEqual(result["derivation_json_sha256"], seed.sha(model.raw_graph))
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+            self.assertIn("recursive-document", {row["phase"] for row in schedule.PHASE_ELAPSED})
+            self.assertTrue(result["source_rechecked"] and result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"])
+
+
+    def test_actual_parser_closed_node_path_and_target_tags_reset_after_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = json.loads(Fixture(directory).raw_graph)
+            for kind in ("node", "path", "target-join"):
+                graph = copy.deepcopy(original)
+                selected = graph["derivations"][DRV.rsplit("/", 1)[1]]
+                if kind == "node":
+                    selected["version"] = True
+                elif kind == "path":
+                    selected["inputs"]["srcs"] = ["unselected-private-path"]
+                else:
+                    selected["outputs"]["out"] = {}
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, kind)
+                self.assertEqual(schedule.diagnostic_summary()["graph_document_reason"], kind)
+                self.assertNotIn("unselected-private-path", json.dumps(schedule.diagnostic_summary()))
+            with self.assertRaises(ValueError):
+                schedule.derivations(b"not JSON", {"drvPath": DRV, "outPath": OUT})
+            self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
+            accepted = schedule.derivations(encoded(original), {"drvPath": DRV, "outPath": OUT})
+            self.assertEqual(set(accepted), {DRV, CHILD})
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+
+
+    def test_pinned_store_names_accept_question_equals_at_all_json_path_sites(self):
+        drv = "/nix/store/" + "d"*32 + "-root?=.drv"
+        child = "/nix/store/" + "b"*32 + "-child?=.drv"
+        out = "/nix/store/" + "f"*32 + "-output?="
+        dependency = "/nix/store/" + "c"*32 + "-dependency?="
+        script = "/nix/store/" + "a"*32 + "-builder?=.sh"
+        graph = {"version": 4, "derivations": {
+            drv.rsplit("/", 1)[1]: row("root?=", out, children=[child], srcs=[script]),
+            child.rsplit("/", 1)[1]: row("child?=", dependency)}}
+        target = {"drvPath": drv, "outPath": out}
+        parsed = schedule.derivations(encoded(graph), target)
+        self.assertEqual(parsed[drv]["inputSrcs"], [script])
+        self.assertEqual(parsed[drv]["inputDrvs"], {child: ["out"]})
+        self.assertEqual(parsed[child]["outputs"]["out"]["path"], dependency)
+        selected = graph["derivations"][child.rsplit("/", 1)[1]]
+        selected["outputs"]["out"] = {"method": "nar:sha256", "hash": "public-model-hash"}
+        parsed = schedule.derivations(encoded(graph), target)
+        self.assertEqual(parsed[child]["outputs"]["out"]["path"], dependency)
+        self.assertIsNone(schedule.GRAPH_PATH_SITE)
+        self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+
+    def test_pinned_store_name_bounds_hash_alphabet_and_dot_prefix_are_exact(self):
+        prefix = "/nix/store/" + "a"*32 + "-"
+        for name in ("x", "x"*211, ".x", "..x", "...-", "?="):
+            self.assertEqual(schedule.store_path(prefix+name), prefix+name)
+        cases = [(prefix+"x"*212, "name-bound"),
+                 (prefix+".", "name-prefix"), (prefix+"..", "name-prefix"),
+                 (prefix+".-x", "name-prefix"), (prefix+"..-x", "name-prefix"),
+                 (prefix+"x:x", "name-characters"), (prefix+"x\\x", "name-characters"),
+                 (prefix+"x/x", "layout"), (prefix+"x\n", "name-characters"),
+                 ("/other/store/"+"a"*32+"-x", "layout"),
+                 ("/nix/store/"+"a"*32+"_x", "layout")]
+        cases.extend(("/nix/store/"+character*32+"-x", "hash")
+                     for character in ("e", "o", "u", "t", "A"))
+        for value, reason in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaises(ValueError):
+                    schedule.store_path(value, site="output-path")
+                self.assertEqual(schedule.GRAPH_PATH_REFUSAL, reason)
+        with self.assertRaises(ValueError):
+            schedule.base_path(17, site="input-source")
+        self.assertEqual(schedule.GRAPH_PATH_REFUSAL, "type")
+        with self.assertRaises(ValueError):
+            schedule.store_path(prefix+"x", drv=True, site="input-derivation")
+        self.assertEqual(schedule.GRAPH_PATH_REFUSAL, "derivation-suffix")
+
+    def test_actual_graph_path_sites_emit_only_fixed_tags_and_reset_after_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = json.loads(Fixture(directory).raw_graph)
+            for site in ("derivation-key", "input-source", "input-derivation",
+                         "output-path", "fixed-output-env"):
+                graph = copy.deepcopy(original)
+                selected = graph["derivations"][DRV.rsplit("/", 1)[1]]
+                if site == "derivation-key":
+                    graph["derivations"][DRV] = graph["derivations"].pop(DRV.rsplit("/", 1)[1])
+                elif site == "input-source":
+                    selected["inputs"]["srcs"] = [SCRIPT]
+                elif site == "input-derivation":
+                    selected["inputs"]["drvs"][CHILD] = selected["inputs"]["drvs"].pop(CHILD.rsplit("/", 1)[1])
+                elif site == "output-path":
+                    selected["outputs"]["out"]["path"] = OUT
+                else:
+                    selected["outputs"]["out"] = {"method": "nar:sha256", "hash": "public-model-hash"}
+                    selected["env"]["out"] = "non-store-private-value"
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+                self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "path")
+                self.assertEqual(schedule.GRAPH_PATH_SITE, site)
+                self.assertEqual(schedule.GRAPH_PATH_REFUSAL,
+                                 "layout" if site == "fixed-output-env" else "basename")
+                self.assertNotIn("non-store-private-value", json.dumps(schedule.diagnostic_summary()))
+            schedule.derivations(encoded(original), {"drvPath": DRV, "outPath": OUT})
+            self.assertIsNone(schedule.GRAPH_PATH_SITE)
+            self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+
+    def test_legal_graph_root_reference_and_deriver_roundtrip_preserves_full_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = "/nix/store/" + "c"*32 + "-builder?=.sh"
+            drv = "/nix/store/" + "d"*32 + "-omux?=-bazel-closure.drv"
+            child = "/nix/store/" + "b"*32 + "-dependency?=.drv"
+            with patch(__name__+".SCRIPT", script), patch(__name__+".DRV", drv), \
+                 patch(__name__+".CHILD", child):
+                model = Fixture(directory)
+                graph = json.loads(model.raw_graph)
+                graph["derivations"][drv.rsplit("/", 1)[1]]["name"] = "omux?=-bazel-closure"
+                graph["derivations"][child.rsplit("/", 1)[1]]["name"] = "dependency?="
+                model.raw_graph = encoded(graph)
+                original = model.registration
+                def registration(private):
+                    lines = original(private).decode("ascii").splitlines()
+                    offset = 0
+                    while offset < len(lines):
+                        if lines[offset] == script:
+                            lines[offset+3] = drv
+                        offset += 5+int(lines[offset+4])
+                    return ("\n".join(lines)+"\n").encode()
+                with patch.object(model, "registration", side_effect=registration), \
+                     patch.object(schedule.proof, "readback_records",
+                                  wraps=schedule.proof.readback_records) as parsed:
+                    result, payloads = model.operate()
+                    self.assertEqual(parsed.call_count, 2)
+                    self.assertEqual(parsed.call_args_list[0].kwargs, {})
+                    self.assertEqual(parsed.call_args_list[1].kwargs, {"current_flake_paths": True})
+            self.assertEqual(set(result["derivations"]), {drv, child})
+            self.assertTrue({drv, child, script} <= set(result["generated"]))
+            self.assertTrue(payloads)
+            self.assertTrue(result["runtime_seed_rechecked"] and result["source_rechecked"]
+                            and result["private_root_removed"])
+            self.assertFalse(result["complete_build_seed_verified"] or result["realized"]
+                             or result["native_runtime_qualified"] or result["sdk_qualified"])
+            roots = sorted({*model.runtime.value["roots"], *model.extra})
+            records = schedule.proof.readback_records(result["registration"].encode("ascii"), roots,
+                                                     current_flake_paths=True)
+            self.assertEqual(records[script]["record"][3], drv)
+            self.assertEqual(set(records[drv]["references"]), {child, script})
+            # The new generated grammar does not change old declared seed admission.
+            with self.assertRaises(ValueError):
+                schedule.proof.readback_records(result["registration"].encode("ascii"), roots)
+            self.assertIsNone(schedule.GRAPH_PATH_SITE)
+            self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+
+    def test_structured_fixed_output_retains_env_join_and_nonstring_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = json.loads(Fixture(directory).raw_graph)
+            selected = original["derivations"][CHILD.rsplit("/", 1)[1]]
+            # These are JSON-shape fixtures, not a computed fixed-output hash.
+            selected["outputs"]["out"] = {"method": "nar:sha256", "hash": "public-model-hash"}
+            selected["structuredAttrs"] = {"name": "dependency", "outputs": ["out"]}
+            accepted = schedule.derivations(encoded(original), {"drvPath": DRV, "outPath": OUT})
+            self.assertEqual(accepted[CHILD]["outputs"]["out"]["path"], DEPENDENCY)
+            for missing, value in ((True, None), (False, None), (False, False), (False, 17)):
+                graph = copy.deepcopy(original)
+                env = graph["derivations"][CHILD.rsplit("/", 1)[1]]["env"]
+                if missing:
+                    del env["out"]
+                else:
+                    env["out"] = value
+                # Nonstring values are rejected by the unchanged node envelope;
+                # an absent member reaches the fixed-output path-type predicate.
+                with self.assertRaises(ValueError):
+                    schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+                if missing:
+                    self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "path")
+                    self.assertEqual(schedule.GRAPH_PATH_SITE, "fixed-output-env")
+                    self.assertEqual(schedule.GRAPH_PATH_REFUSAL, "type")
+                else:
+                    self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "node")
+                    self.assertIsNone(schedule.GRAPH_PATH_SITE)
+                    self.assertIsNone(schedule.GRAPH_PATH_REFUSAL)
+
+
+    def test_current_flake_registration_rejects_invalid_paths_in_each_identity_role(self):
+        root = "/nix/store/" + "a"*32 + "-root?="
+        child = "/nix/store/" + "b"*32 + "-child?=.drv"
+        def wire(selected=root, reference=child, deriver=child):
+            rows = [[selected, "f"*64, "8", deriver, "1", reference],
+                    [child, "d"*64, "9", "", "0"]]
+            return ("\n".join(value for row in rows for value in row)+"\n").encode()
+        accepted = schedule.proof.readback_records(wire(), [root, child], current_flake_paths=True)
+        self.assertEqual(accepted[root]["references"], [child])
+        prefix = "/nix/store/" + "a"*32 + "-"
+        invalid = [prefix+"x"*212, prefix+".", prefix+"..", prefix+".-x", prefix+"..-x",
+                   prefix+"x:x", prefix+"x/x", "/other/store/"+"a"*32+"-x",
+                   "/nix/store/"+"a"*32+"_x"]
+        invalid.extend("/nix/store/"+character*32+"-x" for character in ("e", "o", "u", "t", "A"))
+        for value in invalid:
+            for role in ("declared", "root", "reference", "deriver"):
+                with self.subTest(role=role):
+                    raw = wire(selected=value if role == "root" else root,
+                               reference=value if role == "reference" else child,
+                               deriver=value if role == "deriver" else child)
+                    declared = [value, child] if role == "declared" else [root, child]
+                    with self.assertRaises(ValueError):
+                        schedule.proof.readback_records(raw, declared, current_flake_paths=True)
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(wire(deriver=root), [root, child], current_flake_paths=True)
+
+    def test_current_flake_registration_keeps_hash_size_and_exact_reference_fences(self):
+        root = "/nix/store/"+"a"*32+"-root?="
+        child = "/nix/store/"+"b"*32+"-child?="
+        good = [root, "f"*64, "8", "", "1", child, child, "d"*64, "9", "", "0"]
+        for slot, changed in ((1, "z"*64), (2, "0"), (4, "4097"), (5, root)):
+            rows = list(good)
+            rows[slot] = changed
+            raw = ("\n".join(rows)+"\n").encode()
+            if slot == 5:
+                # A self-reference is valid; the declared child still exists.
+                parsed = schedule.proof.readback_records(raw, [root, child], current_flake_paths=True)
+                self.assertEqual(parsed[root]["references"], [root])
+            else:
+                with self.assertRaises(ValueError):
+                    schedule.proof.readback_records(raw, [root, child], current_flake_paths=True)
+        outside = "/nix/store/"+"c"*32+"-outside?="
+        missing = list(good)
+        missing[5] = outside
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(("\n".join(missing)+"\n").encode(),
+                                           [root, child], current_flake_paths=True)
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(("\n".join(good)+"\n").encode(),
+                                           [root, root], current_flake_paths=True)
+        for selected in (None, 0, 1, "true"):
+            with self.assertRaises(ValueError):
+                schedule.proof.readback_records(("\n".join(good)+"\n").encode(),
+                                               [root, child], current_flake_paths=selected)
+
+    def test_generated_registration_parser_reports_each_exact_fence_without_values(self):
+        closure = schedule.closure
+        root = "/nix/store/"+"a"*32+"-root?="
+        child = "/nix/store/"+"b"*32+"-child?=.drv"
+        outside = "/nix/store/"+"c"*32+"-outside"
+        base = [[root, "sha256:"+"f"*64, "8", child, "1", child],
+                [child, "sha256:"+"d"*64, "9", "", "0"]]
+        def wire(rows):
+            return "\n".join(value for record in rows for value in record)+"\n"
+        def altered(slot, value):
+            rows = copy.deepcopy(base)
+            rows[0][slot] = value
+            return wire(rows)
+        many = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4609)]
+        cases = [
+            ("x"*(4*1024**2+1), [root, child], "text-bound", "wire", None),
+            (wire(base), [], "root-empty", "declared-roots", None),
+            ("", many, "root-bound", "declared-roots", None),
+            (wire(base), [root, root], "root-duplicate", "declared-roots", None),
+            (wire(base), ["/unselected-private-root", child], "path", "declared-root", "layout"),
+            (wire([[name, "sha256:"+"f"*64, "8", "", "0"] for name in many]),
+             [root, child], "record-bound", "record", None),
+            ("one-line\n", [root, child], "record-shape", "record", None),
+            (altered(0, "/unselected-private-root"), [root, child], "path", "record-root", "layout"),
+            (wire(base+[base[0]]), [root, child], "record-duplicate", "record-root", None),
+            (altered(1, "sha256:"+"z"*64), [root, child], "nar-hash", "nar-hash", None),
+            (altered(2, "0"), [root, child], "nar-size", "nar-size", None),
+            (altered(4, "x"), [root, child], "reference-count", "reference-count", None),
+            (altered(3, root), [root, child], "path", "deriver", "derivation-suffix"),
+            (altered(2, str(1 << 63)), [root, child], "nar-size-bound", "nar-size", None),
+            (altered(4, "4097"), [root, child], "reference-bound", "reference-count", None),
+            (altered(1, "sha256:"+"z"*52), [root, child], "nar-hash-range", "nar-hash", None),
+            (wire([[root, "sha256:"+"f"*64, "8", "", "2", child]]),
+             [root, child], "references-length", "references", None),
+            (wire([[root, "sha256:"+"f"*64, "8", "", "2", child, child], base[1]]),
+             [root, child], "references-duplicate", "references", None),
+            (altered(5, "/unselected-private-reference"), [root, child], "path", "reference", "layout"),
+            (wire(base), [root, child, outside], "root-membership", "registered-roots", None),
+            (altered(5, outside), [root, child], "reference-membership", "references", None)]
+        for text, declared, family, site, path_refusal in cases:
+            with self.subTest(family=family,site=site), self.assertRaises(ValueError):
+                closure.registrations(text, declared, current_flake_paths=True)
+            report = closure.REGISTRATION_PARSE_DIAGNOSTIC
+            self.assertEqual(report, {"family": family, "site": site, "path_refusal": path_refusal,
+                "declared_roots": len(declared), "declared_roots_clamped": False})
+            self.assertNotIn("unselected-private", json.dumps(report))
+            self.assertNotIn("/nix/store", json.dumps(report))
+            for selected in (None, 0, 1, "true"):
+                with self.assertRaises(ValueError):
+                    closure.registrations(wire(base), [root, child], current_flake_paths=selected)
+                self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        parsed = closure.registrations(wire(base), [root, child], current_flake_paths=True)
+        self.assertEqual(parsed[root]["references"], [child])
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        with self.assertRaises(ValueError):
+            closure.registrations(wire(base), [root, child])
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+
+    def test_generated_registration_diagnostic_count_is_bounded_and_acceptance_ceiling_unchanged(self):
+        closure = schedule.closure
+        roots = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4096)]
+        text = "\n".join(value for root in roots
+            for value in (root, "sha256:"+"f"*64, "8", "", "0"))+"\n"
+        self.assertEqual(len(closure.registrations(text, roots, current_flake_paths=True)), 4096)
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        oversized = [roots[0]]*(closure.MAX_DIAGNOSTIC_ROOTS+1)
+        with self.assertRaises(ValueError):
+            closure.registrations("", oversized, current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC,
+            {"family": "root-bound", "site": "declared-roots", "path_refusal": None,
+             "declared_roots": closure.MAX_DIAGNOSTIC_ROOTS, "declared_roots_clamped": True})
+        with self.assertRaises(ValueError):
+            closure.registrations("", [], current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["declared_roots"], 0)
+        with self.assertRaises(ValueError):
+            closure.registrations("unselected-private-value", roots)
+        self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+
+    def test_generated_inventory_ceiling_matches_actual_shape_and_isolates_seed_refs_graph(self):
+        closure = schedule.closure
+        self.assertEqual((closure.MAX_RECORDS, closure.GENERATED_MAX_RECORDS,
+                          schedule.MAX_OBJECTS, schedule.MAX_GENERATED_OBJECTS), (4096, 4608, 4096, 4608))
+        roots = ["/nix/store/"+"a"*32+"-public-"+str(index) for index in range(4609)]
+        def wire(selected):
+            return "\n".join(value for root in selected
+                for value in (root, "f"*64, "8", "", "0"))+"\n"
+        for count in (4096, 4319, 4608):
+            selected = roots[:count]
+            parsed = schedule.proof.readback_records(wire(selected).encode("ascii"),
+                                                     selected, current_flake_paths=True)
+            self.assertEqual(set(parsed), set(selected))
+            self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        for count in (4097, 4319, 4608):
+            selected = roots[:count]
+            with self.assertRaises(ValueError):
+                schedule.proof.readback_records(wire(selected).encode("ascii"), selected)
+            self.assertIsNone(closure.REGISTRATION_PARSE_DIAGNOSTIC)
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(wire(roots).encode("ascii"), roots, current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["family"], "root-bound")
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["declared_roots"], 4609)
+        # The independent per-record reference ceiling remains4096.
+        selected = roots[:4608]
+        lines = [selected[0], "f"*64, "8", "", "4097", *selected[1:4098]]
+        for root in selected[1:]:
+            lines.extend((root, "f"*64, "8", "", "0"))
+        raw = ("\n".join(lines)+"\n").encode("ascii")
+        with self.assertRaises(ValueError):
+            schedule.proof.readback_records(raw, selected, current_flake_paths=True)
+        self.assertEqual(schedule.proof.PHASE, "registration-readback-wire")
+        normalized = raw.decode("ascii").replace("\n"+"f"*64+"\n", "\nsha256:"+"f"*64+"\n")
+        with self.assertRaises(ValueError):
+            closure.registrations(normalized, selected, current_flake_paths=True)
+        self.assertEqual(closure.REGISTRATION_PARSE_DIAGNOSTIC["family"], "reference-bound")
+        # Total DB inventory does not expand the recursive derivation graph envelope.
+        graph = {"version": 4, "derivations": {str(index): {} for index in range(4097)}}
+        with self.assertRaises(ValueError):
+            schedule.derivations(encoded(graph), {"drvPath": DRV, "outPath": OUT})
+        self.assertEqual(schedule.GRAPH_DOCUMENT_REASON, "envelope")
+
+    def test_generated_inventory_preflight_and_new_boundary_keep_real_physical_nar_truth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory)
+            store = private/"nix/store"
+            store.mkdir(parents=True)
+            roots = ["/nix/store/"+"a"*32+"-physical-"+str(index)+(".drv" if index == 4 else "")
+                     for index in range(4608)]
+            for logical in roots:
+                physical = store/logical.rsplit("/", 1)[1]
+                physical.write_bytes(b"public-generated")
+                os.chmod(physical, 0o444)
+            original = nar.hash_descriptor(nar.describe(store/roots[0].rsplit("/", 1)[1]))
+            records = {logical: {"record": [logical, original["narHash"], str(original["narSize"]), "", "0"],
+                                 "references": []} for logical in roots}
+            target = {"sourcePaths": dict(zip(("project", *schedule.sources.ROLES), roots[:4])),
+                      "outPath": OUT}
+            graph = {roots[4]: {"inputSrcs": [roots[5]]}}
+            objects, payloads = schedule.generated_objects(private, records, [], target, graph,
+                                                          float(time.monotonic()+60))
+            self.assertEqual(set(objects), set(roots))
+            self.assertEqual(len(payloads), 4604)
+            self.assertTrue(all(item["narHash"] == original["narHash"]
+                                and item["narSize"] == original["narSize"] for item in objects.values()))
+            extra = "/nix/store/"+"b"*32+"-too-many"
+            with patch.object(schedule.proof, "describe_root") as describing, \
+                 patch.object(schedule.nar, "hash_descriptor") as hashing, \
+                 patch.object(schedule.nar, "open_regular") as opening:
+                with self.assertRaises(ValueError):
+                    schedule.generated_objects(private, {**records, extra: records[roots[0]]}, [],
+                                               target, graph, float(time.monotonic()+60))
+                describing.assert_not_called()
+                hashing.assert_not_called()
+                opening.assert_not_called()
+            # An accepted metadata count never accepts a substituted physical object.
+            physical = store/roots[10].rsplit("/", 1)[1]
+            os.chmod(physical, 0o600)
+            physical.write_bytes(b"substituted-public-generated")
+            os.chmod(physical, 0o444)
+            with self.assertRaises(ValueError):
+                schedule.generated_objects(private, records, [], target, graph, float(time.monotonic()+60))
+
+    def test_generated_punctuated_payload_cannot_bypass_registered_nar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = "/nix/store/" + "c"*32 + "-builder?=.sh"
+            with patch(__name__+".SCRIPT", script):
+                model = Fixture(directory)
+                dumps = 0
+                def runner(command, environment, root, deadline, **kwargs):
+                    nonlocal dumps
+                    raw = model.runner(command, environment, root, deadline, **kwargs)
+                    if command[-1] == "--dump-db":
+                        dumps += 1
+                        if dumps == 2:
+                            private = Path(command[command.index("--store")+1].removeprefix("local?root="))
+                            physical = private/"nix/store"/script.rsplit("/", 1)[1]
+                            os.chmod(physical, 0o600)
+                            payload = physical.read_bytes()
+                            physical.write_bytes(b"x"*len(payload))
+                            os.chmod(physical, 0o444)
+                    return raw
+                with self.assertRaises(ValueError):
+                    model.operate(runner)
+                self.assertEqual(dumps, 2)
+            self.assertEqual(schedule.PHASE, "generated-byte-proof")
+            self.assertIsNone(schedule.GRAPH_DOCUMENT_REASON)
+            self.assertEqual(list(model.root.glob("nix-private-build-*")), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

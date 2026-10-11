@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import time
 import struct
 import tempfile
 import unittest
@@ -174,7 +176,11 @@ class AssemblyTest(unittest.TestCase):
         return path
 
     @staticmethod
-    def patch_fixture(path: Path, info: dict, _: Path, backend: bool, rpath: str = "$ORIGIN") -> None:
+    def patch_fixture(path: Path, info: dict, _: Path, backend: bool, rpath: str = "$ORIGIN",
+                      *, action_deadline: float | None = None) -> None:
+        if action_deadline is not None and (type(action_deadline) not in (int, float)
+                or not math.isfinite(action_deadline) or action_deadline <= time.monotonic()):
+            raise ValueError("fixture action deadline refused")
         interpreter = portable._BACKEND_INTERPRETER if backend or info["interpreter"] is not None else None
         path.write_bytes(elf(tuple(Path(name).name for name in info["needed"]),
                              ("$ORIGIN/../lib" if backend else rpath,), interpreter, info["machine"]))

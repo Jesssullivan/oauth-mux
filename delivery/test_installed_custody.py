@@ -39,6 +39,7 @@ PROBE_FAILURES = ("none", "receipt_absent", "invalid_receipt", "unsafe_path", "u
 READINESS_REASONS = ("ready", "observation_unknown", "observation_stale", "evidence_unobserved",
                      "synthetic_only", "native_evidence_missing", "channel_unknown", "channel_mismatch",
                      "missing", "pending", "incompatible", "vault_locked", "vault_key_lost",
+                     "vault_key_unavailable", "vault_access_denied", "vault_unavailable",
                      "authority_expired", "browser_required", "native_unsupported")
 SUBPHASES = ("readiness-command", "readiness-shared-result", "readiness-claims", "readiness-phases",
              "readiness-artifact", "readiness-service", "readiness-vault", "readiness-source",
@@ -318,7 +319,7 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
         for phase, expected in (("artifact", "ready" if selected else "observation_unknown"),
                                 ("service", "observation_unknown"), ("vault", "ready"),
                                 ("source", "missing"), ("identity", "pending"), ("grant", "missing"),
-                                ("native", "observation_unknown")):
+                                ("native", "missing")):
             SUBPHASE = "readiness-" + phase
             READINESS_REASON = "unclassified"
             if rows[phase]["reason"] in READINESS_REASONS:
@@ -331,6 +332,8 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                     PROBE_FAILURE = observed_failure
             require(rows[phase]["reason"] == expected,
                     "installed readiness collapsed custody into acquisition or native capability")
+        require(rows["native"]["action"] == "install_native_adapter",
+                "unconfigured installed fixture lost actionable native adapter gap")
         SUBPHASE = "setup-plan-command"
         plan = setup_command(["setup"], expected_pid)
         SUBPHASE = "setup-plan-fields"
@@ -382,10 +385,11 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
         refusal_revision = cli("system.health")["revision"]
         verification_before = cli("reliability.lifecycle")["setup_verification"]
         refusal = setup_command(["setup", "verify"], daemon_process.pid)
-        require(refusal.get("schema_version") == 1 and refusal.get("outcome") == "safe_refusal"
+        require(refusal.get("schema_version") == 2 and refusal.get("outcome") == "safe_refusal"
                 and refusal.get("refusal") == "installation_selection_required"
                 and isinstance(refusal.get("operation_id"), str) and len(refusal["operation_id"]) == 64
-                and refusal.get("elapsed_ns") is None
+                and type(refusal.get("elapsed_ns")) is int and refusal["elapsed_ns"] >= 0
+                and refusal.get("timing_scope") == "admission_to_terminal_before_commit_process_local"
                 and refusal.get("phases") == [{"outcome": "unknown", "reason": "observation_unknown"}] * 7,
                 "unselected installed verification manufactured successful phase evidence")
         refusal_params = {"operation_id": refusal["operation_id"], "expected_revision": refusal_revision}
@@ -398,6 +402,10 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                 and verification_after["installation_selection_required_refusals"]
                 == verification_before["installation_selection_required_refusals"] + 1
                 and verification_after["verification_completed"] == verification_before["verification_completed"]
+                and sum(verification_after["refusal_timing"]["latency"])
+                == sum(verification_before["refusal_timing"]["latency"]) + 1
+                and verification_after["refusal_timing"]["missing_latency"]
+                == verification_before["refusal_timing"]["missing_latency"]
                 and verification_after["achieved_slo"] is False,
                 "installed refusal counted as completed verification or achieved SLO")
         require(cli("setup.refresh", refusal_params) == refusal,
@@ -500,7 +508,7 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                     {"outcome": "action_required", "reason": "missing"},
                     {"outcome": "action_required", "reason": "pending"},
                     {"outcome": "action_required", "reason": "missing"},
-                    {"outcome": "unknown", "reason": "observation_unknown"}],
+                    {"outcome": "action_required", "reason": "missing"}],
                 "selected verification overclaimed service, enrollment or native readiness")
         selected_evidence = setup_command(["setup", "evidence"], daemon_process.pid)
         require(selected_evidence["provider_access"] is False and selected_evidence["refresh_pending"] is False

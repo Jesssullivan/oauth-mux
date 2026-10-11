@@ -1,0 +1,185 @@
+{
+  "kind": "wide24Sol61_review_index",
+  "authority": "User wide estate/product/install/platform/signing/Linear review; R-N13",
+  "recorded_at": "2026-10-11T01:32:29.631661+00:00",
+  "source_reviewed": "cd002835ca72c963a573c59855949f067baedad3",
+  "streams": [
+    "estate_account_lifecycle",
+    "estate_adapter_scope",
+    "estate_browser_flow",
+    "estate_codex_native",
+    "estate_darwin_platform",
+    "estate_docs_authority",
+    "estate_execution_reapi",
+    "estate_extension_distribution",
+    "estate_home_manager",
+    "estate_installation",
+    "estate_linear_scope",
+    "estate_linux_platform",
+    "estate_native_messaging",
+    "estate_permissions_consent",
+    "estate_pr_goal_sequence",
+    "estate_product_story",
+    "estate_reliability_roles",
+    "estate_renewal_resources",
+    "estate_signing_release",
+    "estate_status_ui",
+    "estate_updates_removal",
+    "estate_user_stories",
+    "estate_vault_recovery",
+    "estate_web_presence"
+  ],
+  "reviews": [
+    {
+      "stream": "estate_account_lifecycle",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_account_lifecycle/docs/agent-notes/2026-10-10-account-lifecycle-reality-review.md",
+      "sha256": "6b75cde7f577c766421591b53be515a95b8abffd4194420685c0613731a2a618",
+      "bytes": 7826
+    },
+    {
+      "stream": "estate_adapter_scope",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_adapter_scope/docs/agent-notes/2026-10-10-adapter-estate-source-audit.md",
+      "sha256": "94123142d7ea7eb1e7675b7ffe2031c45ce6b4a8234b3dc2cad38eb15ce86c5c",
+      "bytes": 7853
+    },
+    {
+      "stream": "estate_browser_flow",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_browser_flow/docs/agent-notes/2026-10-10-browser-user-journey-audit.md",
+      "sha256": "2c368c2c639ed27deb10e6fc4c682ea02a2c2f31413637099767890af19f6567",
+      "bytes": 7423
+    },
+    {
+      "stream": "estate_codex_native",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_codex_native/docs/agent-notes/2026-10-10-native-codex-user-path-audit.SOURCE-ONLY.md",
+      "sha256": "d91c81d3a4858cb43c0e8e7107fbe616b94efd94c5e4289c641afbc808a1d5a3",
+      "bytes": 9010
+    },
+    {
+      "stream": "estate_darwin_platform",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_darwin_platform/docs/agent-notes/2026-10-10-darwin-platform-audit.md",
+      "sha256": "1eb7dccff5fd13887392c2dfcfa239b02a09e2527904bec312bb8988d4b836e4",
+      "bytes": 12262
+    },
+    {
+      "stream": "estate_docs_authority",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_docs_authority/docs/agent-notes/2026-10-10-docs-authority-cd002835-review.txt",
+      "sha256": "5e401c050f807bbc812b9313889aae9f731e868c90d06a5be334f8561880a8c1",
+      "bytes": 6137
+    },
+    {
+      "stream": "estate_execution_reapi",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_execution_reapi/docs/agent-notes/2026-10-10-execution-cache-reapi-estate-audit.md",
+      "sha256": "0deca9300c77a00d8028a4dae948ca3b1f939ea24439110ea49de57fe185039e",
+      "bytes": 11056
+    },
+    {
+      "stream": "estate_extension_distribution",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_extension_distribution/docs/agent-notes/2026-10-10-extension-distribution-audit.md",
+      "sha256": "254d211de16ac36a2f98bf5c7d1c22307df2afdd0b9727efcbe1dbbf376dde94",
+      "bytes": 7068
+    },
+    {
+      "stream": "estate_home_manager",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_home_manager/docs/agent-notes/2026-10-10-home-manager-reality-audit.md",
+      "sha256": "fb39eafff39ab061cfa7b29ae93313e9d5c9d42f0abd5bdaf1683fc0f2ac158a",
+      "bytes": 7886
+    },
+    {
+      "stream": "estate_installation",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_installation/docs/agent-notes/2026-10-10-clean-install-read-only-audit.md",
+      "sha256": "8d807c5467907baaa0b4380d657086e843ac3d6d834bfa1395d930e37a277b80",
+      "bytes": 10041
+    },
+    {
+      "stream": "estate_linear_scope",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_linear_scope/docs/agent-notes/2026-10-10-estate-linear-scope-audit.json",
+      "sha256": "612a110a965a516011667515fbb612614e3fa6c259460c66767b9932c5dfad7f",
+      "bytes": 50430
+    },
+    {
+      "stream": "estate_linux_platform",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_linux_platform/docs/agent-notes/2026-10-10-linux-platform-reality-review.md",
+      "sha256": "a0eb237378dcbdde1705f29aeb030c3a4de53133a67902ede9c721dd5d80fefa",
+      "bytes": 9372
+    },
+    {
+      "stream": "estate_native_messaging",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_native_messaging/docs/agent-notes/2026-10-10-browser-native-messaging-audit.md",
+      "sha256": "7c7777bfeeccd9fedd6a66c00120f4c6a3d394f4e78d7cef27693f36c93ee5ff",
+      "bytes": 11444
+    },
+    {
+      "stream": "estate_permissions_consent",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_permissions_consent/docs/agent-notes/2026-10-10-permissions-consent-source-audit.md",
+      "sha256": "3adb74da06d5d4f2d3a0d68d457767c21d815eeeddeeeb80d6d93e5f22a06a12",
+      "bytes": 8749
+    },
+    {
+      "stream": "estate_pr_goal_sequence",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_pr_goal_sequence/docs/agent-notes/2026-10-10-goal-pr-critical-path-review.md",
+      "sha256": "2b38512a9154deb7bc08dd6085d5899619f5fb48d49d5ff8edacd1283b0cc8e7",
+      "bytes": 10630
+    },
+    {
+      "stream": "estate_product_story",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_product_story/docs/agent-notes/2026-10-10-estate-product-story-review.md",
+      "sha256": "786333de64ff75ebbf0b19777c5564cab51b9c60ab561711ab0aa4ffdf953d0e",
+      "bytes": 7679
+    },
+    {
+      "stream": "estate_product_story",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_product_story/docs/agent-notes/2026-10-10-query-bootstrap-closure-info-independent-review.md",
+      "sha256": "22474bee36180e62eeda58fc47602e940a069f8c6079369b239943daf232ab7f",
+      "bytes": 4857
+    },
+    {
+      "stream": "estate_reliability_roles",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_reliability_roles/docs/agent-notes/2026-10-10-reliability-roles-read-only-audit.md",
+      "sha256": "06013fe84cf40d8259c3064e6faa7cf5fd4cd85cfbc09ca12e6d1c0cec4fa11f",
+      "bytes": 11332
+    },
+    {
+      "stream": "estate_renewal_resources",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_renewal_resources/docs/agent-notes/2026-10-10-renewal-resource-source-audit.md",
+      "sha256": "b14d6f94fc04ce57ad17d75bdb89e619db95b0b0c30666bcfd68e446c1c5055b",
+      "bytes": 7496
+    },
+    {
+      "stream": "estate_signing_release",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_signing_release/docs/agent-notes/2026-10-10-signing-release-audit.md",
+      "sha256": "b67ab4bd9a10481d2d4050481d41819c4fbddb607c3cf63e14e2217534978788",
+      "bytes": 12825
+    },
+    {
+      "stream": "estate_status_ui",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_status_ui/docs/agent-notes/2026-10-10-status-ui-reality-audit.md",
+      "sha256": "46922b3c553b8ade11fcc06acd67b9844a638be7bbb403012e039dbcdc7b12ff",
+      "bytes": 10206
+    },
+    {
+      "stream": "estate_updates_removal",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_updates_removal/docs/agent-notes/2026-10-10-update-removal-recovery-read-only-audit.md",
+      "sha256": "9f45b14555404df6ce4e97b90f3ecf3a1c2fd5cf7175093799e77558dd353e36",
+      "bytes": 10887
+    },
+    {
+      "stream": "estate_user_stories",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_user_stories/docs/agent-notes/2026-10-10-user-story-acceptance-review.md",
+      "sha256": "d5ee879d7d1dadc50a5b34008db0bb684f0d8906f6a871d3b8e369594562dc4f",
+      "bytes": 16539
+    },
+    {
+      "stream": "estate_vault_recovery",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_vault_recovery/docs/agent-notes/2026-10-10-vault-custody-recovery-source-audit.md",
+      "sha256": "3ddc58dca3cae51bcdf9926ec66d6aee764991df08d1e516b2d7f822cc5153e5",
+      "bytes": 10595
+    },
+    {
+      "stream": "estate_web_presence",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_web_presence/docs/agent-notes/2026-10-10-web-presence-audit.md",
+      "sha256": "9386f3418ced41be482727b8e2644630a4b60b1ead51acb4c99e8dfb7fcb9eaf",
+      "bytes": 8821
+    }
+  ],
+  "all_project_execution_root_only": true
+}

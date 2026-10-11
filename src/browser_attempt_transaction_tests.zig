@@ -28,7 +28,7 @@ fn controlCall(actor: *engine.Engine, method: []const u8, params: anytype) !Repl
 }
 fn browserMessage(method: []const u8, id: []const u8, extension: []const u8, changed: bool) ![]u8 {
     const provenance = .{ .browser = "chromium", .extensionId = extension, .channel = "release" };
-    if (std.mem.eql(u8, method, "browser.connect")) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .method = method, .params = .{ .sourceId = "opaque-browser-source", .adapter = "codex", .origin = "https://chatgpt.com", .provenance = provenance } }, .{});
+    if (std.mem.eql(u8, method, "browser.connect") or std.mem.eql(u8, method, "browser.disconnect")) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .method = method, .params = .{ .sourceId = "opaque-browser-source", .adapter = "codex", .origin = "https://chatgpt.com", .provenance = provenance } }, .{});
     return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .method = method, .params = .{ .sourceId = "opaque-browser-source", .adapter = "codex", .origin = "https://chatgpt.com", .provenance = provenance, .capsule = .{ .changed = changed } } }, .{});
 }
 fn counts(actor: *engine.Engine) ![3]u64 {
@@ -110,6 +110,67 @@ test "browser refusal authority and counter recover atomically and exact retries
     defer stale.deinit();
     try std.testing.expectEqualStrings("NeedsProviderAdapterProof", try stale.code());
     try std.testing.expectEqual([3]u64{ 0, 1, 0 }, try counts(fixture.actor.?));
+}
+
+test "explicit browser disconnect fences a retained import attempt across restart without touching another context" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    try fixture.connect();
+    const independent_payload = try std.json.Stringify.valueAlloc(allocator, .{
+        .version = 1,
+        .id = "independent-connect",
+        .method = "browser.connect",
+        .params = .{ .sourceId = "independent-browser-source", .adapter = "codex", .origin = "https://chatgpt.com", .provenance = .{ .browser = "chromium", .extensionId = "extension-a", .channel = "release" } },
+    }, .{});
+    defer allocator.free(independent_payload);
+    {
+        var independent = try dispatch(fixture.actor.?, .browser, independent_payload);
+        defer independent.deinit();
+        try std.testing.expect(control.get(independent.parsed.value, "result") != null);
+    }
+    const pending = try browserMessage("browser.importGrant", "unobserved-import-ack", "extension-a", false);
+    defer allocator.free(pending);
+    {
+        var original = try dispatch(fixture.actor.?, .browser, pending);
+        defer original.deinit();
+        try std.testing.expectEqualStrings("NeedsProviderAdapterProof", try original.code());
+    }
+    const wrong = try browserMessage("browser.disconnect", "wrong-context-removal", "extension-b", false);
+    defer allocator.free(wrong);
+    {
+        var mismatch = try dispatch(fixture.actor.?, .browser, wrong);
+        defer mismatch.deinit();
+        try std.testing.expectEqualStrings("BrowserContextMismatch", try mismatch.code());
+        try std.testing.expectEqual(@import("domain.zig").SourceStatus.connected, fixture.actor.?.state.sources.items[0].status);
+    }
+    const removal = try browserMessage("browser.disconnect", "fresh-removal-id", "extension-a", false);
+    defer allocator.free(removal);
+    {
+        var removed = try dispatch(fixture.actor.?, .browser, removal);
+        defer removed.deinit();
+        try std.testing.expect(try control.boolean(control.get(removed.parsed.value, "result").?, "accepted", false));
+    }
+    try fixture.restart();
+    const actor = fixture.actor.?;
+    try std.testing.expectEqual(@import("domain.zig").SourceStatus.disconnected, actor.state.sources.items[0].status);
+    try std.testing.expectEqual(@import("domain.zig").SourceStatus.connected, actor.state.sources.items[1].status);
+    try std.testing.expectEqual(@as(usize, 0), actor.state.grants.items.len);
+    const generation = actor.import_sources.items[0].generation;
+    try std.testing.expect(generation > 1);
+    const before_counts = try counts(actor);
+    const revision = actor.revision;
+    const checkpoint = actor.db.?.checkpoint;
+    {
+        var late = try dispatch(actor, .browser, pending);
+        defer late.deinit();
+        try std.testing.expectEqualStrings("NeedsProviderAdapterProof", try late.code());
+    }
+    try std.testing.expectEqual(revision, actor.revision);
+    try std.testing.expectEqualDeep(checkpoint, actor.db.?.checkpoint);
+    try std.testing.expectEqual(before_counts, try counts(actor));
+    try std.testing.expectEqual(generation, actor.import_sources.items[0].generation);
+    try std.testing.expectEqual(@import("domain.zig").SourceStatus.disconnected, actor.state.sources.items[0].status);
+    try std.testing.expectEqual(@import("domain.zig").SourceStatus.connected, actor.state.sources.items[1].status);
 }
 
 test "refusal storage failure cannot retain a counter without durable refusal authority" {

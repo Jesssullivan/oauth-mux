@@ -166,6 +166,19 @@ def verify_binding(witness, source_snapshot, destination_snapshot, effective_bin
             "serverPid": destination_snapshot["pid"]}
 
 
+def readonly_setting(witness, now=time.monotonic_ns):
+    """Serialize only the already witnessed leaf; this performs no peer probe.
+
+    systemd serializes this explicit nonrecursive request without a suffix.
+    Actual readback must still pass verify_readonly_binding independently.
+    """
+    require(type(witness) is dict and set(witness) == {"source", "destination", "proof_root", "uid", "deadline_ns", "snapshot"}, "binding_invalid")
+    selectors(witness["source"], witness["destination"], witness["proof_root"], witness["uid"])
+    budget(witness["deadline_ns"], now)
+    valid_snapshot(witness["snapshot"], witness["uid"])
+    return witness["source"] + ":" + witness["destination"] + ":norbind"
+
+
 def reinspect_source(witness, inspect=inspect_endpoint, now=time.monotonic_ns):
     """Fresh supervisor-side observation; never follow the masked destination."""
     require(type(witness) is dict and set(witness) == {"source", "destination", "proof_root", "uid", "deadline_ns", "snapshot"}, "binding_invalid")

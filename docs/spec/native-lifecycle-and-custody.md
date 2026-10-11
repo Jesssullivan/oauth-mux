@@ -98,6 +98,36 @@ A genuine private macOS Keychain driver also passed against the locked SDK.
 Personal-session custody, production Darwin runtime and service behavior
 require separate receipts.
 
+When wrapping-key IO fails with a typed OS-vault error, credential-free local
+controls remain available. `Locked` retains its existing wire status/refusals;
+other vault failures report `vault_unavailable` and an exact redacted
+`custody_error`. Missing/invalid original keys require original-key restoration;
+denied/cancelled/unavailable access requires normal platform-access restoration.
+These retained diagnoses do not establish the current OS-vault state or permanent
+key loss. Database, corruption, allocation and other non-vault errors remain
+startup failures; error names alone cannot grant vault provenance.
+After normal platform-vault unlock or restoration, the user explicitly calls `custody.reopen`
+with no parameters or an empty object. The same daemon actor stages custody and
+loads the existing database using its recorded root; failed retry leaves custody
+unavailable. This action does not enroll a source or initiate a provider request.
+Until loading succeeds, `system.health` reports `metadata_loaded: false` and
+`account_count: null`, rather than asserting an empty account store. Its
+`vault_locked` status records the retained startup condition; setup vault evidence
+is stale diagnostic evidence, not a fresh observation that the OS vault remains
+locked. Existing custody retries retain the original database/directory physical
+identity and never switch to first key creation if that history disappears or is
+replaced. A genuinely fresh initial namespace, checked absent of the database and
+recovery siblings, may perform its original first key creation only while that
+same namespace and absence still hold at explicit retry. The storage writer
+checks that opening expectation before SQLite IO and retains its own exclusive
+creation/original-inode witness. Only that owned first creation can transition
+the actor to existing custody after a later staging failure; subsequent retries
+load the original key and created database. A raced file appearance cannot become
+first-install authority. First creation is not a replacement-key or
+permanent-loss recovery workflow. Full permanent-key-loss
+recovery into separately authorized fresh custody remains unimplemented.
+These are source semantics, not an installed normal-vault recovery proof.
+
 Each adopted refresh lineage has exactly one renewal writer. `src/storage.zig`
 records rotation intent before issuer contact and allows only the creator of
 that intent to issue it. Successful rotation commits successor ciphertext and

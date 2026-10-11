@@ -14,6 +14,7 @@ pub const methods = [_]Method{
     .{ .name = "setup.evidence", .summary = "Read cached bounded installation probes, diagnostic failures and freshness without provider access." },
     .{ .name = "setup.plan", .summary = "Read ownership-aware setup actions without altering managed files." },
     .{ .name = "system.health", .summary = "Read local health without initiating provider access." },
+    .{ .name = "custody.reopen", .summary = "Explicitly retry locked startup custody after normal platform unlock; no source enrollment or provider request." },
     .{ .name = "reliability.lifecycle", .summary = "Read retained terminal counts and explicit setup-verification facts; timing and coverage remain partial, with no achieved SLO." },
     .{ .name = "reliability.export", .summary = "Export redacted diagnostic counters and typed timing bounds; no achieved reliability claim." },
     .{ .name = "sources.catalog", .summary = "Read supported source purposes and acquisition constraints." },

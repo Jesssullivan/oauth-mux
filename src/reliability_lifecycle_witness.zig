@@ -49,6 +49,8 @@ pub const Witness = struct {
     observed_at_utc_s: ?i64,
     elapsed: Duration,
     local_work: Duration = .{},
+    // Daemon control-handler entry through original committed outcome only.
+    daemon_request_elapsed: Duration = .{},
     user_provider_wait: Duration = .{},
     provenance: Provenance,
     user_end_to_end_measured: bool = false,
@@ -57,14 +59,20 @@ pub const Witness = struct {
     achieved_slo: bool = false,
 
     pub fn validate(self: Witness) !void {
-        if (self.schema_version != 1 or self.outcome_revision <= self.anchor.expected_revision or std.mem.allEqual(u8, &self.anchor.operation_digest, 0) or std.mem.allEqual(u8, &self.result_sha256, 0)) return error.InvalidLifecycleWitness;
+        if ((self.schema_version != 1 and self.schema_version != 2) or self.outcome_revision <= self.anchor.expected_revision or std.mem.allEqual(u8, &self.anchor.operation_digest, 0) or std.mem.allEqual(u8, &self.result_sha256, 0)) return error.InvalidLifecycleWitness;
         if (self.observed_at_utc_s) |utc_s| if (utc_s < 0) return error.InvalidLifecycleWitness;
         try self.elapsed.validate();
         try self.local_work.validate();
         try self.user_provider_wait.validate();
-        // No local-work/wait producer is included in this first source slice.
-        // Absence cannot be converted to a fabricated zero-duration wait.
-        if (self.local_work.ns != null or self.local_work.missing != .unobserved or self.user_provider_wait.ns != null or self.user_provider_wait.missing != .unobserved or self.user_end_to_end_measured or self.complete_user_demand_denominator or self.application_provenance_measured or self.achieved_slo) return error.InvalidLifecycleWitness;
+        try self.daemon_request_elapsed.validate();
+        // Schema1 retains its historical unknown local/request intervals.
+        if (self.schema_version == 1 and (self.local_work.ns != null or self.local_work.missing != .unobserved or self.daemon_request_elapsed.ns != null or self.daemon_request_elapsed.missing != .unobserved)) return error.InvalidLifecycleWitness;
+        if (self.schema_version == 2) {
+            if (!std.meta.eql(self.local_work, self.elapsed)) return error.InvalidLifecycleWitness;
+            if (self.daemon_request_elapsed.ns) |total| if (self.local_work.ns) |local| if (local > total) return error.InvalidLifecycleWitness;
+        }
+        // External user/provider wait and user-start remain unwitnessed.
+        if (self.user_provider_wait.ns != null or self.user_provider_wait.missing != .unobserved or self.user_end_to_end_measured or self.complete_user_demand_denominator or self.application_provenance_measured or self.achieved_slo) return error.InvalidLifecycleWitness;
         try self.provenance.validate();
     }
 
@@ -120,11 +128,22 @@ pub const Session = struct {
     started: std.Io.Timestamp,
     provenance: Provenance,
     finished: bool = false,
+    request_started: ?std.Io.Timestamp = null,
 
     pub fn begin(io: std.Io, record: anytype, provenance: Provenance) !Session {
         if (record.state != .started) return error.NonstartedLifecycleAuthority;
         try provenance.validate();
         return .{ .original = try anchor(record), .started = std.Io.Clock.awake.now(io), .provenance = provenance };
+    }
+    /// Only the daemon-owned ingress timestamp is accepted by this internal producer.
+    pub fn beginOwnedRequest(io: std.Io, record: anytype, provenance: Provenance, request_started: std.Io.Timestamp) !Session {
+        var session = try begin(io, record, provenance);
+        session.request_started = request_started;
+        return session;
+    }
+    fn measureDuration(start: std.Io.Timestamp, end: std.Io.Timestamp) Duration {
+        const raw = start.durationTo(end).toNanoseconds();
+        return if (raw < 0) .{ .missing = .clock_anomaly } else if (raw > std.math.maxInt(u64)) .{ .missing = .duration_out_of_range } else .{ .ns = @intCast(raw), .missing = null };
     }
     pub fn afterCommitted(self: *Session, io: std.Io, allocator: std.mem.Allocator, record: anytype, outcome_revision: u64) !Witness {
         // Capture at entry, immediately after the caller's original commit
@@ -139,7 +158,7 @@ pub const Session = struct {
         std.crypto.hash.sha2.Sha256.hash(record.result, &digest, .{});
         const raw = self.started.durationTo(committed).toNanoseconds();
         const duration: Duration = if (raw < 0) .{ .missing = .clock_anomaly } else if (raw > std.math.maxInt(u64)) .{ .missing = .duration_out_of_range } else .{ .ns = @intCast(raw), .missing = null };
-        const result: Witness = .{ .anchor = original, .result_sha256 = digest, .outcome_revision = outcome_revision, .observed_at_utc_s = if (utc_s >= 0) utc_s else null, .elapsed = duration, .provenance = self.provenance };
+        const result: Witness = .{ .schema_version = if (self.request_started != null) 2 else 1, .anchor = original, .result_sha256 = digest, .outcome_revision = outcome_revision, .observed_at_utc_s = if (utc_s >= 0) utc_s else null, .elapsed = duration, .local_work = if (self.request_started != null) duration else .{}, .daemon_request_elapsed = if (self.request_started) |request_start| Session.measureDuration(request_start, committed) else .{}, .provenance = self.provenance };
         try result.validateForRecord(allocator, record, outcome_revision);
         self.finished = true;
         return result;
@@ -162,10 +181,17 @@ pub fn read(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(Wi
         else => return error.InvalidLifecycleWitness,
     };
     defer shape.deinit();
-    try exactFields(Witness, shape.value);
+    if (shape.value != .object) return error.InvalidLifecycleWitness;
+    const version = shape.value.object.get("schema_version") orelse return error.InvalidLifecycleWitness;
+    if (version != .integer or (version.integer != 1 and version.integer != 2)) return error.InvalidLifecycleWitness;
+    if (version.integer == 1 and !shape.value.object.contains("daemon_request_elapsed")) {
+        if (shape.value.object.count() != @typeInfo(Witness).@"struct".field_names.len - 1) return error.InvalidLifecycleWitness;
+        inline for (@typeInfo(Witness).@"struct".field_names) |name| if (!std.mem.eql(u8, name, "daemon_request_elapsed") and !shape.value.object.contains(name)) return error.InvalidLifecycleWitness;
+    } else try exactFields(Witness, shape.value);
     try exactFields(Anchor, shape.value.object.get("anchor").?);
     try exactFields(Provenance, shape.value.object.get("provenance").?);
     inline for (.{ "elapsed", "local_work", "user_provider_wait" }) |name| try exactFields(Duration, shape.value.object.get(name).?);
+    if (shape.value.object.get("daemon_request_elapsed")) |request_duration| try exactFields(Duration, request_duration);
     const parsed = std.json.parseFromValue(Witness, allocator, shape.value, .{ .allocate = .alloc_always }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return error.InvalidLifecycleWitness,
@@ -193,6 +219,12 @@ pub fn maximumSerializedBytes() !usize {
                             const maximum: Witness = .{ .anchor = .{ .operation_digest = @splat(1), .expected_revision = std.math.maxInt(u64) - 1 }, .result_sha256 = @splat(1), .outcome_revision = std.math.maxInt(u64), .observed_at_utc_s = std.math.maxInt(i64), .elapsed = elapsed, .provenance = provenance };
                             try maximum.validate();
                             largest = @max(largest, try admission.countJson(maximum, admission.maximum_snapshot_bytes));
+                            var owned = maximum;
+                            owned.schema_version = 2;
+                            owned.local_work = elapsed;
+                            owned.daemon_request_elapsed = elapsed;
+                            try owned.validate();
+                            largest = @max(largest, try admission.countJson(owned, admission.maximum_snapshot_bytes));
                         }
                     } else |err| switch (err) {
                         error.InvalidLifecycleProvenance => {},

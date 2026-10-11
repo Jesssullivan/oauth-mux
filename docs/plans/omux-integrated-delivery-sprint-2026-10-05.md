@@ -1,7 +1,7 @@
 # Omux integrated delivery and adapter implementation
 
 Status: user-ratified implementation sprint, experimental and unshipped. The
-15-hour goal started at 2026-10-05 04:03:36 UTC and ends at 19:03:36 UTC. Its
+15-hour goal started at 2026-10-05 04:03:36 UTC; its scheduled end was 19:03:36 UTC. Its
 five- and ten-hour checkpoints are 09:03:36 and 14:03:36 UTC. These times bound
 review checkpoints; elapsed time does not establish completed acceptance.
 
@@ -11,11 +11,26 @@ reconcile Linear and architecture, use up to 24 Sol 6.1 agents, and establish a
 [architecture SSOT](omux-native-account-lifecycle-reset-2026-10-02.md).
 Lab receipt authority is R-HOOK-CONVERGENCE-20261004, R-N11/R-N12/R-N13.
 
+## Current operational pointer — October 10
+
+The [dated implementation checkpoint](../agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
+records the pushed726033d source and actual IC2/IA2 model and V2 metadata results.
+The goal remains active, overdue and incomplete. Original clocks, acceptance
+criteria and every failed/partial receipt below remain unchanged. Artifact CA1
+failed at its original packaging boundary; the exact failure scope is recorded
+in the implementation checkpoint. No artifact or installed proof follows.
+
+Later explicit user authorization allows model IO without a spend cap. The
+finite-provider-budget language below records the initial dated authorization,
+not a current model-usage ceiling. This changes no finite execution cohort,
+resource cap, original action/cleanup deadline, custody or native prerequisite.
+No provider calls are recorded at this checkpoint.
+
 ## Ratified product decisions
 
-### October 6 native/browser continuation
+### October 6 native/browser continuation (historical)
 
-Current checkpoint:20:13:12UTC October6 to01:13:12UTC October7. The user
+Historical checkpoint:20:13:12UTC October6 to01:13:12UTC October7. The user
 selected Codex native resume and installed browser proof, provider-free.
 The [focused plan](omux-native-browser-continuation-2026-10-06.md) and
 [checkpoint ledger](../../.goal/omux-native-browser-2026-10-06.json) preserve
@@ -84,8 +99,8 @@ stay preserved; passing workload logs never override failed admission/cleanup.
 
 Fresh Linear reads and two factual resume comments with exact readbacks
 succeeded at 01:38 UTC on October 6; issue scope/state remained unchanged.
-Local changes do not imply another tracker mutation. Provider evaluation still
-needs finite resource/model/profile limits. No provider login/call, fleet activation,
+Local changes did not imply another tracker mutation. Under the initial October 6
+authorization, provider evaluation required finite resource/model/profile limits; No provider login/call, fleet activation,
 PZM/GF service operation, signing or publication follows from this checkpoint.
 
 Current acceptance remains five historical scoped passes and six open gates.
@@ -296,15 +311,17 @@ time does not reduce acceptance scope.
 The previous discovery goal was cleared after a blocked partial checkpoint.
 Its eight ND gates and immutable evidence remain unchanged. New source cannot
 inherit old proof. Linux leads installed validation; PZM's GF Darwin lane stays
-held and GF-owned. Provider evaluation requires finite authorized usage limits.
+held and GF-owned. The initial October 5 provider-evaluation authorization
+required finite usage limits; later uncapped model IO authorization is recorded
+in the current operational pointer above.
 Signing, publication and service deployment are concrete separate operations;
 the user's requested implementation and admin-merge work does not justify
 overwriting unrelated state or falsely promoting untested artifacts.
 
-The [estate audit](../agent-notes/2026-10-05-sess-omux-estate.md) records current
+The [estate audit](../agent-notes/2026-10-05-sess-omux-estate.md) records its dated October 5
 branch/worktree/PR state. Superseded worktrees are removed only after exact
 ownership, clean state and preservation of unmerged work are established.
-Current repository work has one registered worktree, so no extra worktree is
+At that October 5 checkpoint repository work had one registered worktree, so no extra worktree is
 presumed disposable.
 
 ## October 6 build-input preparation allowance

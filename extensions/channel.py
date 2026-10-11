@@ -1,4 +1,4 @@
-"""Deterministic Chromium archives with explicit public identity pins."""
+"""Deterministic unsigned channel archives with exact browser identities."""
 import argparse
 import base64
 import hashlib
@@ -8,6 +8,8 @@ import zipfile
 
 CHANNELS = {"release": ("default", "ai.xoxd.omux"),
             "development": ("dev", "ai.xoxd.omux.dev")}
+FIREFOX_IDS = {"release": "browser-sources@omux.xoxd.ai",
+               "development": "browser-sources-dev@omux.xoxd.ai"}
 
 
 def extension_id(key):
@@ -18,12 +20,24 @@ def extension_id(key):
                    for c in hashlib.sha256(raw).hexdigest()[:32])
 
 
-def archive(manifest_path, sources, key_path, channel, output):
+def archive(manifest_path, sources, key_path, channel, output, browser="chromium"):
     instance, host = CHANNELS[channel]
     manifest = json.loads(Path(manifest_path).read_text())
-    key = Path(key_path).read_text().strip()
-    extension_id(key)
-    manifest["key"] = key
+    if browser == "chromium":
+        if key_path is None:
+            raise ValueError("Chromium channel archive requires a public identity key")
+        key = Path(key_path).read_text().strip()
+        extension_id(key)
+        manifest["key"] = key
+    elif browser == "firefox":
+        if key_path is not None or "key" in manifest:
+            raise ValueError("Firefox channel archive cannot use a Chromium identity key")
+        gecko = manifest["browser_specific_settings"]["gecko"]
+        if gecko["id"] != FIREFOX_IDS["release"]:
+            raise ValueError("Firefox source manifest must declare the exact release identity")
+        gecko["id"] = FIREFOX_IDS[channel]
+    else:
+        raise ValueError("unsupported archive browser")
     if channel == "development":
         manifest["name"] += " (development)"
     entries = {"manifest.json": (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()}
@@ -49,11 +63,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--source", action="append", default=[])
-    parser.add_argument("--public-key", required=True)
+    parser.add_argument("--public-key")
+    parser.add_argument("--browser", choices=("chromium", "firefox"), default="chromium")
     parser.add_argument("--channel", choices=CHANNELS, required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    archive(args.manifest, args.source, args.public_key, args.channel, args.out)
+    archive(args.manifest, args.source, args.public_key, args.channel, args.out, args.browser)
 
 
 if __name__ == "__main__":

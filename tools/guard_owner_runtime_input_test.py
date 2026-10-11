@@ -12,6 +12,41 @@ import guard_owner_runtime_input as subject
 
 
 class ProfileTests(unittest.TestCase):
+    def test_device_api_qualification_is_offline_exact_consumer_only(self):
+        label = "//tools:codex_retained_device_api_qualification"
+        self.assertIn(label,subject.CONSUMERS)
+        subject.finite("standard",["test",label,"//tools:execution_guard_test"])
+        for profile,arguments in (("codex-login",["test",label]),
+                ("standard",["run",label]),("standard",["test",label,"//delivery:native_account_login"])):
+            with self.subTest(profile=profile,arguments=arguments),self.assertRaises(ValueError):
+                subject.finite(profile,arguments)
+
+    def test_retained_ordinary_tui_adds_only_an_exact_offline_test_consumer(self):
+        label = "//delivery:installed_retained_ordinary_native_tui_test"
+        self.assertIn(label, subject.CONSUMERS)
+        self.assertNotIn(label, subject.COMPANIONS)
+        companion = "//delivery:retained_ordinary_native_tui_contract_test"
+        self.assertIn(companion, subject.COMPANIONS)
+        self.assertNotIn(companion, subject.CONSUMERS)
+        subject.finite("standard", ["test", label, companion, "//tools:guard_owner_runtime_input_test"])
+        with self.assertRaises(ValueError):
+            subject.finite("standard", ["test", companion])
+        subject.finite("standard", ["test", label, "//tools:execution_guard_test"])
+        # Existing finite build behavior is unchanged; this exposes no RUN.
+        subject.finite("standard", ["build", label])
+        for profile, arguments in (
+                ("standard", ["run", label]),
+                ("standard", ["test", label, label]),
+                ("standard", ["test", label, "//..."]),
+                ("standard", ["test", label, "//delivery:resident_codex_live_continuity"]),
+                ("standard", ["test", label, "--test_arg=provider"]),
+                ("codex-live", ["test", label]),
+                ("codex-sdk", ["test", label])):
+            with self.subTest(profile=profile, arguments=arguments), self.assertRaises(ValueError):
+                subject.finite(profile, arguments)
+        with self.assertRaises(ValueError):
+            subject.finite("standard", ["test", label], [True])
+
     def test_finite_retained_consumers_admitted(self):
         for label in subject.CONSUMERS:
             subject.finite("standard", ["test", label, "//tools:execution_guard_test"])

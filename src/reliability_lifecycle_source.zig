@@ -23,7 +23,13 @@ pub const Summary = struct {
     duration_out_of_range: u64 = 0,
     verified_deployment_provenance: u64 = 0,
     unknown_deployment_provenance: u64 = 0,
-    local_work: enum { unknown } = .unknown,
+    local_work: enum { unknown, partial_daemon_owned } = .unknown,
+    local_work_measured: u64 = 0,
+    daemon_request_elapsed_measured: u64 = 0,
+    daemon_request_elapsed_missing: u64 = 0,
+    daemon_request_elapsed_total_ns: ?u64 = null,
+    daemon_request_elapsed_total_saturated: bool = false,
+    daemon_request_scope: enum { control_handler_entry_to_original_commit } = .control_handler_entry_to_original_commit,
     user_provider_wait: enum { unknown } = .unknown,
     complete_user_demand_denominator: bool = false,
     complete_lifecycle_coverage: bool = false,
@@ -76,12 +82,28 @@ pub fn summarize(allocator: std.mem.Allocator, saved: mutation.Snapshot, current
                             .unobserved, .original_process_lost => {},
                         }
                     }
+                    if (fact.local_work.ns != null) {
+                        result.local_work = .partial_daemon_owned;
+                        result.local_work_measured += 1;
+                    }
+                    if (fact.daemon_request_elapsed.ns) |total| {
+                        result.daemon_request_elapsed_measured += 1;
+                        if (result.daemon_request_elapsed_measured == 1) {
+                            result.daemon_request_elapsed_total_ns = total;
+                        } else if (result.daemon_request_elapsed_total_ns) |prior| {
+                            result.daemon_request_elapsed_total_ns = std.math.add(u64, prior, total) catch blk: {
+                                result.daemon_request_elapsed_total_saturated = true;
+                                break :blk null;
+                            };
+                        }
+                    } else result.daemon_request_elapsed_missing += 1;
                     switch (fact.provenance.status) {
                         .unknown => result.unknown_deployment_provenance += 1,
                         .verified_deployment => result.verified_deployment_provenance += 1,
                     }
                 } else {
                     result.elapsed_missing += 1;
+                    result.daemon_request_elapsed_missing += 1;
                     result.unknown_deployment_provenance += 1;
                 }
             },

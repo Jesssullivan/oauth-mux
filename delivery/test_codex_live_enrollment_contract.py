@@ -50,7 +50,7 @@ class EnrollmentContract(unittest.TestCase):
                 "installed_bundle_sha256": "4" * 64}
 
     def snapshot(self):
-        return {"accounts": [{"id": "2" * 64, "identity": {"provider": "codex"},
+        return {"accounts": [{"id": "2" * 64, "identity": {"provider": "codex", "verified": True},
                               "source_ids": ["1" * 64], "lifecycle": "active"}],
                 "sources": [{"id": "1" * 64, "kind": "native_store", "status": "connected", "provider": "codex"}],
                 "grants": [{"id": "3" * 64, "account_id": "2" * 64, "source_id": "1" * 64,
@@ -92,6 +92,16 @@ class EnrollmentContract(unittest.TestCase):
     def test_only_completed_external_access_authority_is_accepted(self):
         snapshot = self.snapshot()
         self.assertEqual(proof.enrollment_facts(snapshot, "1" * 64, 100)["grant_generation"], 1)
+        for identity in ({"provider": "codex"},
+                         {"provider": "codex", "verified": False},
+                         {"provider": "codex", "verified": 1},
+                         {"provider": "codex", "verified": "true"},
+                         {"provider": "codex", "verified": None},
+                         {"provider": "codex", "verified": True, "subject": "private-model"}):
+            changed = copy.deepcopy(snapshot)
+            changed["accounts"][0]["identity"] = identity
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                proof.enrollment_facts(changed, "1" * 64, 100)
         changes = (("grants", "credential_kind", "oauth_refresh"), ("grants", "ownership", "omux"),
                    ("grants", "status", "quarantined"), ("grants", "custody_expires_at", 100),
                    ("grants", "provider_expires_at", 100), ("grants", "generation", True),

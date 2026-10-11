@@ -87,3 +87,48 @@ test "full ring with maximum-width consistent counters fits prepaid checkpoint c
     // must fail explicitly rather than producing a fabricated good baseline.
     try std.testing.expectError(error.CounterSaturated, restored.window(27 * 86_400));
 }
+
+test "durable phase projection preserves refusal latency and unknown readiness across restore" {
+    const recorder = try reliability.LifecycleRecorder.create(std.testing.allocator, 0, .{ .evidence = .synthetic });
+    defer std.testing.allocator.destroy(recorder);
+    try recorder.record(0, .{ .operation_correlation = 1, .phase = .enroll, .outcome = .safe_refusal, .cause = .custody_unavailable, .local_elapsed_ns = 100 });
+    try recorder.record(0, .{ .operation_correlation = 2, .phase = .enroll, .outcome = .success, .total_elapsed_ns = 300 });
+    const bytes = try recorder.serialize(std.testing.allocator);
+    defer std.testing.allocator.free(bytes);
+    const restored = try reliability.LifecycleRecorder.readAllocated(std.testing.allocator, bytes, 0, .{});
+    defer std.testing.allocator.destroy(restored);
+    const summary = reliability.lifecycleSummary(try restored.window(0));
+    const enroll = summary[@backingInt(reliability.Phase.enroll)];
+    try std.testing.expectEqual(@as(u128, 2), enroll.recorded_outcomes);
+    try std.testing.expectEqual(@as(u64, 1), enroll.successful_user_outcomes);
+    try std.testing.expectEqual(@as(u64, 1), enroll.safe_refusals);
+    try std.testing.expectEqual(@as(u128, 0), enroll.outcomes[@backingInt(reliability.LifecycleOutcome.success)].local.timedOpportunities());
+    try std.testing.expectEqual(@as(u128, 1), enroll.outcomes[@backingInt(reliability.LifecycleOutcome.safe_refusal)].local.timedOpportunities());
+    for (summary) |phase| {
+        try std.testing.expect(phase.supported_user_demands == null and phase.ready_supported_user_demands == null);
+        try std.testing.expect(!phase.complete_user_demand_denominator and !phase.user_end_to_end_elapsed_measured and !phase.achieved_slo);
+    }
+    inline for (.{ reliability.Phase.install, reliability.Phase.renew, reliability.Phase.@"resume", reliability.Phase.update }) |phase| {
+        try std.testing.expectEqual(reliability.PhaseCoverage.unobserved, summary[@backingInt(phase)].coverage);
+        try std.testing.expectEqual(@as(u128, 0), summary[@backingInt(phase)].recorded_outcomes);
+    }
+}
+
+test "phase export failures preserve the durable recorder and report exact unavailable cause" {
+    try std.testing.expectEqual(reliability.PhaseSummaryUnavailable.recorder_unavailable, reliability.lifecycleExport(null, 0).unavailable_reason.?);
+    const recorder = try reliability.LifecycleRecorder.create(std.testing.allocator, 0, .{});
+    defer std.testing.allocator.destroy(recorder);
+    try recorder.record(1, .{ .operation_correlation = 1, .phase = .enroll, .outcome = .safe_refusal });
+    const anomaly = reliability.lifecycleExport(recorder, 0);
+    try std.testing.expect(anomaly.phases == null);
+    try std.testing.expectEqual(reliability.PhaseSummaryUnavailable.clock_anomaly, anomaly.unavailable_reason.?);
+    try std.testing.expectEqual(@as(u64, 1), recorder.days[0].cells[@backingInt(reliability.Phase.enroll)][@backingInt(reliability.LifecycleOutcome.safe_refusal)].count);
+    recorder.days[0].cells[0][0].count = std.math.maxInt(u64);
+    recorder.days[1].utc_day = 1;
+    recorder.days[1].cells[0][0].count = 1;
+    const saturated = reliability.lifecycleExport(recorder, 86_400);
+    try std.testing.expect(saturated.phases == null);
+    try std.testing.expectEqual(reliability.PhaseSummaryUnavailable.counter_saturated, saturated.unavailable_reason.?);
+    try std.testing.expectEqual(std.math.maxInt(u64), recorder.days[0].cells[0][0].count);
+    try std.testing.expectEqual(@as(u64, 1), recorder.days[1].cells[0][0].count);
+}
