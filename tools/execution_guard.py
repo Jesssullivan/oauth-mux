@@ -757,9 +757,10 @@ def await_startup(read, timeout=10, clock=time.monotonic, pause=time.sleep):
 
 def selected_site_source(path, repository=None):
     repository = Path.cwd().resolve() if repository is None else Path(repository).resolve()
-    expected = (repository.parent / 'omux.xoxd.ai').resolve(strict=True)
-    selected = Path(path).resolve(strict=True)
-    if selected != expected or any(char.isspace() for char in str(selected)):
+    expected = repository.parent / 'omux.xoxd.ai'
+    selected = Path(path)
+    if (not selected.is_absolute() or '..' in selected.parts or selected != expected or
+            selected.resolve(strict=True) != selected or any(char.isspace() for char in str(selected))):
         raise ValueError('site source must be the exact declared sibling repository')
     directory = os.open(selected, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     digests = {}
@@ -847,6 +848,7 @@ def selected_site_receipt(path, expected_sha256, state_root, coordination_root, 
                           'site_coordinator_closure_qualification/test.outputs/'
                           'site-coordinator-closure-qualification/site-coordinator-closure-qualification.json'),
         'manifest': 'output-base/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/chromium_dev_metadata.json',
+        'reference': 'output-base/execroot/_main/bazel-out/k8-fastbuild/bin/reference-bundle.json',
     }
     if kind not in suffixes:
         raise ValueError('unknown site receipt selection')
@@ -874,7 +876,8 @@ def selected_site_receipt(path, expected_sha256, state_root, coordination_root, 
             if info.st_uid != os.getuid() or info.st_mode & 0o022:
                 raise ValueError('site receipt ancestor ownership rejected')
         import guard_site_profile as site
-        site.bounded_file(path, expected_sha256, 16384 if kind == 'manifest' else 65536)
+        site.bounded_file(path, expected_sha256,
+                          2 * 1024 * 1024 if kind == 'reference' else 16384 if kind == 'manifest' else 65536)
     finally:
         os.close(descriptor)
     return path
@@ -1505,11 +1508,13 @@ def _main(argv, admission_resources):
     parser.add_argument('--site-nixpkgs-source', type=Path)
     parser.add_argument('--site-inventory', type=Path)
     parser.add_argument('--site-inventory-sha256')
-    parser.add_argument('--site-phase', choices=('qualification', 'checks', 'build', 'archive', 'import', 'lock', 'fetch'))
+    parser.add_argument('--site-phase', choices=('qualification', 'checks', 'build', 'archive', 'import', 'reference-import', 'lock', 'fetch'))
     parser.add_argument('--site-qualification', type=Path)
     parser.add_argument('--site-qualification-sha256')
     parser.add_argument('--site-delivery-manifest', type=Path)
     parser.add_argument('--site-delivery-manifest-sha256')
+    parser.add_argument('--site-reference-bundle', type=Path)
+    parser.add_argument('--site-reference-bundle-sha256')
     parser.add_argument('--source-commit')
     parser.add_argument('--source-dirty', choices=('true', 'false'))
     parser.add_argument('--state-dir', type=Path)
@@ -1592,6 +1597,9 @@ def _main(argv, admission_resources):
     parser.add_argument('--reuse-owned-cache', action='store_true')
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if (args.site_reference_bundle is not None or args.site_reference_bundle_sha256 is not None) and (
+            args.profile != 'site' or args.site_phase != 'reference-import'):
+        raise ValueError('runtime reference selection is exclusive to site reference-import')
     if args.profile != 'yoga-wrapper-companion-reserved' and (
             args.yoga_wrapper_request is not None or args.yoga_wrapper_request_sha256 is not None):
         raise ValueError('wrapper request is exclusive to exact companion profile')
@@ -1870,11 +1878,10 @@ def _main(argv, admission_resources):
                 args.codex_recovery_delta_directory, args.sdk_lane, args.sdk_source_root, args.sdk_source_receipt_sha256,
                 args.sdk_settings_root, args.sdk_settings_receipt_sha256, args.sdk_bundle, args.sdk_bundle_receipt_sha256))):
             raise ValueError('site requires independent complete qualification and inventory without runtime/SDK inputs')
-        if args.site_phase == 'import':
-            if (args.site_delivery_manifest is None or args.site_delivery_manifest_sha256 is None or
-                    arguments != ['run', '//:import_extension_delivery', '--', '--manifest',
-                                  str(args.site_delivery_manifest), '--sha256', args.site_delivery_manifest_sha256]):
-                raise ValueError('site import requires the exact admitted runtime metadata path and digest')
+        if args.site_phase in ('import', 'reference-import'):
+            site.admitted_import(args.site_phase, arguments,
+                args.site_delivery_manifest, args.site_delivery_manifest_sha256,
+                args.site_reference_bundle, args.site_reference_bundle_sha256)
         else:
             site.finite_phase(args.site_phase, arguments)
             if args.site_delivery_manifest is not None or args.site_delivery_manifest_sha256 is not None:
@@ -2028,10 +2035,10 @@ def _main(argv, admission_resources):
             raise ValueError('site dispatch requires the fixed native ELF and JDK')
         args.site_qualification = selected_site_receipt(args.site_qualification,
             args.site_qualification_sha256, args.state_dir, coordination, 'qualification')
-        site_qualification = site.read_qualification(args.site_qualification, args.site_qualification_sha256)
+        site_qualification = site.read_qualification(args.site_qualification, args.site_qualification_sha256, args.site_source)
         site.source_binding(args.site_source, site_qualification['site_bazelversion_sha256'])
         site_bindings = site.proof_bindings(args.site_inventory, args.site_inventory_sha256,
-            selected_site_inventory, args.state_dir, coordination)
+            selected_site_inventory, args.state_dir, coordination, Path.cwd())
         site_bindings['OMUX_BAZEL_BOOTSTRAP_CLOSURE'] = str(bootstrap)
         if args.site_phase == 'import':
             args.site_delivery_manifest = selected_site_receipt(args.site_delivery_manifest,
@@ -2039,6 +2046,12 @@ def _main(argv, admission_resources):
             site_qualification['delivery_manifest'] = str(args.site_delivery_manifest)
             site.importer_arguments(args.site_delivery_manifest, args.site_delivery_manifest_sha256,
                                     site_qualification['delivery_manifest'])
+        elif args.site_phase == 'reference-import':
+            args.site_reference_bundle = selected_site_receipt(args.site_reference_bundle,
+                args.site_reference_bundle_sha256, args.state_dir, coordination, 'reference')
+            site_qualification['reference_bundle'] = str(args.site_reference_bundle)
+            site.reference_importer_arguments(args.site_reference_bundle, args.site_reference_bundle_sha256,
+                                              site_qualification['reference_bundle'])
         site_snapshot = site.source_snapshot(args.site_source)
     DIAGNOSTIC_STAGE = 'lock'
     lockfd = os.open(coordination / 'execution.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -2130,7 +2143,7 @@ def _main(argv, admission_resources):
             command = []
         else:
             command = site.command(bazel, java, site_qualification, run / 'output-base',
-                               args.site_phase, arguments, site_bindings, run) if site else bazel_command(bazel, run, arguments, args.repository_cache,
+                               args.site_phase, arguments, site_bindings, run, source=args.site_source) if site else bazel_command(bazel, run, arguments, args.repository_cache,
                                 args.source_commit, args.source_dirty, args.nixpkgs_source,
                                 site_source=args.site_source, site_inventory=args.site_inventory,
                                 site_inventory_sha256=args.site_inventory_sha256,
@@ -2387,7 +2400,7 @@ def _main(argv, admission_resources):
                     command = sdk_owned_command(sdk_plan, run, lease.output_base)
                 elif site:
                     command = site.command(bazel, java, site_qualification, lease.output_base,
-                                           args.site_phase, arguments, site_bindings, run)
+                                           args.site_phase, arguments, site_bindings, run, source=args.site_source)
                     if args.repository_cache:
                         command.insert(command.index(arguments[0]) + 1, '--repository_cache=' + str(args.repository_cache))
                 else:
@@ -2579,12 +2592,16 @@ def _main(argv, admission_resources):
                 if graph_digest(Path.cwd()) != site_controller_graph:
                     raise ValueError('site controller source changed before admission')
                 site.verify_source_snapshot(site_snapshot, site.source_snapshot(args.site_source), 'qualification')
-                site.read_qualification(args.site_qualification, args.site_qualification_sha256)
+                site.source_binding(args.site_source, site_qualification['site_bazelversion_sha256'])
+                site.read_qualification(args.site_qualification, args.site_qualification_sha256, args.site_source)
                 site.proof_bindings(args.site_inventory, args.site_inventory_sha256,
-                                    selected_site_inventory, args.state_dir, coordination)
+                                    selected_site_inventory, args.state_dir, coordination, Path.cwd())
                 if args.site_phase == 'import':
                     site.importer_arguments(args.site_delivery_manifest, args.site_delivery_manifest_sha256,
                                             site_qualification['delivery_manifest'])
+                elif args.site_phase == 'reference-import':
+                    site.reference_importer_arguments(args.site_reference_bundle, args.site_reference_bundle_sha256,
+                                                      site_qualification['reference_bundle'])
             if yoga:
                 expected_binds = [yoga_admission['witness']['source'] + ':' + yoga_admission['witness']['destination']]
                 yoga.verify_masks(actual, Path(pwd.getpwuid(os.getuid()).pw_dir), expected_binds)
@@ -2871,12 +2888,18 @@ def _main(argv, admission_resources):
                         raise ValueError('site controller source changed during execution')
                     site_source_changes = site.verify_source_snapshot(site_snapshot,
                         site_snapshot_after, args.site_phase)
-                    site.read_qualification(args.site_qualification, args.site_qualification_sha256)
+                    site.source_binding(args.site_source, site_qualification['site_bazelversion_sha256'])
+                    site.read_qualification(args.site_qualification, args.site_qualification_sha256, args.site_source)
                     site.proof_bindings(args.site_inventory, args.site_inventory_sha256,
-                                        selected_site_inventory, args.state_dir, coordination)
+                                        selected_site_inventory, args.state_dir, coordination, Path.cwd())
                     if args.site_phase == 'import':
                         site.importer_arguments(args.site_delivery_manifest, args.site_delivery_manifest_sha256,
                                                 site_qualification['delivery_manifest'])
+                    elif args.site_phase == 'reference-import':
+                        site.reference_importer_arguments(args.site_reference_bundle, args.site_reference_bundle_sha256,
+                                                          site_qualification['reference_bundle'])
+                        site.verify_reference_outputs(args.site_source, args.site_reference_bundle,
+                                                      args.site_reference_bundle_sha256)
                     site_source_verified_after = True
                 except (OSError, ValueError, KeyError, TypeError):
                     site_source_verified_after = False
@@ -3101,7 +3124,9 @@ def _main(argv, admission_resources):
                                 'source_snapshot_before_sha256': hashlib.sha256(json.dumps(site_snapshot, sort_keys=True).encode()).hexdigest(),
                                 'source_snapshot_after_sha256': hashlib.sha256(json.dumps(site_snapshot_after, sort_keys=True).encode()).hexdigest() if site_snapshot_after is not None else None,
                                 'delivery_manifest': str(args.site_delivery_manifest) if args.site_delivery_manifest else None,
-                                'delivery_manifest_sha256': args.site_delivery_manifest_sha256} if site else None,
+                                'delivery_manifest_sha256': args.site_delivery_manifest_sha256,
+                                'reference_bundle': str(args.site_reference_bundle) if args.site_reference_bundle else None,
+                                'reference_bundle_sha256': args.site_reference_bundle_sha256} if site else None,
                        'supervisor': {'pid': supervisor_pid, 'start_ticks': supervisor_start_ticks},
                        'cache_reuse_requested': args.reuse_owned_cache,
                        'cache_key': cache_key, 'graph_sha256': graph_sha256,

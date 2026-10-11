@@ -9,14 +9,12 @@ import time
 
 from site_coordinator_qualification import BAZEL, BAZEL_NATIVE, JDK, CANDIDATE_SHA256, file_bytes
 
-SITE_SOURCE = Path('/srv/fast-local/jess/git/omux.xoxd.ai')
-RUNTIME_SOURCE = Path('/srv/fast-local/jess/git/oauth-mux')
 MASKS = ('/etc/bluetooth', '/etc/environment')
 QUALIFICATION_LABELS = {'//:qualified_site_tools_test', '//:nix_file_inventory_test', '//:reference_check',
                         '//tools:qualified_site_tools_test', '//tools:nix_file_inventory_test'}
 CHECK_LABELS = {'//:unit_tests', '//:svelte_check', '//:reference_check', '//:archive_check'}
 BUILD_LABELS = {'//:build', '//:site_archive'}
-FETCH_LABELS = QUALIFICATION_LABELS | CHECK_LABELS | BUILD_LABELS | {'//:import_extension_delivery'}
+FETCH_LABELS = QUALIFICATION_LABELS | CHECK_LABELS | BUILD_LABELS | {'//:import_extension_delivery', '//:import_reference'}
 PROOF_FILES = {'mapping': ('delivery/proofs/mapping-96136df1.log', 'd992fe7f4124ce731ae5338b204b993767f3b40b50883d1be1598e3ac367178d'),
                'nar': ('delivery/proofs/nar-120f8b34.log', '42688569613bb69896d4c07f601a543c6b73f89efd27d340158462fb7fd27375')}
 
@@ -39,10 +37,8 @@ def finite_phase(phase, arguments):
 
 
 def phase_isolation(phase, arguments):
-    if phase == 'import':
-        if (len(arguments) != 7 or arguments[:3] != ['run', '//:import_extension_delivery', '--'] or
-                arguments[3] != '--manifest' or arguments[5] != '--sha256'):
-            raise ValueError('only the exact metadata importer is accepted')
+    if phase in ('import', 'reference-import'):
+        import_shape(phase, arguments)
     else:
         finite_phase(phase, arguments)
     return {'PrivateNetwork': 'no' if phase in ('lock', 'fetch') else 'yes'}
@@ -86,21 +82,49 @@ def bounded_file(path, expected, maximum):
         os.close(fd)
 
 
-def source_binding(source, version_sha256):
-    if Path(source) != SITE_SOURCE or SITE_SOURCE.resolve(strict=True) != SITE_SOURCE:
-        raise ValueError('only the exact physical sibling site source is accepted')
-    if bounded_file(SITE_SOURCE / '.bazelversion', version_sha256, 64).strip() != b'9.0.1':
-        raise ValueError('site requires its separately qualified Bazel 9.0.1')
-
-
-def read_qualification(path, expected_sha256):
+def physical_source(source):
+    source = Path(source)
+    if (not source.is_absolute() or '..' in source.parts or
+            any(char.isspace() for char in str(source))):
+        raise ValueError('canonical physical site source required')
     try:
-        return _read_qualification(path, expected_sha256)
+        if source.resolve(strict=True) != source or not source.is_dir():
+            raise ValueError('site source aliases rejected')
+    except (OSError, RuntimeError) as error:
+        raise ValueError('physical site source unavailable') from error
+    return source
+
+
+def source_binding(source, version_sha256):
+    """Admit an independent task-owned checkout, never the dirty shared sibling."""
+    source = physical_source(source)
+    parent = source.parent.stat()
+    checkout = source.stat()
+    if (parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) != 0o700 or
+            checkout.st_uid != os.getuid() or checkout.st_mode & 0o022):
+        raise ValueError('site checkout requires a private owned parent and owned source')
+    git = source / '.git'
+    try:
+        info = git.lstat()
+    except OSError as error:
+        raise ValueError('independent site repository required') from error
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022 or
+            any(path.exists() or path.is_symlink() for path in
+                (git / 'objects/info/alternates', git / 'commondir'))):
+        raise ValueError('shared Git metadata or alternate object stores rejected')
+    if bounded_file(source / '.bazelversion', version_sha256, 64).strip() != b'9.0.1':
+        raise ValueError('site requires its separately qualified Bazel 9.0.1')
+    return source
+
+
+def read_qualification(path, expected_sha256, source):
+    try:
+        return _read_qualification(path, expected_sha256, source)
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError('malformed coordinator qualification') from error
 
 
-def _read_qualification(path, expected_sha256):
+def _read_qualification(path, expected_sha256, source):
     """Receipt SHA is independently selected by the operator, never self-attested."""
     import site_coordinator_closure_qualification as full
     report = full.decode(bounded_file(path, expected_sha256, 65536))
@@ -118,8 +142,8 @@ def _read_qualification(path, expected_sha256):
     candidate = full.selected_receipt(full.CANDIDATE, full.CANDIDATE_SHA256, full.CANDIDATE_SHA256)
     version = full.selected_receipt(full.VERSION_RECEIPT, full.VERSION_RECEIPT_SHA256, full.VERSION_RECEIPT_SHA256)
     full.validate_evidence(candidate, version,
-        {name: bounded_file(SITE_SOURCE / name, digest, 1024 * 1024) for name, digest in full.INPUTS.items()},
-        bounded_file(SITE_SOURCE / '.bazelversion', full.SITE_VERSION_SHA256, 64))
+        {name: bounded_file(Path(source) / name, digest, 1024 * 1024) for name, digest in full.INPUTS.items()},
+        bounded_file(Path(source) / '.bazelversion', full.SITE_VERSION_SHA256, 64))
     if (report.get('input_sha256') != full.INPUTS or
             report.get('site_bazelversion_sha256') != full.SITE_VERSION_SHA256 or
             report.get('binaries') != full.BINARIES or report.get('wrappers') != full.WRAPPERS):
@@ -188,14 +212,14 @@ def required_masks(observed):
         raise ValueError('both host configuration masks must be verified before site execution')
 
 
-def proof_bindings(inventory, inventory_sha256, inventory_validator, state_root, coordination_root):
+def proof_bindings(inventory, inventory_sha256, inventory_validator, state_root, coordination_root, runtime_source):
     """Reuse the controller's exact retained inventory selector; no new path lane."""
     selected = inventory_validator(inventory, inventory_sha256, state_root, coordination_root)
     result = {'OMUX_SITE_INVENTORY': str(selected), 'OMUX_SITE_INVENTORY_SHA256': inventory_sha256}
     for name, (relative, digest) in PROOF_FILES.items():
         if digest is None:
             raise ValueError('fresh Bazel 9 mapping receipt not yet retained and bound')
-        path = RUNTIME_SOURCE / relative
+        path = Path(runtime_source) / relative
         bounded_file(path, digest, 8 * 1024 * 1024)
         result['OMUX_SITE_' + name.upper()] = str(path)
         result['OMUX_SITE_' + name.upper() + '_SHA256'] = digest
@@ -220,17 +244,17 @@ def toolchain_binding(bazel, java_home, qualification):
         raise ValueError('full closure and independent candidate evidence required')
 
 
-def command(bazel, java_home, qualification, output_base, phase, arguments, bindings=None, run=None):
+def command(bazel, java_home, qualification, output_base, phase, arguments, bindings=None, run=None, *, source):
     toolchain_binding(bazel, java_home, qualification)
-    if phase == 'import':
-        if (len(arguments) != 7 or arguments[:3] != ['run', '//:import_extension_delivery', '--'] or
-                arguments[3] != '--manifest' or arguments[5] != '--sha256'):
-            raise ValueError('only the exact metadata importer is accepted')
-        selected = importer_arguments(arguments[4], arguments[6], qualification.get('delivery_manifest'))
+    if phase in ('import', 'reference-import'):
+        import_shape(phase, arguments)
+        selected = (reference_importer_arguments(arguments[4], arguments[6], qualification.get('reference_bundle'))
+                    if phase == 'reference-import' else
+                    importer_arguments(arguments[4], arguments[6], qualification.get('delivery_manifest')))
     else:
         selected = finite_phase(phase, arguments)
     output_base = Path(output_base)
-    if not output_base.is_absolute() or '..' in output_base.parts or output_base.is_relative_to(SITE_SOURCE):
+    if not output_base.is_absolute() or '..' in output_base.parts or output_base.is_relative_to(Path(source)):
         raise ValueError('private external owned output base required')
     tests = ['--nocache_test_results', '--nozip_undeclared_test_outputs', '--test_output=errors',
              '--strategy=TestRunner=processwrapper-sandbox', '--test_env=TZ=UTC'] if selected[0] == 'test' else []
@@ -257,6 +281,51 @@ def command(bazel, java_home, qualification, output_base, phase, arguments, bind
             '--enable_bzlmod', '--incompatible_strict_action_env',
             '--remote_executor=', '--remote_cache=', '--disk_cache=', '--spawn_strategy=sandboxed',
             '--sandbox_default_allow_network=false'] + inputs + symlinks + tests + selected[1:]
+
+
+def import_shape(phase, arguments):
+    target, option = (('//:import_reference', '--bundle') if phase == 'reference-import' else
+                      ('//:import_extension_delivery', '--manifest'))
+    if (phase not in ('import', 'reference-import') or len(arguments) != 7 or
+            arguments[:3] != ['run', target, '--'] or arguments[3] != option or
+            arguments[5] != '--sha256'):
+        raise ValueError('only the exact selected importer is accepted')
+
+
+def admitted_import(phase, arguments, manifest=None, manifest_sha256=None, bundle=None, bundle_sha256=None):
+    """Validate exclusive CLI selections before any executable/input admission."""
+    import_shape(phase, arguments)
+    if phase == 'reference-import':
+        if manifest is not None or manifest_sha256 is not None:
+            raise ValueError('reference import forbids extension metadata selection')
+        selected, digest, option, target = bundle, bundle_sha256, '--bundle', '//:import_reference'
+    else:
+        if bundle is not None or bundle_sha256 is not None:
+            raise ValueError('extension import forbids runtime reference selection')
+        selected, digest, option, target = manifest, manifest_sha256, '--manifest', '//:import_extension_delivery'
+    if (selected is None or not re.fullmatch('[0-9a-f]{64}', digest or '') or
+            arguments != ['run', target, '--', option, str(selected), '--sha256', digest]):
+        raise ValueError('site import requires its exact admitted producer path and digest')
+    return list(arguments)
+
+
+def reference_importer_arguments(bundle, expected_sha256, selected_bundle):
+    if selected_bundle is None or Path(bundle) != Path(selected_bundle):
+        raise ValueError('import must select the exact retained runtime reference')
+    # The Bazel importer owns full public schema validation. This boundary binds
+    # raw producer bytes only; it never stamps or normalizes provenance.
+    bounded_file(bundle, expected_sha256, 2 * 1024 * 1024)
+    return ['run', '//:import_reference', '--', '--bundle', str(bundle), '--sha256', expected_sha256]
+
+
+def verify_reference_outputs(source, bundle, expected_sha256):
+    producer = bounded_file(bundle, expected_sha256, 2 * 1024 * 1024)
+    imported = bounded_file(Path(source) / 'src/lib/content/reference-bundle.json', expected_sha256, 2 * 1024 * 1024)
+    digest_bytes = (expected_sha256 + '\n').encode('ascii')
+    sidecar = bounded_file(Path(source) / 'src/lib/content/reference-bundle.sha256',
+                           hashlib.sha256(digest_bytes).hexdigest(), 65)
+    if imported != producer or sidecar != digest_bytes:
+        raise ValueError('reference import did not preserve exact producer/digest bytes')
 
 
 def importer_arguments(manifest, expected_sha256, selected_manifest):
@@ -298,7 +367,8 @@ def source_snapshot(source):
                 os.close(parent)
             try:
                 before = os.fstat(fd)
-                if not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024 * 1024:
+                if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+                        before.st_mode & 0o022 or before.st_nlink != 1 or before.st_size > 16 * 1024 * 1024):
                     raise ValueError('site source requires bounded regular inputs')
                 payload = bytearray()
                 while chunk := os.read(fd, 1024 * 1024):
@@ -323,26 +393,28 @@ def source_snapshot(source):
 
 def verify_source_snapshot(before, after, phase):
     permitted = ({'src/lib/content/extension-delivery.json'} if phase == 'import' else
-                 {'MODULE.bazel.lock'} if phase == 'lock' else set())
+                 {'src/lib/content/reference-bundle.json', 'src/lib/content/reference-bundle.sha256'}
+                 if phase == 'reference-import' else {'MODULE.bazel.lock'} if phase == 'lock' else set())
     changed = {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
     if changed - permitted:
-        raise ValueError('site source changed outside the selected metadata import')
+        raise ValueError('site source changed outside the selected phase outputs')
     return sorted(changed)
 
 
 def retain_lockfile(source, run, expected_sha256, stage):
     """Preserve exact prior/final lock bytes; never edit or normalize them."""
-    if Path(source) != SITE_SOURCE or stage not in ('before', 'after'):
-        raise ValueError('only the selected site lock evidence is accepted')
+    source = physical_source(source)
+    if stage not in ('before', 'after'):
+        raise ValueError('only selected site lock evidence stages are accepted')
     run = Path(run)
     if not run.is_absolute() or '..' in run.parts:
         raise ValueError('owned absolute epoch required for lock evidence')
     if expected_sha256 is None:
         if stage != 'after':
             raise ValueError('prior lock evidence requires its independently sampled source digest')
-        _, facts = file_bytes(SITE_SOURCE / 'MODULE.bazel.lock', 16 * 1024 * 1024)
+        _, facts = file_bytes(source / 'MODULE.bazel.lock', 16 * 1024 * 1024)
         expected_sha256 = facts['sha256']
-    content = bounded_file(SITE_SOURCE / 'MODULE.bazel.lock', expected_sha256, 16 * 1024 * 1024)
+    content = bounded_file(source / 'MODULE.bazel.lock', expected_sha256, 16 * 1024 * 1024)
     directory = os.open(run, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(directory)

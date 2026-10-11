@@ -1255,6 +1255,40 @@ class GuardTest(unittest.TestCase):
                     main(selected + ['--'] + args)
                 reader.assert_not_called()
 
+    def test_reference_import_selection_rejected_before_tool_admission(self):
+        from execution_guard import main
+        selected = ['--profile', 'site', '--site-phase', 'reference-import', '--site-source', '/site',
+                    '--site-inventory', '/owned/inventory.json', '--site-inventory-sha256', 'a' * 64,
+                    '--site-qualification', '/owned/report.json', '--site-qualification-sha256', 'b' * 64,
+                    '--site-reference-bundle', '/owned/reference-bundle.json', '--site-reference-bundle-sha256', 'c' * 64]
+        args = ['run', '//:import_reference', '--', '--bundle', '/owned/reference-bundle.json', '--sha256', 'c' * 64]
+        cases = [(selected, ['run', '//:preview']),
+                 (selected, args[:-1] + ['d' * 64]),
+                 (selected, args[:4] + ['/other/reference-bundle.json'] + args[5:]),
+                 (selected + ['--site-delivery-manifest', '/owned/metadata.json'], args),
+                 (selected + ['--site-delivery-manifest-sha256', 'd' * 64], args),
+                 (['--profile', 'standard', '--site-reference-bundle', '/owned/reference-bundle.json'], ['test', '//:all']),
+                 (['--profile', 'site', '--site-phase', 'checks', '--site-reference-bundle-sha256', 'c' * 64], ['test', '//:unit_tests'])]
+        for options, arguments in cases:
+            with patch('execution_guard.immutable') as reader, self.assertRaises(ValueError):
+                main(options + ['--'] + arguments)
+            reader.assert_not_called()
+
+    def test_reference_receipt_only_accepts_declared_stdout_producer(self):
+        from execution_guard import selected_site_receipt
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / ('cache-v2-' + 'a' * 64) / 'output-base/execroot/_main/bazel-out/k8-fastbuild/bin/reference-bundle.json'
+            selected.parent.mkdir(parents=True)
+            selected.write_text('{"provenance":{"sourceRevision":null,"sourceDirty":true}}\n')
+            digest = hashlib.sha256(selected.read_bytes()).hexdigest()
+            with patch('execution_guard.private'), patch('guard_site_profile.bounded_file') as reader:
+                self.assertEqual(selected_site_receipt(selected, digest, root, root, 'reference'), selected)
+                reader.assert_called_once_with(selected, digest, 2 * 1024 * 1024)
+                for wrong in (selected.with_name('arbitrary.json'), selected.parent / 'delivery/chromium_dev_metadata.json'):
+                    with self.assertRaises(ValueError):
+                        selected_site_receipt(wrong, digest, root, root, 'reference')
+
     def test_site_receipt_selector_refuses_unowned_and_arbitrary_outputs(self):
         from execution_guard import selected_site_receipt
         with tempfile.TemporaryDirectory() as directory:
@@ -1493,6 +1527,12 @@ class GuardTest(unittest.TestCase):
             self.assertIn('--repo_env=OMUX_SITE_SOURCE=' + str(site), command)
             with self.assertRaises(ValueError):
                 selected_site_source(repository, repository)
+            alias = root / 'site-alias'
+            alias.symlink_to(site, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                selected_site_source(alias, repository)
+            with self.assertRaises(ValueError):
+                selected_site_source(site / '..' / 'omux.xoxd.ai', repository)
             (site / 'flake.lock').chmod(0o600)
             with self.assertRaises(ValueError):
                 selected_site_source(site, repository)
