@@ -14,6 +14,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 KIND = 'omux-native-acquisition-compilation-v1'
 SELECTION_KIND = KIND + '-selection'
@@ -26,6 +28,70 @@ CAPS = {'seconds':1200, 'call_seconds':15, 'cleanup_seconds':30,
 HASH = re.compile(r'[0-9a-f]{64}\Z')
 PUBLIC_ROOT=Path('/srv/fast-local/jess/git/oauth-mux')
 GOAL_SNAPSHOT_PREFIX='docs/agent-notes/2026-10-10-native-acquisition-input-lift.UNAPPLIED/ledger-snapshots/'
+_CARRIER_OUTPUT = ContextVar('native-carrier-compiler-owned-output',default=None)
+
+class CarrierOutput:
+    """Exclusive writer witnesses for this one producer, never selected input."""
+    def __init__(self,deadline):
+        import codex_native_carrier_material as material
+        self.material=material;self.deadline=deadline;self.output=None;self.finished=False
+    def start(self,path):
+        require(self.output is None)
+        self.output=self.material.ProjectionOutput(path,self.material.carrier.Clock(self.deadline))
+    def mkdir(self,name):self.output.mkdir(name)
+    def write(self,name,raw,*,executable=False):
+        require(not self.finished)
+        parts=self.material.carrier.relative(name)
+        for index in range(1,len(parts)):
+            parent='/'.join(parts[:index])
+            if parent not in self.output.root.named:self.output.mkdir(parent)
+        parent,leaf=self.output.root.parent(name)
+        try:
+            fd=os.open(leaf,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
+            try:
+                self.material.carrier.write_all(fd,raw,self.output.clock);os.fsync(fd)
+                os.fchmod(fd,0o555 if executable else 0o444)
+                selected=self.material.carrier.identity(os.fstat(fd))
+                require(selected==self.material.carrier.identity(os.stat(leaf,dir_fd=parent,follow_symlinks=False)))
+                self.output.materialized[name]=selected
+            finally:os.close(fd)
+        finally:os.close(parent)
+    def selected_name(self,path):
+        if self.output is None:return None
+        path=Path(path)
+        if not path.is_relative_to(self.output.path):return None
+        name=str(path.relative_to(self.output.path))
+        return name if name in self.output.materialized else None
+    def read(self,name,pin,maximum):
+        require(self.output is not None and name in self.output.materialized)
+        raw=self.material.carrier.read(self.output.root,name,maximum,pin)
+        self.output.root.check();return raw
+    def finish(self):
+        if self.output is not None:
+            # Every exclusive writer is held even when the caller did not read
+            # that publication leaf. Join the original writer witness first.
+            require(len(self.output.materialized) <= 4096)
+            for name in sorted(self.output.materialized):
+                self.output.clock.tick()
+                fd,_=self.output.root.open(name)
+                os.close(fd)
+            self.output.root.check()
+            if self.finished:return
+            for name in sorted(self.output.root.named,key=lambda item:(-item.count('/'),item)):
+                if name=='artifacts' or name.startswith('artifacts/'):self.output.seal_directory(name)
+            self.output.finish();self.finished=True;self.output.root.check()
+    def close(self):
+        if self.output is not None:self.output.close()
+
+@contextmanager
+def carrier_outputs(deadline):
+    require(_CARRIER_OUTPUT.get() is None)
+    value=CarrierOutput(deadline);token=_CARRIER_OUTPUT.set(value)
+    try:
+        yield value
+        value.finish()
+    finally:
+        _CARRIER_OUTPUT.reset(token);value.close()
 
 def require(value):
     if value is not True:
@@ -45,6 +111,16 @@ def unique(pairs):
     return result
 
 def read_bytes(path, pin, deadline, maximum=64*1024*1024):
+    import codex_native_acquisition_material as ninth
+    if ninth.CARRIER_SESSION.get() is not None:
+        import codex_native_carrier_material as carrier_material
+        own=_CARRIER_OUTPUT.get()
+        if own is not None:
+            name=own.selected_name(path)
+            if name is not None:
+                require(deadline==ninth.CARRIER_SESSION.get().caller_deadline)
+                return own.read(name,pin,maximum)
+        return carrier_material.declared_read(path,pin,deadline,maximum)
     tick(deadline)
     require(type(pin) is str and HASH.fullmatch(pin) is not None)
     path=Path(path)
@@ -133,22 +209,32 @@ def prerequisites(document,deadline,material_verifier):
     """Real qualified plan/query receipts; selection alone confers no authority."""
     tick(deadline); snapshot=ledger(document,deadline)
     material=material_verifier(document['material'],deadline)
-    require(type(material) is dict and set(material)=={'source_inventory_sha256',
-        'sdk_inventory_sha256','mapping_sha256','patch_sha256'}
+    carrier_v2 = document['material'].get('kind') == 'omux-native-carrier-native-selection-v2'
+    expected_material = {'source_inventory_sha256','sdk_inventory_sha256','mapping_sha256','patch_sha256'}
+    if carrier_v2: expected_material.add('material_selection_sha256')
+    require(type(material) is dict and set(material)==expected_material
         and type(material['patch_sha256']) is list and len(material['patch_sha256'])==9
         and all(type(pin) is str and HASH.fullmatch(pin) is not None
             for pin in material['patch_sha256']+ [material['source_inventory_sha256'],
                 material['sdk_inventory_sha256'],material['mapping_sha256']]))
+    if carrier_v2:
+        require(type(material['material_selection_sha256']) is str
+            and HASH.fullmatch(material['material_selection_sha256']) is not None)
     require(controller_inputs(material,deadline)==document['controller_inventory_sha256'])
     evidence={}
     for role in ('plan','query'):
         row=document[role]
         import codex_native_acquisition_material as ninth
         outer=ninth.producer_success({'root':str(Path(row['path']).parent),'producer':row['producer']},
-            '//tools:codex_native_acquisition_'+role+'_producer','native-acquisition-'+role,deadline)
+            ('//tools:codex_native_carrier_' if carrier_v2 else '//tools:codex_native_acquisition_')+role+'_producer',
+            'native-acquisition-'+role,deadline,**({'declared':ninth.CARRIER_SESSION.get().inputs} if carrier_v2 else {}))
         # producer_success verifies this role's independently pinned actor/graph.
         # The source/SDK actor in material is not the later compiler actor.
         value=read_json(row['path'],row['sha256'],deadline)
+        if carrier_v2:
+            import codex_native_carrier_material as carrier_material
+            carrier_material.output_marker(ninth.CARRIER_SESSION.get().inputs.role(role+'/test-log.evidence'),
+                'omux-native-carrier-'+role+'-output-sha256=',row['sha256'])
         require(type(value) is dict and set(value)=={'schema_version','kind','material',
             'controller_inventory_sha256','caps','verb','targets','qualified','exit','closure_rechecked'}
             and type(value['schema_version']) is int and value['schema_version']==1
@@ -178,6 +264,11 @@ def controller_inputs(material,deadline):
 def qualify_material(selection,deadline):
     import codex_native_acquisition_material as ninth
     source,files,parent,report,mappings=ninth.qualify_selection(selection,deadline)
+    if selection.get('kind') == 'omux-native-carrier-native-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        require(len(source['patch_sha256']) == 9 and bool(files)
+            and report['source']['inventory_sha256'] == source['inventory_sha256'])
+        return carrier_material.stable_compact(source,report)
     require(len(source['patch_sha256'])==9 and bool(files)
         and report['source_inventory_sha256']==source['inventory_sha256'])
     return {'source_inventory_sha256':source['inventory_sha256'],
@@ -198,6 +289,9 @@ def artifact(row,deadline):
             require(definitions['OmuxBrokerContextMode']['enum']==['full_native','text_transcript_v1']
                 and definitions['OmuxBrokerConfig']['properties']['context_mode']['default']=='full_native')
     elif row['role']=='test-xml':
+        import codex_native_acquisition_material as ninth
+        if ninth.CARRIER_SESSION.get() is not None:
+            require(ninth.declared_xml_success(raw) is True)
         xml=ET.fromstring(raw)
         suites=[xml] if xml.tag=='testsuite' else list(xml.findall('testsuite'))
         require(xml.tag in ('testsuite','testsuites') and bool(suites)
@@ -215,12 +309,20 @@ def readback(document,selection,deadline):
     require(type(selection) is dict and set(selection)=={'path','sha256','producer'})
     receipt_path=Path(selection['path']);receipt_pin=selection['sha256']
     outer=ninth.producer_success({'root':str(receipt_path.parent),'producer':selection['producer']},
-        '//tools:codex_native_acquisition_compilation_producer','native-acquisition-compilation',deadline)
+        ('//tools:codex_native_carrier_compilation_producer' if document['material'].get('kind') ==
+            'omux-native-carrier-native-selection-v2' else '//tools:codex_native_acquisition_compilation_producer'),
+        'native-acquisition-compilation',deadline,
+        **({'declared':ninth.CARRIER_SESSION.get().inputs} if document['material'].get('kind') ==
+            'omux-native-carrier-native-selection-v2' else {}))
     compiler=ledger(document,deadline)['compiler_controller']
     require(outer['source_commit']==compiler['source_commit']
         and outer['graph_sha256']==compiler['graph_sha256'])
     material,_=prerequisites(document,deadline,qualify_material)
     receipt=read_json(receipt_path,receipt_pin,deadline)
+    if document['material'].get('kind') == 'omux-native-carrier-native-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        carrier_material.output_marker(ninth.CARRIER_SESSION.get().inputs.role('compiler/test-log.evidence'),
+            'omux-native-carrier-compilation-output-sha256=',receipt_pin)
     require(type(receipt) is dict and set(receipt)=={'schema_version','kind','material',
         'ledger_sha256','controller_inventory_sha256','caps','verb','targets','exit',
         'workload_exit','cleanup_empty','resident_verified_after','artifacts',
@@ -294,9 +396,17 @@ def fixed_plan(selection,work,deadline):
     require(TARGETS[:4]==(native.CORE,native.CONFIG,native.LOGIN,native.CLI))
     source,files,parent,report,mappings=ninth.qualify_selection(selection,deadline)
     candidate_source=work/'source'
-    producer.source.DEADLINE=producer.DEADLINE=deadline
+    carrier_v2 = selection.get('kind') == 'omux-native-carrier-native-selection-v2'
+    session = ninth.CARRIER_SESSION.get() if carrier_v2 else None
+    if carrier_v2:
+        import codex_native_carrier_material as carrier_material
+        session = carrier_material.current(selection,deadline)
+    producer.source.DEADLINE=producer.DEADLINE=session.deadline if carrier_v2 else deadline
     producer.source.write_source(candidate_source,files)
-    args=SimpleNamespace(native_export_root=Path(selection['sdk']['root']),native_mode='ninth-final')
+    args=SimpleNamespace(native_export_root=session.extracted/'sdk' if carrier_v2 else Path(selection['sdk']['root']),
+        native_mode='ninth-final')
+    if carrier_v2:
+        args.native_carrier_selection=selection;args.native_carrier_deadline=deadline
     # candidate is disjoint and fresh; no historical native candidate/cache selectors.
     candidate=SimpleNamespace(source=candidate_source,root=work,
         lease=SimpleNamespace(output_base=work/'output-base'))
@@ -316,11 +426,23 @@ def fixed_plan(selection,work,deadline):
 def run_once(plan,output,deadline):
     """One invocation, original cutoff; no retries or replacement compiler."""
     tick(deadline); require(deadline-time.monotonic()>90)
-    logs=output/'logs'; logs.mkdir(mode=0o700)
+    logs=output/'logs'
+    own=_CARRIER_OUTPUT.get()
+    if own is None:logs.mkdir(mode=0o700)
+    else:
+        require(own.output is not None and own.output.path==output)
+        own.mkdir('logs')
     paths=[logs/'stdout',logs/'stderr']
     streams=[];child=None
     try:
-        for path in paths:streams.append(open(path,'xb',buffering=0))
+        for path in paths:
+            if own is None:streams.append(open(path,'xb',buffering=0))
+            else:
+                parent,leaf=own.output.root.parent('logs/'+path.name)
+                try:
+                    fd=os.open(leaf,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
+                    streams.append(os.fdopen(fd,'wb',buffering=0))
+                finally:os.close(parent)
         child=subprocess.Popen(plan['argv'],cwd=plan['cwd'],env=plan['environment'],
             stdin=subprocess.DEVNULL,stdout=streams[0],stderr=streams[1])
         while child.poll() is None:
@@ -359,9 +481,15 @@ def retain_artifacts(output_base,destination,deadline):
                 ==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns))
         finally:os.close(fd)
         raw=b''.join(parts);total+=len(raw);require(total<=1536*1024*1024 and len(rows)<4096)
-        target=destination/relative;target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-        with target.open('xb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
-        target.chmod(0o444)
+        target=destination/relative
+        own=_CARRIER_OUTPUT.get()
+        if own is None:
+            target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+            with target.open('xb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+            target.chmod(0o444)
+        else:
+            require(destination==own.output.path/'artifacts')
+            own.write('artifacts/'+relative,raw,executable=role=='native-cli')
         row={'path':str(target),'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),'role':role}
         artifact(row,deadline);rows.append(row)
     copy(config/'bin/codex-rs/cli/codex','native-cli','native-cli')
@@ -388,12 +516,22 @@ def retain_artifacts(output_base,destination,deadline):
 
 def produce(document,output,deadline):
     import codex_native_acquisition_metadata as producer
-    require(type(deadline) is float and 0<deadline-time.monotonic()<=840)
-    producer.DEADLINE=producer.source.DEADLINE=deadline
-    producer.declared_selection()
+    carrier_v2=document['material'].get('kind') == 'omux-native-carrier-native-selection-v2'
+    require(type(deadline) is float and 0<deadline-time.monotonic()<=(1170 if carrier_v2 else 840))
+    if document['material'].get('kind') == 'omux-native-carrier-native-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        producer.DEADLINE=producer.source.DEADLINE=carrier_material.current(document['material'],deadline).deadline
+    else:
+        producer.DEADLINE=producer.source.DEADLINE=deadline
+        producer.declared_selection()
     material,evidence=prerequisites(document,deadline,qualify_material)
-    require(not output.exists());output.mkdir(mode=0o700)
-    work=output/'work';work.mkdir(mode=0o700)
+    require(not output.exists())
+    own=_CARRIER_OUTPUT.get()
+    if carrier_v2:
+        require(own is not None);own.start(output);own.mkdir('work')
+    else:output.mkdir(mode=0o700)
+    work=output/'work'
+    if not carrier_v2:work.mkdir(mode=0o700)
     plan=fixed_plan(document['material'],work,deadline)
     run_once(plan,output,deadline)
     rows=retain_artifacts(work/'output-base',output/'artifacts',deadline)
@@ -409,14 +547,21 @@ def produce(document,output,deadline):
         'schema_producer_qualified':False,'native_compile_passed':False,'live_handoff_proven':False}
     # Inner producer cannot claim outer cleanup; consumer must join actual guardian.
     path=output/'receipt.json'
-    with path.open('xb') as stream:stream.write(encoded(receipt));stream.flush();os.fsync(stream.fileno())
-    path.chmod(0o444)
-    for directory,subdirs,files in os.walk(output/'artifacts',topdown=False):
-        tick(deadline);Path(directory).chmod(0o555)
-    fd=os.open(output,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-    try:os.fsync(fd)
-    finally:os.close(fd)
-    output.chmod(0o555)
+    if carrier_v2:
+        raw_receipt=encoded(receipt)
+        own.write('receipt.json',raw_receipt)
+        require(own.read('receipt.json',hashlib.sha256(raw_receipt).hexdigest(),64*1024*1024)==raw_receipt)
+    else:
+        with path.open('xb') as stream:stream.write(encoded(receipt));stream.flush();os.fsync(stream.fileno())
+        path.chmod(0o444)
+    if carrier_v2:own.finish()
+    else:
+        for directory,subdirs,files in os.walk(output/'artifacts',topdown=False):
+            tick(deadline);Path(directory).chmod(0o555)
+        fd=os.open(output,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        output.chmod(0o555)
     return receipt
 
 def main():

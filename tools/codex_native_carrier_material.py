@@ -43,7 +43,7 @@ FALSE_FLAGS = ('compiler_qualified','native_compile_passed','runtime_qualified',
     'provider_evaluation','credential_acquisition_qualified','live_handoff_proven','source_witnesses_replaced')
 SDK_KEYS = CORE_KEYS - {'kind'} | {'kind','status','authority_sha256','inventory_sha256','hub_files',
     'graph_files','mapping_sha256','patch_sha256','sdk_export_qualified','source_and_carrier_rechecked', *FALSE_FLAGS}
-_SCOPE = ContextVar('omux-native-carrier-material-session', default=None)
+_SCOPE = legacy.CARRIER_SESSION
 MAX_DOCUMENT = 16 * 1024 * 1024
 
 
@@ -148,6 +148,14 @@ def config(raw=None):
     else:
         program(value['metadata'])
         if value['selection'] is not None: validate_selection(value['selection'])
+        if value['compile'] is not None:
+            row = value['compile']
+            require(type(row) is dict and set(row) == {'selection','result'})
+            member(row['selection'],1024*1024)
+            if row['result'] is not None:
+                require(type(row['result']) is dict and set(row['result']) == {'path','sha256','bytes','producer'})
+                member({name:row['result'][name] for name in ('path','sha256','bytes')})
+                protocol.producer_pin(row['result']['producer'])
     return copy.deepcopy(value),source.sha(raw)
 
 
@@ -181,6 +189,55 @@ class DeclaredRoot(carrier.Root):
             self.check()
         except BaseException:
             self.close(); raise
+
+
+class SelectorReadback:
+    """Caller-owned selector FDs can outlive the workload's extraction Session.
+
+    The two raw authorities and absolute proof cutoff are captured by the
+    admitted Session. This capability never creates another proof phase.
+    """
+    def __init__(self,raws,deadline,until_ns):
+        require(type(raws) is tuple and len(raws) == 2 and type(until_ns) is int
+            and deadline == float(until_ns / 10**9))
+        self.clock = carrier.Clock(deadline); self.stack = ExitStack(); self.closed = False
+        self.clock.until_ns = until_ns
+        self.rows = []; self.parents = {}
+        try:
+            for name,raw,maximum in zip((CONFIG,metadata.CONFIG),raws,(65536,16384)):
+                self.clock.tick()
+                require(type(raw) is bytes and 0 < len(raw) <= maximum)
+                alias = binding.ninth.parent.ROOT / name
+                path = alias.resolve(strict=True)
+                if path.parent not in self.parents:
+                    self.parents[path.parent] = self.stack.enter_context(DeclaredRoot(path.parent,self.clock))
+                root = self.parents[path.parent]
+                fd,witness = root.open(path.name)
+                self.stack.callback(os.close,fd)
+                require(stat.S_IMODE(witness[4]) in (0o444,0o555,0o644))
+                self.rows.append((alias,path,root,fd,witness,raw,maximum))
+            self.check()
+        except BaseException:
+            self.close(); raise
+
+    def check(self):
+        require(not self.closed); self.clock.tick()
+        for alias,path,root,fd,witness,raw,maximum in self.rows:
+            self.clock.tick()
+            require(alias.resolve(strict=True) == path and carrier.identity(os.fstat(fd)) == witness)
+            require(carrier.read(root,path.name,maximum,source.sha(raw)) == raw)
+        for alias,path,root,fd,witness,_,_ in self.rows:
+            self.clock.tick(); root.check()
+            require(alias.resolve(strict=True) == path and carrier.identity(os.fstat(fd)) == witness
+                == carrier.identity(os.stat(path.name,dir_fd=root.fd,follow_symlinks=False)))
+        self.clock.tick()
+
+    def close(self):
+        if not self.closed:
+            self.closed = True; self.stack.close()
+    def __enter__(self):
+        require(not self.closed); return self
+    def __exit__(self,*_): self.close()
 
 
 class DeclaredInputs:
@@ -217,7 +274,8 @@ class DeclaredInputs:
                 require(type(row) is dict and set(row) == {'path','sha256','bytes','alias'}
                     and row['alias'] == 'inputs/' + role)
                 protocol.path(row['path']); protocol.pin(row['sha256'])
-                require(type(row['bytes']) is int and 0 <= row['bytes'] <= 64*1024*1024)
+                maximum = 1024*1024*1024 if role == 'compiler/artifacts/native-cli' else 64*1024*1024
+                require(type(row['bytes']) is int and 0 <= row['bytes'] <= maximum)
                 path = protocol.path(row['path']); alias = runfiles / selected[0] / row['alias']
                 require(alias.resolve(strict=True) == path)
                 self.aliases.append((alias,path))
@@ -240,7 +298,8 @@ class DeclaredInputs:
         for root in self.parents.values(): root.check()
 
     def read(self,path,pin,deadline,maximum=MAX_DOCUMENT):
-        require(deadline == self.clock.deadline)
+        # Only an already-installed immutable runtime phase may join1170 to600.
+        require(deadline == self.clock.deadline or query_tools.verification_deadline(deadline) == self.clock.deadline)
         self.recheck(); row = self.by_path.get(str(path))
         require(row is not None and row['sha256'] == pin and row['bytes'] <= maximum)
         raw = carrier.read(self.parents[Path(path).parent],Path(path).name,maximum,pin)
@@ -511,6 +570,8 @@ class Session:
     def __init__(self,document,deadline,declared,carrier_root,carrier_aliases,carrier_declaration,seal_proofs,
                  temporary,selected_carrier,*,runfiles,rows):
         validate_selection(document); tick(deadline)
+        self.caller_deadline = deadline
+        deadline = query_tools.verification_deadline(deadline)
         self.document = copy.deepcopy(document); self.deadline = deadline; self.inputs = declared
         self.stack = ExitStack(); self.closed = False; self.carrier_root = Path(carrier_root)
         self.carrier_aliases = carrier_aliases; self.carrier_declaration = carrier_declaration
@@ -521,7 +582,11 @@ class Session:
             require(declared.selection_raw is not None and declared.selection == document)
             self.material_selection_sha256 = source.sha(declared.selection_raw)
             self.stack.enter_context(metadata.proof_scope(deadline))
-            require(metadata.legacy.declared_query_tools(runfiles,rows) is True)
+            query_clock = metadata.legacy.DEADLINE
+            try:
+                metadata.legacy.DEADLINE = self.caller_deadline
+                require(metadata.legacy.declared_query_tools(runfiles,rows) is True)
+            finally: metadata.legacy.DEADLINE = query_clock
             self.carrier_hold = self.stack.enter_context(carrier.Root(self.carrier_root,self.clock))
             projection = document['sdk']; self.root = self.stack.enter_context(ProjectionRoot(projection['root'],self.clock))
             raw = declared.read(Path(projection['root'])/'sdk-receipt.json',projection['receipt_sha256'],deadline)
@@ -616,7 +681,7 @@ class Session:
     def recheck(self):
         require(not self.closed); tick(self.deadline)
         require(self.authenticate() == self.authenticated)
-        query = query_tools.verify_repository(metadata.legacy.QUERY_REPOSITORY,self.deadline)
+        query = query_tools.verify_repository(metadata.legacy.QUERY_REPOSITORY,self.caller_deadline)
         require(query['status'] == 'declared-fixed-query-tools-byte-qualified' and query['inputs_rechecked'] is True)
         require(binding.load_verified_source(self.core['original_selection'])[0] == self.source_report)
         for name,held in self.source_proof.snapshots:
@@ -644,8 +709,15 @@ class Session:
             if name == 'ninth': self.source_proof.join_n9(held)
 
     def qualified(self,document,deadline):
-        require(document == self.document and deadline == self.deadline); self.recheck()
+        require(document == self.document and deadline == self.caller_deadline
+            and query_tools.verification_deadline(deadline) == self.deadline); self.recheck()
         return self.source_report,self.source_files,self.parent,self.report,self.mappings
+
+    def retain_selectors(self):
+        require(not self.closed and _SCOPE.get() is self)
+        phase = query_tools._CONSUMER_PHASE.get()
+        require(isinstance(phase,query_tools._ConsumerPhase) and phase.query_deadline == self.deadline)
+        return SelectorReadback(self.selector_bytes,self.deadline,phase.query_deadline_ns)
 
     def close(self):
         if not self.closed:
@@ -655,7 +727,7 @@ class Session:
 def current(document,deadline):
     session = _SCOPE.get()
     require(isinstance(session,Session) and not session.closed and session.document == document
-        and session.deadline == deadline)
+        and session.caller_deadline == deadline and query_tools.verification_deadline(deadline) == session.deadline)
     return session
 
 
@@ -711,18 +783,203 @@ def session_scope(document,deadline,temporary,runfiles):
     selected = metadata.selection(selected_raw)
     packed,aliases,declaration = metadata.declared_carrier(runfiles,rows,selected,deadline)
     proofs = metadata.declared_proofs(runfiles,rows,selected,deadline)
-    declared = DeclaredInputs(runfiles,rows,deadline,stage='material')
+    declared = DeclaredInputs(runfiles,rows,query_tools.verification_deadline(deadline),stage='material')
     try:
         session = Session(document,deadline,declared,packed,aliases,declaration,proofs,
             temporary,selected,runfiles=runfiles,rows=rows)
     except BaseException:
         declared.close(); raise
+    session.selector_bytes = (raw,selected_raw)
     with installed_session(session):
         require(session.core['metadata'] == configured['metadata'])
         yield session
         require(binding.ninth.parent.declared(CONFIG,65536) == raw
             and binding.ninth.parent.declared(metadata.CONFIG,16384) == selected_raw)
+    # Session close performs long SOURCE and fresh-custody work. Recheck the
+    # independent tracked selectors afterward, using the same original cutoff.
+    with metadata.proof_scope(query_tools.verification_deadline(deadline)):
+        tick(query_tools.verification_deadline(deadline))
+        require(binding.ninth.parent.declared(CONFIG,65536) == raw
+            and binding.ninth.parent.declared(metadata.CONFIG,16384) == selected_raw)
+        tick(query_tools.verification_deadline(deadline))
 
+
+@contextmanager
+def session_scope_for_package(selection,work_deadline,temporary,runfiles,*,entry_ns,original_deadline_ns):
+    require(type(selection) is dict and selection.get('kind') == PACKAGE_KIND)
+    with query_tools.consumer_phase(entry_ns,original_deadline_ns) as phase:
+        require(work_deadline == phase.work_deadline)
+        with session_scope(selection['material'],work_deadline,temporary,runfiles) as session:
+            validate_package_paths(selection)
+            configured,_ = config()
+            require(configured['compile'] is not None
+                and configured['compile']['selection']['path'] == selection['compilation']['selection']['path']
+                and configured['compile']['selection']['sha256'] == selection['compilation']['selection']['sha256']
+                and configured['compile']['result'] is not None
+                and {key:configured['compile']['result'][key] for key in ('path','sha256','producer')}
+                    == selection['compilation']['result'])
+            yield session
+
+
+def declared_read(path,pin,deadline,maximum=MAX_DOCUMENT):
+    session = _SCOPE.get()
+    require(isinstance(session,Session) and session.caller_deadline == deadline)
+    require(query_tools.verification_deadline(deadline) == session.deadline)
+    return session.inputs.read(path,pin,session.deadline,maximum)
+
+
+def package_extra_rows(selection):
+    value = selection['carrier_materials']
+    rows = {'carrier/' + name:row for name,row in value['receipts'].items()}
+    for action,group in value['authorities'].items():
+        prefix = 'carrier-authority/' + action + '/'
+        rows[prefix+'outer'] = group['outer']; rows[prefix+'evidence'] = group['evidence']
+        for name,row in group['members'].items(): rows[prefix+name] = row
+    require(len(rows) == 12)
+    return rows
+
+
+def validate_package_paths(selection):
+    legacy._validate_paths_common(selection,schema=2,kind=PACKAGE_KIND)
+    validate_selection(selection['material'])
+    value = selection['carrier_materials']
+    require(type(value) is dict and set(value) == {'schema_version','kind','authority_sha256',
+        'carrier_files','projection','receipts','authorities'}
+        and type(value['schema_version']) is int and value['schema_version'] == 2
+        and value['kind'] == 'omux-native-carrier-retained-authority-v2')
+    protocol.pin(value['authority_sha256']); file_tuple(value['carrier_files'])
+    projection = value['projection']
+    require(type(projection) is dict and set(projection) == {'receipt_sha256','inventory_sha256',
+        'hub_inventory_sha256','graph_inventory_sha256'})
+    for pin in projection.values(): protocol.pin(pin)
+    require(projection['receipt_sha256'] == selection['files']['sdk']['sha256']
+        == selection['material']['sdk']['receipt_sha256']
+        and projection['inventory_sha256'] == value['authority_sha256']
+        == selection['material']['sdk']['inventory_sha256'])
+    receipts = value['receipts']
+    require(type(receipts) is dict and set(receipts) == {'authority_document','carrier_receipt','seal_program','metadata_program'})
+    for row in receipts.values(): member(row)
+    require(receipts['authority_document']['sha256'] == value['authority_sha256']
+        and receipts['metadata_program'] == selection['files']['sdk_metadata'])
+    authorities = value['authorities']
+    require(type(authorities) is dict and set(authorities) == {'seal','metadata'})
+    for group in authorities.values():
+        require(type(group) is dict and set(group) == {'outer','evidence','members'}
+            and type(group['members']) is dict and len(group['members']) == 2)
+        member(group['outer']); member(group['evidence'])
+        for name,row in group['members'].items():
+            require(type(name) is str and re.fullmatch('[0-9a-f]{64}\\.evidence',name) is not None)
+            member(row,64*1024*1024)
+    # Transport byte counts are tuple-only. The payload is never counted as
+    # retained metadata and never smuggled into installed/deployed files.
+    retained = [*selection['files'].values(),*selection['protocol_schema_files'].values(),
+        *selection['native_acquisition_artifact_files'].values(),*package_extra_rows(selection).values()]
+    for group in selection['authority_receipts'].values():
+        retained += [group['outer'],group['evidence'],*group['members'].values()]
+    require(len(retained) <= 4096 and sum(row['bytes'] for row in retained) <= 512*1024*1024)
+    return selection
+
+
+def _join_retained_authority(group,producer,staged,prefix):
+    require(group['outer']['path'] == producer['receipt'] and group['outer']['sha256'] == producer['sha256'])
+    outer = json.loads(staged[prefix+'outer'],object_pairs_hook=source.unique)
+    index = json.loads(staged[prefix+'evidence'],object_pairs_hook=source.unique)
+    parent = Path(producer['receipt']).parent
+    require(group['evidence']['path'] == str(parent/'test-evidence.json')
+        and group['evidence']['sha256'] == outer['test_evidence']['sha256'])
+    require(type(index['results']) is list and 0 < len(index['results']) <= 3)
+    entries = []
+    for result in index['results']:
+        require(type(result['files']) is list and 2 <= len(result['files']) <= 4)
+        entries += [row for row in result['files'] if row['source'] in ('test.log','test.xml')]
+    require(len(entries) == len(group['members'])
+        and len({row['file'] for row in entries}) == len(entries)
+        and {row['file'] for row in entries} == set(group['members']))
+    for row in entries:
+        require(row['state'] == 'copied' and type(row['bytes']) is int and row['bytes'] > 0
+            and group['members'][row['file']] == {'path':str(parent/'test-evidence'/row['file']),
+                'sha256':row['sha256'],'bytes':row['bytes']})
+    return outer,index
+
+
+def validate_package_chain(selection,values,protocol_values,staged_values,*,deadline):
+    """Complete genuine PACKAGE verification, under one held extraction session."""
+    import codex_native_acquisition_compilation as compiler
+    validate_package_paths(selection); session = current(selection['material'],deadline)
+    require(type(values) is dict and set(values) == legacy.ROLES
+        and type(protocol_values) is dict and set(protocol_values) == set(selection['protocol_schema_files'])
+        and type(staged_values) is dict)
+    extra = dict(selection['native_acquisition_artifact_files'])
+    for action,group in selection['authority_receipts'].items():
+        prefix = 'authority/' + action + '/'
+        extra[prefix+'outer'] = group['outer']; extra[prefix+'evidence'] = group['evidence']
+        extra.update({prefix+name:row for name,row in group['members'].items()})
+    extra.update(package_extra_rows(selection))
+    require(set(staged_values) == set(extra))
+    def join(rows,raws):
+        for name,row in rows.items():
+            tick(session.deadline); raw = raws[name]
+            require(type(raw) is bytes and len(raw) == row['bytes'] and source.sha(raw) == row['sha256'])
+    join(selection['files'],values); join(selection['protocol_schema_files'],protocol_values); join(extra,staged_values)
+    parsed = {name:json.loads(values[name],object_pairs_hook=source.unique) for name in legacy.ROLES-{'codex'}}
+    selected = selection['compilation']['selection']; result = selection['compilation']['result']
+    document = compiler.selected_document(selected['path'],selected['sha256'],deadline)
+    require(document == parsed['compiler_selection'] and document['material'] == selection['material'])
+    verified = compiler.readback(document,result,deadline)
+    require(parsed['source'] == session.source_report and parsed['sdk'] == session.report
+        and parsed['sdk_metadata'] == session.authenticated)
+    selected_sdk = selection['material']['sdk']
+    require(selection['files']['source']['path'] == str(Path(selection['material']['source']['root'])/'source-receipt.json')
+        and selection['files']['source']['sha256'] == selection['material']['source']['receipt_sha256'])
+    require(selection['files']['sdk']['path'] == str(Path(selected_sdk['root'])/'sdk-receipt.json')
+        and selection['files']['sdk']['sha256'] == selected_sdk['receipt_sha256'])
+    value = selection['carrier_materials']; receipts = value['receipts']
+    require(staged_values['carrier/authority_document'] == session.authority_raw
+        and value['carrier_files'] == session.core['carrier_files']
+        and value['projection'] == {'receipt_sha256':selected_sdk['receipt_sha256'],
+            'inventory_sha256':session.report['inventory_sha256'],
+            'hub_inventory_sha256':session.report['hub_inventory_sha256'],
+            'graph_inventory_sha256':session.report['graph_inventory_sha256']})
+    require(staged_values['carrier/carrier_receipt'] == carrier.encoded(session.origin)
+        and receipts['carrier_receipt']['path'] == str(session.carrier_root/'receipt.json')
+        and receipts['carrier_receipt']['sha256'] == session.pin)
+    require(receipts['authority_document']['path'] == str(Path(selected_sdk['root'])/'authority.json'))
+    for role in ('seal','metadata'):
+        selected_program = session.core[role]
+        require(receipts[role+'_program'] == selected_program['program'])
+        program_raw = staged_values['carrier/'+role+'_program']
+        expected = session.seal['report'] if role == 'seal' else session.authenticated
+        require(json.loads(program_raw,object_pairs_hook=source.unique) == expected)
+        _join_retained_authority(value['authorities'][role],selected_program['producer'],
+            staged_values,'carrier-authority/'+role+'/')
+    producers = {'source':selection['material']['source']['producer'],'sdk':selected_sdk['producer'],
+        'plan':document['plan']['producer'],'query':document['query']['producer'],'compiler':result['producer']}
+    for role,producer in producers.items():
+        _join_retained_authority(selection['authority_receipts'][role],producer,staged_values,'authority/'+role+'/')
+    joins = {'compiler_selection':selected,'compiler':result,'compiler_outer':result['producer'],
+        'compiler_ledger':document['ledger'],'plan':document['plan'],'query':document['query'],
+        'compiler_ledger_snapshot':parsed['compiler_ledger']['goal_snapshot']}
+    for role,row in joins.items():
+        require(selection['files'][role]['path'] == legacy.selected_role_path(role,row)
+            and selection['files'][role]['sha256'] == row['sha256'])
+    rows = parsed['compiler']['artifacts']; expected = {row['path']:row for row in rows}
+    supplied = [selection['files']['codex'],selection['files']['config_schema'],
+        *selection['protocol_schema_files'].values(),*selection['native_acquisition_artifact_files'].values()]
+    require(len(supplied) == len(expected) and {row['path'] for row in supplied} == set(expected))
+    for row in supplied:
+        require(row['sha256'] == expected[row['path']]['sha256'] and row['bytes'] == expected[row['path']]['bytes'])
+    require(expected[selection['files']['codex']['path']]['role'] == 'native-cli'
+        and expected[selection['files']['config_schema']['path']]['role'] == 'config-schema')
+    for name,row in selection['protocol_schema_files'].items():
+        require(expected[row['path']]['role'] == name.split('/')[0]+'-schema')
+    for name,row in selection['native_acquisition_artifact_files'].items():
+        require(expected[row['path']]['role'] == ('test-xml' if name.endswith('.xml') else 'test-log'))
+    join(selection['files'],values); join(selection['protocol_schema_files'],protocol_values); join(extra,staged_values)
+    require(compiler.readback(document,result,deadline) == verified)
+    session.recheck()
+    return {'material_family':FAMILY,'compiler_qualified':True,'schema_qualified':True,
+        'acquisitionContract':'unsupported','runtime_qualified':False,
+        'provider_identity_proved':False,'live_handoff_proven':False}
 
 def validate_mappings(document,mapping,deadline):
     session = current(document,deadline)

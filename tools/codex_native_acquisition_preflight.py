@@ -15,6 +15,11 @@ def require(value):
     if value is not True:raise ValueError('native-acquisition-preflight-refused')
 
 def selected_material():
+    session = material.CARRIER_SESSION.get()
+    if session is not None:
+        import codex_native_carrier_material as carrier_material
+        carrier_material.current(session.document,session.caller_deadline)
+        return material.validate_selection(session.document)
     value=binding.config()
     sdk=value['sdk']
     require(type(sdk) is dict and set(sdk)=={'root','receipt_sha256','inventory_sha256','producer'})
@@ -24,14 +29,23 @@ def selected_material():
     return material.validate_selection(document)
 
 def compact(source_report,sdk_report):
+    if sdk_report.get('kind') == 'omux-native-carrier-sdk-projection-v2':
+        import codex_native_carrier_material as carrier_material
+        return carrier_material.stable_compact(source_report,sdk_report)
     return {'source_inventory_sha256':source_report['inventory_sha256'],
         'sdk_inventory_sha256':sdk_report['inventory_sha256'],
         'mapping_sha256':sdk_report['mapping_sha256'],'patch_sha256':source_report['patch_sha256']}
 
 def query_plan(work,document,exported):
     material.validate_selection(document)
+    carrier_session = None
+    if document.get('kind') == 'omux-native-carrier-native-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        carrier_session = carrier_material._SCOPE.get()
+        require(carrier_session is not None)
+        carrier_material.validate_mappings(document,exported,carrier_session.caller_deadline)
     require(isinstance(work,Path) and work.is_absolute()
-        and exported['registry_cache']==document['sdk']['root']+'/registry-cache'
+        and (carrier_session is not None or exported['registry_cache']==document['sdk']['root']+'/registry-cache')
         and metadata.metadata.HUB in exported['repositories'])
     argv=[metadata.BAZEL,'--batch','--output_user_root='+str(work/'user-root'),
         '--output_base='+str(work/'output-base'),'--host_jvm_args=-Xmx768m',
@@ -43,7 +57,7 @@ def query_plan(work,document,exported):
         '--repo_env=CARGO_NET_OFFLINE=true']
     for name,path in sorted(exported['repositories'].items()):
         require(type(name) is str and metadata.re.fullmatch(r'[A-Za-z0-9._+~-]{1,256}',name) is not None
-            and path==document['sdk']['root']+'/repositories/'+name)
+            and (carrier_session is not None or path==document['sdk']['root']+'/repositories/'+name))
         argv.append('--override_repository='+name+'='+path)
     argv+=['--output=label','set('+ ' '.join(compilation.TARGETS)+')']
     env={'PATH':metadata.LOCKED_PATH,'USE_BAZEL_VERSION':'9.0.1','CARGO_NET_OFFLINE':'true',
@@ -66,7 +80,11 @@ def controller_inputs(qualified,source_report,sdk_report):
 def produce(mode,document,work,output,deadline,repository):
     require(mode in ('plan','query') and type(deadline) is float and time.monotonic()<deadline
         and not work.exists() and not output.exists())
-    source.DEADLINE=metadata.DEADLINE=deadline
+    proof_deadline = deadline
+    if document.get('kind') == 'omux-native-carrier-native-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        proof_deadline = carrier_material.current(document,deadline).deadline
+    source.DEADLINE=metadata.DEADLINE=proof_deadline
     metadata.configure_selection()
     qualified=metadata.query_tools.verify_repository(repository,deadline)
     require(qualified['inputs_rechecked'] is True)
@@ -86,6 +104,12 @@ def produce(mode,document,work,output,deadline,repository):
         'material':compact(report,exported),'controller_inventory_sha256':controller,
         'caps':compilation.CAPS,'verb':'test','targets':list(compilation.TARGETS),
         'qualified':True,'exit':0,'closure_rechecked':True}
+    own = compilation._CARRIER_OUTPUT.get() if document.get('kind') == 'omux-native-carrier-native-selection-v2' else None
+    if document.get('kind') == 'omux-native-carrier-native-selection-v2':
+        require(own is not None);own.start(output)
+        own.write('receipt.json',source.encoded(value));own.finish()
+        require(own.read('receipt.json',source.sha(source.encoded(value)),source.MAX_METADATA) == source.encoded(value))
+        return value
     output.mkdir(mode=0o700)
     fd=source.directory(output)
     try:

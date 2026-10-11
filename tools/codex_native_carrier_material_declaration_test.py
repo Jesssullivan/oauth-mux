@@ -51,7 +51,9 @@ class Context:
                     'inventory_sha256':'b'*64,'producer':self.sdk['selected']['producer']}}}
     def program(self,model,role,digit):
         epoch = '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/' + digit*8+'-'+digit*4+'-'+digit*4+'-'+digit*4+'-'+digit*12
-        suffix = 'native-sdk-carrier-metadata/metadata-receipt.json' if role == 'metadata' else 'native-carrier-sdk-export/sdk-receipt.json'
+        suffix = {'metadata':'native-sdk-carrier-metadata/metadata-receipt.json',
+            'sdk':'native-carrier-sdk-export/sdk-receipt.json','plan':'native-acquisition-plan/receipt.json',
+            'query':'native-acquisition-query/receipt.json','compiler':'native-acquisition-compilation/receipt.json'}[role]
         report = epoch+'/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/'+model['_TARGETS'][role].split(':')[1]+'/test.outputs/'+suffix
         selected = {'producer':{'receipt':epoch+'/receipt.json','sha256':'e'*64,'source_commit':'f'*40,'graph_sha256':'a'*64},
             'program':{'path':report,'sha256':'b'*64,'bytes':1}}
@@ -79,6 +81,63 @@ class Context:
 class DeclarationModels(unittest.TestCase):
     def setUp(self): self.rule = model()
     def run_rule(self,ctx): self.rule['_implementation'](ctx)
+    def compiler_context(self,*,result=False):
+        ctx=Context(self.rule,'material')
+        selector_path='/model/compiler-selection.json'
+        ledger_path='/model/compiler-ledger.json'
+        snapshot={'path':'docs/agent-notes/2026-10-10-native-acquisition-input-lift.UNAPPLIED/ledger-snapshots/'+'a'*64+'.json',
+            'sha256':'a'*64,'bytes':123}
+        ctx.files[ledger_path]=json.dumps({'kind':'omux-native-acquisition-root-dispatch-ledger-v1',
+            'actor':'Root','aggregate':8,'dispatched':8,'remaining':0,'goal_snapshot':snapshot})
+        document={'schema_version':1,'kind':'omux-native-acquisition-compilation-v1-selection',
+            'material':ctx.selector['selection'],'ledger':{'path':ledger_path,'sha256':'b'*64},
+            'controller_inventory_sha256':'c'*64}
+        for role,digit in [('plan','5'),('query','6')]:
+            program=ctx.program(self.rule,role,digit)
+            row=program['selected'];raw=json.dumps({'model_only':True})
+            ctx.files[row['program']['path']]=raw
+            document[role]={'path':row['program']['path'],'sha256':row['program']['sha256'],'producer':row['producer']}
+        selected_raw=json.dumps(document);ctx.files[selector_path]=selected_raw
+        ctx.selector['compile']={'selection':{'path':selector_path,'sha256':'d'*64,'bytes':len(selected_raw)},'result':None}
+        if result:
+            program=ctx.program(self.rule,'compiler','7');row=program['selected']
+            root=row['program']['path'].removesuffix('/receipt.json')+'/artifacts/'
+            artifacts=[{'path':root+'native-cli','sha256':'e'*64,'bytes':100,'role':'native-cli'}]
+            artifacts += [{'path':root+'tests/t'+str(index)+'.log','sha256':'f'*64,'bytes':12,'role':'test-log'} for index in range(6)]
+            report_raw=json.dumps({'kind':'omux-native-acquisition-compilation-v1','artifacts':artifacts})
+            ctx.files[row['program']['path']]=report_raw
+            ctx.selector['compile']['result']={**row['program'],'bytes':len(report_raw),'producer':row['producer']}
+        return ctx
+
+    def test_compiler_stage_declares_ledger_snapshot_and_genuine_plan_query_proofs(self):
+        ctx=self.compiler_context();self.run_rule(ctx)
+        files=json.loads(ctx.outputs['inputs.json'])['files']
+        self.assertIn('compiler/selection.json',files)
+        self.assertIn('compiler/goal-snapshot.json',files)
+        for role in ('plan','query'):
+            self.assertEqual(len([key for key in files if key.startswith(role+'/')]),5)
+        self.assertFalse(any('registry-cache' in row['path'] for row in files.values()))
+
+    def test_compiler_result_artifact_roles_and_boundaries_are_declared(self):
+        ctx=self.compiler_context(result=True);self.run_rule(ctx)
+        files=json.loads(ctx.outputs['inputs.json'])['files']
+        self.assertIn('compiler/artifacts/native-cli',files)
+        row=ctx.selector['compile']['result'];report=json.loads(ctx.files[row['path']])
+        report['artifacts'][0]['path']='/unselected/native-cli'
+        ctx.files[row['path']]=json.dumps(report);row['bytes']=len(ctx.files[row['path']])
+        with self.assertRaises(ValueError):self.run_rule(ctx)
+
+    def test_compiler_selector_material_or_ledger_spend_substitution_refuses(self):
+        for defect in ('material','ledger'):
+            ctx=self.compiler_context()
+            if defect=='material':
+                path=ctx.selector['compile']['selection']['path'];document=json.loads(ctx.files[path])
+                document['material']={'kind':'wrong'};ctx.files[path]=json.dumps(document)
+                ctx.selector['compile']['selection']['bytes']=len(ctx.files[path])
+            else:
+                document=json.loads(ctx.files['/model/compiler-ledger.json']);document['remaining']=1
+                ctx.files['/model/compiler-ledger.json']=json.dumps(document)
+            with self.assertRaises(ValueError):self.run_rule(ctx)
     def test_metadata_stage_declares_actual_five_proofs_and_hub_only(self):
         ctx = Context(self.rule); self.run_rule(ctx)
         document = json.loads(ctx.outputs['inputs.json'])

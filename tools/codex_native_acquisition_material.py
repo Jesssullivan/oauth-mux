@@ -6,6 +6,7 @@ import stat
 import time
 import hashlib
 import json
+from contextvars import ContextVar
 from decimal import Decimal
 import codex_native_acquisition_metadata as producer
 import codex_native_acquisition_sdk_export as export
@@ -13,6 +14,7 @@ import codex_native_source_acquisition_source as acquisition
 import codex_retained_sdk_export as sdk
 
 PACKAGE_KIND = "omux-native-source-acquisition-native-package-selection-v1"
+CARRIER_SESSION = ContextVar('omux-native-carrier-material-session',default=None)
 INPUT_KIND = "omux-native-source-acquisition-native-selection-v1"
 SDK_EXTRA = frozenset(("binding_receipt_sha256", "sdk_export_qualified",
                        "schema_producer_qualified", "live_handoff_proven"))
@@ -39,11 +41,18 @@ def _member(row):
         and type(row['bytes']) is int and 0<row['bytes']<=1024*1024*1024)
 
 def validate_paths(selection):
-    require(type(selection) is dict and set(selection)=={'schema_version','kind','purpose',
-        'material','compilation','files','protocol_schema_files','native_acquisition_artifact_files',
-        'authority_receipts'}
-        and type(selection['schema_version']) is int and selection['schema_version']==1
-        and selection['kind']==PACKAGE_KIND and selection['purpose']=='evaluation-only')
+    if type(selection) is dict and selection.get('kind') == 'omux-native-carrier-native-package-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        return carrier_material.validate_package_paths(selection)
+    return _validate_paths_common(selection,schema=1,kind=PACKAGE_KIND)
+
+def _validate_paths_common(selection,*,schema,kind):
+    keys = {'schema_version','kind','purpose','material','compilation','files',
+        'protocol_schema_files','native_acquisition_artifact_files','authority_receipts'}
+    if schema == 2: keys.add('carrier_materials')
+    require(type(selection) is dict and set(selection)==keys
+        and type(selection['schema_version']) is int and selection['schema_version']==schema
+        and selection['kind']==kind and selection['purpose']=='evaluation-only')
     validate_selection(selection['material'])
     require(type(selection['compilation']) is dict
         and set(selection['compilation'])=={'selection','result'})
@@ -90,10 +99,17 @@ def load_inputs(selection,read,selected_alias=None):
         evidence['authority/'+action+'/evidence']=read('authority/'+action+'/evidence',group['evidence'],group['evidence']['bytes'])
         for name,row in group['members'].items():
             evidence['authority/'+action+'/'+name]=read('authority/'+action+'/'+name,row,row['bytes'])
+    if selection.get('kind') == 'omux-native-carrier-native-package-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        for role,row in carrier_material.package_extra_rows(selection).items():
+            evidence[role]=read(role,row,row['bytes'])
     return values,schemas,evidence
 
 def validate_chain(selection,values,protocol_values,staged_values,*,deadline):
     """Full readback qualifies evaluation bytes; it cannot qualify acquisition."""
+    if type(selection) is dict and selection.get('kind') == 'omux-native-carrier-native-package-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        return carrier_material.validate_package_chain(selection,values,protocol_values,staged_values,deadline=deadline)
     import codex_native_acquisition_compilation as compiler
     validate_paths(selection); tick(deadline)
     require(type(values) is dict and set(values)==ROLES
@@ -192,6 +208,12 @@ def selected_role_path(role,row):
 def declared_controller(deadline):
     """Resolve genuine declared query tools for producers with their own argv."""
     tick(deadline)
+    session=CARRIER_SESSION.get()
+    if session is not None:
+        require(not session.closed and session.caller_deadline == deadline
+            and producer.QUERY_REPOSITORY is not None)
+        session.recheck()
+        return
     runfiles=os.environ.get('TEST_SRCDIR',os.environ.get('RUNFILES_DIR'))
     require(type(runfiles) is str and Path(runfiles).is_absolute())
     root=Path(runfiles).resolve(strict=True)
@@ -269,6 +291,10 @@ def producer_policy(receipt, target):
         policies = {SDK_TARGET:admission.SDK, METADATA_TARGET:admission.METADATA,
             '//tools:codex_native_carrier_metadata_producer':admission.SDK_CARRIER_METADATA,
             '//tools:codex_native_carrier_sdk_export_producer':admission.CARRIER_SDK,
+            '//tools:codex_native_carrier_plan_producer':admission.CARRIER_PLAN,
+            '//tools:codex_native_carrier_query_producer':admission.CARRIER_QUERY,
+            '//tools:codex_native_carrier_compilation_producer':admission.CARRIER_COMPILE,
+            '//tools:codex_native_carrier_runtime_package':admission.CARRIER_PACKAGE,
             '//tools:codex_native_acquisition_binding_producer':admission.BINDING,
             '//tools:codex_native_acquisition_plan_producer':admission.PLAN,
             '//tools:codex_native_acquisition_query_producer':admission.QUERY,

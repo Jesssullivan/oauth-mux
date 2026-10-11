@@ -5,6 +5,11 @@ import guard_native_seed_plan_reserved as kernel
 SDK_CARRIER_SEAL = "native-sdk-carrier-seal-reserved"
 SDK_CARRIER_METADATA = "native-sdk-carrier-metadata-reserved"
 CARRIER_SDK = "native-sdk-carrier-sdk-export-reserved"
+CARRIER_PLAN = "native-sdk-carrier-plan-reserved"
+CARRIER_QUERY = "native-sdk-carrier-query-reserved"
+CARRIER_COMPILE = "native-sdk-carrier-compilation-reserved"
+CARRIER_PACKAGE = "native-sdk-carrier-package-reserved"
+CARRIER_MODELS = "native-sdk-carrier-route-models-reserved"
 MODEL = "native-acquisition-inputs-models-reserved"
 BINDING = "native-acquisition-binding-reserved"
 METADATA = "native-acquisition-metadata-reserved"
@@ -23,6 +28,15 @@ COHORTS = {
     SDK_CARRIER_SEAL: ("//tools:codex_native_sdk_carrier_seal_producer",),
     SDK_CARRIER_METADATA: ("//tools:codex_native_carrier_metadata_producer",),
     CARRIER_SDK: ("//tools:codex_native_carrier_sdk_export_producer",),
+    CARRIER_PLAN: ("//tools:codex_native_carrier_plan_producer",),
+    CARRIER_QUERY: ("//tools:codex_native_carrier_query_producer",),
+    CARRIER_COMPILE: ("//tools:codex_native_carrier_compilation_producer",),
+    CARRIER_PACKAGE: ("//tools:codex_native_carrier_runtime_package",),
+    CARRIER_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
+        "//tools:codex_native_carrier_material_test",
+        "//tools:codex_native_carrier_material_declaration_test",
+        "//tools:codex_native_carrier_downstream_test",
+        "//tools:codex_native_acquisition_metadata_source_closure_test", "//:docs_check"),
     ORDINARY: ("//delivery:installed_direct_native_tui_test",),
     ORDINARY_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
         "//delivery:direct_native_tui_contract_test", "//delivery:fresh_native_tui_contract_test", "//:docs_check"),
@@ -96,7 +110,7 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
     result = builder(bazel, run, arguments, profile="standard", **kwargs)
     index = result.index("test") + 1
     result[index:index] = ["--repository_disable_download", "--repo_contents_cache="]
-    if profile == PACKAGE:
+    if profile in (PACKAGE,CARRIER_PACKAGE):
         result[index:index] = ["--test_env=OMUX_NATIVE_PACKAGE_MODE=" + PACKAGE,
             "--test_env=OMUX_NATIVE_PACKAGE_ENTRY_NS=" + str(entry),
             "--test_env=OMUX_NATIVE_PACKAGE_DEADLINE_NS=" + str(deadline)]
@@ -137,7 +151,7 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
             for key, value in sorted(bindings.items())] + [
             "--test_env=" + key + "=" + value
             for key, value in sorted(bindings.items())]
-    if profile == CARRIER_SDK:
+    if profile in (CARRIER_SDK,CARRIER_PLAN,CARRIER_QUERY,CARRIER_COMPILE):
         from execution_guard import graph_digest
         from pathlib import Path
         kernel.envelope(entry, deadline)

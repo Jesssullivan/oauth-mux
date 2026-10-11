@@ -212,6 +212,10 @@ def command_from_verified_inputs(args, run, locked_path, bash, candidate,
     # validate_export has already qualified every explicitly selected public
     # registry metadata byte against the retained MODULE lock's exact hashes.
     registry_cache = exported['registry_cache']
+    carrier_selection = getattr(args,'native_carrier_selection',None)
+    if carrier_selection is not None:
+        import codex_native_carrier_material as carrier_material
+        carrier_material.validate_mappings(carrier_selection,exported,args.native_carrier_deadline)
     require(Path(registry_cache) == args.native_export_root / 'registry-cache',
             'registry cache must remain in the sealed qualified export')
     source = candidate.source if candidate is not None else copy_source(args.native_source_root, receipt, run)
@@ -242,7 +246,8 @@ def command_from_verified_inputs(args, run, locked_path, bash, candidate,
         '--noenable_runfiles', '--nobuild_runfile_links']
     argv += core_codegen_arguments()
     for name, directory in sorted(exported['repositories'].items()):
-        require(re.fullmatch(r'[A-Za-z0-9._+~-]{1,256}', name) and Path(directory) == args.native_export_root / 'repositories' / name, 'repository mapping refused')
+        require(re.fullmatch(r'[A-Za-z0-9._+~-]{1,256}', name) and (carrier_selection is not None
+            or Path(directory) == args.native_export_root / 'repositories' / name), 'repository mapping refused')
         argv.append('--override_repository=' + name + '=' + str(directory))
     require(isinstance(exported['module_overrides'], dict), 'qualified module overrides required')
     for name, directory in sorted(exported['module_overrides'].items()):

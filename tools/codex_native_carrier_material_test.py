@@ -441,7 +441,7 @@ class CarrierMaterialModels(unittest.TestCase):
 
     def test_final_source_fence_refuses_mutation_during_long_carrier_pass(self):
         session = material.Session.__new__(material.Session)
-        session.closed = False; session.deadline = self.deadline; session.clock = carrier.Clock(self.deadline)
+        session.closed = False; session.deadline = self.deadline; session.caller_deadline = self.deadline; session.clock = carrier.Clock(self.deadline)
         session.authenticated = {}; session.authenticate = lambda:{}
         session.core = {'original_selection':self.original}
         session.source_report = {}; session.parent = {'baseline_graph_files':{}}; session.exported = {}

@@ -9,6 +9,44 @@ import guard_native_acquisition_inputs_reserved as source
 
 
 class AdmissionModels(unittest.TestCase):
+    def test_carrier_route_models_are_declared_finite_without_selected_input_envelope(self):
+        expected=('//tools:guard_native_acquisition_inputs_reserved_test',
+            '//tools:codex_native_carrier_material_test',
+            '//tools:codex_native_carrier_material_declaration_test',
+            '//tools:codex_native_carrier_downstream_test',
+            '//tools:codex_native_acquisition_metadata_source_closure_test','//:docs_check')
+        self.assertEqual(source.COHORTS[source.CARRIER_MODELS],expected)
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9):
+            result=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),
+                ['test',*expected],source.CARRIER_MODELS,100*10**9,1300*10**9,
+                source_commit='a'*40,source_dirty='false')
+            self.assertEqual(tuple(result[-len(expected):]),expected)
+            self.assertFalse(any(value.startswith('--test_env=OMUX_NATIVE_') for value in result))
+            with self.assertRaises(ValueError):
+                source.command(Mock(),'bazel',Path('/model/epoch'),
+                    ['test',*expected,'//tools:codex_native_carrier_runtime_package'],
+                    source.CARRIER_MODELS,100*10**9,1300*10**9)
+
+    def test_carrier_package_has_distinct_outer_and_unchanged_inner_original_clock(self):
+        entry=100*10**9;until=entry+1200*10**9
+        self.assertEqual(source.COHORTS[source.CARRIER_PACKAGE],
+            ('//tools:codex_native_carrier_runtime_package',))
+        with patch.object(kernel.time,'monotonic_ns',return_value=200*10**9):
+            result=source.command(guard.bazel_command,'bazel',Path('/model/epoch'),
+                ['test',*source.COHORTS[source.CARRIER_PACKAGE]],source.CARRIER_PACKAGE,
+                entry,until,source_commit='a'*40,source_dirty='false')
+            flags=[value for value in result if value.startswith('--test_env=OMUX_NATIVE_PACKAGE_')]
+            self.assertEqual(flags,['--test_env=OMUX_NATIVE_PACKAGE_MODE='+source.PACKAGE,
+                '--test_env=OMUX_NATIVE_PACKAGE_ENTRY_NS='+str(entry),
+                '--test_env=OMUX_NATIVE_PACKAGE_DEADLINE_NS='+str(until)])
+            with self.assertRaises(ValueError):
+                source.command(Mock(),'bazel',Path('/model/epoch'),
+                    ['test',*source.COHORTS[source.PACKAGE]],source.CARRIER_PACKAGE,entry,until)
+        projection=source.projection(source.CARRIER_PACKAGE,entry,until,True,{})
+        self.assertEqual(projection['scope'],'fixed-native-sdk-carrier-package-reserved-v1')
+        self.assertIs(projection['compiler_qualified'],False)
+        self.assertIs(projection['native_runtime_qualified'],False)
+
     def test_ordinary_is_one_real_tui_test_and_retains_original_clock(self):
         self.assertEqual(source.COHORTS[source.ORDINARY],('//delivery:installed_direct_native_tui_test',))
         entry=100*10**9;deadline=1300*10**9
@@ -137,7 +175,7 @@ class AdmissionModels(unittest.TestCase):
                     '--test_env=OMUX_NATIVE_PACKAGE_MODE='+source.PACKAGE,
                     '--test_env=OMUX_NATIVE_PACKAGE_ENTRY_NS='+str(entry),
                     '--test_env=OMUX_NATIVE_PACKAGE_DEADLINE_NS='+str(deadline)]
-                    if profile==source.PACKAGE else []))
+                    if profile in (source.PACKAGE,source.CARRIER_PACKAGE) else []))
             builder=Mock()
             for original_end,arguments in ((deadline-1,['test',*source.COHORTS[source.PACKAGE]]),
                     (deadline,['run',*source.COHORTS[source.PACKAGE]]),

@@ -4,8 +4,8 @@ Raw transport remains in the separately selected carrier repository. This rule
 only declares genuine metadata/SDK reports, generated HUB/graph and five proof
 roles each. Runtime readers independently authenticate all declared bytes.
 """
-_TARGETS = {"metadata": "//tools:codex_native_carrier_metadata_producer", "sdk": "//tools:codex_native_carrier_sdk_export_producer"}
-_PROFILES = {"metadata": "native-sdk-carrier-metadata-reserved", "sdk": "native-sdk-carrier-sdk-export-reserved"}
+_TARGETS = {"metadata": "//tools:codex_native_carrier_metadata_producer", "sdk": "//tools:codex_native_carrier_sdk_export_producer", "plan": "//tools:codex_native_carrier_plan_producer", "query": "//tools:codex_native_carrier_query_producer", "compiler": "//tools:codex_native_carrier_compilation_producer"}
+_PROFILES = {"metadata": "native-sdk-carrier-metadata-reserved", "sdk": "native-sdk-carrier-sdk-export-reserved", "plan": "native-sdk-carrier-plan-reserved", "query": "native-sdk-carrier-query-reserved", "compiler": "native-sdk-carrier-compilation-reserved"}
 _ROOTS = ["/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/", "/home/jess/.local/state/omux-execution-20261005/"]
 
 
@@ -41,9 +41,9 @@ def _read(ctx, value, maximum):
     return document, raw
 
 
-def _add(ctx, files, role, path, digest, size):
+def _add(ctx, files, role, path, digest, size, maximum = 67108864):
     _name(role)
-    _need(role not in files and _hex(digest, 64) and type(size) == "int" and 0 <= size and size <= 67108864, "closed-leaf-row")
+    _need(role not in files and len(files) < 4096 and _hex(digest, 64) and type(size) == "int" and 0 <= size and size <= maximum, "closed-leaf-row")
     physical = _physical(ctx, path)
     alias = "inputs/" + role
     ctx.watch(physical)
@@ -66,7 +66,8 @@ def _producer(ctx, files, role, selected):
     target = _TARGETS[role]
     _need(outer.get("profile") == _PROFILES[role] and outer.get("targets") == [target] and outer.get("verb") == "test" and type(outer.get("exit")) == "int" and outer["exit"] == 0 and type(outer.get("workload_exit")) == "int" and outer["workload_exit"] == 0 and outer.get("source_dirty") == "false" and outer.get("controller_failure") == None and outer.get("descendants_empty") == True and outer.get("cleanup", {}).get("state") == "empty" and outer.get("source_commit") == producer["source_commit"] and outer.get("graph_sha256") == producer["graph_sha256"] and outer.get("output_base") == epoch + "/output-base", "actual-successful-producer")
     prefix = epoch + "/output-base/execroot/_main/bazel-out/"
-    suffix = "/testlogs/tools/" + target.split(":")[1] + "/test.outputs/" + ("native-sdk-carrier-metadata/metadata-receipt.json" if role == "metadata" else "native-carrier-sdk-export/sdk-receipt.json")
+    output_name = {"metadata": "native-sdk-carrier-metadata/metadata-receipt.json", "sdk": "native-carrier-sdk-export/sdk-receipt.json", "plan": "native-acquisition-plan/receipt.json", "query": "native-acquisition-query/receipt.json", "compiler": "native-acquisition-compilation/receipt.json"}[role]
+    suffix = "/testlogs/tools/" + target.split(":")[1] + "/test.outputs/" + output_name
     _need(program["path"].startswith(prefix) and program["path"].endswith(suffix), "actual-program-namespace")
     configuration = program["path"][len(prefix):-len(suffix)]
     _need(len(configuration) > 0 and len(configuration) <= 128 and all([c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-" for c in configuration.elems()]), "output-configuration")
@@ -84,6 +85,50 @@ def _producer(ctx, files, role, selected):
     _need(len(report_raw) == program["bytes"], "program-byte-count")
     _add(ctx, files, role + "/program-report.json", program["path"], program["sha256"], program["bytes"])
     return report
+
+
+def _compiler(ctx, files, configured, material):
+    _need(type(configured) == "dict" and sorted(configured.keys()) == ["result", "selection"], "compiler-config")
+    selected = configured["selection"]
+    _need(type(selected) == "dict" and sorted(selected.keys()) == ["bytes", "path", "sha256"] and _hex(selected["sha256"], 64) and type(selected["bytes"]) == "int" and 0 < selected["bytes"] and selected["bytes"] <= 1048576, "compiler-selector-pin")
+    document, raw = _read(ctx, selected["path"], 1048576)
+    _need(len(raw) == selected["bytes"] and sorted(document.keys()) == ["controller_inventory_sha256", "kind", "ledger", "material", "plan", "query", "schema_version"] and document["schema_version"] == 1 and document["kind"] == "omux-native-acquisition-compilation-v1-selection" and document["material"] == material and _hex(document["controller_inventory_sha256"], 64), "typed-carrier-compiler-selector")
+    _add(ctx, files, "compiler/selection.json", selected["path"], selected["sha256"], selected["bytes"])
+    ledger = document["ledger"]
+    _need(type(ledger) == "dict" and sorted(ledger.keys()) == ["path", "sha256"] and _hex(ledger["sha256"], 64), "compiler-ledger-pin")
+    ledger_document, ledger_raw = _read(ctx, ledger["path"], 1048576)
+    _need(ledger_document.get("kind") == "omux-native-acquisition-root-dispatch-ledger-v1" and ledger_document.get("actor") == "Root" and [ledger_document.get(key) for key in ["aggregate", "dispatched", "remaining"]] == [8, 8, 0], "actual-exhausted-ledger-no-spend")
+    _add(ctx, files, "compiler/ledger.json", ledger["path"], ledger["sha256"], len(ledger_raw))
+    snapshot = ledger_document.get("goal_snapshot")
+    _need(type(snapshot) == "dict" and sorted(snapshot.keys()) == ["bytes", "path", "sha256"] and _hex(snapshot["sha256"], 64) and snapshot["path"] == "docs/agent-notes/2026-10-10-native-acquisition-input-lift.UNAPPLIED/ledger-snapshots/" + snapshot["sha256"] + ".json" and type(snapshot["bytes"]) == "int" and 0 < snapshot["bytes"] and snapshot["bytes"] <= 8388608, "canonical-root-goal-snapshot")
+    _add(ctx, files, "compiler/goal-snapshot.json", "/srv/fast-local/jess/git/oauth-mux/" + snapshot["path"], snapshot["sha256"], snapshot["bytes"])
+    for role in ["plan", "query"]:
+        row = document[role]
+        _need(type(row) == "dict" and sorted(row.keys()) == ["path", "producer", "sha256"] and _hex(row["sha256"], 64), "compiler-prerequisite")
+        _, prerequisite_raw = _read(ctx, row["path"], 16777216)
+        _producer(ctx, files, role, {"producer": row["producer"], "program": {"path": row["path"], "sha256": row["sha256"], "bytes": len(prerequisite_raw)}})
+    result = configured["result"]
+    if result != None:
+        _need(type(result) == "dict" and sorted(result.keys()) == ["bytes", "path", "producer", "sha256"], "compiler-result")
+        report = _producer(ctx, files, "compiler", {"producer": result["producer"], "program": {key: result[key] for key in ["path", "sha256", "bytes"]}})
+        artifacts = report.get("artifacts")
+        _need(report.get("kind") == "omux-native-acquisition-compilation-v1" and type(artifacts) == "list" and 7 <= len(artifacts) and len(artifacts) <= 4096, "compiler-artifacts")
+        root = result["path"][:-len("/receipt.json")] + "/artifacts/"
+        total = 0
+        cli = 0
+        for row in artifacts:
+            _need(type(row) == "dict" and sorted(row.keys()) == ["bytes", "path", "role", "sha256"] and type(row["path"]) == "string" and row["path"].startswith(root) and row["role"] in ["native-cli", "config-schema", "stable-schema", "experimental-schema", "test-log", "test-xml"], "compiler-artifact-role")
+            name = _name(row["path"][len(root):])
+            role = "compiler/artifacts/" + name
+            maximum = 67108864
+            if row["role"] == "native-cli":
+                _need(name == "native-cli", "native-cli-namespace")
+                cli += 1
+                maximum = 1073741824
+            _add(ctx, files, role, row["path"], row["sha256"], row["bytes"], maximum)
+            total += row["bytes"]
+            _need(total <= 1610612736, "compiler-artifact-aggregate")
+        _need(cli == 1, "exact-one-native-cli")
 
 
 def _implementation(ctx):
@@ -123,6 +168,8 @@ def _implementation(ctx):
                 _name(name)
                 _need(type(row) == "dict" and sorted(row.keys()) == ["bytes", "mode", "sha256"] and row["mode"] in ["100644", "100755"], "projection-member")
                 _add(ctx, files, "sdk/" + role + "/" + name, sdk["root"] + "/" + role + "/" + name, row["sha256"], row["bytes"])
+        if document["compile"] != None:
+            _compiler(ctx, files, document["compile"], selected)
     _need(len(files) <= 4096, "declared-input-count")
     for row in files.values():
         _physical(ctx, row["path"])

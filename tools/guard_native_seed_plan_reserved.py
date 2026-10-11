@@ -738,3 +738,4 @@ WORKLOAD_PROFILES += ("native-sdk-carrier-seal-reserved", "native-sdk-carrier-me
 
 # Distinct SDK projection action, same original native reservation/caps.
 WORKLOAD_PROFILES += ("native-sdk-carrier-sdk-export-reserved",)
+WORKLOAD_PROFILES += ("native-sdk-carrier-plan-reserved", "native-sdk-carrier-query-reserved", "native-sdk-carrier-compilation-reserved", "native-sdk-carrier-package-reserved", "native-sdk-carrier-route-models-reserved")
