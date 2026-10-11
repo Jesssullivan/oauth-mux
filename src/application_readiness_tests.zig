@@ -285,7 +285,7 @@ test "selected readiness requires exact singleton account and revision without i
     try std.testing.expectError(error.InvalidApplicationContext, readiness.project(&fixture.state, chosen));
     chosen = selectedInput(&fixture, "private-account-fixture", &.{});
     try std.testing.expectError(error.InvalidApplicationContext, readiness.project(&fixture.state, chosen));
-    chosen = selectedInput(&fixture, "private-account-fixture", &.{"private-account-fixture", "second-account"});
+    chosen = selectedInput(&fixture, "private-account-fixture", &.{ "private-account-fixture", "second-account" });
     try std.testing.expectError(error.InvalidApplicationContext, readiness.project(&fixture.state, chosen));
     chosen = selectedInput(&fixture, "unknown-account", &.{"unknown-account"});
     chosen.context_ref = null;
