@@ -40,8 +40,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) return help(io, allocator);
     if (std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "version")) return output(io, product.version ++ "\n");
     if (std.mem.eql(u8, command, "reference")) {
-        if (parameters.len != 0) return error.InvalidArguments;
-        const bundle = try reference.render(allocator);
+        const bundle = try reference.renderArguments(allocator, parameters);
         try output(io, bundle);
         return output(io, "\n");
     }

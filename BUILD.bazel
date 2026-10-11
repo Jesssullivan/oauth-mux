@@ -2,7 +2,8 @@ load("@omux_nix//:tool_paths.bzl", "NIX_BASH", "NIX_COREUTILS_BIN", "NIX_ZIG_LIN
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
-load("//tools:rules.bzl", "python_test", "source_archive", "stdout_capture")
+load("//tools:rules.bzl", "python_test", "source_archive")
+load("//tools:reference_bundle.bzl", "reference_bundle")
 load("//tools:runtime_zig.bzl", "zig_binary", "zig_test")
 load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
 
@@ -596,10 +597,9 @@ zig_test(
     main = "src/integrations/claude.zig",
 )
 
-stdout_capture(
+reference_bundle(
     name = "reference_bundle",
     executable = ":omux",
-    args = ["reference"],
     out = "reference-bundle.json",
 )
 

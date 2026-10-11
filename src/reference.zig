@@ -33,7 +33,7 @@ pub const cli = [_]Cli{
     .{ .name = "rpc", .summary = "Invoke an implemented control method using a JSON request on stdin.", .usage = "omux rpc <method> -" },
     .{ .name = "native-host", .summary = "Run the browser native-messaging conduit.", .usage = "omux native-host" },
     .{ .name = "git-credential", .summary = "Handle a native Git credential-helper operation.", .usage = "omux git-credential <get|store|erase>" },
-    .{ .name = "reference", .summary = "Emit this versioned source-derived documentation bundle.", .usage = "omux reference" },
+    .{ .name = "reference", .summary = "Emit this versioned source-derived documentation bundle.", .usage = "omux reference [--source-commit <full-commit> --source-dirty <true|false>]" },
     .{ .name = "--version", .summary = "Inspect the experimental successor version.", .usage = "omux --version" },
 };
 
@@ -86,7 +86,34 @@ const states = [_]State{
     .{ .id = "quarantined", .summary = "Ambiguous identity or renewal evidence requires reconciliation before use." },
 };
 
+const Provenance = struct {
+    sourceRevision: ?[]const u8 = null,
+    sourceDirty: bool = true,
+};
+
+fn argumentProvenance(arguments: []const []const u8) !Provenance {
+    // Explicit producer assertions, not Git discovery or support qualification.
+    if (arguments.len == 0) return .{};
+    if (arguments.len != 4 or !std.mem.eql(u8, arguments[0], "--source-commit") or
+        !std.mem.eql(u8, arguments[2], "--source-dirty")) return error.InvalidArguments;
+    const commit = arguments[1];
+    if (commit.len != 40) return error.InvalidArguments;
+    for (commit) |byte| {
+        if (!((byte >= '0' and byte <= '9') or (byte >= 'a' and byte <= 'f'))) return error.InvalidArguments;
+    }
+    const dirty = if (std.mem.eql(u8, arguments[3], "true")) true else if (std.mem.eql(u8, arguments[3], "false")) false else return error.InvalidArguments;
+    return .{ .sourceRevision = commit, .sourceDirty = dirty };
+}
+
+pub fn renderArguments(allocator: std.mem.Allocator, arguments: []const []const u8) ![]u8 {
+    return renderWithProvenance(allocator, try argumentProvenance(arguments));
+}
+
 pub fn render(allocator: std.mem.Allocator) ![]u8 {
+    return renderWithProvenance(allocator, .{});
+}
+
+fn renderWithProvenance(allocator: std.mem.Allocator, provenance: Provenance) ![]u8 {
     var integrations: [catalog.adapters.len]Integration = undefined;
     var allocated: usize = 0;
     defer {
@@ -110,7 +137,7 @@ pub fn render(allocator: std.mem.Allocator) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, .{
         .schemaVersion = product.documentation_schema_version,
         .product = .{ .version = product.version, .status = product.status },
-        .provenance = .{ .sourceRevision = @as(?[]const u8, null), .sourceDirty = true },
+        .provenance = provenance,
         .stableRelease = .{
             .version = product.stable_version,
             .releaseUrl = product.repository ++ "/releases/tag/v" ++ product.stable_version,
@@ -155,4 +182,53 @@ test "CLI help and generated commands share the same catalog" {
     defer std.testing.allocator.free(bytes);
     for (cli) |command| try std.testing.expect(std.mem.indexOf(u8, bytes, command.usage["omux ".len..]) != null);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "enroll [--wait] <opaque-source-id>") != null);
+}
+
+test "reference producer arguments preserve explicit clean and dirty assertions" {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    for ([_][]const u8{ "true", "false" }) |dirty| {
+        const bytes = try renderArguments(std.testing.allocator, &.{ "--source-commit", commit, "--source-dirty", dirty });
+        defer std.testing.allocator.free(bytes);
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{});
+        defer parsed.deinit();
+        const root = parsed.value.object;
+        const provenance = root.get("provenance").?.object;
+        try std.testing.expectEqualStrings(commit, provenance.get("sourceRevision").?.string);
+        try std.testing.expectEqual(std.mem.eql(u8, dirty, "true"), provenance.get("sourceDirty").?.bool);
+        try std.testing.expectEqualStrings("experimental", root.get("product").?.object.get("status").?.string);
+        try std.testing.expectEqualStrings("0.1.15", root.get("stableRelease").?.object.get("version").?.string);
+        for (root.get("integrations").?.array.items) |item| {
+            try std.testing.expect(!std.mem.eql(u8, "live-proven", item.object.get("status").?.string));
+        }
+    }
+}
+
+test "bare reference arguments preserve unknown provenance exactly" {
+    const bare = try renderArguments(std.testing.allocator, &.{});
+    defer std.testing.allocator.free(bare);
+    const unbound = try render(std.testing.allocator);
+    defer std.testing.allocator.free(unbound);
+    try std.testing.expectEqualSlices(u8, unbound, bare);
+}
+
+test "reference producer rejects partial malformed reordered and extra arguments" {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const invalid = [_][]const []const u8{
+        &.{"--source-commit"},
+        &.{ "--source-commit", commit },
+        &.{ "--source-dirty", "false" },
+        &.{ "--source-commit", "", "--source-dirty", "false" },
+        &.{ "--source-commit", "0123456789abcdef0123456789abcdef0123456", "--source-dirty", "false" },
+        &.{ "--source-commit", "0123456789abcdef0123456789abcdef012345678", "--source-dirty", "false" },
+        &.{ "--source-commit", "0123456789ABCDEF0123456789ABCDEF01234567", "--source-dirty", "false" },
+        &.{ "--source-commit", "0123456789abcdef0123456789abcdef0123456g", "--source-dirty", "false" },
+        &.{ "--source-commit", "0123456789abcdef0123456789abcdef0123456\n", "--source-dirty", "false" },
+        &.{ "--source-commit", commit, "--source-dirty", "" },
+        &.{ "--source-commit", commit, "--source-dirty", "False" },
+        &.{ "--source-commit", commit, "--source-dirty", "0" },
+        &.{ "--source-dirty", "false", "--source-commit", commit },
+        &.{ "--source-commit", commit, "--unknown", "false" },
+        &.{ "--source-commit", commit, "--source-dirty", "false", "extra" },
+    };
+    for (invalid) |arguments| try std.testing.expectError(error.InvalidArguments, renderArguments(std.testing.allocator, arguments));
 }
