@@ -201,3 +201,62 @@ New artifact hashes below bind retained root files under `/home/jess/.local/stat
 | `2026-10-11-browser-reconcile-current-authority-adoption-result.json` | `68da8ff3ae5148280e34f684f64fd877f270945b56d7ce09c7af1f9838590d19` |
 | `2026-10-11-linux-desktop-delivery-v3-adoption-result.json` | `4e23e9b53cffbaa35b903fd2fad0ed36e366bbe57ca5e455ab5b483aa0ae069d` |
 | `2026-10-11-darwin-setup-readiness-parity-adoption-result.json` | `8eca5a5b0a89db6341cde41d903abfb4f6d16a63a2309516b688ea831f0b8686` |
+
+
+## Current product estate and next implementation order — 2026-10-11
+
+Authority: user-requested wide examination and integrated implementation, AGENTS.md and R-N13. Root reattached all24 existing workstreams for separate source/evidence follow-ons; the original review index and historical checkpoint bytes remain retained. This checkpoint supersedes implementation-pending wording above only for the exact changes and gates named here.
+
+Current runtime source is clean, pushed experimental `3e725df9c63fe4a553bb3987f34e271dc558048b`, tree `91a7884879f8fa86f16fb107693a3d03d9ece6d8`, graph `4424cad6e9bb6107ac21357ab6be06f3a7647296568b7b4f38b36af2305fe751` /434. All nine protected helpers and the original mixed index remain unchanged. Source commits are explicitly unsigned; root alone executed serialized locked Nix/Bazel gates with existing limits.
+
+Adopted changes include read-only browser reconciliation refusal (`20cd6a68`), owned Linux desktop delivery (`a412213e`), real Darwin readiness parser/fixture (`8a30838c`, **Darwin UNRUN**), bounded native-source maintenance (`5f8b82e4`), retained/stale/unknown UI projection (`15880024`) and verification-only coverage (`cb308b96`). Exact fixture corrections preserve production refusals and original failure outcomes.
+
+| Actual gate / source | Outcome and scope |
+| --- | --- |
+| BD1 `5da86303-8f2a-4ddd-ab6b-2644816f9f49` /8a30838 | Original **3/3**: two targets PASS, four failures retained (browser baseline, delivery/guard fixture contracts and format). |
+| BD2 `f3371c81-517c-4bc9-b2bb-783fb1963647` /8add3cc2 | Original **1/1**: seven targets PASS—native consent59, setup verification37, actual Qt setup fixture, delivery94, enrollment guard45, format and docs. Browser/native-owner targets failed compilation on helper parameter shadowing. |
+| BD3 `b6765cb0-690c-41a5-be92-7041626a2d89` /25f56b27 | Original **1/1**: format PASS; both native/browser targets failed compilation on missing required consent forget epoch. |
+| BD4 `ea21d50f-5161-4577-a22d-2d351383d08a` /3e725df9 | **0/0**, all three targets PASS: browser transaction suite307; native-owner suite317 passed/one unsupported-platform case skipped; format. Independent corrections rename only the helper parameter, then bind consent to the same actual persisted import-forget epoch. No assertions/defaults/production behavior are weakened. |
+
+These suites overlap and are not summed. BD1/BD2/BD3 retain their original failures. Generic cleanup for the above cohorts remains empty/ownership-unproved/readbacks0, with empty descendants, absent original cgroups and null controller failure; those observations do not establish owned cleanup. HM3's real mapper parse/22 models/docs0/0 remains narrow. Genuine NM5 retains125/124, zero tests/qualified metadata and verified owned stop/two cleanup readbacks. SDK/compiler/runtime/package selectors remain unqualified and compiler7/8 remains HOLD.
+
+A six-literal-print metadata diagnostic packet is independently SOURCE CLEAR but **queued, UNAPPLIED and UNRUN**. It adds six static markers plus bounded existing-model capture, without top-level print, changed watches/SDK inputs/helpers/limits or a genuine retry. It establishes no output retention, performance improvement or RCA. Packet: `/home/jess/.local/state/omux-proposals-20261010/estate_execution_reapi/docs/agent-notes/2026-10-11-NM5-six-literal-print.UNAPPLIED/manifest.json`, SHA256 `f0519db0bae1016b2d0a3408d1e9e2463790836e592a3c004efd0ca25d3e7e34`; review SHA256 `2b578707eb81d826702b88161747b35c4312af3db5633ab3f2da037cfef28692`.
+
+This append's required docs_check and final tracker/goal current-pointer readbacks are root-only follow-ons, with their own exact-source terminal receipts; they are not claimed in advance.
+
+The first usable journey remains **install/activate → authorize sources and retain verified usable accounts → ordinary adapted-application launch/resume → same-process handoff**. Omux owns each application's adapter. A browser conduit cannot by itself substitute authorization inside a running terminal application; unmodified Codex support remains unproved.
+
+| Product area | Actual scope and remaining acceptance | Existing carrier |
+| --- | --- | --- |
+| Install/control clients | Owned Linux desktop entries and Qt observation projection have fixture coverage. Actual Home Manager evaluation/activation and installed onboarding/owned updates/removal remain open. Thin-client closure must leave the resident daemon running. | TIN-2063 |
+| Browser sources | Chromium/Firefox source, exact-ID native-host registration and development packaging exist. Chromium leads attended Yoga Wayland consent/lifecycle proof. Browser presence/lost-reply recovery remains incomplete; production exports remain disabled pending provider-field and identity qualification. | TIN-5442; TIN-2720 |
+| Account/custody/renewal | NV4's dated normal-vault observation was Locked; current OS state, wrapping-key readiness, loaded resident metadata and account count remain unobserved. Fresh NV5 metadata-only declaration is prepared but UNRUN. Verified usable two-account custody and adopted renewal remain open. Imported grants retain their existing renewal writer. | TIN-2063; TIN-2720 |
+| Resource observations | Client fixtures cover retained totals, stale/future/unknown states and compatible units. These are descriptive observations, not available entitlement or request eligibility; live provider polling/quota evidence remains open. | TIN-2720; TIN-2057 |
+| Native application | Native source maintenance retains original consent, context, process/image, registry, generation and deadline fences; it creates no enrollment or renewal authority. Genuine metadata→SDK→compiler→candidate package, automatic discovery, ordinary launch/resume and accepted-history preservation remain open. | TIN-5338; TIN-5421 |
+| Live continuity/reliability | Same-process A/B accepted turns, native history/tool/approval preservation, no replay, automatic fallback and adopted renewal remain unproved. Verification-attempt/window coverage is bounded evidence, not successful whole-product availability or an achieved SLO/SLA. | TIN-2057 |
+| Website/distribution | Source-bound site discoverability/provenance proposals remain unapplied; a private captured successor checkout and declared reference import must be qualified before actual site checks. Current downloadable successor selection, signing, store publication and updates remain unproved. SPA never receives credentials. | TIN-734 |
+| Darwin/platforms | Real readiness-parser and packaging proposals do not prove Apple SDK compilation, installed services/GUI/Keychain/native peer authority or authentic platform signing. PZM/GF remains held; Neo is teletype. Windows/Safari/cross-host federation remain deferred. | TIN-2063; TIN-5338 |
+
+Next implementation order, using existing carriers:
+
+1. Fresh normal-vault observation and operator restoration, then original-key/same-actor custody reopening and durable verified compatible accounts. An unlocked collection alone does not establish key or database readiness.
+2. Diagnose genuine metadata declaration with retained phase evidence before a changed-input successor; preserve all watches/SDK inputs, limits, original failures and compiler7/8 HOLD. Finish dependency-qualified candidate packaging, then ordinary command and accepted-history resume.
+3. Prepare the isolated attended Chromium toolbar gate on Yoga. Provider-free consent proves permission behavior; provider schema/identity/usable-authority proof and renewal adoption remain separate.
+4. Join actual retained accounts and ordinary native resume for same-process A/B handoff without repeated accepted work. No fixture, relaunch, prepared fallback or elapsed checkpoint closes this gate.
+5. Qualify Home Manager lifecycle and real update custody/quiescence observations; adopt source-bound website delivery facts; then platform and signing/publication gates. Refresh SLO baselines only from measured successful user outcomes, keeping safe refusals separate.
+
+Fresh Linear readback retains all seven carrier states/scopes and no completedAt. Four retain October4 dates; TIN-2057 is due October11. All eight reviewed PRs remain open drafts/unmerged; dependencies and overlapping lanes need exact-head reconciliation before promotion. Source clearance is not merge or release qualification. Root's own checkpoint comments and PR541 description are the factual reconciliation targets; results require separate durable before/readback receipts.
+
+The original fifteen-hour tool goal remains **ACTIVE, overdue and incomplete**, with its October5 clock unchanged. This is a next-work ordering, not a new sprint clock. User-authorized uncapped model I/O remains applicable. No provider call, unlock/factor guess, signing, public deployment, product service activation or merge occurred in this review continuation.
+
+Root artifact hashes bind retained files under /home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes, not repository JSON links.
+
+| Artifact | SHA256 |
+| --- | --- |
+| `2026-10-11-integrated-models-BD1-result.json` | `0a41b4f20559192cec728df92f37173eea9ab17713a389a103a8e8379df43241` |
+| `2026-10-11-integrated-models-BD2-result.json` | `95b7cc7fb606c31b1c7b61a026a9d4053d84ccf4f9462346ca287966f835bd7e` |
+| `2026-10-11-integrated-models-BD3-result.json` | `7a27e423c27ac1663c96a03886ad9075accc6b886670067a93101455f3f0e5b2` |
+| `2026-10-11-integrated-models-BD4-result.json` | `c971f76644be862302525461f0a04591e7d28bfc86cef3ce4fb4c93fb9bfa116` |
+| `2026-10-11-BD2-seed-shadow-adoption-result.json` | `7e1c70459ab4052d99d3622b99c25086a29b6172abe1d948fe73c51ba1f7a791` |
+| `2026-10-11-BD3-seed-epoch-adoption-result.json` | `6ac4401ff6f42b09076a9fdbd0c267886d6d8955663241d483c2ba5cb7748739` |
+| `2026-10-11-estate-v6-fresh-issues-readback.json` | `ed839f2b39d966a7bc8e6611450ce17ebe55a836ac6e654ea929c7dd763e47f4` |
