@@ -122,8 +122,10 @@ class CarrierModels(unittest.TestCase):
                 parent = self.root / ("parent-" + change)
                 parent.mkdir(mode=0o700)
                 root, _, pin = self.seal("source-" + change)
+                root.chmod(0o700)
                 root.rename(parent / "carrier")
                 root = parent / "carrier"
+                root.chmod(0o555)
                 parent.chmod(0o555)
                 alias = self.root / ("alias-" + change)
                 alias.symlink_to(root)
