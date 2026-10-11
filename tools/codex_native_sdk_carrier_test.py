@@ -4,6 +4,7 @@ The only SDK seam is the synthetic selected JDK root. Existing SDK validators,
 registry/module/link-absence logic, byte readers and canonical NAR run unchanged.
 No model claims a genuine carrier producer, metadata or application qualification.
 """
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -507,6 +508,151 @@ class CarrierModels(unittest.TestCase):
             with self.assertRaises(ValueError):
                 carrier.revalidate_extraction(root, pin, output, self.deadline,
                     pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(fresh)))
+
+    def parent_output(self, name="parents"):
+        output = carrier.Output(self.root / name, carrier.Clock(self.deadline))
+        for path in ("sdk", "sdk/one", "sdk/one/two"):
+            output.mkdir(path)
+        return output
+
+    def test_parent_handles_reduce_real_opens_preserving_stat_checks(self):
+        with closing(self.parent_output()) as output:
+            real_open, real_stat = os.open, os.stat
+            with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                for _ in range(2):
+                    fd, leaf = output.root.parent("sdk/one/two/leaf")
+                    self.assertEqual(leaf, "leaf")
+                    self.assertEqual(carrier.identity(os.fstat(fd), True),
+                                     carrier.identity((output.path / "sdk/one/two").stat(), True))
+                    os.close(fd)
+                baseline_opens, baseline_stats = opened.call_count, named.call_count
+            with carrier._ParentHandles(output.root) as parents:
+                with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                        patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                    for _ in range(2):
+                        fd, leaf = parents.parent("sdk/one/two/leaf")
+                        self.assertEqual(leaf, "leaf")
+                        self.assertEqual(carrier.identity(os.fstat(fd), True),
+                                         carrier.identity((output.path / "sdk/one/two").stat(), True))
+                        os.close(fd)
+                    self.assertEqual(baseline_opens, 6)
+                    self.assertEqual(opened.call_count, 3)
+                    self.assertEqual(named.call_count, baseline_stats)
+                retained = [fd for fd, _ in parents.entries.values()]
+            for fd in retained:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+
+    def test_parent_handles_refuse_same_byte_parent_mode_and_symbolic_replacement(self):
+        for change in ("same-byte", "mode", "symbolic"):
+            with self.subTest(change=change), closing(self.parent_output(change)) as output:
+                parent = output.path / "sdk/one/two"
+                self.write(parent / "unchanged", b"same bytes")
+                with carrier._ParentHandles(output.root) as parents:
+                    fd, _ = parents.parent("sdk/one/two/leaf")
+                    os.close(fd)
+                    if change == "mode":
+                        parent.chmod(0o500)
+                    else:
+                        parent.rename(parent.with_name("detached"))
+                        if change == "same-byte":
+                            parent.mkdir(mode=0o700)
+                            self.write(parent / "unchanged", b"same bytes")
+                        else:
+                            foreign = self.root / "foreign-parent"
+                            foreign.mkdir(mode=0o700)
+                            parent.symlink_to(foreign, target_is_directory=True)
+                    with self.assertRaises(ValueError):
+                        parents.parent("sdk/one/two/leaf")
+
+    def test_parent_handles_refuse_named_root_replacement(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                fd, _ = parents.parent("sdk/one/two/leaf")
+                os.close(fd)
+                output.path.rename(self.root / "detached-root")
+                output.path.mkdir(mode=0o700)
+                with self.assertRaisesRegex(ValueError, "named-ancestor"):
+                    parents.parent("sdk/one/two/leaf")
+
+    def test_parent_handles_cached_dup_rechecks_after_named_race(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                fd, _ = parents.parent("sdk/one/two/leaf")
+                os.close(fd)
+                cached = parents.entries["sdk/one/two"][0]
+                real_dup, borrowed = os.dup, []
+                def replace_after_dup(fd):
+                    child = real_dup(fd)
+                    if fd == cached:
+                        borrowed.append(child)
+                        parent = output.path / "sdk/one/two"
+                        parent.rename(parent.with_name("detached"))
+                        parent.mkdir(mode=0o700)
+                    return child
+                with patch.object(carrier.os, "dup", side_effect=replace_after_dup):
+                    with self.assertRaisesRegex(ValueError, "internal-parent-race"):
+                        parents.parent("sdk/one/two/leaf")
+                self.assertEqual(len(borrowed), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(borrowed[0])
+
+    def test_parent_handles_bound_evict_and_close_exact_owned_descriptors(self):
+        with closing(self.parent_output()) as output:
+            for index in range(34):
+                output.mkdir("sdk/d" + str(index))
+            with carrier._ParentHandles(output.root) as parents:
+                fd, _ = parents.parent("sdk/d0/leaf")
+                os.close(fd)
+                evicted = parents.entries["sdk/d0"][0]
+                real_close, evicted_closed = os.close, []
+                def record_close(fd):
+                    if fd == evicted and carrier.identity(os.fstat(fd), True) == output.root.named["sdk/d0"]:
+                        evicted_closed.append(fd)
+                    real_close(fd)
+                with patch.object(carrier.os, "close", side_effect=record_close):
+                    for index in range(1, 34):
+                        fd, _ = parents.parent("sdk/d" + str(index) + "/leaf")
+                        os.close(fd)
+                        self.assertLessEqual(len(parents.entries), 32)
+                self.assertNotIn("sdk/d0", parents.entries)
+                self.assertEqual(evicted_closed, [evicted])
+                held = [fd for fd, _ in parents.entries.values()]
+            self.assertEqual(parents.entries, {})
+            for fd in held:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+            output.root.check()
+            with self.assertRaisesRegex(ValueError, "parent-handles-closed"):
+                parents.parent("sdk/d1/leaf")
+
+    def test_parent_handles_original_expiry_and_exception_close_descriptors(self):
+        for reason in ("deadline", "integer-deadline", "exception"):
+            with self.subTest(reason=reason), closing(self.parent_output(reason)) as output:
+                parents = carrier._ParentHandles(output.root)
+                held = []
+                with self.assertRaisesRegex(ValueError, reason):
+                    with parents:
+                        fd, _ = parents.parent("sdk/one/two/leaf")
+                        os.close(fd)
+                        held = [fd for fd, _ in parents.entries.values()]
+                        if reason == "deadline":
+                            original = output.root.clock.deadline
+                            with patch.object(carrier.time, "monotonic", return_value=original):
+                                parents.parent("sdk/one/two/leaf")
+                        elif reason == "integer-deadline":
+                            output.root.clock.until_ns = time.monotonic_ns() + 10**9
+                            with patch.object(carrier.time, "monotonic_ns", return_value=output.root.clock.until_ns):
+                                parents.parent("sdk/one/two/leaf")
+                        else:
+                            raise ValueError("exception")
+                self.assertEqual(parents.entries, {})
+                output.root.clock.until_ns = None
+                for fd in held:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+                output.root.check()
 
 
 if __name__ == "__main__":

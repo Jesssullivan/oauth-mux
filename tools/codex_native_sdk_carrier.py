@@ -149,6 +149,9 @@ class Root:
             need(identity(os.stat(name, dir_fd=self.fd, follow_symlinks=False)) == selected, "named-root-leaf")
 
     def parent(self, name):
+        return self._parent(name, None)
+
+    def _parent(self, name, handles):
         parts = relative(name)
         self.check()
         fd = os.dup(self.fd)
@@ -166,10 +169,13 @@ class Root:
                     need(key in self.named, "unowned-output-parent")
                 if key in self.named:
                     need(self.named[key] == selected, "internal-parent-replacement")
-                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                child = (handles.take(key, fd, part, selected) if handles is not None else
+                         os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd))
                 try:
                     need(selected == identity(os.fstat(child), True) == identity(
                         os.stat(part, dir_fd=fd, follow_symlinks=False), True), "internal-parent-race")
+                    if handles is not None:
+                        handles.keep(key, child, selected)
                 except BaseException:
                     os.close(child)
                     raise
@@ -214,6 +220,58 @@ class Root:
         for _, fd, _ in reversed(self.chain):
             os.close(fd)
         self.chain = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
+class _ParentHandles:
+    """At most 32 owned directory FDs, scoped to regular extraction writes.
+
+    Reuse changes open to dup only. Root._parent still performs every external
+    and per-component named/before/held/after/custody check on every traversal.
+    Close before creating links or changing directory modes.
+    """
+    def __init__(self, root):
+        need(root.owned, "parent-handles-owned")
+        self.root, self.entries, self.closed = root, {}, False
+
+    def parent(self, name):
+        need(not self.closed, "parent-handles-closed")
+        return self.root._parent(name, self)
+
+    def take(self, key, parent, name, selected):
+        if key in self.entries:
+            fd, witness = self.entries.pop(key)
+            self.entries[key] = (fd, witness)
+            need(witness == selected, "parent-handle-replacement")
+            return os.dup(fd)
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+
+    def keep(self, key, fd, selected):
+        if key not in self.entries:
+            if len(self.entries) == 32:
+                oldest = next(iter(self.entries))
+                prior, _ = self.entries.pop(oldest)
+                os.close(prior)
+            held = os.dup(fd)
+            self.entries[key] = (held, selected)
+
+    def close(self):
+        entries, self.entries = self.entries, {}
+        self.closed = True
+        failure = None
+        for fd, _ in entries.values():
+            try:
+                os.close(fd)
+            except OSError as error:
+                if failure is None:
+                    failure = error
+        if failure is not None:
+            raise failure
 
     def __enter__(self):
         return self
@@ -963,30 +1021,31 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
                 clock.tick()
                 if path and rows[(role, path)]["kind"] == "directory":
                     output.mkdir(role + "/" + path)
-            for (role, path), entry in files.items():
-                fd, leaf = output.root.parent(role + "/" + path)
-                try:
-                    target = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                     0o600, dir_fd=fd)
+            with _ParentHandles(output.root) as parents:
+                for (role, path), entry in files.items():
+                    fd, leaf = parents.parent(role + "/" + path)
                     try:
-                        part = Range(payload, entry["offset"], entry["size"], clock)
-                        h = hashlib.sha256()
-                        while True:
-                            block = part.read(65536)
-                            if not block:
-                                break
-                            h.update(block)
-                            write_all(target, block, clock)
-                        need(h.hexdigest() == entry["sha256"], "extracted-file-digest")
-                        os.fsync(target)
-                        os.fchmod(target, entry["mode"])
-                        selected = identity(os.fstat(target))
-                        need(selected == identity(os.stat(leaf, dir_fd=fd, follow_symlinks=False)), "extracted-file-name")
-                        output.materialized[role + "/" + path] = selected
+                        target = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                         0o600, dir_fd=fd)
+                        try:
+                            part = Range(payload, entry["offset"], entry["size"], clock)
+                            h = hashlib.sha256()
+                            while True:
+                                block = part.read(65536)
+                                if not block:
+                                    break
+                                h.update(block)
+                                write_all(target, block, clock)
+                            need(h.hexdigest() == entry["sha256"], "extracted-file-digest")
+                            os.fsync(target)
+                            os.fchmod(target, entry["mode"])
+                            selected = identity(os.fstat(target))
+                            need(selected == identity(os.stat(leaf, dir_fd=fd, follow_symlinks=False)), "extracted-file-name")
+                            output.materialized[role + "/" + path] = selected
+                        finally:
+                            os.close(target)
                     finally:
-                        os.close(target)
-                finally:
-                    os.close(fd)
+                        os.close(fd)
             # Literal targets remain inert, including the original absolute JDK.
             for (role, path), row in rows.items():
                 if row["kind"] == "symlink":
