@@ -2275,7 +2275,7 @@ test "held compact carrier reports independently join SOURCE original authority 
     const producer_pin = try carrierModelJson(a, .{ .receipt = "/proof/11111111-1111-1111-1111-111111111111/receipt.json", .sha256 = pin, .source_commit = "1111111111111111111111111111111111111111", .graph_sha256 = pin });
     const graph = try carrierModelJson(a, .{ .@"MODULE.bazel.lock" = .{ .sha256 = pin } });
     const graph_projection = try carrierModelJson(a, .{ .@"MODULE.bazel.lock" = .{ .sha256 = pin, .bytes = @as(u64, 32), .mode = "100644" } });
-    const patches = [_][]const u8{pin} ** 9;
+    const patches = [_][]const u8{ pin, pin, pin, pin, pin, pin, pin, pin, pin };
     var source = try carrierModelJson(a, .{ .inventory_sha256 = pin, .graph_files = graph, .source_inventory = .{ .@"MODULE.bazel.lock" = .{ .sha256 = pin, .mode = "100644" } }, .patch_sha256 = patches });
     // Value is inserted explicitly; Stringify(Value) represents the JSON value.
     carrierModelSet(&source, "graph_files", graph);
@@ -2563,7 +2563,14 @@ test "carrier preflight counts every logical receipt proof declaration and alias
     const io = std.testing.io;
     const budget: Budget = .{ .io = io, .deadline = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .clock = .awake, .raw = .fromSeconds(30) }) };
     const input: Input = .{ .descriptor = -1, .bytes = 32, .sha256 = @splat(0x11) };
-    const members = [_]ModernMember{ .{ .name = "model", .input = input } } ** 6;
+    const members = [_]ModernMember{
+        .{ .name = "model", .input = input },
+        .{ .name = "model", .input = input },
+        .{ .name = "model", .input = input },
+        .{ .name = "model", .input = input },
+        .{ .name = "model", .input = input },
+        .{ .name = "model", .input = input },
+    };
     const group: ModernAuthority = .{ .outer = input, .evidence = input, .members = members[0..2] };
     var modern: ModernInputs = .{ .package_selection = input, .package_outputs = input, .package_output_root = "/package", .package_authority = group, .roles = @splat(input), .protocol_schema_files = &.{}, .native_acquisition_artifact_files = &.{}, .authority_receipts = @splat(group), .carrier_materials = .{ .receipts = @splat(input), .authority_receipts = @splat(group) } };
     modern.authority_receipts[0].members = &members;
