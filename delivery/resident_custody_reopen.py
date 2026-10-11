@@ -46,6 +46,32 @@ def metadata(health,handshake):
             guard.require(action == expected)
     return loaded,count
 
+def observation(health,handshake):
+    guard.require(type(health) is dict and type(handshake) is dict)
+    # A loaded repair diagnosis is observable, but cannot authorize reopening.
+    if health.get("status") == "repair_required":
+        guard.require(type(health) is dict and type(handshake) is dict
+            and type(health.get("protocol_version")) is int and health["protocol_version"] == 2
+            and type(handshake.get("protocol_version")) is int and handshake["protocol_version"] == 2
+            and handshake.get("service") == "omuxd" and handshake.get("channel") == "control"
+            and health.get("metadata_loaded") is True and health.get("custody_available") is False
+            and handshake.get("custody_available") is False
+            and type(health.get("account_count")) is int and health["account_count"] >= 0
+            and health.get("live_handoff_proven") is False)
+        caps=handshake.get("capabilities")
+        guard.require(type(caps) is dict and caps.get("credential_free_control") is True
+            and caps.get("custody_reopen") is True and caps.get("live_handoff_proven") is False)
+        loaded,count=True,health["account_count"]
+    else:
+        loaded,count=metadata(health,handshake)
+    origin=health.get("custody_origin")
+    guard.require(origin in (None,"fresh","existing","unverified"))
+    return {"status":health["status"],"custody_available":health["custody_available"],
+        "metadata_loaded":loaded,"account_count":count,
+        "custody_error":health.get("custody_error") if not loaded else None,
+        "custody_origin":origin if not loaded else None,
+        "recovery_action":health.get("recovery_action") if not loaded else None}
+
 def classify(before,after,envelope):
     guard.require(type(envelope) is dict and envelope.get("jsonrpc") == "2.0"
         and type(envelope.get("id")) is int)
@@ -119,9 +145,14 @@ class Channel:
     def close(self):
         self.connection.close()
 
+class ObservationChannel(Channel):
+    # Enforce this read-only action at the wire boundary as well as its branch.
+    METHODS = ("system.health","system.handshake")
+
 def execute(systemctl,manifest,environment,bounded,remaining,deadline_ns):
     guard.manifest_schema(manifest,environment["HOME"])
-    guard.require(manifest["action"] == "reopen-existing")
+    guard.require(manifest["action"] in ("reopen-existing","observe-custody-existing"))
+    observing=manifest["action"] == "observe-custody-existing"
     deadline=deadline_ns-30*10**9
     witness=owned.OwnedCustodyReopen(manifest,environment["HOME"],deadline)
     channel=None
@@ -145,9 +176,28 @@ def execute(systemctl,manifest,environment,bounded,remaining,deadline_ns):
             guard.require(resident.process_identity(pid) == identity)
             return values,identity,cgroup,peer,writer
         initial=active()
-        channel=Channel(path,initial[1][0],deadline)
-        before=metadata(channel.read("system.health"),channel.read("system.handshake"))
+        channel=(ObservationChannel if observing else Channel)(path,initial[1][0],deadline)
+        project=observation if observing else metadata
+        before=project(channel.read("system.health"),channel.read("system.handshake"))
         guard.require(active() == initial)
+        if observing:
+            remaining()
+            # Two current local views; periodic daemon work may change counts.
+            # No snapshot, database content, source, vault or mutation RPC.
+            after=observation(channel.read("system.health"),channel.read("system.handshake"))
+            remaining()
+            guard.require(active() == initial and channel.identity() == channel.peer)
+            witness.recheck()
+            remaining()
+            return {"schema_version":1,"scope":"owned_resident_custody_observation",
+                "outcome":"observed","before":before,**after,
+                "account_counts_observed":after["metadata_loaded"],
+                "same_process_verified":True,"same_service_invocation_verified":True,
+                "same_socket_peer_verified":True,"daemon_singleton_lock_owner_verified":True,"resident_bounds_verified":True,
+                "custody_reopen_requests":0,"service_mutation_requested":False,
+                "provider_request_requested_by_controller":False,"controller_vault_material_read":False,
+                "controller_key_written":False,"source_connected":False,"enrollment_verified":False,
+                "same_process_handoff_proven":False,"archive_sha256":manifest["start"]["archive_sha256"]}
         # Exactly one explicit request; no retry, enrollment, provider request or unlock.
         response=channel.rpc("custody.reopen")
         remaining()

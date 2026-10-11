@@ -151,15 +151,37 @@ class AdmissionContract(unittest.TestCase):
                 bad[field]=change
                 with self.assertRaises(ValueError): reopen.guard.manifest_schema(bad,home)
 
+    def test_observation_exact_role_and_false_permissions(self):
+        home=reopen.Path("/home/jess")
+        value={"schema_version":1,"ownership":"omux-installation","action":"observe-custody-existing","instance":"default",
+            **{key:str(path) for key,path in reopen.guard.fixed_paths(home).items()},
+            "native_context":None,"permissions":{"connect_source":False,"activate_service":False,"restart_daemon":False},
+            "start":{"archive_path":"/public/qualified-archive"}}
+        with mock.patch.object(reopen.owned,"start_pins",return_value=value["start"]):
+            reopen.guard.manifest_schema(value,home)
+            with mock.patch.dict(reopen.os.environ,{"HOME":str(home)}):
+                reopen.resident.validate_manifest(value)
+            reopen.guard.carrier_purpose(reopen.guard.LIFECYCLE_LABEL,value["action"])
+            for label in (reopen.guard.LABEL,reopen.guard.EXISTING_ENROLLMENT_LABEL,reopen.guard.PREPARE_LABEL):
+                with self.assertRaises(ValueError): reopen.guard.carrier_purpose(label,value["action"])
+            with self.assertRaises(ValueError): reopen.guard.carrier_purpose(reopen.guard.LIFECYCLE_LABEL,value["action"],True)
+            for key in value["permissions"]:
+                bad=copy.deepcopy(value);bad["permissions"][key]=True
+                with self.assertRaises(ValueError): reopen.guard.manifest_schema(bad,home)
+            for field,change in (("native_context",{}),("ownership","home-manager"),("instance","dev")):
+                bad=copy.deepcopy(value);bad[field]=change
+                with self.assertRaises(ValueError): reopen.guard.manifest_schema(bad,home)
+
+
 
 class CompleteExecuteContract(unittest.TestCase):
-    def invoke(self,*,refusal=False,drift=None,missing=None):
+    def invoke(self,*,refusal=False,drift=None,missing=None,observing=False,case="Locked"):
         from contextlib import ExitStack
         import os
         import stat
         home=reopen.Path("/home/jess")
         selection={"archive_path":"/public/qualified-archive","archive_sha256":"a"*64}
-        manifest={"schema_version":1,"ownership":"omux-installation","action":"reopen-existing","instance":"default",
+        manifest={"schema_version":1,"ownership":"omux-installation","action":"observe-custody-existing" if observing else "reopen-existing","instance":"default",
             **{key:str(path) for key,path in reopen.guard.fixed_paths(home).items()},
             "native_context":None,"permissions":{"connect_source":False,"activate_service":False,"restart_daemon":False},
             "start":selection}
@@ -197,10 +219,20 @@ class CompleteExecuteContract(unittest.TestCase):
         channel.peer="original-connected-peer"
         channel.identity.return_value=channel.peer
         helpers=ReopenContract()
-        before=helpers.pair()
+        before=helpers.pair(case in ("ready","repair_required"),2 if case in ("ready","repair_required") else None)
+        if observing:
+            if case == "repair_required":
+                before[0].update(status=case,custody_available=False)
+                before[1]["custody_available"]=False
+            elif case != "ready":
+                before[0].update(custody_origin="existing",custody_error=case,
+                    status="vault_locked" if case == "Locked" else "vault_unavailable",
+                    recovery_action="unlock_platform_vault_then_reopen_custody" if case == "Locked" else
+                        "restore_original_vault_key_then_reopen_custody" if case in ("Missing","InvalidKey") else
+                        "restore_platform_vault_access_then_reopen_custody")
         if missing:
             before[0].pop(missing)
-        after=helpers.pair() if refusal else helpers.pair(True,2)
+        after=copy.deepcopy(before) if observing else helpers.pair() if refusal else helpers.pair(True,2)
         replies=iter((*before,*after))
         read_methods=[]
         def read(method):
@@ -228,6 +260,7 @@ class CompleteExecuteContract(unittest.TestCase):
                 (reopen.guard.Path,"stat",{"side_effect":AssertionError("fixture must never fall back to host proc stat")}),
                 (reopen.guard.Path,"read_text",{"side_effect":AssertionError("fixture must never fall back to host proc stat text")}),
                 (reopen,"Channel",{"return_value":channel}),
+                (reopen,"ObservationChannel",{"return_value":channel}),
             ):
                 stack.enter_context(mock.patch.object(target,name,**options))
             try:
@@ -238,13 +271,14 @@ class CompleteExecuteContract(unittest.TestCase):
                 self.assertEqual(set(tick_calls),{10})
                 witness.close.assert_called_once()
                 channel.close.assert_called_once()
-                if missing:
+                if missing or observing:
                     channel.rpc.assert_not_called()
                 if drift:
-                    channel.rpc.assert_called_once_with("custody.reopen")
+                    if not observing: channel.rpc.assert_called_once_with("custody.reopen")
                     self.assertEqual(read_methods,["system.health","system.handshake"]*2)
             self.assertEqual(read_methods,["system.health","system.handshake"]*2)
-            channel.rpc.assert_called_once_with("custody.reopen")
+            if observing: channel.rpc.assert_not_called()
+            else: channel.rpc.assert_called_once_with("custody.reopen")
             self.assertEqual(len(commands),3)
             self.assertGreaterEqual(remaining.call_count,6)
             self.assertIs(result["service_mutation_requested"],False)
@@ -259,6 +293,54 @@ class CompleteExecuteContract(unittest.TestCase):
         result=self.invoke(refusal=True)
         self.assertEqual((result["outcome"],result["refusal"],result["metadata_loaded"],result["account_count"]),
             ("safe_refusal","Locked",False,None))
+    def test_read_only_observation_loaded_repair_and_all_typed_vault_failures(self):
+        for case in ("ready","repair_required","Locked","Missing","InvalidKey","Denied","Cancelled","Unavailable","Conflict","BackendFailure","InvalidRoot"):
+            with self.subTest(case=case):
+                result=self.invoke(observing=True,case=case)
+                self.assertEqual(result["scope"],"owned_resident_custody_observation")
+                self.assertEqual(result["custody_reopen_requests"],0)
+                self.assertFalse(result["service_mutation_requested"] or result["source_connected"]
+                    or result["provider_request_requested_by_controller"] or result["controller_vault_material_read"])
+                loaded=case in ("ready","repair_required")
+                self.assertEqual(result["account_counts_observed"],loaded)
+                self.assertEqual(result["account_count"],2 if loaded else None)
+                self.assertEqual(result["custody_available"],case == "ready")
+                self.assertEqual(result["custody_error"],None if loaded else case)
+                self.assertEqual(result["before"]["account_count"],result["account_count"])
+    def test_read_only_observation_refuses_identity_drift_and_missing_metadata(self):
+        for drift in ("InvocationID","NRestarts","MainPID","cgroup","socket","writer","ticks"):
+            with self.subTest(drift=drift),self.assertRaises(ValueError): self.invoke(observing=True,drift=drift)
+        for missing in ("metadata_loaded","account_count"):
+            with self.subTest(missing=missing),self.assertRaises(ValueError): self.invoke(observing=True,missing=missing)
+    def test_observation_does_not_classify_unrelated_errors_or_invent_counts(self):
+        with self.assertRaises(ValueError): self.invoke(observing=True,case="OutOfMemory")
+        helper=ReopenContract()
+        for bad in (None,[],True):
+            with self.assertRaises(ValueError): reopen.observation(bad,helper.pair()[1])
+        for loaded in (False,True):
+            for count in (False,-1,"2"):
+                health,handshake=helper.pair(loaded,count)
+                with self.assertRaises(ValueError): reopen.observation(health,handshake)
+        health,handshake=helper.pair(True,2)
+        health.update(status="repair_required",custody_available=False)
+        handshake["custody_available"]=False
+        for field,change in (("metadata_loaded",False),("account_count",None),("custody_available",True)):
+            bad=copy.deepcopy(health);bad[field]=change
+            with self.assertRaises(ValueError): reopen.observation(bad,handshake)
+
+    def test_observation_wire_cannot_dispatch_reopen_or_any_mutation(self):
+        helper=ReopenContract()
+        for method in ("custody.reopen","state.snapshot","operation.status","source.connect","policy.set"):
+            channel=helper.channel(b"")
+            channel.METHODS=reopen.ObservationChannel.METHODS
+            with self.assertRaises(ValueError): channel.rpc(method)
+            channel.connection.sendall.assert_not_called()
+        for method in reopen.ObservationChannel.METHODS:
+            channel=helper.channel(b'{"jsonrpc":"2.0","id":1,"result":{}}\n')
+            channel.METHODS=reopen.ObservationChannel.METHODS
+            channel.rpc(method)
+            self.assertEqual(json.loads(channel.connection.sendall.call_args.args[0])["params"],{})
+
     def test_full_execute_identity_changes_refuse_after_request(self):
         for drift in ("InvocationID","NRestarts","MainPID","cgroup","socket","writer","ticks"):
             with self.subTest(drift=drift), self.assertRaises(ValueError): self.invoke(drift=drift)
