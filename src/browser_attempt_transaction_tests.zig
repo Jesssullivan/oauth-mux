@@ -194,9 +194,7 @@ test "browser reconciliation observes current source authority without reconnect
             try std.testing.expect(try control.boolean(control.get(disconnected.parsed.value, "result").?, "accepted", false));
         } else {
             const capability = try fixture.actor.?.capabilityForTest("enrollment");
-            const payload = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1,
-                .method = "fixture.importSource", .params = .{ .application = "enrollment", .capability = capability[0..],
-                    .source_id = "opaque-browser-source", .transition = transition } }, .{});
+            const payload = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = "fixture.importSource", .params = .{ .application = "enrollment", .capability = capability[0..], .source_id = "opaque-browser-source", .transition = transition } }, .{});
             defer allocator.free(payload);
             var changed = try dispatch(fixture.actor.?, .adapter, payload);
             defer changed.deinit();

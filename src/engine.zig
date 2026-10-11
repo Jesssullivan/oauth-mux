@@ -741,7 +741,9 @@ const NativeSourceMaintenanceTask = struct {
             self.failure = error.ServiceStopping;
             return;
         }
-        self.perform() catch |err| { self.failure = err; };
+        self.perform() catch |err| {
+            self.failure = err;
+        };
     }
     fn perform(self: *NativeSourceMaintenanceTask) !void {
         const io = self.engine.io;
@@ -1791,7 +1793,9 @@ pub const Engine = struct {
         if (self.native_source_maintenance) |task| if (job == &task.job) {
             self.native_source_maintenance = null;
             defer task.deinit();
-            self.completeNativeSourceMaintenance(task) catch { self.fence(); };
+            self.completeNativeSourceMaintenance(task) catch {
+                self.fence();
+            };
             return;
         };
         for (self.native_import_tasks.items, 0..) |task, index| if (job == &task.job) {
@@ -5152,12 +5156,10 @@ pub const Engine = struct {
         };
         if (task.failure) |failure| {
             switch (failure) {
-                error.NativeSourceUnavailable, error.NativeSourceContextMismatch, error.NativeSourceOriginChanged,
-                error.NativeOwnerIdentityMismatch => {
+                error.NativeSourceUnavailable, error.NativeSourceContextMismatch, error.NativeSourceOriginChanged, error.NativeOwnerIdentityMismatch => {
                     if (task.image_verified and task.negative_verified) return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, failure);
                 },
-                error.NativeOwnerPeerMismatch, error.PeerIncarnationChanged, error.PeerDeparted, error.PeerImageMismatch =>
-                    return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, failure),
+                error.NativeOwnerPeerMismatch, error.PeerIncarnationChanged, error.PeerDeparted, error.PeerImageMismatch => return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, failure),
                 error.OutOfMemory => return failure,
                 else => {},
             }
@@ -9015,7 +9017,14 @@ test "native maintenance actual worker reports unqualified owner context changes
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_]u8{ 0, 1, 2, 3, 4, 5 }) |case| {
-        const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_eof = case == 5, .source_context_mode = switch (case) { 0, 5 => .available, 1 => .rotated_context, 2 => .unavailable, 3 => .wrong_owner, 4 => .unknown_status, else => unreachable } });
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_eof = case == 5, .source_context_mode = switch (case) {
+            0, 5 => .available,
+            1 => .rotated_context,
+            2 => .unavailable,
+            3 => .wrong_owner,
+            4 => .unknown_status,
+            else => unreachable,
+        } });
         defer fixture.destroy();
         var directory = std.testing.tmpDir(.{});
         defer directory.cleanup();
@@ -9032,7 +9041,15 @@ test "native maintenance actual worker reports unqualified owner context changes
         const result = control.get(snapshot.value, "result").?;
         try NativeMaintenanceTest.retained(result, "connected");
         const maintenance = control.get(result, "native_source_maintenance").?;
-        const reason: []const u8 = switch (case) { 0 => "NativeImageUnavailable", 1 => "NativeSourceContextMismatch", 2 => "NativeSourceUnavailable", 3 => "NativeOwnerIdentityMismatch", 4 => "InvalidNativeSourceContext", 5 => "PeerConnectionClosed", else => unreachable };
+        const reason: []const u8 = switch (case) {
+            0 => "NativeImageUnavailable",
+            1 => "NativeSourceContextMismatch",
+            2 => "NativeSourceUnavailable",
+            3 => "NativeOwnerIdentityMismatch",
+            4 => "InvalidNativeSourceContext",
+            5 => "PeerConnectionClosed",
+            else => unreachable,
+        };
         try std.testing.expectEqualStrings(reason, try control.string(maintenance, "reason"));
         try std.testing.expectEqualStrings("historical_observation", try control.string(maintenance, "freshness"));
         try std.testing.expectEqual(false, control.get(maintenance, "acquisition_authority_granted").?.bool);
@@ -9100,7 +9117,9 @@ test "native maintenance completed worker cannot publish a negative observation 
         a.free(current.state_dir);
     }
     try current.bootstrap();
-    const Quiet = struct { fn signal(_: *anyopaque) void {} };
+    const Quiet = struct {
+        fn signal(_: *anyopaque) void {}
+    };
     current.native_workers = try native_work.Supervisor.create(io, a, .{ .context = &current, .signal = Quiet.signal });
     try current.pollNativeSources();
     const task = current.native_source_maintenance orelse return error.MaintenanceNotScheduled;
