@@ -12,10 +12,11 @@ Omux develops the adapter for each application; a vendor-supplied Codex hook is
 not a dependency. The architecture reset remains the SSOT and all release claims
 remain version-bound to evidence.
 
-The [October 11 product reality and work order](agent-notes/2026-10-11-product-reality-and-work-order.md)
-joins the 24-workstream audit, adopted source, actual scoped checks, Linear carriers
-and remaining installed/live gates. Its [pinned audit index](agent-notes/2026-10-11-product-reality-reattachment-index.json)
-preserves the independent dated source reviews. The [October 10 checkpoint](agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
+The [October 11, 17:57 UTC current checkpoint](agent-notes/2026-10-11-1757UTC-current-product-checkpoint.md)
+records later source-bound readiness and site qualification, actual native failure,
+and pending execution without installed/live promotion. The [morning product report](agent-notes/2026-10-11-product-reality-and-work-order.md)
+and its [pinned audit index](agent-notes/2026-10-11-product-reality-reattachment-index.json)
+preserve the original 24-workstream review and dated source scope. The [October 10 checkpoint](agent-notes/2026-10-10-native-peer-lifecycle-implementation.md#october-10-post-cleanup-operational-checkpoint)
 retains its original source/model/vault scope; later work inherits none of its proof.
 
 The original fifteen-hour checkpoint was incomplete; resumed implementation
