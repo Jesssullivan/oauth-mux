@@ -139,8 +139,12 @@ query `operation.status` with that same ID after response loss or shutdown/resta
 uncertainty. Do not reissue unknown work under a new identity. Exact replay uses
 the cached result; changed intent conflicts, while busy or missing installation
 selection returns a classified safe refusal. Collection timeout is immutable
-`safe_refusal` / `collection_timed_out`, with null duration and all seven phases
-unknown. Its dedicated refusal count is separate from verification completion.
+`safe_refusal` / `collection_timed_out`, with all seven phases unknown. Historical
+schema1 refusals retain null duration. Current schema2 source may retain an
+observed process-local admission-to-terminal-before-commit duration; an unavailable
+duration remains null. Its dedicated refusal count and latency population remain
+separate from verification completion. Optional timing does not establish a
+successful installation, enrollment, complete coverage or an achieved SLO.
 
 `verification_completed` means local verification completed only. Inspect all
 seven phase reasons/outcomes: artifact, service, vault, source, identity, grant,

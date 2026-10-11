@@ -275,8 +275,12 @@ an unmeasured diagnostic. Existing external mutation authority durably records
 started state and prepays terminal space before worker execution. Exact replay
 returns the cached result; changed intent conflicts. Busy or missing installation
 selection is a classified safe refusal. Collection timeout records immutable
-`safe_refusal` / `collection_timed_out`, null duration and seven unknown phase
-facts; its dedicated refusal counter never increments verification completion.
+`safe_refusal` / `collection_timed_out` and seven unknown phase facts. Historical
+schema1 refusals retain null duration; current schema2 source may retain an
+observed process-local admission-to-terminal-before-commit duration, with missing
+duration remaining null. Refusal counters and latency populations remain separate
+from verification completion; optional timing establishes neither successful
+installation/enrollment nor complete coverage or an achieved SLO.
 Shutdown/restart uncertainty never
 authorizes reissue; query `operation.status` using the same ID.
 

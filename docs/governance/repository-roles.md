@@ -85,9 +85,15 @@ release receipts cannot substitute. Current Codex candidate `native_support:
 false` and missing live continuity remain visible. Genuine isolated Linux
 Secret Service and private macOS Keychain C-driver IO passed their recorded
 [safety evidence](../implementation/native-safety-evidence-2026-10-03.md)
-predicates; they do not establish personal-session custody, production Darwin
-daemon/application execution or installed service/desktop behavior. Those gates
-remain unproved until their own exact receipts exist.
+predicates; they do not establish personal-session custody or production Darwin
+daemon/application execution. The October 5 experimental Linux epoch
+`ef255a3e-8d6d-4bb7-a044-d9a42e20aded` separately passed its scoped installed
+daemon/Qt custody, third-restart sealed replay and paired core/browser registration
+predicates; see the [exact installed setup tuple](../tracker-updates/integrated-delivery-installed-setup-2026-10-05.json).
+Those results retain their exact epoch, target and artifact scope. They do not
+establish Home Manager activation, ordinary personal-session custody/desktop
+operation, production Darwin execution or live continuity; those gates require
+their own exact receipts.
 
 Release approval concerns a concrete versioned artifact, checksums/provenance,
 platform/install/uninstall evidence and bounded release notes. It does not imply
