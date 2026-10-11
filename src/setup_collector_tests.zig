@@ -141,7 +141,7 @@ test "prefix sibling digest mode and duplicate entry validation deny forged inve
 test "production receipt parser types desktop placement and preserves legacy schema one" {
     const allocator = std.testing.allocator;
     const legacy =
-        "{\"schemaVersion\":1,\"prefix\":\"/opt/omux\",\"product\":\"omux\",\"files\":[" ++
+        "{\"schemaVersion\":1,\"prefix\":\"/opt/omux\",\"product\":\"omux\",\"product\":\"legacy ignored field\",\"files\":[" ++
         "{\"path\":\"/opt/omux/bin/omux\",\"sha256\":\"" ++ digest ++ "\",\"mode\":493}," ++
         "{\"path\":\"/opt/omux/bin/omuxd\",\"sha256\":\"" ++ digest ++ "\",\"mode\":493}," ++
         "{\"path\":\"/opt/omux/bin/omux-native-host\",\"sha256\":\"" ++ digest ++ "\",\"mode\":493}]";
@@ -153,11 +153,25 @@ test "production receipt parser types desktop placement and preserves legacy sch
         try std.testing.expect(parsed.value.desktopDirectory == null);
         try collector.validateReceipt(parsed.value, "/opt/omux", null);
     }
-    for ([_][]const u8{ "7", "true", "[]", "{}" }) |wrong_type| {
+    for ([_][]const u8{ "7", "true", "[]", "{}", "[47,116,109,112]", "false", "1.5", "null,\"desktopDirectory\":null" }) |wrong_type| {
         const bytes = try std.fmt.allocPrint(allocator, "{s},\"desktopDirectory\":{s}}}", .{ legacy, wrong_type });
         defer allocator.free(bytes);
-        try std.testing.expectError(error.InvalidReceipt, collector.parseReceipt(allocator, bytes));
+        const result = collector.parseReceipt(allocator, bytes);
+        if (result) |unexpected| {
+            // A parser regression must fail without leaking its parsed arena.
+            unexpected.deinit();
+            return error.TestUnexpectedResult;
+        } else |err| {
+            try std.testing.expectEqual(error.InvalidReceipt, err);
+        }
     }
+    const string_bytes = try std.fmt.allocPrint(allocator, "{s},\"desktopDirectory\":\"/tmp/applications\"}}", .{legacy});
+    defer allocator.free(string_bytes);
+    const string_value = try collector.parseReceipt(allocator, string_bytes);
+    defer string_value.deinit();
+    try std.testing.expectEqualStrings("/tmp/applications", string_value.value.desktopDirectory.?);
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, collector.parseReceipt(failing.allocator(), string_bytes));
     const oversized = try allocator.alloc(u8, collector.max_receipt_bytes + 1);
     defer allocator.free(oversized);
     @memset(oversized, ' ');

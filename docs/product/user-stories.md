@@ -120,14 +120,14 @@ isolated installed slices and live acceptance remain distinct.
 
 | Stories | Support gates | Existing carriers |
 | --- | --- | --- |
-| US-INSTALL-01, US-SETUP-01, US-DEV-01, US-UPDATE-01, US-KEY-LOSS-01 | SC-01, SC-02, SC-09, **SC-12**, **SC-14**, **SC-15** | [TIN-2063](https://linear.app/tinyland/issue/TIN-2063); TIN-2723, TIN-2797, TIN-2830, [TIN-5443](https://linear.app/tinyland/issue/TIN-5443), TIN-2050 |
-| US-SOURCE-01, US-IDENTITY-01, US-MISMATCH-01 | SC-03, SC-07, SC-08 | TIN-2078, TIN-2071, TIN-1818, TIN-1798, TIN-2063 |
-| US-LAUNCH-01, US-ATTACH-01, US-HANDOFF-01, US-NOREPLAY-01 | SC-04, SC-05, SC-06 | [TIN-5338](https://linear.app/tinyland/issue/TIN-5338), [TIN-5421](https://linear.app/tinyland/issue/TIN-5421), [TIN-2057](https://linear.app/tinyland/issue/TIN-2057) |
-| US-BROWSER-01, US-BROWSER-CONTEXT-01 | SC-03, **SC-13** | [TIN-5442](https://linear.app/tinyland/issue/TIN-5442) installed context lifecycle; [TIN-2720](https://linear.app/tinyland/issue/TIN-2720) provider acquisition |
-| US-RESOURCE-01, US-FRESHNESS-01, US-LOCAL-ADMISSION-01 | SC-07, SC-08 | TIN-2400, TIN-1803, TIN-1798, TIN-5336, TIN-2040, TIN-5342, TIN-2057 |
-| US-RENEWAL-01, US-REENROLL-01 | SC-03, SC-08 | [TIN-3032](https://linear.app/tinyland/issue/TIN-3032) production renewal; TIN-2078, TIN-2071, TIN-5340 |
-| US-DETACH-01, US-DISCONNECT-01, US-PAUSE-01, US-FORGET-01, US-VAULT-01, US-OUTAGE-01, US-REPAIR-01 | SC-08, SC-10, **SC-15** | TIN-2063, TIN-5340, TIN-2723, TIN-1798, TIN-5336, TIN-3032, TIN-5339, TIN-5442, TIN-2057 |
-| US-REMOVE-01, US-UNINSTALL-01 | SC-10, SC-11 | TIN-2063, TIN-2830, TIN-5443, TIN-5338, TIN-1798, TIN-5442, TIN-2050, TIN-2462, [TIN-734](https://linear.app/tinyland/issue/TIN-734), TIN-2796 |
+| References: `US-INSTALL-01`, `US-SETUP-01`, `US-DEV-01`, `US-UPDATE-01`, `US-KEY-LOSS-01` | SC-01, SC-02, SC-09, **SC-12**, **SC-14**, **SC-15** | [TIN-2063](https://linear.app/tinyland/issue/TIN-2063); TIN-2723, TIN-2797, TIN-2830, [TIN-5443](https://linear.app/tinyland/issue/TIN-5443), TIN-2050 |
+| References: `US-SOURCE-01`, `US-IDENTITY-01`, `US-MISMATCH-01` | SC-03, SC-07, SC-08 | TIN-2078, TIN-2071, TIN-1818, TIN-1798, TIN-2063 |
+| References: `US-LAUNCH-01`, `US-ATTACH-01`, `US-HANDOFF-01`, `US-NOREPLAY-01` | SC-04, SC-05, SC-06 | [TIN-5338](https://linear.app/tinyland/issue/TIN-5338), [TIN-5421](https://linear.app/tinyland/issue/TIN-5421), [TIN-2057](https://linear.app/tinyland/issue/TIN-2057) |
+| References: `US-BROWSER-01`, `US-BROWSER-CONTEXT-01` | SC-03, **SC-13** | [TIN-5442](https://linear.app/tinyland/issue/TIN-5442) installed context lifecycle; [TIN-2720](https://linear.app/tinyland/issue/TIN-2720) provider acquisition |
+| References: `US-RESOURCE-01`, `US-FRESHNESS-01`, `US-LOCAL-ADMISSION-01` | SC-07, SC-08 | TIN-2400, TIN-1803, TIN-1798, TIN-5336, TIN-2040, TIN-5342, TIN-2057 |
+| References: `US-RENEWAL-01`, `US-REENROLL-01` | SC-03, SC-08 | [TIN-3032](https://linear.app/tinyland/issue/TIN-3032) production renewal; TIN-2078, TIN-2071, TIN-5340 |
+| References: `US-DETACH-01`, `US-DISCONNECT-01`, `US-PAUSE-01`, `US-FORGET-01`, `US-VAULT-01`, `US-OUTAGE-01`, `US-REPAIR-01` | SC-08, SC-10, **SC-15** | TIN-2063, TIN-5340, TIN-2723, TIN-1798, TIN-5336, TIN-3032, TIN-5339, TIN-5442, TIN-2057 |
+| References: `US-REMOVE-01`, `US-UNINSTALL-01` | SC-10, SC-11 | TIN-2063, TIN-2830, TIN-5443, TIN-5338, TIN-1798, TIN-5442, TIN-2050, TIN-2462, [TIN-734](https://linear.app/tinyland/issue/TIN-734), TIN-2796 |
 
 SC-12 shared declarative setup, SC-13 installed browser context, SC-14 isolated
 development and SC-15 update/permanent-loss custody remain separate installed

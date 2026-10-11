@@ -178,6 +178,23 @@ pub fn mergeProbe(previous: evidence.Probe, next: evidence.Probe) evidence.Probe
 /// Unknown historical producer fields remain tolerated; desktopDirectory is typed.
 pub fn parseReceipt(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(Receipt) {
     if (bytes.len > max_receipt_bytes) return error.InvalidReceipt;
+    // []const u8 also accepts JSON byte arrays. Check the actual JSON kind
+    // first so only a string, null or an absent placement field can cross this
+    // producer boundary. Unknown historical fields remain tolerated.
+    {
+        // The typed parser below retains duplicate known-field enforcement;
+        // this kind-only pass must not reject duplicate ignored legacy fields.
+        const raw = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .duplicate_field_behavior = .use_last, .max_value_len = max_receipt_bytes, .parse_numbers = false }) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            return error.InvalidReceipt;
+        };
+        defer raw.deinit();
+        if (raw.value != .object) return error.InvalidReceipt;
+        if (raw.value.object.get("desktopDirectory")) |directory| switch (directory) {
+            .string, .null => {},
+            else => return error.InvalidReceipt,
+        };
+    }
     return std.json.parseFromSlice(Receipt, allocator, bytes, .{ .ignore_unknown_fields = true, .max_value_len = max_receipt_bytes }) catch |err| {
         if (err == error.OutOfMemory) return err;
         return error.InvalidReceipt;

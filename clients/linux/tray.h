@@ -40,6 +40,7 @@ private:
     QPushButton *sourceSignIn_;
     QSystemTrayIcon tray_;
     QLabel *connection_;
+    QLabel *snapshotNotice_;
     QLabel *message_;
     QLabel *policy_;
     QLabel *service_;
@@ -59,9 +60,11 @@ private:
     QTableWidget *leases_;
     QTableWidget *operations_;
     QTableWidget *integrations_;
+    QLabel *runtimeSelection_;
     QTableWidget *nativeThreads_;
     QTimer refreshTimer_;
     bool refreshing_ = false;
+    quint64 readinessQuery_ = 0;
     bool explicitSocket_ = false;
     bool connected_ = false;
     bool custodyAvailable_ = false;

@@ -68,7 +68,39 @@ QString text(const QJsonObject &object, const QString &field) {
     return "Unknown";
 }
 
-QJsonArray capacityRows(const QJsonArray &records, bool connected) {
+QString snapshotSummary(const QJsonObject &snapshot) {
+    if (snapshot.isEmpty()) return "No successful account snapshot received.";
+    const auto captured = snapshot.value("captured_at");
+    const auto capturedTime = QDateTime::fromSecsSinceEpoch(captured.toInteger(-1));
+    const auto revision = snapshot.value("revision");
+    return QString("Last daemon snapshot: captured %1; revision %2.")
+        .arg(captured.isDouble() && captured.toInteger(-1) >= 0
+                && captured.toDouble() == static_cast<double>(captured.toInteger(-1)) && capturedTime.isValid()
+            ? capturedTime.toString(Qt::ISODate) : "Unavailable",
+            revision.isDouble() && revision.toInteger(-1) >= 0
+                && revision.toDouble() == static_cast<double>(revision.toInteger(-1))
+            ? QString::number(revision.toInteger()) : "Unknown");
+}
+
+QString runtimeSelectionText(const QJsonObject &result) {
+    if (!result.value("runtime_selection").isObject())
+        return "Runtime selection is unavailable in this service's status report. Native application support remains unproved.";
+    const auto runtime = result.value("runtime_selection").toObject();
+    const auto state = runtime.value("state").toString();
+    const auto reason = runtime.value("reason");
+    if (runtime.value("qualification").toString() != "measured_installed_bytes_only"
+        || !runtime.value("native_support").isBool() || runtime.value("native_support").toBool()
+        || (state != "pending" && state != "refused" && state != "committed_historical_facts" && state != "unselected")
+        || (!reason.isNull() && !reason.isString())
+        || (state == "refused" && reason.toString().isEmpty()))
+        return "The runtime selection report is unsupported. Native application support remains unproved.";
+    return "Runtime selection: " + state + (reason.isString() && !reason.toString().isEmpty()
+            ? " · reason: " + reason.toString() : QString())
+        + ". Qualification: measured installed bytes only. Native application support remains unproved.";
+}
+
+QJsonArray capacityRows(const QJsonArray &records, bool connected,
+                       const QString &unavailable = "Stale: service or custody unavailable") {
     QJsonArray result;
     const qint64 now = QDateTime::currentSecsSinceEpoch();
     for (const auto &value : records) {
@@ -81,7 +113,7 @@ QJsonArray capacityRows(const QJsonArray &records, bool connected) {
                     + " — " + QDateTime::fromSecsSinceEpoch(end.toInteger()).toString(Qt::ISODate)
                 : "Unknown");
         }
-        if (!connected) record.insert("freshness", "Stale: service or custody unavailable");
+        if (!connected) record.insert("freshness", unavailable);
         else if (!record.contains("freshness") && record.value("complete").isBool()) {
             const bool complete = record.value("complete").toBool();
             record.insert("freshness", complete ? "Complete at snapshot"
@@ -221,6 +253,11 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     button(top, "Reconnect", this, [this] { client_.connectToDaemon(); refresh(); });
     button(top, "Refresh", this, [this] { refresh(); });
     layout->addLayout(top);
+    snapshotNotice_ = new QLabel(snapshotSummary({}));
+    snapshotNotice_->setObjectName("snapshotNotice");
+    snapshotNotice_->setWordWrap(true);
+    snapshotNotice_->setTextFormat(Qt::PlainText);
+    layout->addWidget(snapshotNotice_);
     message_ = new QLabel;
     message_->setWordWrap(true);
     message_->setTextFormat(Qt::PlainText);
@@ -357,8 +394,13 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
 
     integrations_ = makeTable({"Application", "Installed", "Capability", "Version", "ID"});
     auto *integrationPage = page(integrations_, &actions);
+    runtimeSelection_ = new QLabel("Runtime selection has not been queried. Native application support remains unproved.");
+    runtimeSelection_->setObjectName("runtimeSelection");
+    runtimeSelection_->setWordWrap(true);
+    runtimeSelection_->setTextFormat(Qt::PlainText);
+    static_cast<QVBoxLayout *>(integrationPage->layout())->insertWidget(0, runtimeSelection_);
     nativeThreads_ = makeTable({"Native thread", "Process", "Version", "Hook compatibility"});
-    static_cast<QVBoxLayout *>(integrationPage->layout())->insertWidget(1, nativeThreads_);
+    static_cast<QVBoxLayout *>(integrationPage->layout())->insertWidget(2, nativeThreads_);
     tabs->addTab(integrationPage, "Integrations");
     button(actions, "Discover Codex", this, [this] { discoverNative(); });
     mutationButton(actions, "Attach selected thread", [this] { nativeAction("integrations.attach"); })->setObjectName("nativeAttach");
@@ -432,7 +474,11 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
         tray_.setToolTip(connected ? "Omux: connected" : "Omux: service unavailable");
         if (!connected) {
             setupVerify_->setEnabled(false);
+            ++readinessQuery_;
+            readiness_->setRowCount(0);
             setupNotice_->setText("Service unavailable. Displayed readiness may be stale; connection failure does not establish whether packages or browser registration are installed.");
+            snapshotNotice_->setText("Service unavailable; displayed account rows are retained. " + snapshotSummary(snapshot_));
+            runtimeSelection_->setText("Service unavailable; displayed integration rows are retained. Runtime selection is unverified.");
             custodyAvailable_ = false;
             for (auto *control : mutationControls_) control->setEnabled(false);
             message_->setText((client_.hasUncertainOperations() ? client_.uncertaintyMessage() + "\n" : QString())
@@ -529,7 +575,17 @@ void OmuxTray::refresh() {
     refreshing_ = true;
     client_.request("state.snapshot", {}, [this](const QJsonObject &result, const QString &error) {
         refreshing_ = false;
-        if (!error.isEmpty()) { message_->setText((client_.hasUncertainOperations() ? client_.uncertaintyMessage() + "\n" : QString()) + error); return; }
+        if (!error.isEmpty()) {
+            message_->setText((client_.hasUncertainOperations() ? client_.uncertaintyMessage() + "\n" : QString()) + error);
+            snapshotNotice_->setText("Snapshot refresh failed (" + error + "); displayed account rows are retained. " + snapshotSummary(snapshot_));
+            ++readinessQuery_;
+            readiness_->setRowCount(0);
+            setupNotice_->setText("Snapshot refresh failed. Check setup to query readiness separately. "
+                + setupNotice_->property("custodyFeedback").toString());
+            fillTable(capacity_, capacityRows(capacityDisplayRows(snapshot_), false, "Stale: snapshot refresh failed"),
+                {"provider", "resource.target", "resource.scope", "remaining", "resource.unit", "window", "freshness", "status"});
+            return;
+        }
         applySnapshot(result);
         refreshReadiness();
     });
@@ -537,12 +593,17 @@ void OmuxTray::refresh() {
 
 void OmuxTray::refreshReadiness() {
     if (!client_.ready()) {
+        ++readinessQuery_;
+        readiness_->setRowCount(0);
         setupNotice_->setText("Connect to the selected daemon to query readiness. Home Manager owns installation; these controls never rewrite managed files.");
         return;
     }
-    client_.request("setup.readiness", {}, [this](const QJsonObject &result, const QString &error) {
+    const auto query = ++readinessQuery_;
+    client_.request("setup.readiness", {}, [this, query](const QJsonObject &result, const QString &error) {
+        if (query != readinessQuery_) return;
         const auto custodyFeedback = setupNotice_->property("custodyFeedback").toString();
         if (!error.isEmpty()) {
+            readiness_->setRowCount(0);
             setupNotice_->setText("Shared setup readiness unavailable. No installation or continuity claim can be inferred from this connection. " + error);
             if (!custodyFeedback.isEmpty()) setupNotice_->setText(setupNotice_->text() + "\n" + custodyFeedback);
             return;
@@ -587,6 +648,7 @@ void OmuxTray::refreshReadiness() {
 
 void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
     snapshot_ = snapshot;
+    snapshotNotice_->setText(snapshotSummary(snapshot_));
     custodyAvailable_ = snapshot.value("custody_available").toBool(false)
         && setupNotice_->property("custodyFeedback").toString().isEmpty();
     acquisition_->observe(snapshot);
@@ -630,6 +692,7 @@ void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
         : "All compatible accounts are eligible. Routes stay sticky; alternative preparation is paused.");
     client_.request("integrations.status", {}, [this](const QJsonObject &result, const QString &error) {
         if (error.isEmpty()) {
+            runtimeSelection_->setText(runtimeSelectionText(result));
             integrationPaths_.clear();
             const auto integrations = integrationRows(result);
             for (const auto &value : integrations) {
@@ -639,6 +702,7 @@ void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
             fillTable(integrations_, integrations,
                       {"adapter", "installed", "capability", "version", "id"});
         } else {
+            runtimeSelection_->setText("Integration status refresh failed; displayed integration rows are retained. Runtime selection is unverified. " + error);
             message_->setText((client_.hasUncertainOperations() ? client_.uncertaintyMessage() + "\n" : QString())
                 + "Integration status is unavailable. Displayed capabilities may be stale.");
         }

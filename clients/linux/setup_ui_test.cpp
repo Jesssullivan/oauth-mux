@@ -1,4 +1,5 @@
 #include "tray.h"
+#include <QAbstractItemModel>
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -25,8 +26,8 @@ QJsonObject report(bool duplicate) {
     QJsonArray findings;
     for (const auto *phase : {"artifact", "service", "vault", "source", "identity", "grant", "native"})
         findings.append(QJsonObject{{"phase", duplicate ? "artifact" : phase},
-            {"reason", QString(phase) == "native" ? "unknown" : "ready"},
-            {"action", QString(phase) == "native" ? "inspect_capability" : "none"}});
+            {"reason", QString(phase) == "native" ? "missing" : "ready"},
+            {"action", QString(phase) == "native" ? "install_native_adapter" : "none"}});
     return {{"schema_version", 1}, {"ready", false}, {"findings", findings}, {"seamless_handoff_proven", false}};
 }
 QJsonObject capacitySnapshot(bool custodyReady) {
@@ -114,6 +115,16 @@ int main(int argc, char **argv) {
     bool duplicate = false;
     bool contradictoryReady = false;
     bool decline = false;
+    bool snapshotDecline = false;
+    QString snapshotRefusal = "SnapshotTooLarge";
+    bool holdNextReadiness = false;
+    QLocalSocket *heldReadinessSocket = nullptr;
+    QByteArray heldReadinessReply;
+    bool omitCapture = false;
+    bool integrationDecline = false;
+    bool omitRuntime = false;
+    QJsonObject runtimeSelection {{"qualification", "measured_installed_bytes_only"},
+        {"native_support", false}, {"state", "unselected"}, {"reason", QJsonValue(QJsonValue::Null)}};
     int connections = 0;
     int mutations = 0;
     int reopenRequests = 0;
@@ -139,13 +150,22 @@ int main(int argc, char **argv) {
                         {"error", QJsonObject{{"code", -32000}, {"message", "CustodyLocked"}}}}).toJson(QJsonDocument::Compact) + '\n');
                     continue;
                 }
+                if ((method == "state.snapshot" && snapshotDecline)
+                    || (method == "integrations.status" && integrationDecline)) {
+                    socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
+                        {"error", QJsonObject{{"code", -32000}, {"message", snapshotRefusal}}}}).toJson(QJsonDocument::Compact) + '\n');
+                    continue;
+                }
                 QJsonObject result;
                 if (method == "system.handshake") {
                     result = {{"protocol_version", 2}};
                     if (!reopenCapability.isUndefined())
                         result.insert("capabilities", QJsonObject{{"custody_reopen", reopenCapability}});
                 }
-                else if (method == "state.snapshot") result = capacitySnapshot(custodyReady);
+                else if (method == "state.snapshot") {
+                    result = capacitySnapshot(custodyReady);
+                    if (omitCapture) result.remove("captured_at");
+                }
                 else if (method == "setup.readiness") {
                     ++readinessRequests;
                     result = report(duplicate);
@@ -186,8 +206,18 @@ int main(int argc, char **argv) {
                     else if (reopenResultMode == "handoff-claim") result.insert("live_handoff_proven", true);
                     else if (reopenResultMode == "extra-field") result.insert("extra", true);
                 }
-                else if (method == "integrations.status") result = {{"integrations", QJsonArray{}}};
+                else if (method == "integrations.status") {
+                    result = {{"adapters", QJsonArray{}}, {"installed", QJsonArray{}}};
+                    if (!omitRuntime) result.insert("runtime_selection", runtimeSelection);
+                }
                 else ++mutations;
+                if (method == "setup.readiness" && holdNextReadiness) {
+                    holdNextReadiness = false;
+                    heldReadinessSocket = socket;
+                    heldReadinessReply = QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
+                        {"result", result}}).toJson(QJsonDocument::Compact) + '\n';
+                    continue;
+                }
                 socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
                     {"result", result}}).toJson(QJsonDocument::Compact) + '\n');
             }
@@ -203,7 +233,7 @@ int main(int argc, char **argv) {
         auto *table = window.findChild<QTableWidget *>("setupReadiness");
         auto *notice = window.findChild<QLabel *>("setupNotice");
         if (!table || !notice || !until([&] { return table->rowCount() == 7; })) return 2;
-        if (table->item(6, 1)->text() != "unknown" || !notice->text().contains("Home Manager")) return 3;
+        if (table->item(6, 1)->text() != "missing" || !notice->text().contains("Home Manager")) return 3;
         // The real socket→applySnapshot path displays observations retained for
         // a paused account without presenting its total as request eligibility.
         auto *capacity = window.findChild<QTableWidget *>("capacityObservations");
@@ -223,9 +253,103 @@ int main(int argc, char **argv) {
             if (capacity->item(row, 3)->text() != "Unknown" || capacity->item(row, 6)->text() != "Unknown") return 34;
         for (int row : {5, 6})
             if (capacity->item(row, 3)->text() != "42" || capacity->item(row, 6)->text() != "Stale") return 35;
+        auto *snapshotNotice = window.findChild<QLabel *>("snapshotNotice");
+        auto *runtimeNotice = window.findChild<QLabel *>("runtimeSelection");
+        if (!snapshotNotice || !runtimeNotice || !until([&] {
+                return runtimeNotice->text().contains("Runtime selection: unselected");
+            }) || !snapshotNotice->text().contains("revision 1")
+            || snapshotNotice->text().contains("Unavailable")) return 38;
+        const auto lastSnapshot = snapshotNotice->text();
+        // Hold a real readiness reply across the later snapshot failure. It
+        // must not repopulate rows after that failure invalidates the query.
+        holdNextReadiness = true;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Check setup") button->click();
+        if (!until([&] { return heldReadinessSocket != nullptr; })) return 51;
+        const int beforeSnapshotFailureConnections = connections;
+        const int beforeSnapshotFailureReadiness = readinessRequests;
+        snapshotDecline = true;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] { return snapshotNotice->text().contains("Snapshot refresh failed"); })
+            || !snapshotNotice->text().contains(lastSnapshot) || table->rowCount() != 0
+            || capacity->rowCount() != 9 || capacity->item(0, 3)->text() != "42"
+            || connections != beforeSnapshotFailureConnections
+            || readinessRequests != beforeSnapshotFailureReadiness) return 39;
+        for (int row = 0; row < capacity->rowCount(); ++row)
+            if (capacity->item(row, 6)->text() != "Stale: snapshot refresh failed") return 40;
+        bool staleReadinessReappeared = false;
+        const auto staleRows = QObject::connect(table->model(), &QAbstractItemModel::rowsInserted,
+            &window, [&] { staleReadinessReappeared = true; });
+        heldReadinessSocket->write(heldReadinessReply);
+        heldReadinessSocket->flush();
+        snapshotRefusal = "SnapshotCardinalityExceeded";
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        // The second reply is a socket-order fence after the held readiness
+        // reply, rather than a sleep that assumes the callback was processed.
+        if (!until([&] { return snapshotNotice->text().contains(snapshotRefusal); })
+            || staleReadinessReappeared || table->rowCount() != 0) return 52;
+        QObject::disconnect(staleRows);
+        snapshotRefusal = "SnapshotTooLarge";
+        snapshotDecline = false;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] {
+                return table->rowCount() == 7 && capacity->item(2, 6)->text() == "Current";
+            }) || snapshotNotice->text().contains("refresh failed")) return 41;
+        // Missing capture metadata stays unknown; the UI must not invent a
+        // capture timestamp from its own wall clock when a reply omits it.
+        omitCapture = true;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] { return snapshotNotice->text().contains("captured Unavailable"); })) return 42;
+        omitCapture = false;
+        // Use the daemon's exact existing status contract through the actual
+        // socket→applySnapshot→integrations.status projection, never a mock UI.
+        for (const auto *state : {"refused", "pending", "committed_historical_facts", "unselected"}) {
+            runtimeSelection.insert("state", state);
+            runtimeSelection.insert("reason", QString(state) == "refused"
+                ? QJsonValue("NativeCustodyPending") : QJsonValue(QJsonValue::Null));
+            for (auto *button : window.findChildren<QPushButton *>())
+                if (button->text() == "Refresh") button->click();
+            if (!until([&] { return runtimeNotice->text().contains(QString("Runtime selection: ") + state); })
+                || !runtimeNotice->text().contains("measured installed bytes only")
+                || !runtimeNotice->text().contains("support remains unproved")) return 43;
+            if (QString(state) == "refused" && !runtimeNotice->text().contains("NativeCustodyPending")) return 44;
+        }
+        runtimeSelection.insert("native_support", true);
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] { return runtimeNotice->text().contains("report is unsupported"); })) return 45;
+        runtimeSelection.insert("native_support", false);
+        omitRuntime = true;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] { return runtimeNotice->text().contains("unavailable in this service"); })) return 46;
+        omitRuntime = false;
+        integrationDecline = true;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] { return runtimeNotice->text().contains("Integration status refresh failed"); })
+            || !runtimeNotice->text().contains("Runtime selection is unverified")
+            || !runtimeNotice->text().contains("SnapshotTooLarge")) return 47;
+        integrationDecline = false;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Refresh") button->click();
+        if (!until([&] { return runtimeNotice->text().contains("Runtime selection: unselected"); })) return 48;
+        decline = true;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Check setup") button->click();
+        if (!until([&] { return notice->text().contains("Shared setup readiness unavailable"); })
+            || table->rowCount() != 0) return 49;
+        decline = false;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == "Check setup") button->click();
+        if (!until([&] { return table->rowCount() == 7; })) return 50;
         // Ordinary connection/readiness must not trigger an automatic reopen.
         if (reopenRequests != 0) return 11;
-        // A top-level success cannot override the actual unknown native row.
+        // A top-level success cannot override the actual missing native row.
         contradictoryReady = true;
         for (auto *button : window.findChildren<QPushButton *>())
             if (button->text() == "Check setup") button->click();
