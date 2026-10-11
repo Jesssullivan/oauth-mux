@@ -13,7 +13,7 @@ import stat
 import subprocess
 
 from cached_nix_inventory import MAX_REFS, snapshot_inventory
-from site_coordinator_qualification import file_bytes
+from site_coordinator_qualification import file_bytes, declared_site_version
 from verify_cached_nars import MAX_INPUT, MAX_PATHS, STORE, parse_inventory, verify
 
 STATE = Path('/home/jess/.local/state/omux-execution-20261005')
@@ -23,7 +23,6 @@ CANDIDATE = TESTLOGS / 'site_coordinator_settings_producer/test.outputs/site-coo
 CANDIDATE_SHA256 = '48253bf1b32bc341baadbe77e9fc983ad898c338166009e92e9e2f0047e7e55c'
 VERSION_RECEIPT = TESTLOGS / 'site_coordinator_binary_qualification/test.outputs/site-coordinator-qualification/site-coordinator-qualification.json'
 VERSION_RECEIPT_SHA256 = 'a1d7e2b974c6a548245b88c07a7cce921dd1fcb31758d0ee5c50511ca3780ccd'
-SITE = Path('/srv/fast-local/jess/git/omux.xoxd.ai')
 SOURCE = '/nix/store/l61vfkyy0qrnz9bmgx84fa7z3bjzhyp4-source'
 REVISION = '1c3fe55ad329cbcb28471bb30f05c9827f724c76'
 SOURCE_NAR = 'sha256-bxrdOn8SCOv8tN4JbTF/TXq7kjo9ag4M+C8yzzIRYbE='
@@ -200,13 +199,18 @@ def write_exclusive(directory, name, content):
         os.close(descriptor)
 
 
+def declared_site_inputs(paths, version_path):
+    require(type(paths) is dict and set(paths) == set(INPUTS), 'complete declared site input set required')
+    values = {name: file_bytes(Path(paths[name]).resolve(strict=True), 1024 * 1024)[0] for name in INPUTS}
+    version, _ = declared_site_version(version_path)
+    return values, version
+
+
 def produce(nix, candidate_sha256, version_sha256, output, snapshotter=snapshot_inventory,
-            verifier=verify, observer=immutable_store_object):
+            verifier=verify, observer=immutable_store_object, *, site_inputs, site_version_path):
     candidate = selected_receipt(CANDIDATE, candidate_sha256, CANDIDATE_SHA256)
     version = selected_receipt(VERSION_RECEIPT, version_sha256, VERSION_RECEIPT_SHA256)
-    require(SITE.resolve(strict=True) == SITE, 'site source alias rejected')
-    inputs = {name: file_bytes(SITE / name, 1024 * 1024)[0] for name in INPUTS}
-    site_version = file_bytes(SITE / '.bazelversion', 64)[0]
+    inputs, site_version = declared_site_inputs(site_inputs, site_version_path)
     validate_evidence(candidate, version, inputs, site_version)
     resolved_nix = str(Path(nix).resolve(strict=True))
     require(resolved_nix == NIX, 'declared Nix pin differs')
@@ -220,9 +224,8 @@ def produce(nix, candidate_sha256, version_sha256, output, snapshotter=snapshot_
     require(selected_receipt(CANDIDATE, candidate_sha256, CANDIDATE_SHA256) == candidate and
             selected_receipt(VERSION_RECEIPT, version_sha256, VERSION_RECEIPT_SHA256) == version,
             'selected evidence changed')
-    validate_evidence(candidate, version,
-                      {name: file_bytes(SITE / name, 1024 * 1024)[0] for name in INPUTS},
-                      file_bytes(SITE / '.bazelversion', 64)[0])
+    inputs_after, version_after = declared_site_inputs(site_inputs, site_version_path)
+    validate_evidence(candidate, version, inputs_after, version_after)
     report = {'schema_version': 1, 'status': 'verified-site-toolchain',
               'bazel': BAZEL, 'bazel_executable': BAZEL_NATIVE, 'java_home': JDK,
               'bazel_version': '9.0.1', 'java_version': '21.0.10+7',
@@ -256,10 +259,19 @@ def main():
     parser.add_argument('--nix', required=True)
     parser.add_argument('--candidate-sha256', required=True)
     parser.add_argument('--binary-qualification-sha256', required=True)
+    parser.add_argument('--site-flake', required=True)
+    parser.add_argument('--site-lock', required=True)
+    parser.add_argument('--site-roots', required=True)
+    parser.add_argument('--site-selection', required=True)
+    parser.add_argument('--site-version', required=True)
     args = parser.parse_args()
     try:
         output = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True) / 'site-coordinator-closure-qualification'
-        result = produce(args.nix, args.candidate_sha256, args.binary_qualification_sha256, output)
+        result = produce(args.nix, args.candidate_sha256, args.binary_qualification_sha256, output,
+                         site_inputs={'flake.nix': args.site_flake, 'flake.lock': args.site_lock,
+                                      'tools/offline-site-roots.json': args.site_roots,
+                                      'tools/tool-selection.nix': args.site_selection},
+                         site_version_path=args.site_version)
         print(json.dumps(result, sort_keys=True))
         return 0
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError, KeyboardInterrupt):
