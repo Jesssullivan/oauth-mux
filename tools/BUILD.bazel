@@ -1806,7 +1806,16 @@ python_test(
     timeout = "long",
 )
 
-exports_files(["codex_owner_status_persistence_metadata_inputs.bzl"])
+exports_files(["codex_owner_status_persistence_metadata_inputs.bzl", "codex_owner_status_persistence_metadata_declaration.py"])
+
+python_test(
+    name = "codex_owner_status_persistence_metadata_declaration_test",
+    main = "codex_owner_status_persistence_metadata_declaration_test.py",
+    srcs = ["codex_owner_status_persistence_metadata_declaration.py"],
+    data = ["codex_owner_status_persistence_metadata_inputs.bzl"],
+    args = ["--rule", "$(location :codex_owner_status_persistence_metadata_inputs.bzl)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 
 _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES = _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES + _OWNER_STATUS_PERSISTENCE_SOURCES + ["codex_owner_status_persistence_binding.py", "codex_owner_status_persistence_source.py", "codex_protocol_history_metadata.py", "codex_retained_sdk_export.py"]
 _OWNER_STATUS_PERSISTENCE_METADATA_DATA = ["@omux_codex_protocol_history_source_inputs//:inputs", "@omux_codex_owner_status_source_inputs//:inputs", "@omux_codex_owner_status_binding_inputs//:inputs", "@omux_codex_owner_status_persistence_source_inputs//:inputs", "@omux_codex_owner_status_persistence_binding_inputs//:inputs", "@omux_owner_status_persistence_metadata_inputs//:inputs", "@omux_protocol_history_query_tools//:inputs"]
