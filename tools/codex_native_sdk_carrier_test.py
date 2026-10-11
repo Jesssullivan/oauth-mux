@@ -170,8 +170,11 @@ class CarrierModels(unittest.TestCase):
                             else: (parent / "jdk").symlink_to(moved, target_is_directory=True)
                         elif change == "directory":
                             (parent / "sdk").chmod(0o700)
-                            (parent / "sdk/a").rename(parent / "a-aside")
-                            shutil.copytree(parent / "a-aside", parent / "sdk/a")
+                            (parent / "sdk/a").rename(parent / "sdk/a-aside")
+                            shutil.copytree(parent / "sdk/a-aside", parent / "sdk/a")
+                            (parent / "sdk/a-aside").chmod(0o700)
+                            (parent / "sdk/a-aside/child").unlink()
+                            (parent / "sdk/a-aside").rmdir()
                             (parent / "sdk").chmod(0o555)
                         elif change == "link":
                             (parent / "sdk").chmod(0o700)
