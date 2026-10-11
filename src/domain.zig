@@ -1753,7 +1753,7 @@ test "ordinary grant replacements preserve writer authority and held work" {
         var state = try fixtureStateWithOwnership(owner);
         defer state.deinit();
         _ = try state.bind(.{ .id = "writer-thread", .application = "native", .session_id = "session", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1 });
-        _ = try state.beginLease(.{ .id = "held-work", .binding_id = "writer-thread", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1, .started_at = 1, .expires_at = 100 }, 1);
+        _ = try state.beginLease(.{ .id = "held-work", .binding_id = "writer-thread", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1, .route_generation = 1, .started_at = 1, .expires_at = 100 }, 1);
         const before = try std.json.Stringify.valueAlloc(std.testing.allocator, state.snapshot(), .{});
         defer std.testing.allocator.free(before);
         for ([_]RenewalOwnership{ .external, .adopted, .omux }) |replacement_owner| {
