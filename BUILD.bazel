@@ -56,7 +56,7 @@ zig_test(
 # Git metadata, operator state, captured browser data or credential fixtures.
 source_archive(
     name = "public_source_archive",
-    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + INSTALLED_RUNTIME_RECORDS + [
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/agent-notes/2026-10-11-estate-review-index.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + INSTALLED_RUNTIME_RECORDS + [
         "clients/README.md", "nix/README.md", "nix/evaluation_runner.py", "nix/evaluation_runner_test.py",
         "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
         "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
@@ -122,6 +122,7 @@ python_test(
     data = glob([
         "docs/**/*.md",
         "docs/authority.json",
+        "docs/agent-notes/2026-10-11-estate-review-index.json",
         "docs/tracker-updates/*.json",
         ".goal/*.json",
         "src/**/*.c",
