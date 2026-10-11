@@ -6,6 +6,7 @@ import { sendNativeRequest, requestNativeHealth } from "./native.mjs";
 const STORAGE_KEY = "omuxSourceMetadataV1";
 const STATE_KEY = "omuxSourceStatesV1";
 const REQUEST_KEY = "omuxSourceRequestsV1";
+const CLEANUP_CURSOR_KEY = "omuxSourceCleanupCursorV1";
 const STATES = new Set(["pending_connection", "connected_schema_unproven", "grant_submitted", "completion_unknown", "pending_disconnect"]);
 const COMMANDS = new Set(["connect", "reconcile", "disconnect", "status"]);
 const REQUEST_ID = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -270,9 +271,18 @@ export class BrowserService {
       try {
       const entries = await this.metadata();
       const states = await this.states();
+      const cursor = (await this.api.storage.local.get(CLEANUP_CURSOR_KEY))[CLEANUP_CURSOR_KEY];
+      if (cursor !== undefined && (typeof cursor !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(cursor))) throw new AcquisitionError("invalid_source_metadata");
+      const offset = Math.max(0, entries.findIndex(entry => entry.sourceId === cursor));
+      const ordered = [...entries.slice(offset), ...entries.slice(0, offset)];
       let failure;
-      for (const entry of entries) {
+      for (const [index, entry] of ordered.entries()) {
         if (this.monotonicNow() >= this.activeBudget.deadline || this.activeBudget.items >= 8) break;
+        // Persist only the next opaque source ID before work. A worker restart
+        // must not strand later removals behind repeatedly failing contexts.
+        // This hint confers no source, permission or mutation authority.
+        await this.api.storage.local.set({ [CLEANUP_CURSOR_KEY]: ordered[(index + 1) % ordered.length].sourceId });
+        if (this.monotonicNow() >= this.activeBudget.deadline) break;
         const adapter = getAdapter(entry.adapter, { allowFixture: this.allowFixture });
         if (states[entry.sourceId] === "pending_disconnect" || !await this.api.permissions.contains({ permissions: ["cookies"], origins: [hostPermission(adapter)] })) {
           try { await this.disconnectSource(entry, adapter); } catch (error) { failure ??= error; }

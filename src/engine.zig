@@ -2672,6 +2672,15 @@ pub const Engine = struct {
         snapshot.vault = .{ .state = if (self.vault_locked) .locked else if (self.poisoned) .unknown else .ready, .freshness = if (self.vault_locked) .stale else .current, .evidence = .diagnostic };
         // A locked startup has not loaded retained source/account metadata.
         if (self.vault_locked) return snapshot;
+        // Configuration is an actor-owned fact, not native capability proof.
+        // No current installed adapter has a qualified ordinary-launch gate.
+        // Publish the actionable gap through the shared UI/CLI report without
+        // manufacturing native readiness from a catalog or fixture.
+        if (!self.poisoned) snapshot.native = .{
+            .state = if (self.installed.items.len == 0) .missing else .unverified,
+            .freshness = .current,
+            .evidence = .diagnostic,
+        };
         const timestamp = self.now();
         var connected = false;
         for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= timestamp and (source.authorized_until == null or source.authorized_until.? > timestamp)) {
@@ -7592,6 +7601,68 @@ test "setup usable authority follows its own source authorization and actual rou
     try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
     try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
     try std.testing.expectEqual(@as(u64, 7), current.state.grants.items[0].generation);
+}
+
+test "shared setup readiness distinguishes absent configuration from unverified native capability" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    // Threadless actor-owned metadata; the production control handler runs
+    // without acquisition, native probing, database or provider work.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    const SharedReport = struct {
+        fn expect(actor: *Engine, reason: onboarding.Reason, action: onboarding.Action) !void {
+            var request = try control.parse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"setup.readiness\",\"params\":null}");
+            defer request.deinit();
+            const bytes = try actor.handleRequest(std.testing.allocator, request, .control);
+            defer std.testing.allocator.free(bytes);
+            const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{});
+            defer parsed.deinit();
+            const result = control.get(parsed.value, "result") orelse return error.MissingReadiness;
+            try std.testing.expect(!control.get(result, "ready").?.bool);
+            try std.testing.expect(!control.get(result, "seamless_handoff_proven").?.bool);
+            const findings = control.get(result, "findings").?.array.items;
+            try std.testing.expectEqual(@as(usize, 7), findings.len);
+            try std.testing.expectEqualStrings("native", try control.string(findings[6], "phase"));
+            try std.testing.expectEqualStrings(@tagName(reason), try control.string(findings[6], "reason"));
+            try std.testing.expectEqualStrings(@tagName(action), try control.string(findings[6], "action"));
+            const verified = try setup_verification.makeCompleted("native-readiness-fixture", 1, actor.now(), onboarding.assess(actor.setupSnapshot(.{}, false)), null);
+            try std.testing.expectEqual(reason, verified.phases[6].reason);
+            try std.testing.expectEqual(setup_verification.classify(reason), verified.phases[6].outcome);
+        }
+    };
+    const revision = current.revision;
+    try SharedReport.expect(&current, .missing, .install_native_adapter);
+    try current.installed.ensureUnusedCapacity(allocator, 1);
+    current.installed.appendAssumeCapacity(try allocator.dupe(u8, "codex"));
+    try SharedReport.expect(&current, .native_evidence_missing, .verify_native_capability);
+    // Untrusted or unloaded retained configuration cannot become a native fact.
+    current.poisoned = true;
+    try SharedReport.expect(&current, .observation_unknown, .refresh_observation);
+    current.poisoned = false;
+    current.vault_locked = true;
+    try SharedReport.expect(&current, .observation_unknown, .refresh_observation);
+    current.vault_locked = false;
+    try SharedReport.expect(&current, .native_evidence_missing, .verify_native_capability);
+    try std.testing.expectEqual(revision, current.revision);
+    try std.testing.expectEqual(@as(usize, 0), current.requests.records.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+    try std.testing.expect(current.thread == null and current.db == null and current.network == null);
 }
 
 test "Git route cache retires oldest idle context while preserving native and leased routes" {

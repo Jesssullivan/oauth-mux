@@ -4,7 +4,7 @@ pub const Channel = enum { unknown, development, release };
 pub const Ownership = enum { unknown, home_manager, installation_receipt };
 pub const Evidence = enum { unobserved, diagnostic, synthetic, native_conformance, live };
 pub const Freshness = enum { unknown, current, stale };
-pub const State = enum { unknown, ready, missing, pending, incompatible, locked, key_lost, expired, browser_required, unsupported };
+pub const State = enum { unknown, ready, missing, pending, incompatible, locked, key_lost, expired, browser_required, unsupported, unverified };
 pub const Observation = struct {
     state: State = .unknown,
     freshness: Freshness = .unknown,
@@ -107,6 +107,7 @@ fn finding(phase: Phase, observation: Observation) Finding {
             .expired => .authority_expired,
             .browser_required => .browser_required,
             .unsupported => .native_unsupported,
+            .unverified => if (phase == .native) .native_evidence_missing else .evidence_unobserved,
             .ready => switch (observation.evidence) {
                 .unobserved => .evidence_unobserved,
                 .synthetic => .synthetic_only,

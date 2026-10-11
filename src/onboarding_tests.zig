@@ -57,6 +57,21 @@ test "diagnostic native observation lacks version-bound conformance" {
     try std.testing.expectEqual(model.Reason.native_evidence_missing, model.assess(snapshot).findings[6].reason);
 }
 
+test "configured but unverified native capability cannot be promoted by evidence labels" {
+    var snapshot = observed();
+    snapshot.native.state = .unverified;
+    inline for (.{ model.Evidence.unobserved, .diagnostic, .synthetic, .native_conformance, .live }) |evidence| {
+        snapshot.native.evidence = evidence;
+        const result = model.assess(snapshot);
+        try std.testing.expect(!result.ready);
+        try std.testing.expect(!result.seamless_handoff_proven);
+        try std.testing.expectEqual(model.Reason.native_evidence_missing, result.findings[6].reason);
+        try std.testing.expectEqual(model.Action.verify_native_capability, result.findings[6].action);
+    }
+    snapshot.native.freshness = .stale;
+    try std.testing.expectEqual(model.Reason.observation_stale, model.assess(snapshot).findings[6].reason);
+}
+
 test "channel diagnostics cannot hide observed artifact failure or pending refresh" {
     var snapshot = observed();
     snapshot.installed_channel = .unknown;

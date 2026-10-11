@@ -791,6 +791,108 @@ test("startup caps item count and leaves remaining sources for an explicit subse
   assert.equal(mock.messages[8].params.sourceId, "source-8", "the next explicit event starts with deferred sources");
 });
 
+function cleanupContexts(count) {
+  const mock = browserMock({ selectedAdapter: "codex" });
+  const entries = Array.from({ length: count }, (_, index) => ({ adapter: "codex", storeId: `cleanup-store-${index}`, sourceId: `cleanup-source-${index}` }));
+  mock.persisted.omuxSourceMetadataV1 = structuredClone(entries);
+  mock.persisted.omuxSourceStatesV1 = Object.fromEntries(entries.map(entry => [entry.sourceId, "pending_disconnect"]));
+  mock.persisted.omuxSourceRequestsV1 = Object.fromEntries(entries.map((entry, index) => [entry.sourceId, { id: `original-removal-${index}`, method: "browser.disconnect" }]));
+  mock.api.permissions.contains = async () => { throw new Error("pending removal needs no read permission"); };
+  mock.api.cookies = undefined;
+  let nextId = 0;
+  const restart = (options = {}) => new BrowserService({ api: mock.api, browserKind: "firefox", randomId: () => `cleanup-health-${++nextId}`, monotonicNow: () => 0, ...options });
+  return { ...mock, entries, restart };
+}
+
+test("cleanup continues past repeatedly unaccepted removals after worker restart within the eight-send budget", async () => {
+  const mock = cleanupContexts(12);
+  const blocked = new Set(mock.entries.slice(0, 8).map(entry => entry.sourceId));
+  // These sources initially lost permission, rather than recording removal.
+  mock.persisted.omuxSourceStatesV1 = Object.fromEntries(mock.entries.map(entry => [entry.sourceId, "connected_schema_unproven"]));
+  mock.api.permissions.contains = async () => false;
+  mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages, mutationReply: message => ({ version: 1, id: message.id, result: { accepted: !blocked.has(message.params.sourceId) } }) });
+  const first = mock.restart();
+  await assert.rejects(first.reconcilePermissions(), fails("invalid_native_response"));
+  assert.equal(mock.messages.length, 8);
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, mock.entries);
+  await first.reconcileSources();
+  assert.equal(mock.messages.length, 8, "source reconciliation cannot renew the shared startup budget");
+  await assert.rejects(mock.restart().reconcilePermissions(), fails("invalid_native_response"));
+  assert.equal(mock.messages.length, 16);
+  assert.deepEqual(mock.messages.slice(8, 12).map(message => message.params.sourceId), mock.entries.slice(8).map(entry => entry.sourceId));
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, mock.entries.slice(0, 8), "later revoked contexts complete despite earlier failures");
+  for (const message of mock.messages) {
+    assert.equal(message.method, "browser.disconnect");
+    assert.equal(message.id, `original-removal-${mock.entries.findIndex(entry => entry.sourceId === message.params.sourceId)}`);
+  }
+  assert.equal(mock.messages.some(message => message.method === "browser.importGrant"), false);
+  assert.deepEqual(mock.cookieQueries, []);
+  assert.deepEqual(mock.removedPermissions, [], "startup cleanup does not request or broaden provider permission");
+});
+
+test("cleanup advances after a failed request consumes the original startup deadline", async () => {
+  const mock = cleanupContexts(3);
+  let clock = 0;
+  mock.api.runtime.connectNative = () => {
+    const port = nativePort({ messages: mock.messages, nativeFailure: true });
+    const post = port.postMessage;
+    port.postMessage = message => { if (message.method !== "browser.health") clock = 10000; post(message); };
+    return port;
+  };
+  const first = mock.restart({ monotonicNow: () => clock });
+  await assert.rejects(first.reconcilePermissions(), fails("native_host_unavailable"));
+  await first.reconcileSources();
+  assert.equal(mock.messages.length, 1);
+  mock.api.runtime.connectNative = () => nativePort({ messages: mock.messages });
+  await mock.restart().reconcilePermissions();
+  assert.deepEqual(mock.messages.slice(1).map(message => message.params.sourceId), ["cleanup-source-1", "cleanup-source-2", "cleanup-source-0"]);
+  assert.equal(mock.messages.at(-1).id, "original-removal-0");
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, []);
+  assert.deepEqual(mock.persisted.omuxSourceRequestsV1, {});
+});
+
+test("invalid cleanup cursor refuses before permission reads, metadata changes or native dispatch", async () => {
+  for (const cursor of [null, 0, "", "bad source", "x".repeat(129), { sourceId: "cleanup-source-0" }]) {
+    const mock = cleanupContexts(1);
+    mock.persisted.omuxSourceCleanupCursorV1 = cursor;
+    const before = structuredClone(mock.persisted);
+    await assert.rejects(mock.restart().reconcilePermissions(), fails("invalid_source_metadata"));
+    assert.deepEqual(mock.persisted, before);
+    assert.deepEqual(mock.messages, []);
+  }
+});
+
+test("a removed cursor target does not create source authority or strand remaining cleanup", async () => {
+  const mock = cleanupContexts(2);
+  mock.persisted.omuxSourceCleanupCursorV1 = "already-removed-source";
+  await mock.restart().reconcilePermissions();
+  assert.deepEqual(mock.messages.map(message => message.params.sourceId), mock.entries.map(entry => entry.sourceId));
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, []);
+  assert.equal(mock.messages.some(message => message.method !== "browser.disconnect"), false);
+});
+
+test("cleanup cursor write failure preserves original removal and dispatches no work", async () => {
+  const mock = cleanupContexts(2);
+  const before = structuredClone(mock.persisted);
+  mock.api.storage.local.set = async () => { throw new Error("synthetic-storage-unavailable"); };
+  await assert.rejects(mock.restart().reconcilePermissions(), /synthetic-storage-unavailable/);
+  assert.deepEqual(mock.persisted, before);
+  assert.deepEqual(mock.messages, []);
+});
+
+test("cleanup does not dispatch when persisting its cursor consumes the startup deadline", async () => {
+  const mock = cleanupContexts(2);
+  let clock = 0;
+  const save = mock.api.storage.local.set;
+  mock.api.storage.local.set = async value => { await save(value); clock = 10000; };
+  const service = mock.restart({ monotonicNow: () => clock });
+  await service.reconcilePermissions();
+  await service.reconcileSources();
+  assert.deepEqual(mock.messages, []);
+  assert.deepEqual(mock.persisted.omuxSourceMetadataV1, mock.entries);
+  assert.equal(mock.persisted.omuxSourceCleanupCursorV1, "cleanup-source-1");
+});
+
 test("ambiguous disconnected-tab selection cannot disconnect multiple authorized contexts", async () => {
   const mock = browserMock({ selectedAdapter: "codex" });
   await mock.service.command({ command: "connect", adapter: "codex" });
