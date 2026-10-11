@@ -2,9 +2,11 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QDir>
 #include <QDateTime>
 #include <QFormLayout>
@@ -18,6 +20,8 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -179,6 +183,50 @@ bool nativeGeneration(const QJsonValue &value) {
     bool valid = false;
     const auto generation = decimal.toULongLong(&valid);
     return valid && generation != 0;
+}
+
+bool accountDiagnostics(const QJsonObject &result, const QString &account, const QString &application) {
+    const QStringList reasons {"ready", "context_required", "revision_changed", "account_unavailable",
+        "source_required", "source_unauthorized", "source_detached", "acquisition_unverified", "acquisition_unsupported",
+        "identity_required", "compatible_authority_required", "custody_unavailable", "custody_generation_mismatch",
+        "renewal_owner_mismatch", "renewal_owner_unverified", "adapter_configuration_required", "ordinary_launch_unverified",
+        "native_unsupported", "capacity_unknown", "capacity_unavailable"};
+    const QStringList actions {"none", "select_application_context", "refresh_context", "select_account", "connect_source",
+        "reconcile_source", "inspect_acquisition", "verify_identity", "enroll_compatible_authority", "repair_custody",
+        "inspect_renewal_owner", "install_adapter", "verify_native_capability", "inspect_capacity"};
+    const auto validObservation = [&reasons, &actions](const QJsonObject &row) {
+        const auto state = row.value("state").toString();
+        const auto reason = row.value("reason").toString();
+        const auto action = row.value("action").toString();
+        return (state == "unknown" || state == "ready" || state == "action_required")
+            && reasons.contains(reason) && actions.contains(action)
+            && (state == "ready" ? reason == "ready" && action == "none" : reason != "ready");
+    };
+    if (result.value("schema_version") != QJsonValue(2)
+        || result.value("scope").toString() != "selected_account_request_authority_and_adapter_diagnostics"
+        || result.value("actual_renewal_writer").toString() != "unknown" || result.value("live_process").toString() != "unknown"
+        || (!result.value("account_id").isNull() && result.value("account_id") != QJsonValue(account))
+        || !result.value("diagnostics").isObject()) return false;
+    const auto report = result.value("diagnostics").toObject();
+    const auto revision = report.value("revision");
+    if (report.value("schema_version") != QJsonValue(1)
+        || report.value("scope").toString() != "joined_request_authority_and_adapter_diagnostics"
+        || report.value("application") != QJsonValue(application) || !validObservation(report)
+        || !report.value("ready").isBool() || report.value("ready").toBool() || report.value("state").toString() == "ready"
+        || !revision.isDouble() || revision.toInteger(-1) < 0
+        || revision.toDouble() != static_cast<double>(revision.toInteger(-1))
+        || !QStringList{"unknown", "external", "omux"}.contains(report.value("renewal_owner").toString())) return false;
+    for (const auto *flag : {"provider_access", "enrollment_success_proven", "seamless_handoff_proven"})
+        if (!report.value(flag).isBool() || report.value(flag).toBool()) return false;
+    for (const auto *phase : {"source", "enrollment", "identity", "authority", "adapter", "ordinary_launch", "capacity"})
+        if (!report.value(phase).isObject() || !validObservation(report.value(phase).toObject())) return false;
+    if (report.value("ordinary_launch").toObject().value("state").toString() != "unknown") return false;
+    if (result.value("account_id").isNull())
+        return report.value("context_ref").isNull()
+            && QStringList{"revision_changed", "account_unavailable", "custody_unavailable"}.contains(report.value("reason").toString());
+    const auto evaluated = report.value("evaluated_at");
+    return nativeHex(report.value("context_ref")) && evaluated.isDouble() && evaluated.toInteger(-1) >= 0
+        && evaluated.toDouble() == static_cast<double>(evaluated.toInteger(-1));
 }
 
 bool nativeReference(const QJsonValue &value, const QJsonObject &row) {
@@ -480,6 +528,7 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
         tray_.setToolTip(connected ? "Omux: connected" : "Omux: service unavailable");
         if (!connected) {
             snapshotRefreshSucceeded_ = false;
+            invalidateAccountDemand("Service unavailable; refresh before checking this account demand again.");
             setupVerify_->setEnabled(false);
             ++readinessQuery_;
             readiness_->setRowCount(0);
@@ -638,6 +687,10 @@ void OmuxTray::showDetails(QTableWidget *table) {
         copy("Account type (descriptive)", "account_type");
         fact("Usable request grant", "Unknown: this snapshot has no request-context or held-custody verdict. A ready grant row does not prove usable authority.");
         fact("Actual renewal writer", "Unknown: ownership metadata does not verify the held renewal writer.");
+        auto *demand = new QPushButton("Check a request demand…");
+        demand->setObjectName("accountDemand");
+        layout->addWidget(demand);
+        connect(demand, &QPushButton::clicked, dialog, [this, row] { showAccountDemand(row); });
         QJsonArray sources;
         const auto ids = row.value("source_ids");
         if (ids.isArray()) for (const auto &id : ids.toArray()) {
@@ -721,6 +774,208 @@ void OmuxTray::showDetails(QTableWidget *table) {
     dialog->show();
 }
 
+void OmuxTray::invalidateAccountDemand(const QString &reason, bool changedRevisionOnly) {
+    for (auto *notice : findChildren<QLabel *>("accountDemandNotice")) {
+        if (changedRevisionOnly && notice->property("revision").value<QJsonValue>() == snapshot_.value("revision")) continue;
+        notice->setProperty("query", notice->property("query").toULongLong() + 1);
+        notice->setText("Unknown: " + reason);
+        auto *dialog = qobject_cast<QDialog *>(notice->parentWidget());
+        if (dialog) {
+            if (auto *table = dialog->findChild<QTableWidget *>("accountDemandResult")) table->setRowCount(0);
+            if (auto *check = dialog->findChild<QPushButton *>("checkAccountDemand")) check->setEnabled(true);
+        }
+    }
+}
+
+void OmuxTray::showAccountDemand(const QJsonObject &account) {
+    const QString accountID = account.value("id").toString();
+    QJsonObject current;
+    for (const auto &value : snapshot_.value("accounts").toArray())
+        if (value.toObject().value("id").toString() == accountID && !accountID.isEmpty()) current = value.toObject();
+    const auto revision = snapshot_.value("revision");
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName("accountDemandDialog");
+    dialog->setWindowTitle("Selected-account request diagnostics");
+    dialog->resize(900, 740);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *notice = new QLabel("Unknown: choose an application and declare the actual request demand. This check reads metadata only; it creates no authority or request.", dialog);
+    notice->setObjectName("accountDemandNotice");
+    notice->setWordWrap(true);
+    notice->setTextFormat(Qt::PlainText);
+    notice->setProperty("revision", QVariant::fromValue(revision));
+    auto *context = new QLabel("Opaque account: " + accountID + " · metadata revision: "
+        + (revision.isDouble() && revision.toInteger(-1) >= 0 ? QString::number(revision.toInteger()) : "Unknown"));
+    context->setTextFormat(Qt::PlainText);
+    context->setWordWrap(true);
+    layout->addWidget(context);
+    layout->addWidget(notice);
+    auto *form = new QFormLayout;
+    layout->addLayout(form);
+    auto *application = new QComboBox;
+    application->setObjectName("demandApplication");
+    application->addItems({"codex", "git", "claude"});
+    application->setCurrentIndex(-1);
+    form->addRow("Application", application);
+    const auto provider = current.value("identity").toObject().value("provider").toString();
+    auto *providerLabel = new QLabel(provider.isEmpty() ? "Unknown" : provider);
+    providerLabel->setTextFormat(Qt::PlainText);
+    form->addRow("Provider metadata", providerLabel);
+    auto *audience = new QComboBox;
+    audience->setObjectName("demandAudience");
+    audience->setEditable(true);
+    audience->setMaxCount(1024);
+    auto *scopes = new QPlainTextEdit;
+    scopes->setObjectName("demandScopes");
+    scopes->setPlaceholderText("Requested scopes, one per line; leave empty only if the request needs none.");
+    scopes->setMaximumHeight(65);
+    for (const auto &value : snapshot_.value("grants").toArray()) {
+        const auto grant = value.toObject();
+        if (grant.value("account_id").toString() != accountID || !grant.value("audience").isString()) continue;
+        audience->addItem(grant.value("audience").toString(), QVariant::fromValue(grant.value("scopes").toArray()));
+    }
+    audience->setCurrentIndex(-1);
+    audience->setEditText({});
+    form->addRow("Actual request audience", audience);
+    form->addRow("Requested scopes", scopes);
+    auto *resource = new QComboBox;
+    resource->setObjectName("demandResourceTemplate");
+    resource->addItem("Declare the actual resource below", QVariant::fromValue(QJsonObject{}));
+    for (const auto *collection : {"observations", "leases"}) for (const auto &value : snapshot_.value(collection).toArray()) {
+        const auto row = value.toObject();
+        if (row.value("account_id").toString() != accountID || !row.value("resource").isObject()) continue;
+        resource->addItem(QString(QString::fromLatin1(collection) == "leases" ? "Retained lease: " : "Observation descriptor: ")
+            + text(row, "resource.kind") + " / " + text(row, "resource.target") + " / " + text(row, "resource.unit"), QVariant::fromValue(row.value("resource").toObject()));
+    }
+    form->addRow("Resource descriptor template", resource);
+    const auto input = [form](const char *name, const QString &title) {
+        auto *field = new QLineEdit;
+        field->setObjectName(name);
+        field->setMaxLength(256);
+        form->addRow(title, field);
+        return field;
+    };
+    auto *kind = input("demandKind", "Actual resource kind");
+    auto *target = input("demandTarget", "Actual resource target");
+    auto *unit = new QComboBox;
+    unit->setObjectName("demandUnit");
+    unit->addItems({"calls", "bytes", "seconds", "uploads", "tokens", "custom"});
+    unit->setCurrentIndex(-1);
+    form->addRow("Requested amount unit", unit);
+    auto *unitName = input("demandUnitName", "Custom unit name (custom only)");
+    auto *scope = input("demandResourceScope", "Actual resource scope");
+    auto *required = new QDoubleSpinBox;
+    required->setObjectName("demandRequired");
+    required->setDecimals(6);
+    required->setRange(0, 1e15);
+    required->setValue(1);
+    form->addRow("Requested amount", required);
+    auto *capacity = new QCheckBox("Require a current capacity observation for this request");
+    capacity->setObjectName("demandRequiresCapacity");
+    form->addRow(capacity);
+    auto *table = makeTable({"Independent diagnostic", "State", "Reason", "Next action"});
+    table->setObjectName("accountDemandResult");
+    layout->addWidget(table);
+    auto *buttons = new QHBoxLayout;
+    layout->addLayout(buttons);
+    auto *check = new QPushButton("Check declared demand");
+    buttons->addWidget(check);
+    check->setObjectName("checkAccountDemand");
+    auto *close = button(buttons, "Close", dialog, [dialog] { dialog->close(); });
+    Q_UNUSED(close);
+    const auto edited = [notice, table, check] {
+        notice->setProperty("query", notice->property("query").toULongLong() + 1);
+        notice->setText("Unknown: demand changed; check the declared request again.");
+        table->setRowCount(0);
+        check->setEnabled(true);
+    };
+    for (auto *field : {kind, target, unitName, scope}) connect(field, &QLineEdit::textChanged, dialog, edited);
+    connect(application, &QComboBox::currentIndexChanged, dialog, edited);
+    connect(unit, &QComboBox::currentIndexChanged, dialog, edited);
+    connect(audience, &QComboBox::editTextChanged, dialog, edited);
+    connect(scopes, &QPlainTextEdit::textChanged, dialog, edited);
+    connect(required, &QDoubleSpinBox::valueChanged, dialog, edited);
+    connect(capacity, &QCheckBox::toggled, dialog, edited);
+    connect(audience, &QComboBox::activated, dialog, [audience, scopes] {
+        QStringList values;
+        for (const auto &value : audience->currentData().value<QJsonArray>()) if (value.isString()) values.append(value.toString());
+        scopes->setPlainText(values.join('\n'));
+    });
+    connect(resource, &QComboBox::currentIndexChanged, dialog, [resource, kind, target, unit, unitName, scope, edited] {
+        const auto row = resource->currentData().value<QJsonObject>();
+        kind->setText(row.value("kind").toString());
+        target->setText(row.value("target").toString());
+        unit->setCurrentIndex(unit->findText(row.value("unit").toString()));
+        unitName->setText(row.value("unit_name").toString());
+        scope->setText(row.value("scope").toString());
+        edited();
+    });
+    connect(check, &QPushButton::clicked, dialog,
+        [this, accountID, provider, revision, notice, table, check, application, audience, scopes, kind, target, unit, unitName, scope, required, capacity] {
+        table->setRowCount(0);
+        const auto query = notice->property("query").toULongLong() + 1;
+        notice->setProperty("query", query);
+        if (!client_.supportsAccountReadiness()) { notice->setText("Unknown: this service has not negotiated selected-account readiness v2. Update the service to use this read-only check."); return; }
+        bool retained = false;
+        for (const auto &value : snapshot_.value("accounts").toArray()) if (value.toObject().value("id") == QJsonValue(accountID) && !accountID.isEmpty()) retained = true;
+        if (!client_.ready() || !connected_ || !custodyAvailable_ || !snapshotRefreshSucceeded_
+            || revision != snapshot_.value("revision") || !revision.isDouble() || revision.toInteger(-1) < 0
+            || revision.toDouble() != static_cast<double>(revision.toInteger(-1)) || !retained) {
+            notice->setText("Unknown: account metadata is unavailable or stale. Refresh and reopen this demand form."); return;
+        }
+        QJsonArray requestedScopes;
+        QSet<QString> seen;
+        for (const auto &value : scopes->toPlainText().split('\n')) {
+            if (value.isEmpty()) continue;
+            if (value.toUtf8().size() > 256 || seen.contains(value)) { notice->setText("Unknown: requested scopes must be distinct and bounded. Correct the demand."); return; }
+            seen.insert(value); requestedScopes.append(value);
+        }
+        if (application->currentIndex() < 0 || provider.isEmpty() || provider.toUtf8().size() > 256
+            || audience->currentText().isEmpty() || audience->currentText().toUtf8().size() > 256 || kind->text().isEmpty()
+            || unit->currentIndex() < 0 || (unit->currentText() == "custom" && unitName->text().isEmpty()) || requestedScopes.size() > 64
+            || !std::isfinite(required->value())) {
+            notice->setText("Unknown: select an application, audience and actual resource with its unit; complete the bounded request demand."); return;
+        }
+        for (auto *field : {kind, target, unitName, scope}) if (field->text().toUtf8().size() > 256) {
+            notice->setText("Unknown: resource descriptors must fit the declared demand limit."); return;
+        }
+        const auto selectedApplication = application->currentText();
+        QJsonObject demand {{"provider", provider}, {"audience", audience->currentText()}, {"purpose", "request"},
+            {"scopes", requestedScopes}, {"required", required->value()}, {"requires_capacity", capacity->isChecked()},
+            {"resource", QJsonObject{{"kind", kind->text()}, {"target", target->text()}, {"unit", unit->currentText()},
+                {"unit_name", unitName->text()}, {"scope", scope->text()}}}};
+        check->setEnabled(false);
+        notice->setText("Checking read-only diagnostics for this account and declared request…");
+        client_.request("setup.applicationReadiness", {{"account_id", accountID}, {"application", selectedApplication},
+            {"expected_revision", revision}, {"demand", demand}},
+            [this, accountID, selectedApplication, revision, query, notice = QPointer<QLabel>(notice), table = QPointer<QTableWidget>(table), check = QPointer<QPushButton>(check)](const QJsonObject &result, const QString &error) {
+            if (!notice || !table || !check || notice->property("query").toULongLong() != query) return;
+            check->setEnabled(true);
+            table->setRowCount(0);
+            if (!client_.ready() || !connected_ || !custodyAvailable_ || !snapshotRefreshSucceeded_ || snapshot_.value("revision") != revision) {
+                notice->setText("Unknown: the connection, custody or metadata revision changed during this check. Refresh and reopen the demand form."); return;
+            }
+            if (!error.isEmpty()) { notice->setText("Unknown: read-only demand check refused or unavailable: " + error + ". No account action or provider request was initiated."); return; }
+            if (!accountDiagnostics(result, accountID, selectedApplication)) { notice->setText("Unknown: unsupported or contradictory selected-account diagnostics. No usable authority is established."); return; }
+            const auto report = result.value("diagnostics").toObject();
+            if (result.value("account_id").isNull() || report.value("revision") != revision) {
+                notice->setText("Unknown: selected-account check reported " + report.value("reason").toString() + " · next action: " + report.value("action").toString() + ". Refresh metadata before checking again."); return;
+            }
+            QJsonArray rows;
+            for (const auto *phase : {"source", "enrollment", "identity", "authority", "adapter", "ordinary_launch", "capacity"}) {
+                auto row = report.value(phase).toObject();
+                row.insert("phase", QString(phase)); rows.append(row);
+            }
+            fillTable(table, rows, {"phase", "state", "reason", "action"});
+            notice->setText("Captured demand diagnostics at revision " + QString::number(report.value("revision").toInteger()) + ", evaluated " + text(report, "evaluated_at")
+                + ". These diagnostics describe this declared request only; this is not a cached permit. Recorded renewal ownership: "
+                + report.value("renewal_owner").toString() + ". Actual renewal writer: Unknown. Live process: Unknown. Enrollment and seamless handoff remain unproved.");
+        });
+    });
+    if (!client_.supportsAccountReadiness()) notice->setText("Unknown: this service has not negotiated selected-account readiness v2.");
+    dialog->show();
+}
+
 void OmuxTray::refresh() {
     if (!client_.ready() || refreshing_) return;
     refreshing_ = true;
@@ -728,6 +983,7 @@ void OmuxTray::refresh() {
         refreshing_ = false;
         if (!error.isEmpty()) {
             snapshotRefreshSucceeded_ = false;
+            invalidateAccountDemand("Snapshot refresh failed; refresh before checking this account demand again.");
             message_->setText((client_.hasUncertainOperations() ? client_.uncertaintyMessage() + "\n" : QString()) + error);
             snapshotNotice_->setText("Snapshot refresh failed (" + error + "); displayed account rows are retained. " + snapshotSummary(snapshot_));
             ++readinessQuery_;
@@ -804,6 +1060,8 @@ void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
     snapshotNotice_->setText(snapshotSummary(snapshot_));
     custodyAvailable_ = snapshot.value("custody_available").toBool(false)
         && setupNotice_->property("custodyFeedback").toString().isEmpty();
+    invalidateAccountDemand(custodyAvailable_ ? "Account metadata revision changed; refresh and reopen the demand form."
+        : "Custody unavailable; current account demand authority is Unknown.", custodyAvailable_);
     acquisition_->observe(snapshot);
     updateMutationControls();
     connection_->setText(custodyAvailable_ ? "Connected" : "Connected; credential custody unavailable");
@@ -946,6 +1204,8 @@ QString OmuxTray::sourceReconcileIssue(bool forEnrollment) const {
 }
 
 void OmuxTray::updateMutationControls() {
+    if (!custodyAvailable_)
+        invalidateAccountDemand("Custody unavailable; current account demand authority is Unknown.");
     setupVerify_->setEnabled(connected_ && !client_.hasUncertainOperations());
     const bool allowed = connected_ && custodyAvailable_ && !client_.hasUncertainOperations() && (!acquisition_ || !acquisition_->busy());
     if (auto *cancel = findChild<QPushButton *>("codexAccountCancel")) cancel->setEnabled(acquisition_ && acquisition_->busy());

@@ -25,6 +25,7 @@ public:
     bool ready() const { return ready_; }
     bool supportsEnrollmentGeneration() const { return enrollmentGeneration_; }
     bool supportsCustodyReopen() const { return custodyReopen_; }
+    bool supportsAccountReadiness() const { return accountReadiness_; }
     bool hasUncertainOperations() const { return !uncertain_.isEmpty(); }
     QString uncertaintyMessage() const;
     const QString &socketPath() const { return socketPath_; }
@@ -58,6 +59,7 @@ private:
     bool ready_ = false;
     bool enrollmentGeneration_ = false;
     bool custodyReopen_ = false;
+    bool accountReadiness_ = false;
     bool connecting_ = false;
     static constexpr qsizetype maximumFrame = 1024 * 1024;
 };

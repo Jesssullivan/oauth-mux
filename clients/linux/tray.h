@@ -19,6 +19,8 @@ private:
     void refreshReadiness();
     void applySnapshot(const QJsonObject &snapshot);
     void showDetails(QTableWidget *table);
+    void showAccountDemand(const QJsonObject &account);
+    void invalidateAccountDemand(const QString &reason, bool changedRevisionOnly = false);
     void action(const QString &method, QJsonObject params);
     void connectSource();
     void enroll();

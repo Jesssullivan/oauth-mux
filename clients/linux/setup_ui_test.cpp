@@ -12,6 +12,10 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QDateTime>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
+#include <QPlainTextEdit>
 #include <cstdio>
 #include <memory>
 
@@ -65,6 +69,44 @@ QJsonObject capacitySnapshot(bool custodyReady) {
         {"capacity", QJsonArray{total, partial}},
         {"observations", QJsonArray{sample, unavailable, unknown, expired, ended, futureObservation, futureWindow}}};
 }
+QJsonObject selectedDemandReport(const QJsonObject &params, const QString &mode) {
+    QJsonObject diagnostics {{"schema_version", 1}, {"scope", "joined_request_authority_and_adapter_diagnostics"},
+        {"application", params.value("application")}, {"revision", params.value("expected_revision")},
+        {"context_ref", QString(64, '1')}, {"evaluated_at", QDateTime::currentSecsSinceEpoch()},
+        {"ready", false}, {"state", "action_required"}, {"reason", "adapter_configuration_required"}, {"action", "install_adapter"},
+        {"renewal_owner", "external"}, {"provider_access", false}, {"enrollment_success_proven", false}, {"seamless_handoff_proven", false}};
+    for (const auto *phase : {"source", "identity", "authority"})
+        diagnostics.insert(phase, QJsonObject{{"state", "ready"}, {"reason", "ready"}, {"action", "none"}});
+    diagnostics.insert("adapter", QJsonObject{{"state", "action_required"}, {"reason", "adapter_configuration_required"}, {"action", "install_adapter"}});
+    diagnostics.insert("enrollment", QJsonObject{{"state", "unknown"}, {"reason", "acquisition_unverified"}, {"action", "inspect_acquisition"}});
+    diagnostics.insert("ordinary_launch", QJsonObject{{"state", "unknown"}, {"reason", "ordinary_launch_unverified"}, {"action", "verify_native_capability"}});
+    diagnostics.insert("capacity", QJsonObject{{"state", "unknown"}, {"reason", "capacity_unknown"}, {"action", "inspect_capacity"}});
+    QJsonObject result {{"schema_version", 2}, {"scope", "selected_account_request_authority_and_adapter_diagnostics"},
+        {"account_id", params.value("account_id")}, {"diagnostics", diagnostics}, {"actual_renewal_writer", "unknown"}, {"live_process", "unknown"}};
+    if (mode == "stale" || mode == "missing" || mode == "custody") {
+        result.insert("account_id", QJsonValue(QJsonValue::Null));
+        diagnostics.insert("context_ref", QJsonValue(QJsonValue::Null));
+        diagnostics.insert("evaluated_at", QJsonValue(QJsonValue::Null));
+        diagnostics.insert("reason", mode == "stale" ? "revision_changed" : mode == "missing" ? "account_unavailable" : "custody_unavailable");
+        diagnostics.insert("action", mode == "stale" ? "refresh_context" : mode == "missing" ? "select_account" : "repair_custody");
+        diagnostics.insert("state", mode == "missing" ? "action_required" : "unknown");
+        if (mode == "stale") diagnostics.insert("revision", params.value("expected_revision").toInteger() + 1);
+        for (const auto *phase : {"source", "identity", "authority", "adapter"})
+            diagnostics.insert(phase, QJsonObject{{"state", "unknown"}, {"reason", QString(phase) == "source" ? "source_required"
+                : QString(phase) == "identity" ? "identity_required" : QString(phase) == "authority" ? "compatible_authority_required" : "ordinary_launch_unverified"},
+                {"action", QString(phase) == "source" ? "connect_source" : QString(phase) == "identity" ? "verify_identity"
+                : QString(phase) == "authority" ? "enroll_compatible_authority" : "verify_native_capability"}});
+        diagnostics.insert("renewal_owner", "unknown");
+        if (mode == "custody") diagnostics.insert("authority", QJsonObject{{"state", "unknown"}, {"reason", "custody_unavailable"}, {"action", "repair_custody"}});
+    } else if (mode == "mismatch") result.insert("account_id", "unrelated-opaque-account");
+    else if (mode == "old") result.insert("schema_version", 1);
+    else if (mode == "claims") diagnostics.insert("provider_access", true);
+    else if (mode == "writer") result.insert("actual_renewal_writer", "omux");
+    else if (mode == "malformed") diagnostics.remove("authority");
+    result.insert("diagnostics", diagnostics);
+    return result;
+}
+
 QJsonObject drilldownSnapshot(bool custodyReady, int mode) {
     const auto now = QDateTime::currentSecsSinceEpoch();
     const QJsonObject resource {{"kind", "api-calls"}, {"target", "core"}, {"unit", "calls"}, {"scope", "github:rest:core"}};
@@ -215,6 +257,15 @@ int main(int argc, char **argv) {
     bool omitRuntime = false;
     bool detailsFixture = false;
     int detailsMode = 0;
+    bool selectedFixture = false;
+    qint64 selectedRevision = 2;
+    QJsonValue accountReadinessCapability(QJsonValue::Undefined);
+    int accountDemandRequests = 0;
+    bool accountDemandWireValid = true;
+    QString accountDemandMode = "normal";
+    bool holdAccountDemand = false;
+    QLocalSocket *heldAccountSocket = nullptr;
+    QByteArray heldAccountReply;
     bool uncertainRecovery = false;
     bool originalOutcomeCompleted = false;
     QString originalOperation;
@@ -245,7 +296,8 @@ int main(int argc, char **argv) {
             *buffer += socket->readAll();
             while (buffer->contains('\n')) {
                 const auto end = buffer->indexOf('\n');
-                const auto request = QJsonDocument::fromJson(buffer->left(end)).object();
+                const auto wire = buffer->left(end);
+                const auto request = QJsonDocument::fromJson(wire).object();
                 buffer->remove(0, end + 1);
                 const auto method = request.value("method").toString();
                 if (uncertainRecovery && method == "policy.set") {
@@ -283,12 +335,69 @@ int main(int argc, char **argv) {
                 QJsonObject result;
                 if (method == "system.handshake") {
                     result = {{"protocol_version", 2}};
-                    if (!reopenCapability.isUndefined())
-                        result.insert("capabilities", QJsonObject{{"custody_reopen", reopenCapability}});
+                    QJsonObject capabilities;
+                    if (!reopenCapability.isUndefined()) capabilities.insert("custody_reopen", reopenCapability);
+                    if (!accountReadinessCapability.isUndefined()) capabilities.insert("account_scoped_readiness_v2", accountReadinessCapability);
+                    if (!capabilities.isEmpty()) result.insert("capabilities", capabilities);
                 }
                 else if (method == "state.snapshot") {
                     result = detailsFixture ? drilldownSnapshot(custodyReady, detailsMode) : capacitySnapshot(custodyReady);
+                    if (selectedFixture) {
+                        result.insert("revision", selectedRevision);
+                        auto accounts = result.value("accounts").toArray();
+                        auto account = accounts[0].toObject();
+                        account.insert("identity", QJsonObject{{"provider", "github"}, {"verified", true}});
+                        account.insert("lifecycle", "active");
+                        accounts[0] = account;
+                        result.insert("accounts", accounts);
+                        auto grants = result.value("grants").toArray();
+                        auto grant = grants[0].toObject();
+                        grant.insert("ownership", "external");
+                        grant.insert("source_id", "detail-source-connected");
+                        grants[0] = grant;
+                        result.insert("grants", grants);
+                        auto bindings = result.value("bindings").toArray();
+                        auto binding = bindings[0].toObject();
+                        binding.insert("grant_generation", 4);
+                        bindings[0] = binding;
+                        result.insert("bindings", bindings);
+                        auto leases = result.value("leases").toArray();
+                        auto lease = leases[0].toObject();
+                        lease.insert("grant_generation", 4);
+                        lease.insert("resource", QJsonObject{{"kind", "repository"}, {"target", "synthetic-repository"}, {"unit", "calls"}, {"scope", "github:git"}});
+                        leases[0] = lease;
+                        result.insert("leases", leases);
+                    }
                     if (omitCapture) result.remove("captured_at");
+                }
+                else if (method == "setup.applicationReadiness") {
+                    ++accountDemandRequests;
+                    const auto params = request.value("params").toObject();
+                    const auto demand = params.value("demand").toObject();
+                    const auto resource = demand.value("resource").toObject();
+                    accountDemandWireValid = accountDemandWireValid && selectedFixture && params.size() == 4
+                        && params.value("account_id").toString() == "detail-account-a" && params.value("application").toString() == "git"
+                        && params.value("expected_revision").toInteger(-1) == selectedRevision
+                        && !params.contains("operation_id") && demand.size() == 7 && !demand.contains("now")
+                        && demand.value("provider").toString() == "github" && demand.value("audience").toString() == "https://github.com"
+                        && demand.value("purpose").toString() == "request" && demand.value("required").toDouble() == 5
+                        && !demand.value("requires_capacity").toBool(true) && demand.value("scopes").toArray() == QJsonArray{"fixture-scope"}
+                        && resource.value("kind").toString() == "repository" && resource.value("target").toString() == "synthetic-repository"
+                        && resource.value("unit").toString() == "calls" && resource.value("scope").toString() == "github:git";
+                    if (selectedRevision == 9007199254740993LL)
+                        accountDemandWireValid = accountDemandWireValid && wire.contains("\"expected_revision\":9007199254740993");
+                    if (accountDemandMode == "refused") {
+                        socket->write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")},
+                            {"error", QJsonObject{{"code", -32000}, {"message", "InvalidApplicationContext"}}}}).toJson(QJsonDocument::Compact) + '\n');
+                        continue;
+                    }
+                    result = selectedDemandReport(params, accountDemandMode);
+                    if (holdAccountDemand) {
+                        holdAccountDemand = false;
+                        heldAccountSocket = socket;
+                        heldAccountReply = QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", request.value("id")}, {"result", result}}).toJson(QJsonDocument::Compact) + '\n';
+                        continue;
+                    }
                 }
                 else if (method == "setup.readiness") {
                     ++readinessRequests;
@@ -847,8 +956,185 @@ int main(int argc, char **argv) {
         delete account;
         window.close();
     }
+    // Negotiation and the real selected-account wire path are independent of
+    // grant labels and the pre-existing global setup readiness report.
+    selectedFixture = true;
+    detailsMode = 0;
+    const auto demandDialog = [](OmuxTray &window) -> QDialog * {
+        auto *accounts = window.findChild<QTableWidget *>("accounts");
+        auto *details = window.findChild<QPushButton *>("accountDetails");
+        if (!accounts || !details) return nullptr;
+        accounts->selectRow(0);
+        details->click();
+        auto *account = window.findChild<QDialog *>("accountDrilldown");
+        auto *open = account ? account->findChild<QPushButton *>("accountDemand") : nullptr;
+        if (open) open->click();
+        delete account;
+        return window.findChild<QDialog *>("accountDemandDialog");
+    };
+    const auto declareDemand = [](QDialog *dialog) {
+        auto *application = dialog->findChild<QComboBox *>("demandApplication");
+        auto *audience = dialog->findChild<QComboBox *>("demandAudience");
+        auto *scopes = dialog->findChild<QPlainTextEdit *>("demandScopes");
+        auto *resource = dialog->findChild<QComboBox *>("demandResourceTemplate");
+        auto *required = dialog->findChild<QDoubleSpinBox *>("demandRequired");
+        if (!application || !audience || !scopes || !resource || !required || resource->count() != 4) return false;
+        application->setCurrentText("git");
+        audience->setEditText("https://github.com");
+        scopes->setPlainText("fixture-scope");
+        // The descriptor comes from this account's retained request lease,
+        // while requested amount is an explicit user choice, not remaining quota.
+        resource->setCurrentIndex(3);
+        required->setValue(5);
+        return true;
+    };
+    for (const auto capability : {QJsonValue(QJsonValue::Undefined), QJsonValue(false), QJsonValue(QString("true"))}) {
+        accountReadinessCapability = capability;
+        OmuxTray window(socketPath, false, true);
+        window.show();
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Reconnect") button->click();
+        auto *accounts = window.findChild<QTableWidget *>("accounts");
+        if (!until([&] { return accounts && accounts->rowCount() == 2; })) return 77;
+        auto *dialog = demandDialog(window);
+        if (!dialog || !declareDemand(dialog)) return 78;
+        auto *check = dialog->findChild<QPushButton *>("checkAccountDemand");
+        auto *notice = dialog->findChild<QLabel *>("accountDemandNotice");
+        if (!check || !notice) return 79;
+        check->click();
+        if (!notice->text().contains("has not negotiated") || accountDemandRequests != 0) return 80;
+        delete dialog;
+        window.close();
+    }
+    accountReadinessCapability = true;
+    {
+        OmuxTray window(socketPath, false, true);
+        window.show();
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Reconnect") button->click();
+        auto *accounts = window.findChild<QTableWidget *>("accounts");
+        auto *global = window.findChild<QTableWidget *>("setupReadiness");
+        if (!until([&] { return accounts->rowCount() == 2 && global->rowCount() == 7; })) return 81;
+        auto *dialog = demandDialog(window);
+        if (!dialog) return 82;
+        auto *check = dialog->findChild<QPushButton *>("checkAccountDemand");
+        auto *notice = dialog->findChild<QLabel *>("accountDemandNotice");
+        auto *result = dialog->findChild<QTableWidget *>("accountDemandResult");
+        auto *scopes = dialog->findChild<QPlainTextEdit *>("demandScopes");
+        if (!check || !notice || !result || !scopes) return 83;
+        check->click();
+        if (!notice->text().startsWith("Unknown:") || accountDemandRequests != 0) return 84;
+        if (!declareDemand(dialog)) return 85;
+        scopes->setPlainText("fixture-scope\nfixture-scope");
+        check->click();
+        if (!notice->text().contains("distinct and bounded") || accountDemandRequests != 0) return 86;
+        scopes->setPlainText("fixture-scope");
+        check->click();
+        if (!until([&] { return result->rowCount() == 7; }) || !accountDemandWireValid
+            || result->item(3, 1)->text() != "ready" || result->item(4, 1)->text() != "action_required"
+            || result->item(5, 1)->text() != "unknown" || !notice->text().contains("Recorded renewal ownership: external")
+            || !notice->text().contains("Actual renewal writer: Unknown") || !notice->text().contains("Live process: Unknown")
+            || global->rowCount() != 7 || global->item(6, 1)->text() != "missing") return 87;
+        for (const auto *mode : {"stale", "missing", "custody", "refused", "mismatch", "old", "claims", "writer", "malformed"}) {
+            accountDemandMode = mode;
+            const auto before = accountDemandRequests;
+            check->click();
+            if (!until([&] { return accountDemandRequests == before + 1 && notice->text().startsWith("Unknown:"); })
+                || result->rowCount() != 0 || !accountDemandWireValid) return 88;
+            if (QString(mode) == "stale" && !notice->text().contains("revision_changed")) return 89;
+            if (QString(mode) == "missing" && !notice->text().contains("account_unavailable")) return 90;
+            if (QString(mode) == "refused" && !notice->text().contains("InvalidApplicationContext")) return 91;
+        }
+        accountDemandMode = "normal";
+        auto *snapshotNotice = window.findChild<QLabel *>("snapshotNotice");
+        check->click();
+        if (!until([&] { return result->rowCount() == 7; })) return 103;
+        snapshotDecline = true;
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") button->click();
+        if (!until([&] { return notice->text().contains("Snapshot refresh failed"); }) || result->rowCount() != 0) return 104;
+        auto beforeUnavailable = accountDemandRequests;
+        check->click();
+        if (!notice->text().contains("unavailable or stale") || accountDemandRequests != beforeUnavailable) return 105;
+        snapshotDecline = false;
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") button->click();
+        if (!until([&] { return snapshotNotice->text().startsWith("Last daemon snapshot:"); })) return 106;
+        check->click();
+        if (!until([&] { return result->rowCount() == 7; })) return 107;
+        custodyReady = false;
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") button->click();
+        if (!until([&] { return notice->text().contains("Custody unavailable"); }) || result->rowCount() != 0) return 108;
+        beforeUnavailable = accountDemandRequests;
+        check->click();
+        if (!notice->text().contains("unavailable or stale") || accountDemandRequests != beforeUnavailable) return 109;
+        custodyReady = true;
+        ++selectedRevision;
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") button->click();
+        if (!until([&] { return snapshotNotice->text().contains("revision 3."); })) return 110;
+        delete dialog;
+        dialog = demandDialog(window);
+        if (!dialog || !declareDemand(dialog)) return 111;
+        check = dialog->findChild<QPushButton *>("checkAccountDemand");
+        notice = dialog->findChild<QLabel *>("accountDemandNotice");
+        result = dialog->findChild<QTableWidget *>("accountDemandResult");
+        scopes = dialog->findChild<QPlainTextEdit *>("demandScopes");
+        holdAccountDemand = true;
+        heldAccountSocket = nullptr;
+        check->click();
+        if (!until([&] { return heldAccountSocket != nullptr; })) return 92;
+        scopes->setPlainText("changed-scope");
+        if (!notice->text().contains("demand changed") || result->rowCount() != 0) return 93;
+        bool staleRows = false;
+        const auto inserted = QObject::connect(result->model(), &QAbstractItemModel::rowsInserted, &window, [&] { staleRows = true; });
+        heldAccountSocket->write(heldAccountReply);
+        heldAccountSocket->flush();
+        scopes->setPlainText("fixture-scope");
+        accountDemandMode = "refused";
+        check->click();
+        if (!until([&] { return notice->text().contains("InvalidApplicationContext"); }) || staleRows || result->rowCount() != 0) return 94;
+        QObject::disconnect(inserted);
+        accountDemandMode = "normal";
+        holdAccountDemand = true;
+        heldAccountSocket = nullptr;
+        check->click();
+        if (!until([&] { return heldAccountSocket != nullptr; })) return 95;
+        ++selectedRevision;
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") button->click();
+        if (!until([&] { return notice->text().contains("metadata revision changed"); }) || result->rowCount() != 0) return 96;
+        heldAccountSocket->write(heldAccountReply);
+        heldAccountSocket->flush();
+        const int afterRevision = accountDemandRequests;
+        check->click();
+        if (!notice->text().contains("unavailable or stale") || accountDemandRequests != afterRevision) return 97;
+        delete dialog;
+        // The Qt wire must preserve a genuine JSON integer beyond double's
+        // exact range, never round the selected snapshot revision.
+        selectedRevision = 9007199254740993LL;
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") button->click();
+        if (!until([&] { return snapshotNotice->text().contains(QString::number(selectedRevision)); })) return 98;
+        dialog = demandDialog(window);
+        if (!dialog || !declareDemand(dialog)) return 99;
+        check = dialog->findChild<QPushButton *>("checkAccountDemand");
+        notice = dialog->findChild<QLabel *>("accountDemandNotice");
+        result = dialog->findChild<QTableWidget *>("accountDemandResult");
+        check->click();
+        if (!until([&] { return result->rowCount() == 7; }) || !accountDemandWireValid
+            || !notice->text().contains(QString::number(selectedRevision))) return 100;
+        // Destruction of a form with a held reply must not retain raw widget
+        // pointers or recreate a diagnostic display from that later reply.
+        holdAccountDemand = true;
+        heldAccountSocket = nullptr;
+        check->click();
+        if (!until([&] { return heldAccountSocket != nullptr; })) return 101;
+        delete dialog;
+        heldAccountSocket->write(heldAccountReply);
+        heldAccountSocket->flush();
+        ++selectedRevision;
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == "Refresh") button->click();
+        if (!until([&] { return snapshotNotice->text().contains(QString::number(selectedRevision)); })
+            || global->rowCount() != 7 || window.findChild<QDialog *>("accountDemandDialog")) return 102;
+        window.close();
+    }
     // UI close/destruction sends no unexpected shutdown, mutation, or removal request.
     QApplication::processEvents();
     return server.isListening() && mutations == 0 && reopenRequests == expectedReopenRequests && strictReopen
-        && originalMutationRequests == 1 && originalWireValid && removalRequests == 2 && removalWireValid ? 0 : 5;
+        && originalMutationRequests == 1 && originalWireValid && removalRequests == 2 && removalWireValid
+        && accountDemandRequests >= 14 && accountDemandWireValid ? 0 : 5;
 }
