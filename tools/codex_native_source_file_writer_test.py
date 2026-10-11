@@ -203,10 +203,16 @@ class FileWriterSourceModels(unittest.TestCase):
                 cleanup(temporary)
                 source.DEADLINE = time.monotonic() + 120
 
-    def test_parent_finish_late_leaf_and_receipt_replacement_never_seal_output(self):
+    def test_parent_finish_late_leaf_and_receipt_replacement_never_accept_publication(self):
         for fault in ('leaf', 'leaf-replacement', 'receipt'):
             temporary = Path(tempfile.mkdtemp())
+            trees, fault_seen = [], []
+            real_tree = family.TreeWitness
             try:
+                def capture_tree(*args, **kwargs):
+                    tree = real_tree(*args, **kwargs)
+                    trees.append(tree)
+                    return tree
                 def mutate():
                     leaf = temporary / ('out/source-receipt.json' if fault == 'receipt' else 'out/source/unrelated.txt')
                     leaf.parent.chmod(0o700)
@@ -217,9 +223,25 @@ class FileWriterSourceModels(unittest.TestCase):
                         leaf.chmod(0o600); leaf.write_bytes(b'public changed fixture\n')
                     leaf.chmod(0o444 if fault == 'receipt' else 0o555)
                     leaf.parent.chmod(0o700 if fault == 'receipt' else 0o555)
-                with self.assertRaises((ValueError, OSError)):
-                    self.run_producer(temporary, at_finish=mutate)
-                self.assertEqual((temporary / 'out').stat().st_mode & 0o777, 0o700)
+                    fault_seen.append(fault)
+                with patch.object(family, 'TreeWitness', side_effect=capture_tree):
+                    with self.assertRaises((ValueError, OSError)):
+                        self.run_producer(temporary, at_finish=mutate, at_captured_check=lambda: None)
+                self.assertEqual(fault_seen, [fault])
+                self.assertEqual(len(trees), 2)
+                self.assertTrue(all(tree.fd is None for tree in trees))
+                # Changed bytes refuse before sealing. Identical-byte replacement
+                # refuses at the final original member-witness fence after sealing;
+                # readonly diagnostic files alone are never accepted publication.
+                expected_mode = 0o555 if fault == 'leaf-replacement' else 0o700
+                self.assertEqual((temporary / 'out').stat().st_mode & 0o777, expected_mode)
+                parent_tree = trees[0]
+                self.assertEqual(parent_tree.root, temporary / 'parent/source')
+                self.assertEqual(family.witness(parent_tree.root.stat()), parent_tree.anchor)
+                for name, (stamp, _) in parent_tree.members.items():
+                    self.assertEqual(family.witness((parent_tree.root / name).lstat()), stamp)
+                for name, (_, raw) in self.files.items():
+                    self.assertEqual((parent_tree.root / name).read_bytes(), raw)
                 self.assertIsNone(source.DEADLINE)
             finally:
                 cleanup(temporary)
