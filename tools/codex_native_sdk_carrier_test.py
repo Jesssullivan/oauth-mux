@@ -111,10 +111,10 @@ class CarrierModels(unittest.TestCase):
                 with lock: captured.append(copy)
                 return copy
             def fsync(fd):
-                with lock: fsynced.add(carrier.identity(os.fstat(fd), True)[:2])
+                with lock: fsynced.add(tuple(carrier.identity(os.fstat(fd), True)[:2]))
                 return real_fsync(fd)
             def chmod(fd, mode):
-                self.assertIn(carrier.identity(os.fstat(fd), True)[:2], fsynced)
+                self.assertIn(tuple(carrier.identity(os.fstat(fd), True)[:2]), fsynced)
                 return real_chmod(fd, mode)
             with patch.object(carrier, "Queue", BoundedQueue), patch.object(carrier, "_copy_regular_job", job), \
                     patch.object(carrier.Root, "check", checked), patch.object(carrier.Root, "_parent", parent), \
@@ -430,7 +430,7 @@ class CarrierModels(unittest.TestCase):
             output, payload, witness, files, clock, accept, accepted, values = case
             real_write, real_fsync, counts = os.write, os.fsync, []
             def short(fd, raw): return real_write(fd, raw[:17])
-            def fsync(fd): counts.append(carrier.identity(os.fstat(fd), True)[:2]); return real_fsync(fd)
+            def fsync(fd): counts.append(tuple(carrier.identity(os.fstat(fd), True)[:2])); return real_fsync(fd)
             with patch.object(carrier.os, "write", short), patch.object(carrier.os, "fsync", fsync):
                 carrier._copy_regulars(output, payload, witness, files, clock, accept)
             self.assertEqual(len(set(counts)), 6)
