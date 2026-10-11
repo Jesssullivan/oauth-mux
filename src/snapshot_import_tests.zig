@@ -885,6 +885,256 @@ fn holdEnrollmentStart(engine: *engine_module.Engine) !void {
     try success(engine, .adapter, "fixture.importEnrollmentHold", .{ .application = "enrollment", .capability = capability[0..] });
 }
 
+fn policySourcePoll(engine: *engine_module.Engine, respect_cadence: bool) !Reply {
+    var capability = try engine.capabilityForTest("enrollment");
+    defer std.crypto.secureZero(u8, &capability);
+    // The real actor invokes its production poller with actual policy. Only
+    // the test clock reset and existing held provider boundary are selectable.
+    return rpc(engine, .adapter, "fixture.pollSources", .{ .application = "enrollment", .capability = capability[0..], .respect_policy = true, .respect_cadence = respect_cadence });
+}
+
+fn polledImport(engine: *engine_module.Engine, source: []const u8) !HeldImport {
+    const operation = try std.fmt.allocPrint(allocator, "reconcile-{s}", .{source});
+    defer allocator.free(operation);
+    var snapshot = try rpc(engine, .control, "state.snapshot", .{});
+    defer snapshot.deinit();
+    for (control.get(try snapshot.result(), "jobs").?.array.items) |job| {
+        if (!std.mem.eql(u8, operation, try control.string(job, "id"))) continue;
+        try std.testing.expectEqualStrings("running", try control.string(job, "status"));
+        return .{ .operation_id = try allocator.dupe(u8, operation), .generation = control.get(job, "operation_generation").?.integer };
+    }
+    return error.AutomaticEnrollmentNotAdmitted;
+}
+
+test "authorized file source enrolls with warming disabled while capacity traffic stays disabled" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const engine = fixture.engine.?;
+    try success(engine, .control, "policy.set", .{ .warm_alternatives = false });
+    try holdEnrollmentStart(engine);
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const source = try nativeEnrollmentSource(&fixture, token);
+    defer allocator.free(source);
+    // No enrollment.start or importStart: only ordinary source authorization
+    // and the actor's production file poll admit this verification generation.
+    var polled = try policySourcePoll(engine, false);
+    defer polled.deinit();
+    _ = try polled.result();
+    var held = try polledImport(engine, source);
+    defer held.deinit();
+    try std.testing.expectEqual(@as(usize, 1), (try budget(engine)).credit_count);
+    {
+        var verifying = try rpc(engine, .control, "state.snapshot", .{});
+        defer verifying.deinit();
+        try std.testing.expectEqual(@as(usize, 0), control.get(try verifying.result(), "accounts").?.array.items.len);
+        try std.testing.expectEqual(@as(usize, 0), control.get(try verifying.result(), "grants").?.array.items.len);
+    }
+    const response = try identityResponse();
+    defer allocator.free(response);
+    try completeImport(engine, source, held, response, null);
+    var enrolled = try rpc(engine, .control, "state.snapshot", .{});
+    defer enrolled.deinit();
+    const result = try enrolled.result();
+    try std.testing.expectEqual(@as(usize, 1), control.get(result, "accounts").?.array.items.len);
+    const grants = control.get(result, "grants").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), grants.len);
+    try std.testing.expectEqualStrings("external", try control.string(grants[0], "ownership"));
+    try std.testing.expectEqualStrings("ready", try control.string(grants[0], "status"));
+    const expiry = control.get(grants[0], "custody_expires_at").?.integer;
+    try std.testing.expect(expiry > std.Io.Clock.real.now(io).toSeconds());
+    try std.testing.expect(expiry <= std.Io.Clock.real.now(io).toSeconds() + 3600);
+    try std.testing.expectEqual(@as(usize, 0), (try budget(engine)).credit_count);
+    var quiet = try policySourcePoll(engine, false);
+    defer quiet.deinit();
+    try std.testing.expectEqual(@as(i64, 0), control.get(try quiet.result(), "identity_submissions").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(try quiet.result(), "observation_submissions").?.integer);
+    try assertNoPlaintext(&fixture, token);
+    // The same ready grant reaches observation submission when warming is
+    // explicitly restored; policy-off was not an ineligible-fixture accident.
+    try success(engine, .control, "policy.set", .{ .warm_alternatives = true });
+    var warmed = try policySourcePoll(engine, false);
+    defer warmed.deinit();
+    try std.testing.expectEqual(@as(i64, 0), control.get(try warmed.result(), "identity_submissions").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), control.get(try warmed.result(), "observation_submissions").?.integer);
+}
+
+test "policy independent file polling refuses disconnected expired and future source authorization" {
+    for ([_][]const u8{ "disconnect", "expire", "future" }) |transition| {
+        var fixture = try Fixture.init();
+        defer fixture.deinit();
+        const engine = fixture.engine.?;
+        try success(engine, .control, "policy.set", .{ .warm_alternatives = false });
+        try holdEnrollmentStart(engine);
+        const token = try generatedValue();
+        defer {
+            std.crypto.secureZero(u8, token);
+            allocator.free(token);
+        }
+        const source = try nativeEnrollmentSource(&fixture, token);
+        defer allocator.free(source);
+        if (std.mem.eql(u8, transition, "disconnect")) try success(engine, .control, "source.disconnect", .{ .source_id = source }) else try sourceTransition(engine, source, transition);
+        const before = try storedFingerprint(engine);
+        const reserved = try budget(engine);
+        var polled = try policySourcePoll(engine, false);
+        defer polled.deinit();
+        try std.testing.expectEqual(@as(i64, 0), control.get(try polled.result(), "identity_submissions").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(try polled.result(), "observation_submissions").?.integer);
+        try std.testing.expectEqualDeep(before, try storedFingerprint(engine));
+        try std.testing.expectEqualDeep(reserved, try budget(engine));
+        var snapshot = try rpc(engine, .control, "state.snapshot", .{});
+        defer snapshot.deinit();
+        try std.testing.expectEqual(@as(usize, 0), control.get(try snapshot.result(), "accounts").?.array.items.len);
+        try std.testing.expectEqual(@as(usize, 0), control.get(try snapshot.result(), "jobs").?.array.items.len);
+    }
+}
+
+test "policy independent file disappearance and return cannot clear forgotten identity across restart" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var engine = fixture.engine.?;
+    try success(engine, .control, "policy.set", .{ .warm_alternatives = false });
+    try holdEnrollmentStart(engine);
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const source = try nativeEnrollmentSource(&fixture, token);
+    defer allocator.free(source);
+    var polled = try policySourcePoll(engine, false);
+    defer polled.deinit();
+    _ = try polled.result();
+    var original = try polledImport(engine, source);
+    defer original.deinit();
+    const response = try identityResponse();
+    defer allocator.free(response);
+    try completeImport(engine, source, original, response, null);
+    {
+        var enrolled = try rpc(engine, .control, "state.snapshot", .{});
+        defer enrolled.deinit();
+        const account = control.get(try enrolled.result(), "accounts").?.array.items[0];
+        try success(engine, .control, "account.forget", .{ .account_id = try control.string(account, "id") });
+    }
+    try fixture.directory.dir.deleteFile(io, "explicit-enrollment.json");
+    var missing = try policySourcePoll(engine, false);
+    defer missing.deinit();
+    _ = try missing.result();
+    {
+        var detached = try rpc(engine, .control, "state.snapshot", .{});
+        defer detached.deinit();
+        try std.testing.expectEqualStrings("detached", try control.string(control.get(try detached.result(), "sources").?.array.items[0], "status"));
+    }
+    const document = try std.json.Stringify.valueAlloc(allocator, .{ .access_token = token }, .{});
+    defer {
+        std.crypto.secureZero(u8, document);
+        allocator.free(document);
+    }
+    {
+        const file = try fixture.directory.dir.createFile(io, "explicit-enrollment.json", .{ .exclusive = true });
+        defer file.close(io);
+        if (std.c.fchmod(file.handle, 0o600) != 0) return error.FixturePermissionFailed;
+        try file.writeStreamingAll(io, document);
+    }
+    // Restored authorized acquisition is not explicit identity re-enrollment.
+    var returned = try policySourcePoll(engine, false);
+    defer returned.deinit();
+    _ = try returned.result();
+    var successor = try polledImport(engine, source);
+    defer successor.deinit();
+    try std.testing.expect(successor.generation > original.generation);
+    try completeImport(engine, source, successor, response, "IdentityNotAdmitted");
+    try fixture.restart();
+    engine = fixture.engine.?;
+    var saved = try rpc(engine, .control, "state.snapshot", .{});
+    defer saved.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(try saved.result(), "accounts").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, 0), control.get(try saved.result(), "grants").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, 0), (try budget(engine)).credit_count);
+    try expectZeroProviderSubmissions(engine, "fixture.providerSubmissions");
+    // Tombstone identity is private custody, deliberately absent from public
+    // state.snapshot. Read only the owned fixture's retained SQLite snapshot.
+    fixture.close();
+    var store = try openStored(&fixture);
+    defer store.close();
+    var retained = try store.readSnapshot();
+    defer retained.deinit();
+    var metadata = try std.json.parseFromSlice(std.json.Value, allocator, retained.json, .{});
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(usize, 1), control.get(control.get(metadata.value, "state").?, "tombstones").?.array.items.len);
+    try std.testing.expectEqual(@as(i64, 1), control.get(metadata.value, "import_forget_epoch").?.integer);
+}
+
+test "policy independent failed identity polling keeps cadence and never warms on failure" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const engine = fixture.engine.?;
+    try success(engine, .control, "policy.set", .{ .warm_alternatives = false });
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const source = try nativeEnrollmentSource(&fixture, token);
+    defer allocator.free(source);
+    // Production submitIdentity reaches its test-only no-provider refusal;
+    // a failure must not make the 100ms actor schedule retry this source.
+    var refused = try policySourcePoll(engine, false);
+    defer refused.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(try refused.result(), "identity_submissions").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(try refused.result(), "observation_submissions").?.integer);
+    try std.testing.expectEqual(@as(usize, 0), (try budget(engine)).credit_count);
+    const before = try storedFingerprint(engine);
+    var throttled = try policySourcePoll(engine, true);
+    defer throttled.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(try throttled.result(), "identity_submissions").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(try throttled.result(), "observation_submissions").?.integer);
+    try std.testing.expectEqualDeep(before, try storedFingerprint(engine));
+    var snapshot = try rpc(engine, .control, "state.snapshot", .{});
+    defer snapshot.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(try snapshot.result(), "accounts").?.array.items.len);
+    try std.testing.expectEqualStrings("failed", try control.string(control.get(try snapshot.result(), "jobs").?.array.items[0], "status"));
+}
+
+test "policy independent saturated file polling preserves a previously reserved terminal import" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const engine = fixture.engine.?;
+    try success(engine, .control, "policy.set", .{ .warm_alternatives = false });
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const file_source = try nativeEnrollmentSource(&fixture, token);
+    defer allocator.free(file_source);
+    const independent = try fixture.connect();
+    defer allocator.free(independent);
+    var held = try holdImport(engine, independent, token, false);
+    defer held.deinit();
+    const response = try identityResponse();
+    defer allocator.free(response);
+    try saturate(engine);
+    const before = try storedFingerprint(engine);
+    const reserved = try budget(engine);
+    const counts = try reservedCounts(engine);
+    var polled = try policySourcePoll(engine, false);
+    defer polled.deinit();
+    try std.testing.expectEqual(@as(i64, 0), control.get(try polled.result(), "identity_submissions").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(try polled.result(), "observation_submissions").?.integer);
+    try std.testing.expectEqualDeep(before, try storedFingerprint(engine));
+    try std.testing.expectEqualDeep(reserved, try budget(engine));
+    try std.testing.expectEqualDeep(counts, try reservedCounts(engine));
+    try expectJob(engine, held, "running");
+    try completeImport(engine, independent, held, response, null);
+    try expectJob(engine, held, "completed");
+    try std.testing.expectEqual(@as(usize, 0), (try budget(engine)).credit_count);
+    try assertNoPlaintext(&fixture, token);
+}
+
 test "ordinary explicit enrollment fences only stranded generation while mutation replay and live ownership stay unchanged" {
     const wait = @import("enrollment_wait.zig");
     var fixture = try Fixture.init();

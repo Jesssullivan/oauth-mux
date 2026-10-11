@@ -49,6 +49,16 @@ and manual OAuth imports default to one hour. Explicit custody is bounded to
 one second through 30 days and cannot extend a known provider expiry. Expiry is
 checked again at admission and materialization, not only on initial import.
 
+Exact retained file-source reconciliation runs on the existing once-per-minute
+actor maintenance pass independently of alternative-route warming. Disabling
+warming does not disable authorized identity verification/enrollment or external
+access reacquisition; it still prevents speculative capacity-observation requests.
+The same source/forget/job-generation fences, import admission reservations,
+pending-import limit, provider deadline and custody ceilings apply. Missing files
+detach without erasing independent authority; malformed or unavailable sources
+cannot authorize imports or clear tombstones. This policy separation does not
+implement refresh adoption, provider renewal or fileless native reacquisition.
+
 Supervised fileless native sources have a separate actor-clock maintenance pass,
 independent of alternative-route warming. New verified connections retain their
 exact selected context ID/generation beside the original owner, endpoint, consent

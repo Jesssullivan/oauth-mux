@@ -3872,9 +3872,9 @@ pub const Engine = struct {
         if (builtin.is_test and (eql(method, "fixture.providerSubmissions") or eql(method, "fixture.pollSources"))) {
             if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
             if (eql(method, "fixture.pollSources")) {
-                self.fixture_force_poll = true;
+                self.fixture_force_poll = !try control.boolean(params, "respect_policy", false);
                 defer self.fixture_force_poll = false;
-                self.last_source_poll = 0;
+                if (!try control.boolean(params, "respect_cadence", false)) self.last_source_poll = 0;
                 try self.pollSources();
             }
             return control.success(allocator, request.id, .{ .identity_submissions = self.fixture_identity_submissions, .observation_submissions = self.fixture_observation_submissions });
@@ -3997,7 +3997,7 @@ pub const Engine = struct {
                 return error.NotFound;
             }
             if (eql(method, "fixture.importEnrollmentHold")) {
-                // Actor-owned test transport hold for the ordinary control RPC;
+                // Actor-owned test transport hold for control and source polling;
                 // neither a production parameter nor persisted authorization.
                 self.fixture_hold_enrollment_start = true;
                 return control.success(allocator, request.id, .{ .held = true });
@@ -5245,7 +5245,8 @@ pub const Engine = struct {
     }
 
     fn pollSources(self: *Engine) !void {
-        if (!self.policy.warm_alternatives and !(builtin.is_test and self.fixture_force_poll)) return;
+        // Authorized source lifecycle work is independent of route warming.
+        // Retain the same cadence and bounded import/verification path.
         if (self.now() - self.last_source_poll < 60) return;
         self.last_source_poll = self.now();
         var source_ids: std.ArrayList([]const u8) = .empty;
@@ -5259,13 +5260,15 @@ pub const Engine = struct {
             try source_ids.append(self.allocator, id);
         };
         for (source_ids.items) |source_id| {
-            _ = self.reconcileSource(source_id) catch |err| {
+            _ = self.reconcileSourceMode(source_id, builtin.is_test and self.fixture_hold_enrollment_start) catch |err| {
                 if (err == error.OutOfMemory or self.poisoned) return err;
                 try self.restoreCommitted();
                 // A malformed/unavailable source cannot poison other accounts.
                 continue;
             };
         }
+        // Warming opt-out still prevents speculative capacity observations.
+        if (!self.policy.warm_alternatives and !(builtin.is_test and self.fixture_force_poll)) return;
         self.observers.prune(&self.state, self.now());
         if (self.state.pruneObservations(self.now()) > 0) try self.persist(&.{});
         var grant_ids: std.ArrayList([]const u8) = .empty;
