@@ -167,24 +167,60 @@ def recheck_root(path, held):
 
 
 def load_candidate(document):
+    """Fresh/default binding inputs retain their exact producer-sealed mode."""
+    return _load_candidate(document, (0o444,))
+
+
+def load_retained_candidate(document):
+    """Read only the independently configured original retained binding input.
+
+    Bazel seals retained outputs as 0555. This explicit consumer context does
+    not change fresh output modes or the source/SDK logical member contracts.
+    """
+    tick()
+    value = binding.config()
+    require(INPUT_CONTROL == Path(value["binding"]["path"])
+        and BINDING_SHA == value["binding"]["sha256"])
+    result = _load_candidate(document, (0o444, 0o555))
+    require(binding.config() == value and INPUT_CONTROL == Path(value["binding"]["path"])
+        and BINDING_SHA == value["binding"]["sha256"])
+    tick()
+    return result
+
+
+def _load_candidate(document, modes):
     validate_document(document)
     fd = source.directory(INPUT_CONTROL.parent)
+    leaf = None
     try:
         anchor = identity(os.fstat(fd))
         require(anchor[2] == os.getuid() and anchor[3] == 0o555)
+        leaf = os.open(INPUT_CONTROL.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=fd)
+        witness = binding.SealedSource.witness(leaf)
         raw,mode = source.read(fd,INPUT_CONTROL.name,16384)
-        require(mode == 0o444)
+        require(mode in modes)
         parse_selection(raw,BINDING_SHA)
         report, expected, parent = binding.load_verified_source(document)
         again, again_mode = source.read(fd,INPUT_CONTROL.name,16384)
-        require(again == raw and again_mode == 0o444)
+        require(again == raw and again_mode == mode
+            and binding.SealedSource.witness(leaf) == witness)
         named = source.directory(INPUT_CONTROL.parent)
         try:
             require(identity(os.fstat(named)) == anchor)
+            named_leaf = os.open(INPUT_CONTROL.name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=named)
+            try:
+                require(binding.SealedSource.witness(named_leaf) == witness)
+            finally:
+                os.close(named_leaf)
         finally:
             os.close(named)
         return report,expected,parent
-    finally:os.close(fd)
+    finally:
+        if leaf is not None:
+            os.close(leaf)
+        os.close(fd)
 
 
 def read_hub(root):

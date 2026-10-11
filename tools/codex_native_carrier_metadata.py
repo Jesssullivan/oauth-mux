@@ -427,7 +427,7 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
         stack.callback(os.close, source_hold[0])
         binding_hold = legacy.hold_root(legacy.INPUT_CONTROL.parent)
         stack.callback(os.close, binding_hold[0])
-        report, files, parent = legacy.load_candidate(selected["original_selection"])
+        report, files, parent = legacy.load_retained_candidate(selected["original_selection"])
         output.mkdir(mode=0o700)
         output_hold = stack.enter_context(carrier.Root(output, carrier.Clock(deadline), sealed=False, owned=True))
         extracted = output / "extracted"
@@ -459,7 +459,7 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
         query = query_tools.verify_repository(legacy.QUERY_REPOSITORY, deadline)
         require(query["status"] == "declared-fixed-query-tools-byte-qualified" and query["inputs_rechecked"] is True)
         source.verify_written(temporary / "workspace/source", files)
-        require(legacy.load_candidate(selected["original_selection"])[0] == report)
+        require(legacy.load_retained_candidate(selected["original_selection"])[0] == report)
         require(sdk.validate_export(sdk_root, legacy.EXPORT_SHA, source.BASE_INVENTORY,
             parent["baseline_graph_files"], on_read=lambda count: tick(deadline)) == exported)
         require(carrier.validate_binding(carrier_root, pin, deadline) == origin)

@@ -5,7 +5,7 @@ Receipt/evidence byte readers, XML success checks, aliases, query planning and
 restoration/refusal logic below are the actual consumer implementation.
 """
 import copy
-from contextlib import ExitStack, redirect_stdout
+from contextlib import contextmanager, ExitStack, redirect_stdout
 import io
 import json
 import os
@@ -88,6 +88,120 @@ class CarrierMetadataModels(unittest.TestCase):
     def encoded_selection(self, selected=None):
         return consumer.source.encoded({"schema_version": 2, "kind": consumer.KIND,
             "status": "selected-qualified-carrier-for-metadata", "selection": self.selected if selected is None else selected})
+
+    @contextmanager
+    def binding_candidate_fixture(self):
+        """Actual binding bytes/readers; SOURCE ancestry is an explicit model seam."""
+        controls = Path(tempfile.mkdtemp(dir=self.root))
+        path = controls / "receipt.json"
+        bound = {"kind": "bounded-original-binding-model", "native_support": False}
+        raw = consumer.source.encoded(bound)
+        path.write_bytes(raw)
+        path.chmod(0o444)
+        controls.chmod(0o555)
+        pin = consumer.source.sha(raw)
+        self.original["binding_receipt_sha256"] = pin
+        value = {"binding": {"path": str(path), "sha256": pin}}
+        report = {"inventory_sha256": "2" * 64, "graph_files": {}, "patch_sha256": []}
+        result = (report, {"MODULE.bazel": ("100644", b"# tiny source model\n")}, {"baseline_graph_files": {}})
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.multiple(consumer.legacy, INPUT_CONTROL=path, BINDING_SHA=pin, DEADLINE=601.0))
+                stack.enter_context(patch.object(consumer.source, "DEADLINE", 601.0))
+                stack.enter_context(patch.object(consumer.binding, "config", side_effect=lambda: copy.deepcopy(value)))
+                stack.enter_context(patch.object(consumer.binding, "bind", return_value=bound))
+                loaded = stack.enter_context(patch.object(consumer.binding, "load_verified_source", return_value=result))
+                yield path, raw, result, loaded, value
+        finally:
+            controls.chmod(0o700)
+
+    def test_explicit_retained_binding_reads_actual_bazel_mode_without_weakening_default(self):
+        with self.binding_candidate_fixture() as (path, raw, result, loaded, value):
+            self.assertEqual(consumer.legacy.load_candidate(self.original), result)
+            self.assertEqual(consumer.legacy.load_retained_candidate(self.original), result)
+            self.assertEqual(path.read_bytes(), raw)
+            # Fixture-only immutable retention reproduces Bazel's physical mode.
+            path.chmod(0o555)
+            loaded.reset_mock()
+            with self.assertRaises(ValueError):
+                consumer.legacy.load_candidate(self.original)
+            loaded.assert_not_called()
+            self.assertEqual(consumer.legacy.load_retained_candidate(self.original), result)
+            loaded.assert_called_once_with(self.original)
+            self.assertEqual((consumer.source.DEADLINE, consumer.legacy.DEADLINE), (601.0, 601.0))
+            self.assertEqual(path.read_bytes(), raw)
+            self.assertEqual(path.stat().st_mode & 0o7777, 0o555)
+
+    def test_retained_binding_refuses_writable_symlink_pin_and_context_before_source_proof(self):
+        with self.binding_candidate_fixture() as (path, raw, result, loaded, value):
+            for mode in (0o600, 0o644, 0o666, 0o755):
+                with self.subTest(mode=oct(mode)):
+                    path.chmod(mode)
+                    with self.assertRaises(ValueError):
+                        consumer.legacy.load_retained_candidate(self.original)
+                    loaded.assert_not_called()
+            path.chmod(0o600)
+            path.write_bytes(raw + b"\n")
+            path.chmod(0o555)
+            with self.assertRaises(ValueError):
+                consumer.legacy.load_retained_candidate(self.original)
+            loaded.assert_not_called()
+            path.chmod(0o600)
+            path.write_bytes(raw)
+            path.chmod(0o555)
+            value["binding"]["path"] = str(self.root / "unselected-binding.json")
+            with self.assertRaises(ValueError):
+                consumer.legacy.load_retained_candidate(self.original)
+            loaded.assert_not_called()
+            value["binding"]["path"] = str(path)
+            path.parent.chmod(0o700)
+            foreign = path.parent / "foreign.json"
+            path.rename(foreign)
+            path.symlink_to(foreign)
+            path.parent.chmod(0o555)
+            with self.assertRaises(OSError):
+                consumer.legacy.load_retained_candidate(self.original)
+            loaded.assert_not_called()
+
+    def test_retained_binding_rechecks_exact_mode_inode_bytes_and_config_after_source_proof(self):
+        for mutation in ("mode", "inode", "bytes", "config"):
+            with self.subTest(mutation=mutation), self.binding_candidate_fixture() as (path, raw, result, loaded, value):
+                def mutate(document):
+                    self.assertEqual(document, self.original)
+                    if mutation == "mode":
+                        path.chmod(0o555)
+                    elif mutation == "inode":
+                        path.parent.chmod(0o700)
+                        path.rename(path.parent / "held-original.json")
+                        path.write_bytes(raw)
+                        path.chmod(0o444)
+                        path.parent.chmod(0o555)
+                    elif mutation == "bytes":
+                        path.chmod(0o600)
+                        path.write_bytes(raw + b"\n")
+                        path.chmod(0o444)
+                    else:
+                        value["binding"]["path"] = str(self.root / "changed-configuration.json")
+                    return result
+                loaded.side_effect = mutate
+                with self.assertRaises(ValueError):
+                    consumer.legacy.load_retained_candidate(self.original)
+                loaded.assert_called_once_with(self.original)
+
+    def test_retained_binding_original_deadline_expires_during_source_proof_without_renewal(self):
+        with self.binding_candidate_fixture() as (path, raw, result, loaded, value):
+            with patch.object(consumer.time, "monotonic", return_value=601.0):
+                with self.assertRaises(ValueError):
+                    consumer.legacy.load_retained_candidate(self.original)
+            loaded.assert_not_called()
+            def expire(document):
+                self.patches.enter_context(patch.object(consumer.time, "monotonic", return_value=601.0))
+                return result
+            loaded.side_effect = expire
+            with self.assertRaises(ValueError):
+                consumer.legacy.load_retained_candidate(self.original)
+            loaded.assert_called_once_with(self.original)
+            self.assertEqual((consumer.source.DEADLINE, consumer.legacy.DEADLINE), (601.0, 601.0))
 
     def declared_proofs(self):
         """Real mapped proof repository fixture, with the selected exact pins."""
@@ -407,7 +521,7 @@ class CarrierMetadataModels(unittest.TestCase):
         with patch.object(consumer.legacy, "configure_selection"), \
                 patch.object(consumer, "qualify_producer", side_effect=ValueError("producer refused")), \
                 patch.object(consumer.carrier, "extract") as extract, \
-                patch.object(consumer.legacy, "load_candidate") as source_read:
+                patch.object(consumer.legacy, "load_retained_candidate") as source_read:
             with self.assertRaises(ValueError), consumer.proof_scope(601.0):
                 consumer.produce(self.selected, "5" * 64, self.root / "carrier", (), {}, self.declared_proofs(),
                     self.root / "work", self.root / "result", 601.0, context)
@@ -417,7 +531,8 @@ class CarrierMetadataModels(unittest.TestCase):
         self.assertIsNone(consumer._SCOPE.get())
 
     def run_bounded_consumer(self, *, mutate_workspace=False, fail_final_custody=False,
-            mutate_ready_workspace=False, fail_ready_custody=False, mutate_ready_proof=False):
+            mutate_ready_workspace=False, fail_ready_custody=False, mutate_ready_proof=False,
+            mutate_binding=False):
         """Actual workspace/output FD writes and root holds; explicit proof seams.
 
         A tiny source/SDK/carrier is a trusted model boundary, never qualification.
@@ -427,7 +542,15 @@ class CarrierMetadataModels(unittest.TestCase):
         retained.mkdir(mode=0o555)
         self.original["source_root"] = str(retained)
         controls = self.root / "binding-controls"
-        controls.mkdir(mode=0o555)
+        controls.mkdir(mode=0o700)
+        binding_path = controls / "receipt.json"
+        bound = {"kind": "bounded-original-binding-model", "native_support": False}
+        binding_raw = consumer.source.encoded(bound)
+        binding_path.write_bytes(binding_raw)
+        binding_path.chmod(0o555)
+        controls.chmod(0o555)
+        binding_pin = consumer.source.sha(binding_raw)
+        self.original["binding_receipt_sha256"] = binding_pin
         packed = self.root / "packed"
         packed.mkdir(mode=0o555)
         work, output = self.root / "work", self.root / "result"
@@ -443,8 +566,8 @@ class CarrierMetadataModels(unittest.TestCase):
         events = []
 
         def configure():
-            consumer.legacy.INPUT_CONTROL = controls / "receipt.json"
-            consumer.legacy.BINDING_SHA = "3" * 64
+            consumer.legacy.INPUT_CONTROL = binding_path
+            consumer.legacy.BINDING_SHA = binding_pin
             consumer.legacy.QUERY_REPOSITORY = self.root / "independent-query-tools"
 
         def extract(root, pin, destination, deadline):
@@ -475,6 +598,10 @@ class CarrierMetadataModels(unittest.TestCase):
                 path.chmod(0o600)
                 path.write_bytes(b"query changed its own module\n")
                 path.chmod(0o555)
+            if mutate_binding:
+                binding_path.chmod(0o600)
+                binding_path.write_bytes(binding_raw + b"\n")
+                binding_path.chmod(0o555)
             return 0
 
         def revalidate(root, pin, destination, deadline, *, pinned_extraction_receipt_sha256):
@@ -512,7 +639,11 @@ class CarrierMetadataModels(unittest.TestCase):
             stack.enter_context(patch.object(consumer.legacy, "configure_selection", side_effect=configure))
             stack.enter_context(patch.object(consumer.carrier, "validate_binding", return_value=origin))
             stack.enter_context(patch.object(consumer, "recheck_declaration"))
-            stack.enter_context(patch.object(consumer.legacy, "load_candidate", return_value=(report, files, baseline)))
+            stack.enter_context(patch.object(consumer.binding, "config", return_value={"binding": {
+                "path": str(binding_path), "sha256": binding_pin}}))
+            stack.enter_context(patch.object(consumer.binding, "bind", return_value=bound))
+            source_read = stack.enter_context(patch.object(consumer.binding, "load_verified_source",
+                return_value=(report, files, baseline)))
             stack.enter_context(patch.object(consumer.carrier, "extract", side_effect=extract))
             stack.enter_context(patch.object(consumer.carrier, "revalidate_extraction", side_effect=revalidate))
             stack.enter_context(patch.object(consumer.sdk, "validate_export", side_effect=validate_export))
@@ -527,6 +658,7 @@ class CarrierMetadataModels(unittest.TestCase):
                 result = consumer.produce(self.selected, "5" * 64, packed, (), {}, self.declared_proofs(), work, output, 601.0, context)
             self.assertEqual([call.args[0] for call in hold.call_args_list], [retained, controls])
             self.assertEqual([call.args[0] for call in recheck.call_args_list], [retained, controls, retained, controls])
+            self.assertEqual(source_read.call_args_list, [unittest.mock.call(self.original)] * 2)
         self.assertGreater(events.index("fresh", events.index("query-tools")), events.index("query-tools"))
         self.assertTrue(all(result[name] is False for name in consumer.FALSE_FLAGS))
         self.assertEqual(result["kind"], consumer.OUTPUT_KIND)
@@ -541,6 +673,12 @@ class CarrierMetadataModels(unittest.TestCase):
     def test_query_workspace_mutation_refuses_before_metadata_receipt(self):
         with self.assertRaises(ValueError):
             self.run_bounded_consumer(mutate_workspace=True)
+        self.assertFalse((self.root / "result/metadata-receipt.json").exists())
+        self.assertIsNone(consumer._SCOPE.get())
+
+    def test_query_binding_mutation_refuses_actual_retained_readback_before_metadata_receipt(self):
+        with self.assertRaises(ValueError):
+            self.run_bounded_consumer(mutate_binding=True)
         self.assertFalse((self.root / "result/metadata-receipt.json").exists())
         self.assertIsNone(consumer._SCOPE.get())
 
