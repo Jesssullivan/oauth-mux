@@ -66,6 +66,12 @@ export class BrowserService {
     return saved;
   }
 
+  async requests() {
+    const requests = (await this.api.storage.local.get(REQUEST_KEY))[REQUEST_KEY] ?? {};
+    if (!requests || typeof requests !== "object" || Array.isArray(requests) || Object.keys(requests).length > 64 || Object.entries(requests).some(([id, value]) => !/^[A-Za-z0-9._:-]{1,128}$/.test(id) || !validPendingRequest(value))) throw new AcquisitionError("invalid_source_metadata");
+    return requests;
+  }
+
   async setState(source, state) {
     const entries = await this.metadata();
     const states = await this.states();
@@ -77,22 +83,28 @@ export class BrowserService {
   async status(adapterId) {
     const entries = await this.metadata();
     const states = await this.states();
+    const requests = await this.requests();
     const sources = entries.filter(source => !adapterId || source.adapter === adapterId);
     let connection = sources.length ? "select_source_context" : "disconnected";
     if (adapterId) {
       const adapter = getAdapter(adapterId, { allowFixture: this.allowFixture });
-      const [tab] = await this.api.tabs.query({ active: true, currentWindow: true });
-      let origin;
-      try { origin = new URL(tab?.url).origin; } catch {}
-      if (tab && !tab.incognito && origin === adapter.origin) {
-        const stores = tab.cookieStoreId ? [] : await this.api.cookies?.getAllCookieStores?.() ?? [];
-        const storeId = tab.cookieStoreId ?? stores.find(candidate => candidate.tabIds?.includes(tab.id))?.id;
-        const source = sources.find(source => source.storeId === storeId);
-        connection = source ? states[source.sourceId] ?? "pending_connection" : "disconnected";
-      } else if (!tab && sources.length === 1) connection = states[sources[0].sourceId] ?? "pending_connection";
+      // Missing browser read access must not hide the saved removal choices.
+      // A failed active-context lookup establishes no selected-context status.
+      try {
+        const [tab] = await this.api.tabs.query({ active: true, currentWindow: true });
+        let origin;
+        try { origin = new URL(tab?.url).origin; } catch {}
+        if (tab && !tab.incognito && origin === adapter.origin) {
+          const stores = tab.cookieStoreId ? [] : await this.api.cookies?.getAllCookieStores?.() ?? [];
+          const storeId = tab.cookieStoreId ?? stores.find(candidate => candidate.tabIds?.includes(tab.id))?.id;
+          const source = sources.find(source => source.storeId === storeId);
+          connection = source ? states[source.sourceId] ?? "pending_connection" : "disconnected";
+        } else if (!tab && sources.length === 1) connection = states[sources[0].sourceId] ?? "pending_connection";
+      } catch { connection = sources.length ? "select_source_context" : "disconnected"; }
     }
     // UI readback exposes only categorical local state, never native response data.
-    return { ok: true, connection, identity: "unverified", grant: "unproven", capability: "unproven", sources: sources.map(source => ({ ...source, status: states[source.sourceId] ?? "pending_connection" })) };
+    const pendingOperations = { "browser.connect": "connect", "browser.disconnect": "disconnect", "browser.reconcile": "reconcile", "browser.importGrant": "import" };
+    return { ok: true, connection, identity: "unverified", grant: "unproven", capability: "unproven", sources: sources.map(source => ({ ...source, status: states[source.sourceId] ?? "pending_connection", pendingOperation: pendingOperations[requests[source.sourceId]?.method] ?? null })) };
   }
 
   async health() { return { ok: true, ...await requestNativeHealth(this.api, this.browserKind, this.randomId(), this.nativeOptions) }; }
@@ -123,8 +135,7 @@ export class BrowserService {
     const budget = this.activeBudget;
     const remaining = budget ? Math.floor(budget.deadline - this.monotonicNow()) : 10000;
     if (budget && (remaining < 1 || budget.items >= 8)) throw new AcquisitionError("startup_budget_exhausted");
-    const requests = (await this.api.storage.local.get(REQUEST_KEY))[REQUEST_KEY] ?? {};
-    if (!requests || typeof requests !== "object" || Array.isArray(requests) || Object.keys(requests).length > 64 || Object.entries(requests).some(([id, value]) => !/^[A-Za-z0-9._:-]{1,128}$/.test(id) || !validPendingRequest(value))) throw new AcquisitionError("invalid_source_metadata");
+    const requests = await this.requests();
     const entries = await this.metadata();
     for (const id of Object.keys(requests)) if (!entries.some(entry => entry.sourceId === id)) delete requests[id];
     const pending = requests[source.sourceId];
@@ -132,7 +143,7 @@ export class BrowserService {
       // The daemon cannot report/cancel this original outcome. Replaying Connect
       // can renew acquisition authority; a Disconnect ACK cannot settle a
       // delayed original Connect. Retain uncertainty and durable removal intent.
-      throw new AcquisitionError("uncertain_operation");
+      throw new AcquisitionError("connect_outcome_unknown");
     }
     if (pending?.method === "browser.reconcile" && method === "browser.disconnect") {
       // Reconcile observes current authority without reconnecting or extending
@@ -185,7 +196,11 @@ export class BrowserService {
 
   async performCommand(command) {
     if (command && typeof command === "object" && !Array.isArray(command) && Object.keys(command).join(",") === "command" && command.command === "health") return this.health();
-    if (!command || typeof command !== "object" || Array.isArray(command) || Object.keys(command).sort().join(",") !== "adapter,command" || !COMMANDS.has(command.command)) throw new AcquisitionError("invalid_command");
+    if (!command || typeof command !== "object" || Array.isArray(command) || !COMMANDS.has(command.command)) throw new AcquisitionError("invalid_command");
+    const fields = Object.keys(command).sort().join(",");
+    const storedRemoval = fields === "adapter,command,sourceId" && command.command === "disconnect";
+    if (fields !== "adapter,command" && !storedRemoval) throw new AcquisitionError("invalid_command");
+    if (storedRemoval && (typeof command.sourceId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(command.sourceId))) throw new AcquisitionError("invalid_command");
     let adapter;
     try { adapter = getAdapter(command.adapter, { allowFixture: this.allowFixture }); } catch { throw new AcquisitionError("unsupported_adapter"); }
     if (command.command === "status") return this.status(adapter.id);
@@ -195,24 +210,31 @@ export class BrowserService {
       const entries = await this.metadata();
       if (command.command === "disconnect") {
         const sources = entries.filter(entry => entry.adapter === adapter.id);
-        // Resolve the selected context without reading provider data or requiring
-        // acquisition permission. With no tab, a sole source remains removable.
-        const tabs = await this.api.tabs.query({ active: true, currentWindow: true });
-        const tab = tabs[0];
         let selected;
-        if (tab) {
-          if (tab.incognito) throw new AcquisitionError("select_source_context");
-          let origin;
-          try { origin = new URL(tab.url).origin; } catch {}
-          if (origin === adapter.origin) {
-            const stores = tab.cookieStoreId ? [] : await this.api.cookies?.getAllCookieStores?.() ?? [];
-            const storeId = tab.cookieStoreId ?? stores.find(candidate => candidate.tabIds?.includes(tab.id))?.id;
-            selected = sources.find(source => source.storeId === storeId);
-            if (!selected) throw new AcquisitionError("source_not_connected");
-          } else throw new AcquisitionError("select_source_context");
+        if (storedRemoval) {
+          // Explicit popup selection is removal intent only. Recheck membership
+          // and provider now; a stale selection cannot target a replacement.
+          selected = sources.find(source => source.sourceId === command.sourceId);
+          if (!selected) throw new AcquisitionError("source_not_connected");
+        } else {
+          // Resolve the active context without reading provider data or requiring
+          // acquisition permission. With no tab, a sole source remains removable.
+          const tabs = await this.api.tabs.query({ active: true, currentWindow: true });
+          const tab = tabs[0];
+          if (tab) {
+            if (tab.incognito) throw new AcquisitionError("select_source_context");
+            let origin;
+            try { origin = new URL(tab.url).origin; } catch {}
+            if (origin === adapter.origin) {
+              const stores = tab.cookieStoreId ? [] : await this.api.cookies?.getAllCookieStores?.() ?? [];
+              const storeId = tab.cookieStoreId ?? stores.find(candidate => candidate.tabIds?.includes(tab.id))?.id;
+              selected = sources.find(source => source.storeId === storeId);
+              if (!selected) throw new AcquisitionError("source_not_connected");
+            } else throw new AcquisitionError("select_source_context");
+          }
+          if (!selected && sources.length === 1) selected = sources[0];
+          if (!selected) throw new AcquisitionError(sources.length ? "select_source_context" : "source_not_connected");
         }
-        if (!selected && sources.length === 1) selected = sources[0];
-        if (!selected) throw new AcquisitionError(sources.length ? "select_source_context" : "source_not_connected");
         await this.disconnectSource(selected, adapter);
         const remaining = await this.metadata();
         if (!remaining.some(entry => entry.adapter === adapter.id)) {
@@ -228,7 +250,9 @@ export class BrowserService {
         if (!source) {
           if (entries.length >= 64) throw new AcquisitionError("source_limit_reached");
           source = { adapter: adapter.id, storeId, sourceId: this.randomId() };
-          // Persist only source metadata before dispatch, keeping retries idempotent.
+          // Persist only metadata before dispatch to retain the same source ID.
+          // A repeated Connect can renew authority; its request ID is not a
+          // daemon cancellation or effect-idempotence contract.
           entries.push(source);
           await this.saveMetadata(entries);
           await this.setState(source, "pending_connection");
@@ -237,7 +261,10 @@ export class BrowserService {
       }
       if (!source) throw new AcquisitionError("source_not_connected");
       if (command.command === "reconcile") {
-        if ((await this.states())[source.sourceId] === "pending_disconnect") throw new AcquisitionError("disconnect_pending");
+        if ((await this.states())[source.sourceId] === "pending_disconnect") {
+          if ((await this.requests())[source.sourceId]?.method === "browser.connect") throw new AcquisitionError("connect_outcome_unknown");
+          throw new AcquisitionError("disconnect_pending");
+        }
         return await this.reconcileSource(source, adapter);
       }
       throw new AcquisitionError("invalid_command");
@@ -359,6 +386,6 @@ export class BrowserService {
 }
 
 export function publicError(error) {
-    const allowed = new Set(["provider_permission_required", "open_provider_tab", "cookie_store_unavailable", "source_not_connected", "select_source_context", "disconnect_pending", "uncertain_operation", "startup_budget_exhausted", "operation_in_progress", "source_limit_reached", "native_host_unavailable", "incompatible_native_host", "daemon_rejected_request", "grant_export_unproven", "storage_reader_unproven"]);
+    const allowed = new Set(["provider_permission_required", "open_provider_tab", "cookie_store_unavailable", "source_not_connected", "select_source_context", "disconnect_pending", "connect_outcome_unknown", "uncertain_operation", "startup_budget_exhausted", "operation_in_progress", "source_limit_reached", "native_host_unavailable", "incompatible_native_host", "daemon_rejected_request", "grant_export_unproven", "storage_reader_unproven"]);
   return { ok: false, code: error instanceof AcquisitionError && allowed.has(error.code) ? error.code : "request_failed" };
 }

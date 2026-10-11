@@ -256,6 +256,24 @@ disappearance transition remain unimplemented/unproved. The C8 Chromium tuple ab
 recovery and context disconnect; human consent, production authority transitions
 and committed daemon mutation with lost-reply recovery remain unproved.
 Removing host registration is a separate action.
+
+The popup also offers **Disconnect saved context** for an explicit opaque context
+within the selected provider. This uses validated local source metadata when
+provider read permission or the provider tab is gone. The service rechecks exact
+source/provider membership at dispatch, without reading cookies, capturing a
+grant or sending Connect. A stale or foreign-provider selection is refused.
+Changing the provider or saved context clears Connect consent. Delayed status
+and removal replies cannot replace feedback for a newer UI selection.
+
+An unknown original Connect outcome is distinct from an unconfirmed Disconnect
+reply. In the former case removal remains pending, with the original source and
+request identity retained: neither retry nor an ordinary Disconnect reply can
+cancel a delayed original Connect. Authoritative original-outcome recovery is
+not implemented. In the latter case retry sends the retained Disconnect only.
+The saved list and pending-operation labels are local metadata, not verified
+identity, daemon authority or proof that a removal completed. Production grant
+export remains disabled; browser-presence detachment remains unimplemented.
+
 Use the exact browser, extension ID, binary and destination from installation:
 
 ```bash
