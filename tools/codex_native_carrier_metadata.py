@@ -259,9 +259,10 @@ def _recheck_initial_declaration(declaration, qualified, carrier_root, pin, cand
     tick(deadline)
 
 
-def recheck_declaration(declaration, qualified, carrier_root, pin, deadline):
+def recheck_declaration(declaration, qualified, carrier_root, pin, deadline, *, _held_carrier=None):
     _read_declaration(declaration, deadline)
-    actual = carrier.publication_report(carrier_root, pin, deadline)
+    actual = carrier.publication_report(carrier_root, pin, deadline) if _held_carrier is None else (
+        carrier.publication_report(carrier_root, pin, deadline, _held_carrier=_held_carrier))
     require(actual["carrier_receipt_sha256"] == pin
         and actual["files"] == qualified["report"]["files"]
         and {row["name"]: row["sha256"] for row in actual["files"]} == declaration["selection"]["digests"])
@@ -443,7 +444,7 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
     pin = selected["carrier"]["receipt_sha256"]
     qualified = qualify_producer(selected, deadline, proof_inputs)
     with ExitStack() as stack:
-        carrier_hold = stack.enter_context(carrier.Root(carrier_root, carrier.Clock(deadline)))
+        carrier_hold = stack.enter_context(carrier.HeldCarrier(carrier_root, pin, deadline))
         origin = report = files = parent = output_hold = source_hold = binding_hold = None
         def accept_initial(candidate):
             nonlocal origin, report, files, parent, output_hold, source_hold, binding_hold
@@ -475,10 +476,11 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
                 progress("refused")
                 raise
         extracted = output / "extracted"
-        extraction = carrier.extract(carrier_root, pin, extracted, deadline, on_bound=accept_initial)
+        extraction = carrier.extract(carrier_root, pin, extracted, deadline, on_bound=accept_initial,
+            _held_carrier=carrier_hold)
         extraction_pin = carrier.sha(carrier.encoded(extraction))
         require(carrier.revalidate_extraction(carrier_root, pin, extracted, deadline,
-            pinned_extraction_receipt_sha256=extraction_pin) == extraction)
+            pinned_extraction_receipt_sha256=extraction_pin, _held_carrier=carrier_hold) == extraction)
         sdk_root = extracted / "sdk"
         fresh = {role: stack.enter_context(carrier.Root(extracted / role, carrier.Clock(deadline)))
             for role in ("sdk", "jdk")}
@@ -499,16 +501,16 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
         os.close(fd)
         source.verify_written(output / "hub/source", hub)
         require(qualify_producer(selected, deadline, proof_inputs) == qualified)
-        recheck_declaration(declaration, qualified, carrier_root, pin, deadline)
+        recheck_declaration(declaration, qualified, carrier_root, pin, deadline, _held_carrier=carrier_hold)
         query = query_tools.verify_repository(legacy.QUERY_REPOSITORY, deadline)
         require(query["status"] == "declared-fixed-query-tools-byte-qualified" and query["inputs_rechecked"] is True)
         source.verify_written(temporary / "workspace/source", files)
         require(legacy.load_retained_candidate(selected["original_selection"])[0] == report)
         require(sdk.validate_export(sdk_root, legacy.EXPORT_SHA, source.BASE_INVENTORY,
             parent["baseline_graph_files"], on_read=lambda count: tick(deadline)) == exported)
-        require(carrier.validate_binding(carrier_root, pin, deadline) == origin)
+        require(carrier_hold.report() == origin)
         require(carrier.revalidate_extraction(carrier_root, pin, extracted, deadline,
-            pinned_extraction_receipt_sha256=extraction_pin) == extraction)
+            pinned_extraction_receipt_sha256=extraction_pin, _held_carrier=carrier_hold) == extraction)
         legacy.recheck_root(Path(selected["original_selection"]["source_root"]), source_hold)
         legacy.recheck_root(legacy.INPUT_CONTROL.parent, binding_hold)
         for root in [output_hold, carrier_hold, *fresh.values()]:
@@ -534,8 +536,11 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
             "source_and_extracted_carrier_rechecked": True, **{name: False for name in FALSE_FLAGS}}
         tick(deadline)
         write_receipt(output_hold, result, deadline)
+        # Long final carrier content/NAR IO precedes the last fresh output proof.
+        # A scoped report or completed copy can never replace this full read.
+        carrier_hold.full_final()
         require(carrier.revalidate_extraction(carrier_root, pin, extracted, deadline,
-            pinned_extraction_receipt_sha256=extraction_pin) == extraction)
+            pinned_extraction_receipt_sha256=extraction_pin, _held_carrier=carrier_hold) == extraction)
         source.verify_written(temporary / "workspace/source", files)
         source.verify_written(output / "hub/source", hub)
         legacy.recheck_root(Path(selected["original_selection"]["source_root"]), source_hold)

@@ -591,7 +591,7 @@ class CarrierMetadataModels(unittest.TestCase):
     def run_bounded_consumer(self, *, mutate_workspace=False, fail_final_custody=False,
             mutate_ready_workspace=False, fail_ready_custody=False, mutate_ready_proof=False,
             mutate_binding=False, bad_initial_context=False, fail_initial_declaration=False,
-            fail_initial_source=False):
+            fail_initial_source=False, fail_final_full=False, mutate_during_final_full=False):
         """Actual workspace/output FD writes and root holds; explicit proof seams.
 
         A tiny source/SDK/carrier is a trusted model boundary, never qualification.
@@ -625,14 +625,56 @@ class CarrierMetadataModels(unittest.TestCase):
             origin["producer_context"] = dict(origin["producer_context"], source_commit="c" * 40)
         extraction = {"kind": "bounded-extraction-model"}
         events = []
+        scopes = []
+
+        class ModelHeldCarrier:
+            # Explicit carrier content seam. Core models exercise actual four
+            # leaf ownership; this model keeps real root/workspace/output IO.
+            def __init__(inner, root, pin, deadline):
+                self.assertEqual((root, pin, deadline), (packed, "4" * 64, 601.0))
+                inner.root = consumer.carrier.Root(root, consumer.carrier.Clock(deadline))
+                inner.final = False
+                scopes.append(inner)
+
+            def __enter__(inner):
+                return inner
+
+            def check(inner):
+                inner.root.check()
+
+            def report(inner):
+                inner.check()
+                return copy.deepcopy(origin)
+
+            def full_final(inner):
+                inner.check()
+                self.assertFalse(inner.final)
+                self.assertTrue((output / "metadata-receipt.json").exists())
+                events.append("full-final")
+                if fail_final_full:
+                    raise ValueError("actual full carrier seam refused")
+                if mutate_during_final_full:
+                    path = work / "workspace/source/MODULE.bazel"
+                    path.chmod(0o600)
+                    path.write_bytes(b"workspace changed during full final carrier read\n")
+                    path.chmod(0o555)
+                inner.final = True
+
+            def __exit__(inner, exc_type, *unused):
+                try:
+                    if exc_type is None:
+                        self.assertTrue(inner.final)
+                finally:
+                    inner.root.close()
 
         def configure():
             consumer.legacy.INPUT_CONTROL = binding_path
             consumer.legacy.BINDING_SHA = binding_pin
             consumer.legacy.QUERY_REPOSITORY = self.root / "independent-query-tools"
 
-        def extract(root, pin, destination, deadline, *, on_bound):
+        def extract(root, pin, destination, deadline, *, on_bound, _held_carrier):
             self.assertEqual((root, pin, deadline), (packed, "4" * 64, 601.0))
+            self.assertIs(_held_carrier, scopes[0])
             events.append("extract")
             self.assertFalse(output.exists())
             self.assertFalse(work.exists())
@@ -670,8 +712,9 @@ class CarrierMetadataModels(unittest.TestCase):
                 binding_path.chmod(0o555)
             return 0
 
-        def revalidate(root, pin, destination, deadline, *, pinned_extraction_receipt_sha256):
+        def revalidate(root, pin, destination, deadline, *, pinned_extraction_receipt_sha256, _held_carrier):
             self.assertEqual(deadline, 601.0)
+            self.assertIs(_held_carrier, scopes[0])
             self.assertEqual(pinned_extraction_receipt_sha256, consumer.carrier.sha(consumer.carrier.encoded(extraction)))
             events.append("fresh")
             if fail_final_custody and "query-tools" in events:
@@ -703,8 +746,9 @@ class CarrierMetadataModels(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(consumer.legacy, "configure_selection", side_effect=configure))
+            stack.enter_context(patch.object(consumer.carrier, "HeldCarrier", ModelHeldCarrier))
             final_binding = stack.enter_context(patch.object(consumer.carrier, "validate_binding", return_value=origin))
-            stack.enter_context(patch.object(consumer, "recheck_declaration"))
+            declarations = stack.enter_context(patch.object(consumer, "recheck_declaration"))
             initial_join = stack.enter_context(patch.object(consumer, "_recheck_initial_declaration",
                 side_effect=ValueError("private declaration content") if fail_initial_declaration else None))
             stack.enter_context(patch.object(consumer.binding, "config", return_value={"binding": {
@@ -728,13 +772,19 @@ class CarrierMetadataModels(unittest.TestCase):
             self.assertEqual([call.args[0] for call in hold.call_args_list], [retained, controls])
             self.assertEqual([call.args[0] for call in recheck.call_args_list], [retained, controls, retained, controls])
             self.assertEqual(source_read.call_args_list, [unittest.mock.call(self.original)] * 2)
-            self.assertEqual(final_binding.call_args_list, [unittest.mock.call(packed, "4" * 64, 601.0)])
+            final_binding.assert_not_called()
+            declarations.assert_called_once_with({}, unittest.mock.ANY, packed, "4" * 64, 601.0,
+                _held_carrier=scopes[0])
             initial_join.assert_called_once()
             self.assertEqual(initial_join.call_args.args[0], {})
             self.assertEqual(initial_join.call_args.args[1]["report"], self.program)
             self.assertEqual(initial_join.call_args.args[2:], (packed, "4" * 64, origin, 601.0))
         self.assertLess(events.index("bound"), events.index("sdk"))
         self.assertGreater(events.index("fresh", events.index("query-tools")), events.index("query-tools"))
+        self.assertEqual(events.count("full-final"), 1)
+        self.assertGreater(events.index("full-final"), events.index("query-tools"))
+        self.assertGreater(events.index("fresh", events.index("full-final")), events.index("full-final"))
+        self.assertEqual(scopes[0].root.chain, [])
         self.assertTrue(all(result[name] is False for name in consumer.FALSE_FLAGS))
         self.assertEqual(result["kind"], consumer.OUTPUT_KIND)
         self.assertEqual(os.stat(output).st_mode & 0o777, 0o700)
@@ -776,6 +826,18 @@ class CarrierMetadataModels(unittest.TestCase):
 
     def test_initial_callback_source_failure_preserves_refusal_and_no_output(self):
         self.assert_initial_callback_refusal("fail_initial_source", ("start", "declaration-ready", "aliases-ready", "refused"))
+
+    def test_missing_final_full_carrier_proof_refuses_after_partial_receipt(self):
+        with self.assertRaises(ValueError):
+            self.run_bounded_consumer(fail_final_full=True)
+        self.assertTrue((self.root / "result/metadata-receipt.json").exists())
+        self.assertIsNone(consumer._SCOPE.get())
+
+    def test_final_full_carrier_io_mutation_is_followed_by_actual_workspace_readback(self):
+        with self.assertRaises(ValueError):
+            self.run_bounded_consumer(mutate_during_final_full=True)
+        self.assertTrue((self.root / "result/metadata-receipt.json").exists())
+        self.assertIsNone(consumer._SCOPE.get())
 
     def test_authenticated_initial_origin_context_refuses_before_dependent_output(self):
         with self.assertRaises(ValueError):

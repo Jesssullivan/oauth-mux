@@ -5,9 +5,11 @@ registry/module/link-absence logic, byte readers and canonical NAR run unchanged
 No model claims a genuine carrier producer, metadata or application qualification.
 """
 from contextlib import closing, redirect_stderr
+import copy
 import io
 import json
 import os
+import pickle
 from pathlib import Path
 import re
 import shutil
@@ -22,6 +24,311 @@ import codex_retained_sdk_export as sdk
 
 
 class CarrierModels(unittest.TestCase):
+    def held_fds(self, scope):
+        return [fd for _, fd, _ in scope._held] + [fd for _, fd, _ in scope._chain]
+
+    def assert_descriptors_closed(self, descriptors):
+        for fd in descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    def test_scoped_real_full_proof_reuses_one_owner_then_requires_fresh_final(self):
+        root, original, pin = self.seal()
+        public = carrier.publication_report(root, pin, self.deadline)
+        output = self.root / "scoped-extracted"
+        owners = []
+        real = carrier.binding
+        def full(owner, selected, clock):
+            owners.append(owner)
+            return real(owner, selected, clock)
+        with patch.object(carrier, "binding", side_effect=full) as calls:
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                descriptors = self.held_fds(scope)
+                self.assertEqual(len(scope._held), 4)
+                result = carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+                receipt_pin = carrier.sha(carrier.encoded(result))
+                self.assertEqual(calls.call_count, 1)
+                self.assertEqual(scope.report(), original)
+                self.assertEqual(carrier.publication_report(root, pin, self.deadline, _held_carrier=scope), public)
+                self.assertEqual(carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope), result)
+                self.assertEqual(calls.call_count, 1)
+                # Public standalone validation stays a separate complete read.
+                self.assertEqual(carrier.validate_binding(root, pin, self.deadline), original)
+                self.assertEqual(calls.call_count, 2)
+                scope.full_final()
+                self.assertEqual(carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope), result)
+                self.assertEqual(calls.call_count, 3)
+                self.assertIs(owners[0], owners[2])
+                self.assertIsNot(owners[0], owners[1])
+                self.assertEqual(scope.report(), original)
+                self.assertEqual((output / "sdk/receipt.json").read_bytes(), self.original)
+                self.assertFalse(result["metadata_qualified"])
+                with self.assertRaises(TypeError):
+                    scope._binding()[2][("sdk", "")]["mode"] = 0o700
+                copied = scope.report()
+                copied["origin"]["root"] = "/foreign"
+                self.assertEqual(scope.report(), original)
+            self.assert_descriptors_closed(descriptors)
+            with self.assertRaises(ValueError):
+                scope.report()
+            with self.assertRaises(ValueError):
+                scope.__enter__()
+
+    def test_scoped_all_four_leaf_mutations_refuse_current_held_proof(self):
+        for index, name in enumerate(carrier.FILES):
+            for change in ("inode", "mode", "chmod-restored", "mtime-restored", "bytes", "hardlink", "symlink"):
+                with self.subTest(name=name, change=change):
+                    root, _, pin = self.seal("leaf-" + str(index) + "-" + change)
+                    path = root / name
+                    with self.assertRaises(ValueError):
+                        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                            scope.report()
+                            descriptors = self.held_fds(scope)
+                            original = path.stat()
+                            root.chmod(0o700)
+                            if change in ("inode", "symlink"):
+                                aside = self.root / ("old-" + str(index) + "-" + change)
+                                path.rename(aside)
+                                if change == "inode":
+                                    self.write(path, aside.read_bytes(), 0o444)
+                                else:
+                                    path.symlink_to(aside)
+                            elif change == "mode":
+                                path.chmod(0o555)
+                            elif change == "chmod-restored":
+                                path.chmod(0o600)
+                                path.chmod(0o444)
+                            elif change == "mtime-restored":
+                                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns + 10**9))
+                                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+                            elif change == "bytes":
+                                path.chmod(0o600)
+                                with path.open("r+b") as stream:
+                                    first = stream.read(1)
+                                    stream.seek(0)
+                                    stream.write(bytes([first[0] ^ 1]))
+                                path.chmod(0o444)
+                            else:
+                                os.link(path, self.root / ("extra-hardlink-" + str(index)))
+                            root.chmod(0o555)
+                            scope.report()
+                    self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_same_byte_named_ancestor_root_and_alias_changes_refuse(self):
+        for change in ("root", "ancestor", "alias"):
+            with self.subTest(change=change):
+                parent = self.root / ("parent-" + change)
+                parent.mkdir(mode=0o700)
+                root, _, pin = self.seal("source-" + change)
+                root.rename(parent / "carrier")
+                root = parent / "carrier"
+                parent.chmod(0o555)
+                alias = self.root / ("alias-" + change)
+                alias.symlink_to(root)
+                with self.assertRaises(ValueError):
+                    with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                        scope.report()
+                        descriptors = self.held_fds(scope)
+                        if change == "root":
+                            parent.chmod(0o700)
+                            root.rename(parent / "old-carrier")
+                            shutil.copytree(parent / "old-carrier", root, symlinks=True)
+                            parent.chmod(0o555)
+                            scope.report()
+                        elif change == "ancestor":
+                            parent.rename(self.root / "old-parent")
+                            shutil.copytree(self.root / "old-parent", parent, symlinks=True)
+                            scope.report()
+                        else:
+                            foreign = self.root / "foreign-alias-root"
+                            shutil.copytree(root, foreign, symlinks=True)
+                            alias.unlink()
+                            alias.symlink_to(foreign)
+                            carrier.publication_report(alias.resolve(strict=True), pin, self.deadline,
+                                _held_carrier=scope)
+                self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_foreign_owner_pin_clock_type_and_closed_scope_refuse(self):
+        root, _, pin = self.seal()
+        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+            scope.report()
+            for candidate, selected, deadline in ((self.root / "foreign", pin, self.deadline),
+                    (root, "f" * 64, self.deadline), (root, pin, self.deadline + 1)):
+                with self.assertRaises(ValueError):
+                    carrier.publication_report(candidate, selected, deadline, _held_carrier=scope)
+            with self.assertRaises(ValueError):
+                carrier.publication_report(root, pin, self.deadline, _held_carrier={})
+            owner, clock = scope._root, scope._clock
+            with carrier.Root(root, clock) as foreign:
+                scope._root = foreign
+                with self.assertRaises(ValueError):
+                    scope.check()
+                scope._root = owner
+            scope._clock = carrier.Clock(self.deadline)
+            with self.assertRaises(ValueError):
+                scope.check()
+            scope._clock = clock
+            scope.full_final()
+            descriptors = self.held_fds(scope)
+        self.assert_descriptors_closed(descriptors)
+        with self.assertRaises(ValueError):
+            carrier.publication_report(root, pin, self.deadline, _held_carrier=scope)
+
+    def test_scoped_before_use_after_use_race_refuses_and_closes_owner(self):
+        root, _, pin = self.seal()
+        real = carrier.decode
+        mutate = False
+        def change(raw):
+            nonlocal mutate
+            result = real(raw)
+            if mutate:
+                mutate = False
+                path = root / "payload.bin"
+                path.chmod(0o600)
+                path.chmod(0o444)
+            return result
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                scope.report()
+                descriptors = self.held_fds(scope)
+                mutate = True
+                with patch.object(carrier, "decode", side_effect=change):
+                    carrier.publication_report(root, pin, self.deadline, _held_carrier=scope)
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_original_float_integer_expiry_and_partial_entry_cleanup(self):
+        for kind in ("float", "integer", "partial"):
+            with self.subTest(kind=kind):
+                root, _, pin = self.seal("deadline-" + kind)
+                captured = []
+                real_clock, real_open = carrier.Clock, carrier.Root.open
+                def clock(deadline):
+                    selected = real_clock(deadline)
+                    if kind == "integer":
+                        selected.until_ns = time.monotonic_ns() + 60 * 10**9
+                    return selected
+                def open_leaf(owner, name):
+                    if kind == "partial" and name == "payload.bin":
+                        captured.extend(fd for _, fd, _ in owner.chain)
+                        raise ValueError("partial entry")
+                    fd, witness = real_open(owner, name)
+                    captured.append(fd)
+                    return fd, witness
+                with patch.object(carrier, "Clock", side_effect=clock), patch.object(carrier.Root, "open", open_leaf):
+                    with self.assertRaises(ValueError):
+                        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                            scope.report()
+                            captured = self.held_fds(scope)
+                            if kind == "float":
+                                with patch.object(carrier.time, "monotonic", return_value=self.deadline):
+                                    scope.report()
+                            else:
+                                with patch.object(carrier.time, "monotonic_ns", return_value=scope._until_ns):
+                                    scope.report()
+                self.assert_descriptors_closed(captured)
+
+    def test_scoped_missing_or_failed_final_full_proof_never_accepts_exit(self):
+        for kind in ("missing", "failed"):
+            with self.subTest(kind=kind):
+                root, _, pin = self.seal("final-" + kind)
+                with self.assertRaises(ValueError):
+                    with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                        scope.report()
+                        descriptors = self.held_fds(scope)
+                        if kind == "failed":
+                            with patch.object(carrier, "binding", side_effect=ValueError("final full refused")):
+                                scope.full_final()
+                self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_final_full_read_precedes_last_fresh_output_mutation_refusal(self):
+        root, _, pin = self.seal()
+        output = self.root / "final-raced-output"
+        real = carrier.binding
+        def final(owner, selected, clock):
+            result = real(owner, selected, clock)
+            path = output / "jdk/ordinary"
+            path.chmod(0o600)
+            path.write_bytes(b"changed during long final carrier read")
+            path.chmod(0o444)
+            return result
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                result = carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+                descriptors = self.held_fds(scope)
+                with patch.object(carrier, "binding", side_effect=final):
+                    scope.full_final()
+                carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(result)), _held_carrier=scope)
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_real_named_leaf_mutation_during_full_final_refuses(self):
+        root, _, pin = self.seal()
+        real = carrier.binding
+        def final(owner, selected, clock):
+            result = real(owner, selected, clock)
+            path = root / "manifest.json"
+            root.chmod(0o700)
+            path.rename(self.root / "held-manifest.json")
+            self.write(path, (self.root / "held-manifest.json").read_bytes())
+            root.chmod(0o555)
+            return result
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                scope.report()
+                descriptors = self.held_fds(scope)
+                with patch.object(carrier, "binding", side_effect=final):
+                    scope.full_final()
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_extraction_requires_last_fresh_proof_after_full_final(self):
+        root, _, pin = self.seal()
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                result = carrier.extract(root, pin, self.root / "unfinished-last-proof", self.deadline,
+                    _held_carrier=scope)
+                descriptors = self.held_fds(scope)
+                # A fresh proof performed before full_final cannot satisfy exit.
+                carrier.revalidate_extraction(root, pin, self.root / "unfinished-last-proof", self.deadline,
+                    pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(result)), _held_carrier=scope)
+                scope.full_final()
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_copies_serialization_and_foreign_thread_never_transfer_authority(self):
+        root, _, pin = self.seal()
+        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+            scope.report()
+            for transfer in (copy.copy, copy.deepcopy, pickle.dumps):
+                with self.subTest(transfer=transfer), self.assertRaises(ValueError):
+                    transfer(scope)
+            with patch.object(carrier.threading, "get_ident", return_value=scope._thread + 1):
+                with self.assertRaises(ValueError):
+                    scope.report()
+            with patch.object(carrier.os, "getpid", return_value=scope._pid + 1):
+                with self.assertRaises(ValueError):
+                    scope.report()
+            scope.check()
+            scope.full_final()
+            descriptors = self.held_fds(scope)
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_existing_unregistered_extraction_refuses_before_fresh_reads(self):
+        root, _, pin = self.seal()
+        output = self.root / "standalone-existing-output"
+        receipt = carrier.extract(root, pin, output, self.deadline)
+        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+            scope.report()
+            descriptors = self.held_fds(scope)
+            with patch.object(carrier, "scan", side_effect=AssertionError("unregistered output read")):
+                with self.assertRaisesRegex(ValueError, "registered-extraction"):
+                    carrier.revalidate_extraction(root, pin, output, self.deadline,
+                        pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(receipt)), _held_carrier=scope)
+            with self.assertRaisesRegex(ValueError, "fresh-output-join"):
+                scope._complete_fresh(output, receipt)
+            scope.full_final()
+        self.assert_descriptors_closed(descriptors)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

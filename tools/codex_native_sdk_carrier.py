@@ -6,6 +6,7 @@ JDK/tool paths still require a separately qualified platform before execution.
 """
 import argparse
 from contextlib import ExitStack
+from types import MappingProxyType
 import hashlib
 import io
 import json
@@ -15,6 +16,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import threading
 import time
 
 import codex_retained_sdk_export as sdk
@@ -931,13 +933,186 @@ def validate_binding(carrier_dir, pinned_carrier_receipt_sha256, absolute_deadli
         return report
 
 
+class HeldCarrier:
+    """One local proof owner, never a serialized or caller-supplied proof token.
+
+    Hold four exact regular FDs plus the nofollow ancestor chain. Initial and
+    mandatory final binding stay full. Intermediate reuse is valid only while
+    every held/current name and original clock remains the same.
+    """
+    def __init__(self, carrier_dir, pin, absolute_deadline):
+        self._path, self._pin = absolute(carrier_dir), digest(pin)
+        self._self = self
+        self._pid, self._thread = os.getpid(), threading.get_ident()
+        self._clock = Clock(absolute_deadline)
+        self._deadline, self._until_ns = self._clock.deadline, self._clock.until_ns
+        self._stack, self._held = ExitStack(), ()
+        self._root = self._owner = None
+        self._chain = ()
+        self._facts = None
+        self._extracted = None
+        self._final_fresh = False
+        self._entered = self._active = self._final = False
+
+    def __enter__(self):
+        need(self._self is self and not self._entered and os.getpid() == self._pid
+             and threading.get_ident() == self._thread, "held-carrier-reentry")
+        self._entered = self._active = True
+        try:
+            self._root = self._owner = self._stack.enter_context(Root(self._path, self._clock))
+            self._chain = tuple(self._root.chain)
+            held = []
+            for name in FILES:
+                fd, witness = self._root.open(name)
+                self._stack.callback(os.close, fd)
+                need(witness[5] == 1 and transport_leaf_mode(self._root, witness), "held-carrier-leaf")
+                held.append((name, fd, tuple(witness)))
+            self._held = tuple(held)
+            self.check()
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def check(self):
+        need(self._self is self and self._active and os.getpid() == self._pid
+             and threading.get_ident() == self._thread
+             and self._root is self._owner and self._root is not None
+             and self._root.path == self._path and self._root.clock is self._clock
+             and tuple(self._root.chain) == self._chain
+             and self._clock.deadline == self._deadline and self._clock.until_ns == self._until_ns,
+             "held-carrier-owner-clock")
+        self._root.check()
+        need(tuple(name for name, _, _ in self._held) == FILES, "held-carrier-four-leaves")
+        names(self._root.fd, set(FILES), self._clock)
+        for name, fd, witness in self._held:
+            self._clock.tick()
+            before = os.stat(name, dir_fd=self._root.fd, follow_symlinks=False)
+            held = os.fstat(fd)
+            after = os.stat(name, dir_fd=self._root.fd, follow_symlinks=False)
+            need(identity(before) == identity(held) == identity(after) == list(witness)
+                 and stat.S_ISREG(held.st_mode) and held.st_nlink == 1
+                 and held.st_uid in (0, os.getuid()) and transport_leaf_mode(self._root, witness),
+                 "held-carrier-current-leaf")
+        self._root.check()
+
+    def join(self, carrier_dir, pin, absolute_deadline):
+        self.check()
+        need(absolute(carrier_dir) == self._path and pin == self._pin
+             and absolute_deadline == self._deadline, "held-carrier-foreign-use")
+        self.check()
+
+    def _binding(self):
+        self.check()
+        if self._facts is None:
+            report, manifest, rows, files = binding(self._root, self._pin, self._clock)
+            self.check()
+            frozen = []
+            for values in (rows, files):
+                entries = {}
+                for key, row in values.items():
+                    self._clock.tick()
+                    entries[key] = MappingProxyType(dict(row))
+                frozen.append(MappingProxyType(entries))
+            self._facts = (encoded(report), encoded(manifest["nars"]), *frozen)
+        self.check()
+        raw, nars, rows, files = self._facts
+        # Only small ordinary copies escape; member facts remain read-only.
+        result = decode(raw), {"nars": decode(nars)}, rows, files
+        self.check()
+        return result
+
+    def report(self):
+        result = self._binding()[0]
+        self.check()
+        return result
+
+    def full_final(self):
+        self.check()
+        need(self._facts is not None and not self._final, "held-carrier-final-state")
+        report, manifest, rows, files = binding(self._root, self._pin, self._clock)
+        raw, nars, expected_rows, expected_files = self._facts
+        need(encoded(report) == raw and encoded(manifest["nars"]) == nars
+             and rows == expected_rows and files == expected_files, "held-carrier-full-final")
+        self.check()
+        self._final = True
+
+    def _complete_extract(self, path, receipt):
+        self.check()
+        need(self._extracted is None and not self._final, "held-carrier-one-extraction")
+        self._extracted = (absolute(path), sha(encoded(receipt)))
+        self.check()
+
+    def _complete_fresh(self, path, receipt):
+        self.check()
+        need(self._extracted is not None
+             and self._extracted == (absolute(path), sha(encoded(receipt))), "held-carrier-fresh-output-join")
+        if self._final:
+            self._final_fresh = True
+        self.check()
+
+    def close(self):
+        need(self._self is self, "held-carrier-foreign-close")
+        self._active = False
+        self._facts = None
+        try:
+            self._stack.close()
+        finally:
+            self._held = ()
+
+    def __exit__(self, exc_type, *unused):
+        try:
+            if exc_type is None:
+                self.check()
+                need(self._final and (self._extracted is None or self._final_fresh), "held-carrier-final-required")
+        finally:
+            self.close()
+
+    def __copy__(self):
+        raise ValueError("SDK carrier refused: held-carrier-nontransferable")
+
+    def __deepcopy__(self, memo):
+        raise ValueError("SDK carrier refused: held-carrier-nontransferable")
+
+    def __reduce_ex__(self, protocol):
+        raise ValueError("SDK carrier refused: held-carrier-nontransferable")
+
+
+def _carrier_clock(held, carrier_dir, pin, deadline):
+    if held is None:
+        return Clock(deadline)
+    need(type(held) is HeldCarrier, "held-carrier-type")
+    held.join(carrier_dir, pin, deadline)
+    return held._clock
+
+
+def _carrier_binding(held, root, pin, clock):
+    if held is None:
+        return binding(root, pin, clock)
+    need(root is held._owner and clock is held._clock and pin == held._pin, "held-carrier-binding-owner")
+    return held._binding()
+
+
 def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
-                         absolute_deadline, *, pinned_extraction_receipt_sha256=None):
-    """Full read-only fresh custody/content proof; no ambient origin SDK reads."""
-    clock = Clock(absolute_deadline)
+                         absolute_deadline, *, pinned_extraction_receipt_sha256=None, _held_carrier=None):
+    """Full fresh custody/content proof; scoped carrier facts stay held locally.
+
+    Default calls reauthenticate the carrier fully at both fences. Scoped calls
+    require that owner's mandatory full final proof before successful exit.
+    """
+    clock = _carrier_clock(_held_carrier, carrier_dir, pinned_carrier_receipt_sha256, absolute_deadline)
+    if _held_carrier is not None:
+        need(_held_carrier._extracted is not None
+             and absolute(extracted_dir) == _held_carrier._extracted[0]
+             and (pinned_extraction_receipt_sha256 is None
+                  or pinned_extraction_receipt_sha256 == _held_carrier._extracted[1]),
+             "held-carrier-registered-extraction")
+        _held_carrier.check()
     with ExitStack() as stack:
-        carrier = stack.enter_context(Root(carrier_dir, clock))
-        report, manifest, rows, _ = binding(carrier, pinned_carrier_receipt_sha256, clock)
+        carrier = stack.enter_context(Root(carrier_dir, clock)) if _held_carrier is None else _held_carrier._owner
+        if _held_carrier is not None:
+            stack.callback(_held_carrier.check)
+        report, manifest, rows, _ = _carrier_binding(_held_carrier, carrier, pinned_carrier_receipt_sha256, clock)
         output = stack.enter_context(Root(extracted_dir, clock))
         names(output.fd, {"sdk", "jdk", "extraction-receipt.json"}, clock)
         raw = read(output, "extraction-receipt.json", 65536, pinned_extraction_receipt_sha256)
@@ -966,7 +1141,7 @@ def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_
                  and selected["root"] == str(root.path) and selected["root_identity"] == root.chain[-1][2]
                  and selected["members_sha256"] == sha(encoded([[name, value]
                     for (which, name), value in sorted(witnesses.items()) if which == role])), "fresh-custody-join")
-        need(binding(carrier, pinned_carrier_receipt_sha256, clock)[0] == report, "extraction-carrier-readback")
+        need(_carrier_binding(_held_carrier, carrier, pinned_carrier_receipt_sha256, clock)[0] == report, "extraction-carrier-readback")
         after, again = scan(roots, rows, clock)
         need(after == observed and again == witnesses
              and read(output, "extraction-receipt.json", 65536, receipt_pin) == raw, "extraction-final-readback")
@@ -974,11 +1149,23 @@ def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_
             root.check()
         carrier.check()
         output.check()
+        if _held_carrier is not None:
+            _held_carrier._complete_fresh(extracted_dir, receipt)
         return receipt
 
 
-def publication_report(carrier_dir, pinned_carrier_receipt_sha256, absolute_deadline):
-    clock = Clock(absolute_deadline)
+def publication_report(carrier_dir, pinned_carrier_receipt_sha256, absolute_deadline, *, _held_carrier=None):
+    clock = _carrier_clock(_held_carrier, carrier_dir, pinned_carrier_receipt_sha256, absolute_deadline)
+    if _held_carrier is not None:
+        report = _held_carrier.report()
+        digests = {"manifest.json": report["manifest_sha256"], "origin-receipt.json": report["origin"]["receipt_sha256"],
+                   "payload.bin": report["payload_sha256"], "receipt.json": pinned_carrier_receipt_sha256}
+        sizes = {"manifest.json": report["manifest_bytes"], "origin-receipt.json": report["origin"]["receipt_bytes"],
+                 "payload.bin": report["payload_bytes"], "receipt.json": len(encoded(report))}
+        result = {"kind": KIND + "-publication", "carrier_receipt_sha256": pinned_carrier_receipt_sha256,
+                  "files": [{"name": name, "sha256": digests[name], "size": sizes[name]} for name in FILES]}
+        _held_carrier.check()
+        return result
     with Root(carrier_dir, clock) as root:
         report, _, _, _ = binding(root, pinned_carrier_receipt_sha256, clock)
         files = []
@@ -1008,10 +1195,16 @@ def publication_report(carrier_dir, pinned_carrier_receipt_sha256, absolute_dead
                 "files": files}
 
 
-def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, *, on_bound=None):
-    """Authenticate then extract on one held owner; callback grants no proof token."""
+def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, *, on_bound=None, _held_carrier=None):
+    """Authenticate then extract on one held owner; callback grants no proof token.
+
+    A scoped result remains provisional until its owner completes full_final
+    and the consumer performs its last complete fresh output proof afterward.
+    """
     need(on_bound is None or callable(on_bound), "bound-callback")
-    clock = Clock(absolute_deadline)
+    clock = _carrier_clock(_held_carrier, carrier_dir, pinned_carrier_receipt_sha256, absolute_deadline)
+    if _held_carrier is not None:
+        need(_held_carrier._extracted is None and not _held_carrier._final, "held-carrier-one-extraction")
     # Diagnostic time and counters never participate in a proof allowance.
     started_ns, copied_files, copied_bytes, created_directories = time.monotonic_ns(), 0, 0, 0
     def progress(phase):
@@ -1022,14 +1215,18 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
               file=sys.stderr, flush=True)
     progress("initial-start")
     with ExitStack() as stack:
-        carrier = stack.enter_context(Root(carrier_dir, clock))
-        report, manifest, rows, files = binding(carrier, pinned_carrier_receipt_sha256, clock)
+        carrier = stack.enter_context(Root(carrier_dir, clock)) if _held_carrier is None else _held_carrier._owner
+        if _held_carrier is not None:
+            stack.callback(_held_carrier.check)
+        report, manifest, rows, files = _carrier_binding(_held_carrier, carrier, pinned_carrier_receipt_sha256, clock)
         progress("initial-bound")
         if on_bound is not None:
-            on_bound(report)
+            on_bound(report if _held_carrier is None else decode(encoded(report)))
             # Dependent SOURCE IO does not renew the proof or its deadline.
             # Join held ancestry and all named carrier leaves before output.
             carrier.check()
+            if _held_carrier is not None:
+                _held_carrier.check()
         output = Output(output_dir, clock)
         stack.callback(output.close)
         progress("directories-start")
@@ -1117,8 +1314,10 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
             else:
                 need(value == output.materialized[name], "created-member-identity")
         need(observed == rows and nar_origins(fresh, rows, clock) == manifest["nars"], "extracted-full-proof")
-        # Reauthenticate the complete immutable carrier; never read the old SDK/JDK.
-        need(binding(carrier, pinned_carrier_receipt_sha256, clock)[0] == report, "carrier-final-proof")
+        # Default calls fully reauthenticate; scoped calls keep this fence
+        # provisional until the owner's mandatory full_final and fresh proof.
+        # Neither path reads the old SDK/JDK.
+        need(_carrier_binding(_held_carrier, carrier, pinned_carrier_receipt_sha256, clock)[0] == report, "carrier-final-proof")
         after, after_witnesses = scan(fresh, rows, clock)
         need(after == observed and after_witnesses == witnesses, "extracted-final-custody")
         receipt = {"kind": EXTRACTED, "carrier_receipt_sha256": digest(pinned_carrier_receipt_sha256),
@@ -1147,6 +1346,8 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
             need(final_rows == observed and final_witnesses == witnesses, "publication-extracted-custody")
         output.root.check()
         carrier.check()
+        if _held_carrier is not None:
+            _held_carrier._complete_extract(output_dir, receipt)
         progress("final-proof-complete")
         return receipt
 
