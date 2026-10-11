@@ -442,11 +442,31 @@ final class DaemonStore: ObservableObject {
 
     func updateServiceStatus() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let external = home + "/Library/LaunchAgents/" + RuntimePaths.serviceLabel + ".plist"
         // A fleet launch agent and the bundled SMAppService must never compete.
-        // Existing external definitions are reported, never rewritten here.
-        var metadata = stat()
-        let hasExternalDefinition = external.withCString { lstat($0, &metadata) == 0 }
+        // Legacy unqualified definitions cannot establish the selected instance;
+        // their presence conservatively blocks a second login service. Existing
+        // files are reported, never renamed, removed or treated as active proof.
+        let externalLabels = [RuntimePaths.serviceLabel, "dev.xoxd.omux", "ai.xoxd.omux.daemon"]
+        var hasExternalDefinition = false
+        for label in externalLabels {
+            var metadata = stat()
+            let path = home + "/Library/LaunchAgents/" + label + ".plist"
+            let (result, inspectionError) = path.withCString { pointer in
+                let result = lstat(pointer, &metadata)
+                return (result, errno)
+            }
+            if result == 0 {
+                hasExternalDefinition = true
+                break
+            }
+            guard inspectionError == ENOENT else {
+                serviceExternallyManaged = true
+                serviceRegistered = false
+                serviceStatus = "External service ownership is unverified"
+                serviceGuidance = "Omux could not inspect existing login-service definitions. Restore access or review the deployment configuration before enabling the bundled service."
+                return
+            }
+        }
         serviceExternallyManaged = hasExternalDefinition || RuntimePaths.isDevelopment
             || ProcessInfo.processInfo.environment["OMUX_SOCKET"] != nil
         if serviceExternallyManaged {

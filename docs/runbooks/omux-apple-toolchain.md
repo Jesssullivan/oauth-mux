@@ -53,11 +53,22 @@ nix develop --ignore-environment --keep HOME --command bazelisk \
 When execution is admitted, the first target compiles the complete SwiftUI client.
 The second emits the
 declared `Omux.app` directory artifact, including `Omux`, `omux`, `omuxd`,
+the copied `omux-native-host` CLI alias,
 `Contents/Library/LaunchAgents/ai.xoxd.omux.daemon.plist`, and an Info.plist whose
 version derives from `src/product.zig`. `CFBundleShortVersionString` holds the
 numeric version; `OmuxProductVersion` preserves its prerelease suffix. The
 service is registered explicitly through `SMAppService`; quitting the controls
 does not unregister it.
+
+The bundled native-host alias is covered by the same declared Mach-O relocation
+and signing recipe. Registration still requires an explicit stable installed app
+path and protected directory chain, the exact browser extension ID and separate
+installed transport evidence. The alias does not install a browser manifest.
+Its ordinary environment selects the release instance by default; a development
+host still requires an independently qualified immutable instance binding.
+Unqualified legacy external Omux launch-agent definitions conservatively block
+bundled service registration until their ownership and selected instance are
+reconciled. The controls never rename or remove them.
 
 The application action resolves actual Mach-O load commands, copies transitive
 Nix dylibs into `Contents/Frameworks`, and rewrites dependency edges to paths

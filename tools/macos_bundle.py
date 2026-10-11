@@ -132,6 +132,9 @@ def plan_relocation(roots, custody, architecture, *, read_binary=_read_binary, c
     closure = set(custody["store_paths"])
     sdk_root = custody["developer_dir"]
     root_paths = {name: canonicalize(str(path)) for name, path in roots.items()}
+    # The browser requires this exact argv[0] alias. Derive it from the declared
+    # CLI input, with its own relocation and embedded-signature checks.
+    root_paths["omux-native-host"] = root_paths["omux"]
     root_sources = set(root_paths.values())
     metadata = {}
     entries = {}
@@ -392,7 +395,7 @@ def assemble(output, binary, cli, daemon, info, helper, product, custody):
     manifest["CFBundleExecutable"] = "Omux"
     with open(root / "Contents" / "Info.plist", "wb") as handle:
         plistlib.dump(manifest, handle, fmt=plistlib.FMT_XML, sort_keys=True)
-    for name, source in (("Omux", binary), ("omux", cli), ("omuxd", daemon)):
+    for name, source in (("Omux", binary), ("omux", cli), ("omuxd", daemon), ("omux-native-host", cli)):
         shutil.copyfile(source, macos / name)
         os.chmod(macos / name, 0o755)
     with open(agents / Path(helper).name, "wb") as handle:
