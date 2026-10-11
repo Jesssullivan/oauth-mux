@@ -6,6 +6,7 @@ JDK/tool paths still require a separately qualified platform before execution.
 """
 import argparse
 from contextlib import ExitStack
+from queue import Empty, Queue
 from types import MappingProxyType
 import hashlib
 import io
@@ -1377,6 +1378,226 @@ def publication_report(carrier_dir, pinned_carrier_receipt_sha256, absolute_dead
                 "files": files}
 
 
+class _CopyState:
+    """Bounded invocation-local refusal control, never a proof or new clock."""
+    def __init__(self, clock):
+        self.clock, self.owner = clock, threading.get_ident()
+        self.cancel, self.lock, self.error = threading.Event(), threading.Lock(), None
+
+    @property
+    def deadline(self):
+        return self.clock.deadline
+
+    def fail(self, error):
+        with self.lock:
+            if self.error is None:
+                self.error = error
+            self.cancel.set()
+
+    def tick(self):
+        self.clock.tick()
+        need(not self.cancel.is_set(), "copy-cancelled")
+
+    def owner_tick(self):
+        need(threading.get_ident() == self.owner, "copy-owner")
+        with self.lock:
+            error = self.error
+        if error is not None:
+            raise error
+        self.clock.tick()
+
+
+def _copy_regular_job(state, parent, leaf, parent_witness, payload, entry):
+    """Borrow the owner's parent/payload; own and close only this target FD."""
+    target = None
+    try:
+        state.tick()
+        need(identity(os.fstat(parent), True) == parent_witness, "copy-worker-parent")
+        target = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=parent)
+        initial = os.fstat(target)
+        need(stat.S_ISREG(initial.st_mode) and initial.st_uid == os.getuid()
+             and initial.st_nlink == 1 and stat.S_IMODE(initial.st_mode) == 0o600
+             and identity(initial) == identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False)),
+             "copy-worker-created-name")
+        part = Range(payload, entry["offset"], entry["size"], state)
+        h = hashlib.sha256()
+        while True:
+            block = part.read(65536)
+            state.tick()
+            if not block:
+                break
+            h.update(block)
+            write_all(target, block, state)
+        need(part.position == entry["size"] and h.hexdigest() == entry["sha256"], "extracted-file-digest")
+        state.tick()
+        os.fsync(target)
+        state.tick()
+        os.fchmod(target, entry["mode"])
+        state.tick()
+        final = os.fstat(target)
+        selected = identity(final)
+        need(stat.S_ISREG(final.st_mode) and final.st_uid == os.getuid() and final.st_nlink == 1
+             and final.st_size == entry["size"] and stat.S_IMODE(final.st_mode) == entry["mode"]
+             and selected == identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False))
+             and identity(os.fstat(parent), True) == parent_witness, "extracted-file-name")
+        state.tick()
+        return selected, part.position
+    except BaseException as error:
+        state.fail(error)
+        raise
+    finally:
+        if target is not None:
+            try:
+                os.close(target)
+            except BaseException as error:
+                state.fail(error)
+                raise
+
+
+def _copy_worker(state, jobs, results, gate, ready, stop):
+    """FD-free bootstrap: no job is dispatched until BOTH starts are admitted."""
+    try:
+        ready.set()
+        while not gate.wait(0.05):
+            if stop.is_set() or state.cancel.is_set():
+                return
+            state.tick()
+        while not stop.is_set() and not state.cancel.is_set():
+            state.tick()
+            try:
+                number, arguments = jobs.get(timeout=0.05)
+            except Empty:
+                continue
+            state.tick()
+            selected, count = _copy_regular_job(state, *arguments)
+            state.tick()
+            # There are never more than two dispatched/unaccepted jobs, even
+            # when the owner refuses before draining their factual results.
+            results.put_nowait((number, selected, count))
+    except BaseException as error:
+        state.fail(error)
+
+
+def _copy_regulars(output, payload, payload_witness, files, clock, on_copied):
+    """Two jobs/leases maximum; physical authority stays on the original owner."""
+    state = _CopyState(clock)
+    jobs, results = Queue(maxsize=2), Queue(maxsize=2)
+    gate, stop = threading.Event(), threading.Event()
+    ready = (threading.Event(), threading.Event())
+    # Record every Thread object BEFORE start, with no borrowed FD, Root or
+    # writer state in its bootstrap arguments. There is no later thread creation.
+    workers = tuple(threading.Thread(target=_copy_worker,
+                    args=(state, jobs, results, gate, event, stop),
+                    name="sdk-copy-" + str(index), daemon=False)
+                    for index, event in enumerate(ready))
+    attempted, started, pending, leases, completed = [], [], [], {}, {}
+    entries, exhausted, sequence = iter(files.items()), False, 0
+    with _ParentHandles(output.root) as parents:
+        try:
+            state.owner_tick()
+            for worker in workers:
+                attempted.append(worker)
+                worker.start()
+                started.append(worker)
+            for event in ready:
+                while not event.wait(0.05):
+                    state.owner_tick()
+                state.owner_tick()
+            # No physical capability was queued until BOTH start calls returned
+            # successfully and BOTH FD-free workers reported ready.
+            gate.set()
+            while pending or not exhausted:
+                state.owner_tick()
+                while len(pending) < 2 and not exhausted:
+                    state.owner_tick()
+                    try:
+                        (role, path), entry = next(entries)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    name = role + "/" + path
+                    parent, leaf = parents.parent(name)
+                    sequence += 1
+                    # Register the owner lease before the queue operation, so
+                    # even interruption AFTER enqueue still joins before close.
+                    leases[sequence] = parent
+                    selected_parent = identity(os.fstat(parent), True)
+                    pending.append((sequence, name, leaf, selected_parent, entry))
+                    state.owner_tick()
+                    jobs.put_nowait((sequence, (parent, leaf, selected_parent, payload, entry)))
+                if not pending:
+                    continue
+                number, name, leaf, parent_witness, entry = pending[0]
+                while number not in completed:
+                    state.owner_tick()
+                    try:
+                        result_number, selected, count = results.get(timeout=0.05)
+                    except Empty:
+                        continue
+                    need(result_number in leases and result_number not in completed,
+                         "copy-result-membership")
+                    completed[result_number] = selected, count
+                    need(len(completed) <= 2, "copy-result-bound")
+                selected, count = completed.pop(number)
+                state.owner_tick()
+                parent = leases[number]
+                current, current_leaf = parents.parent(name)
+                try:
+                    need(current_leaf == leaf
+                         and identity(os.fstat(parent), True) == parent_witness
+                         and identity(os.fstat(current), True) == parent_witness
+                         and identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False)) == selected
+                         and identity(os.stat(current_leaf, dir_fd=current, follow_symlinks=False)) == selected,
+                         "copy-owner-current-name")
+                finally:
+                    os.close(current)
+                need(count == entry["size"] and identity(os.fstat(payload)) == payload_witness,
+                     "copy-owner-payload")
+                output.root.check()
+                state.owner_tick()
+                on_copied(name, selected, count)
+                # Detach before close: never retry a possibly reused FD.
+                os.close(leases.pop(number))
+                pending.pop(0)
+        except BaseException as error:
+            state.fail(error)
+        finally:
+            stop.set()
+            gate.set()
+            for worker in attempted:
+                while True:
+                    try:
+                        worker.join()
+                        need(not worker.is_alive(), "copy-worker-join")
+                        break
+                    except RuntimeError as error:
+                        if worker not in started:
+                            # Thread.start may be interrupted between OS launch
+                            # and its started event. Missing readiness/ident or a
+                            # join refusal is NOT proof of nonstart. No jobs/FDs
+                            # were admitted in this outcome; any late bootstrap
+                            # sees stop/cancel. Refuse, with the original owned
+                            # outer guard the ultimate unknown-start cleanup.
+                            need(not leases, "copy-unadmitted-capabilities")
+                            state.fail(error)
+                            with state.lock:
+                                state.error.add_note("copy-worker-start-outcome-unknown")
+                            break
+                        state.fail(error)
+                    except BaseException as error:
+                        # Blocked fsync is not clock-interruptible. Keep leases
+                        # until actual joins; unchanged outer guard is ultimate.
+                        state.fail(error)
+            closing, leases = tuple(leases.values()), {}
+            for parent in closing:
+                try:
+                    os.close(parent)
+                except BaseException as error:
+                    state.fail(error)
+        state.owner_tick()
+
+
 def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, *, on_bound=None, _held_carrier=None):
     """Authenticate then extract on one held owner; callback grants no proof token.
 
@@ -1435,33 +1656,12 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
             progress("directories-ready")
             copy_complete = False
             try:
-                with _ParentHandles(output.root) as parents:
-                    for (role, path), entry in files.items():
-                        fd, leaf = parents.parent(role + "/" + path)
-                        try:
-                            target = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                             0o600, dir_fd=fd)
-                            try:
-                                part = Range(payload, entry["offset"], entry["size"], clock)
-                                h = hashlib.sha256()
-                                while True:
-                                    block = part.read(65536)
-                                    if not block:
-                                        break
-                                    h.update(block)
-                                    write_all(target, block, clock)
-                                need(h.hexdigest() == entry["sha256"], "extracted-file-digest")
-                                os.fsync(target)
-                                os.fchmod(target, entry["mode"])
-                                selected = identity(os.fstat(target))
-                                need(selected == identity(os.stat(leaf, dir_fd=fd, follow_symlinks=False)), "extracted-file-name")
-                                output.materialized[role + "/" + path] = selected
-                                copied_files += 1
-                                copied_bytes += entry["size"]
-                            finally:
-                                os.close(target)
-                        finally:
-                            os.close(fd)
+                def copied(name, selected, count):
+                    nonlocal copied_files, copied_bytes
+                    output.materialized[name] = selected
+                    copied_files += 1
+                    copied_bytes += count
+                _copy_regulars(output, payload, witness, files, clock, copied)
                 copy_complete = True
             finally:
                 progress("copy-complete" if copy_complete else "copy-refused")

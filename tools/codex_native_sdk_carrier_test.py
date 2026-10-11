@@ -4,7 +4,7 @@ The only SDK seam is the synthetic selected JDK root. Existing SDK validators,
 registry/module/link-absence logic, byte readers and canonical NAR run unchanged.
 No model claims a genuine carrier producer, metadata or application qualification.
 """
-from contextlib import closing, ExitStack, redirect_stderr
+from contextlib import closing, contextmanager, ExitStack, redirect_stderr
 import copy
 import io
 import json
@@ -15,6 +15,7 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -24,6 +25,488 @@ import codex_retained_sdk_export as sdk
 
 
 class CarrierModels(unittest.TestCase):
+    @contextmanager
+    def copy_fixture(self, name, count=6):
+        clock = carrier.Clock(self.deadline)
+        output = carrier.Output(self.root / name, clock)
+        output.mkdir("sdk")
+        output.mkdir("sdk/batch")
+        values = [b"", b"1", b"seven77", b"eight888", b"c" * 65536, b"l" * 65537]
+        values = [values[index % len(values)] for index in range(count)]
+        path = self.root / (name + "-payload")
+        self.write(path, b"".join(values))
+        payload = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        witness, files, offset = carrier.identity(os.fstat(payload)), {}, 0
+        for index, raw in enumerate(values):
+            files[("sdk", "batch/f" + str(index))] = {"offset": offset, "size": len(raw),
+                "sha256": carrier.sha(raw), "mode": 0o555 if index % 2 else 0o444}
+            offset += len(raw)
+        accepted = []
+        def accept(name, selected, size):
+            output.materialized[name] = selected
+            accepted.append((name, selected, size, threading.get_ident()))
+        try:
+            yield output, payload, witness, files, clock, accept, accepted, values
+        finally:
+            os.close(payload)
+            output.close()
+
+    def test_two_copy_workers_overlap_with_two_jobs_owner_authority_and_complete_fsync(self):
+        with self.copy_fixture("workers-overlap", 8) as case:
+            output, payload, witness, files, clock, accept, accepted, values = case
+            owner = threading.get_ident()
+            lock, barrier = threading.Lock(), threading.Barrier(2)
+            worker_ids, worker_threads, active, peaks, parents, captured, fsynced = set(), set(), [0], [0, 0, 0], set(), [], set()
+            real_job, real_queue = carrier._copy_regular_job, carrier.Queue
+            real_open, real_dup, real_fsync, real_chmod = os.open, os.dup, os.fsync, os.fchmod
+            real_check, real_parent, real_keep = carrier.Root.check, carrier.Root._parent, carrier._ParentHandles.keep
+            outstanding = [0]
+            queues = []
+            class BoundedQueue(real_queue):
+                def __init__(queue, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    queues.append(queue)
+                    self.assertEqual(queue.maxsize, 2)
+                def put_nowait(queue, item):
+                    if queue is queues[0]:
+                        self.assertEqual(threading.get_ident(), owner)
+                        with lock:
+                            outstanding[0] += 1
+                            peaks[1] = max(peaks[1], outstanding[0])
+                    return super().put_nowait(item)
+            def accepted_copy(*args):
+                accept(*args)
+                with lock: outstanding[0] -= 1
+            def job(state, parent, *args):
+                with lock:
+                    active[0] += 1
+                    peaks[0] = max(peaks[0], active[0])
+                    worker_ids.add(threading.get_ident())
+                    worker_threads.add(threading.current_thread())
+                    parents.add(parent)
+                try:
+                    barrier.wait(5)
+                    return real_job(state, parent, *args)
+                finally:
+                    with lock:
+                        active[0] -= 1
+                        parents.remove(parent)
+            def checked(root):
+                self.assertEqual(threading.get_ident(), owner)
+                return real_check(root)
+            def parent(root, *args):
+                self.assertEqual(threading.get_ident(), owner)
+                return real_parent(root, *args)
+            def keep(handles, *args):
+                self.assertEqual(threading.get_ident(), owner)
+                result = real_keep(handles, *args)
+                peaks[2] = max(peaks[2], len(handles.entries))
+                return result
+            def opened(*args, **kwargs):
+                fd = real_open(*args, **kwargs)
+                with lock: captured.append(fd)
+                return fd
+            def duplicated(fd):
+                copy = real_dup(fd)
+                with lock: captured.append(copy)
+                return copy
+            def fsync(fd):
+                with lock: fsynced.add(carrier.identity(os.fstat(fd), True)[:2])
+                return real_fsync(fd)
+            def chmod(fd, mode):
+                self.assertIn(carrier.identity(os.fstat(fd), True)[:2], fsynced)
+                return real_chmod(fd, mode)
+            with patch.object(carrier, "Queue", BoundedQueue), patch.object(carrier, "_copy_regular_job", job), \
+                    patch.object(carrier.Root, "check", checked), patch.object(carrier.Root, "_parent", parent), \
+                    patch.object(carrier._ParentHandles, "keep", keep), patch.object(carrier.os, "open", opened), \
+                    patch.object(carrier.os, "dup", duplicated), patch.object(carrier.os, "fsync", fsync), \
+                    patch.object(carrier.os, "fchmod", chmod):
+                carrier._copy_regulars(output, payload, witness, files, clock, accepted_copy)
+            self.assertEqual(peaks[:2], [2, 2])
+            self.assertLessEqual(peaks[2], 32)
+            self.assertEqual(len(worker_ids), 2)
+            self.assertNotIn(owner, worker_ids)
+            self.assertTrue(all(not thread.is_alive() for thread in worker_threads))
+            self.assertEqual((active[0], outstanding[0], parents), (0, 0, set()))
+            self.assertEqual(len(accepted), len(values))
+            self.assertEqual(len(fsynced), len(values))
+            for index, (name, selected, size, thread) in enumerate(accepted):
+                leaf = output.path / name
+                self.assertEqual((leaf.read_bytes(), size, thread), (values[index], len(values[index]), owner))
+                self.assertEqual(carrier.identity(leaf.stat()), selected)
+                self.assertEqual(stat.S_IMODE(leaf.stat().st_mode), files[("sdk", "batch/f" + str(index))]["mode"])
+            self.assert_descriptors_closed(set(captured))
+            os.fstat(payload)
+            output.root.check()
+
+    def test_two_copy_workers_first_io_failure_cancels_joins_before_parent_close(self):
+        with self.copy_fixture("workers-first-error", 6) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            blocked, release, failed = threading.Event(), threading.Event(), threading.Event()
+            lock, live, parents, states, targets, submitted = threading.Lock(), [0], set(), [], [], [0]
+            real_job, real_queue, real_read, real_fsync, real_close = carrier._copy_regular_job, carrier.Queue, os.pread, os.fsync, os.close
+            queues = []
+            class BoundedQueue(real_queue):
+                def __init__(queue, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    queues.append(queue)
+                def put_nowait(queue, item):
+                    if queue is queues[0]: submitted[0] += 1
+                    return super().put_nowait(item)
+            def job(state, parent, *args):
+                with lock:
+                    live[0] += 1
+                    parents.add(parent)
+                    states.append(state)
+                try: return real_job(state, parent, *args)
+                finally:
+                    with lock:
+                        live[0] -= 1
+                        parents.remove(parent)
+            def read(fd, size, offset):
+                self.assertTrue(blocked.wait(5))
+                failed.set()
+                raise OSError("first actual copy read refusal")
+            def fsync(fd):
+                targets.append(fd)
+                blocked.set()
+                self.assertTrue(release.wait(5))
+                return real_fsync(fd)
+            def close(fd):
+                with lock: self.assertNotIn(fd, parents, "owner closed a running worker parent")
+                return real_close(fd)
+            controller_errors = []
+            def unblock():
+                try:
+                    self.assertTrue(failed.wait(5))
+                    self.assertTrue(states[0].cancel.wait(5))
+                except BaseException as error:
+                    controller_errors.append(error)
+                finally:
+                    release.set()
+            controller = threading.Thread(target=unblock)
+            controller.start()
+            try:
+                with patch.object(carrier, "Queue", BoundedQueue), patch.object(carrier, "_copy_regular_job", job), \
+                        patch.object(carrier.os, "pread", read), patch.object(carrier.os, "fsync", fsync), \
+                        patch.object(carrier.os, "close", close):
+                    with self.assertRaisesRegex(OSError, "first actual copy read refusal"):
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            finally:
+                release.set()
+                controller.join()
+            self.assertEqual(controller_errors, [])
+            self.assertTrue(failed.is_set())
+            self.assertEqual((live[0], parents, accepted), (0, set(), []))
+            self.assertEqual(submitted[0], 2)
+            self.assert_descriptors_closed(targets)
+            output.root.check()
+            os.fstat(payload)
+
+    def test_two_copy_workers_enqueue_interruption_preserves_parent_leases_until_join(self):
+        with self.copy_fixture("workers-submit") as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            real_queue, real_job = carrier.Queue, carrier._copy_regular_job
+            submitted, parents, queues, workers = [0], [], [], set()
+            class BoundedQueue(real_queue):
+                def __init__(queue, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    queues.append(queue)
+                def put_nowait(queue, item):
+                    if queue is queues[0]:
+                        submitted[0] += 1
+                        parents.append(item[1][0])
+                        result = super().put_nowait(item)
+                        if submitted[0] == 2: raise RuntimeError("model post-enqueue refusal")
+                        return result
+                    return super().put_nowait(item)
+            def job(*args):
+                workers.add(threading.current_thread())
+                return real_job(*args)
+            with patch.object(carrier, "Queue", BoundedQueue), patch.object(carrier, "_copy_regular_job", job):
+                with self.assertRaisesRegex(RuntimeError, "model post-enqueue refusal"):
+                    carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(accepted, [])
+            self.assertEqual(submitted[0], 2)
+            self.assertTrue(all(not worker.is_alive() for worker in workers))
+            self.assert_descriptors_closed(parents)
+            os.fstat(payload)
+            output.root.check()
+
+    def test_two_copy_workers_retry_interrupted_join_then_refuse_without_late_success(self):
+        with self.copy_fixture("workers-join", 2) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            real_join, joins = threading.Thread.join, [0]
+            def join(worker, *args, **kwargs):
+                joins[0] += 1
+                if joins[0] == 1: raise KeyboardInterrupt("model join interruption")
+                return real_join(worker, *args, **kwargs)
+            with patch.object(carrier.threading.Thread, "join", join):
+                with self.assertRaisesRegex(KeyboardInterrupt, "model join interruption"):
+                    carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(joins[0], 3)
+            self.assertEqual(len(accepted), 2)
+            os.fstat(payload)
+            output.root.check()
+
+    def test_two_copy_workers_failed_start_admits_no_descriptors_and_preserves_unknown_outcome(self):
+        real_start = threading.Thread.start
+        for launched in (False, True):
+            with self.subTest(launched=launched), self.copy_fixture("workers-start-" + str(launched), 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                attempts, threads, jobs, ready = [0], [], [], []
+                real_worker = carrier._copy_worker
+                def worker(*args):
+                    ready.append(threading.current_thread())
+                    return real_worker(*args)
+                def start(thread):
+                    threads.append(thread)
+                    attempts[0] += 1
+                    if attempts[0] == 2:
+                        if launched: real_start(thread)
+                        raise KeyboardInterrupt("model interrupted bootstrap")
+                    return real_start(thread)
+                def job(*args):
+                    jobs.append(args)
+                    self.fail("copy capability admitted after failed start")
+                with patch.object(carrier.threading.Thread, "start", start), \
+                        patch.object(carrier, "_copy_worker", worker), patch.object(carrier, "_copy_regular_job", job):
+                    with self.assertRaisesRegex(KeyboardInterrupt, "model interrupted bootstrap") as caught:
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                self.assertEqual((attempts[0], jobs, accepted), (2, [], []))
+                self.assertFalse(threads[0].is_alive())
+                if launched:
+                    self.assertFalse(threads[1].is_alive())
+                else:
+                    self.assertIn("copy-worker-start-outcome-unknown", caught.exception.__notes__)
+                self.assertEqual(list((output.path / "sdk/batch").iterdir()), [])
+                output.root.check()
+                os.fstat(payload)
+
+    def test_two_copy_workers_actual_late_bootstrap_has_no_copy_capability_after_unknown_start(self):
+        with self.copy_fixture("workers-late-bootstrap", 2) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            launched, release = threading.Event(), threading.Event()
+            real_start, real_inner = threading.Thread.start, threading.Thread._bootstrap_inner
+            callers, late_workers, controller_errors, copied = [], [], [], []
+            def inner(worker):
+                if worker.name == "sdk-copy-1":
+                    launched.set()
+                    if not release.wait(5): controller_errors.append("late bootstrap release missing")
+                return real_inner(worker)
+            def start(worker):
+                if worker.name != "sdk-copy-1": return real_start(worker)
+                late_workers.append(worker)
+                # The real start waits for _started while its actual OS thread
+                # is alive but deliberately delayed before that event is set.
+                caller = threading.Thread(target=lambda: real_start(worker), name="model-bootstrap-caller")
+                callers.append(caller)
+                real_start(caller)
+                self.assertTrue(launched.wait(5))
+                raise KeyboardInterrupt("model unknown OS-start outcome")
+            try:
+                with patch.object(carrier.threading.Thread, "start", start), \
+                        patch.object(carrier.threading.Thread, "_bootstrap_inner", inner), \
+                        patch.object(carrier, "_copy_regular_job", side_effect=lambda *args: copied.append(args)):
+                    with self.assertRaisesRegex(KeyboardInterrupt, "unknown OS-start outcome") as caught:
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                    self.assertIn("copy-worker-start-outcome-unknown", caught.exception.__notes__)
+                    self.assertEqual((copied, accepted), ([], []))
+                    self.assertEqual(list((output.path / "sdk/batch").iterdir()), [])
+                    release.set()
+                    for caller in callers: caller.join()
+                    for worker in late_workers: worker.join()
+                    self.assertTrue(all(not worker.is_alive() for worker in late_workers))
+                    self.assertEqual(copied, [])
+            finally:
+                release.set()
+                for caller in callers: caller.join()
+                for worker in late_workers: worker.join()
+            self.assertEqual(controller_errors, [])
+            output.root.check()
+            os.fstat(payload)
+
+    def test_two_copy_workers_delayed_ready_expires_before_any_copy_capability(self):
+        with self.copy_fixture("workers-ready", 2) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            real_worker, entered = carrier._copy_worker, []
+            def worker(state, jobs, results, gate, ready, stop):
+                entered.append(threading.current_thread())
+                # A real started worker delays its own ready signal, without
+                # borrowing physical capabilities; expiry wakes it only to exit.
+                if threading.current_thread().name.endswith("1"):
+                    clock.deadline = time.monotonic() - 1
+                    self.assertTrue(stop.wait(5))
+                return real_worker(state, jobs, results, gate, ready, stop)
+            with patch.object(carrier, "_copy_worker", worker), \
+                    patch.object(carrier, "_copy_regular_job", side_effect=AssertionError("unexpected physical dispatch")):
+                with self.assertRaisesRegex(ValueError, "deadline"):
+                    carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(accepted, [])
+            self.assertEqual(list((output.path / "sdk/batch").iterdir()), [])
+            self.assertTrue(all(not thread.is_alive() for thread in entered))
+            os.fstat(payload)
+
+    def test_two_copy_workers_late_leaf_parent_root_and_alias_mutations_refuse_owner_acceptance(self):
+        real = carrier._copy_regular_job
+        for change in ("inode", "mode", "chmod-restored", "mtime-restored", "bytes", "symlink", "hardlink", "parent", "root", "alias"):
+            with self.subTest(change=change), self.copy_fixture("workers-mutation-" + change, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                lock, changed = threading.Lock(), [False]
+                def mutate(state, parent, leaf, *args):
+                    result = real(state, parent, leaf, *args)
+                    if leaf == "f0":
+                        with lock:
+                            changed[0] = True
+                            selected = output.path / "sdk/batch/f0"
+                            info = selected.stat()
+                            if change in ("parent", "alias"):
+                                batch = output.path / "sdk/batch"
+                                batch.rename(output.path / "sdk/old-batch")
+                                if change == "parent": batch.mkdir(mode=0o700)
+                                else: batch.symlink_to(output.path / "sdk/old-batch", target_is_directory=True)
+                            elif change == "root":
+                                output.path.rename(output.path.with_name(output.path.name + "-aside"))
+                                output.path.mkdir(mode=0o700)
+                            elif change in ("inode", "symlink"):
+                                selected.unlink()
+                                if change == "inode": self.write(selected, b"")
+                                else: selected.symlink_to(self.root / "unselected-target")
+                            elif change == "hardlink": os.link(selected, self.root / "workers-foreign-hardlink")
+                            elif change == "mode": selected.chmod(0o555)
+                            elif change == "bytes":
+                                selected.chmod(0o600); selected.write_bytes(b"unexpected"); selected.chmod(0o444)
+                            elif change == "mtime-restored":
+                                selected.chmod(0o600); selected.write_bytes(b"")
+                                os.utime(selected, ns=(info.st_atime_ns, info.st_mtime_ns)); selected.chmod(0o444)
+                            else: selected.chmod(0o600); selected.chmod(0o444)
+                    return result
+                with patch.object(carrier, "_copy_regular_job", mutate):
+                    with self.assertRaises(ValueError):
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                self.assertTrue(changed[0])
+                self.assertEqual(accepted, [])
+
+    def test_two_copy_workers_foreign_parent_and_exclusive_name_refuse(self):
+        for change in ("foreign", "existing", "symlink", "duplicate"):
+            with self.subTest(change=change), self.copy_fixture("workers-foreign-" + change, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                real = carrier._copy_regular_job
+                foreign = self.root / ("foreign-parent-" + change)
+                foreign.mkdir(mode=0o700)
+                fd = os.open(foreign, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                def substituted(state, parent, leaf, selected, *args):
+                    return real(state, fd, leaf, selected, *args)
+                if change == "existing": self.write(output.path / "sdk/batch/f0", b"already here")
+                elif change == "symlink": (output.path / "sdk/batch/f0").symlink_to(foreign / "never-follow")
+                elif change == "duplicate":
+                    class Entries(dict):
+                        def items(unused): return [(('sdk', 'batch/f0'), files[('sdk', 'batch/f0')])] * 2
+                    files = Entries(files)
+                try:
+                    with ExitStack() as stack:
+                        if change == "foreign": stack.enter_context(patch.object(carrier, "_copy_regular_job", substituted))
+                        with self.assertRaises((ValueError, OSError)):
+                            carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                    self.assertFalse(list(foreign.iterdir()))
+                finally: os.close(fd)
+
+    def test_two_copy_workers_actual_byte_digest_extent_mode_and_fsync_failures_refuse(self):
+        for boundary in ("digest", "truncated", "write", "fsync", "chmod"):
+            with self.subTest(boundary=boundary), self.copy_fixture("workers-io-" + boundary, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                if boundary == "digest": files[("sdk", "batch/f0")]["sha256"] = "f" * 64
+                elif boundary == "truncated": files[("sdk", "batch/f1")]["size"] += 1
+                with ExitStack() as stack:
+                    if boundary == "write": stack.enter_context(patch.object(carrier.os, "write", side_effect=OSError("write refused")))
+                    elif boundary == "fsync": stack.enter_context(patch.object(carrier.os, "fsync", side_effect=OSError("fsync refused")))
+                    elif boundary == "chmod": stack.enter_context(patch.object(carrier.os, "fchmod", side_effect=OSError("chmod refused")))
+                    with self.assertRaises((ValueError, OSError)):
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                self.assertLess(len(accepted), 2)
+
+    def test_two_copy_workers_partial_writes_preserve_each_actual_digest_and_fsync(self):
+        with self.copy_fixture("workers-partial-write", 6) as case:
+            output, payload, witness, files, clock, accept, accepted, values = case
+            real_write, real_fsync, counts = os.write, os.fsync, []
+            def short(fd, raw): return real_write(fd, raw[:17])
+            def fsync(fd): counts.append(carrier.identity(os.fstat(fd), True)[:2]); return real_fsync(fd)
+            with patch.object(carrier.os, "write", short), patch.object(carrier.os, "fsync", fsync):
+                carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(len(set(counts)), 6)
+            self.assertEqual([row[2] for row in accepted], [len(raw) for raw in values])
+            for index, raw in enumerate(values): self.assertEqual((output.path / ("sdk/batch/f" + str(index))).read_bytes(), raw)
+
+    def test_two_copy_workers_original_float_integer_and_blocked_fsync_expiry_join(self):
+        for boundary in ("pre", "read", "fsync"):
+            with self.subTest(boundary=boundary), self.copy_fixture("workers-clock-" + boundary, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                original_until = time.monotonic_ns() + 10**9
+                clock.until_ns = original_until
+                real_read, real_fsync, calls = os.pread, os.fsync, []
+                def read(*args):
+                    result = real_read(*args)
+                    clock.until_ns = time.monotonic_ns() - 1
+                    return result
+                blocked, release = threading.Event(), threading.Event()
+                def fsync(fd):
+                    calls.append(fd); blocked.set()
+                    self.assertTrue(release.wait(5))
+                    return real_fsync(fd)
+                controller_errors = []
+                def expire():
+                    try:
+                        self.assertTrue(blocked.wait(5))
+                        clock.until_ns = time.monotonic_ns() - 1
+                    except BaseException as error:
+                        controller_errors.append(error)
+                    finally:
+                        release.set()
+                if boundary == "pre": clock.deadline = time.monotonic() - 1
+                controller = threading.Thread(target=expire) if boundary == "fsync" else None
+                if controller: controller.start()
+                try:
+                    with ExitStack() as stack:
+                        if boundary == "read": stack.enter_context(patch.object(carrier.os, "pread", read))
+                        elif boundary == "fsync": stack.enter_context(patch.object(carrier.os, "fsync", fsync))
+                        with self.assertRaisesRegex(ValueError, "deadline"):
+                            carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                finally:
+                    release.set()
+                    if controller: controller.join()
+                self.assertEqual(controller_errors, [])
+                if boundary == "read":
+                    self.assertLessEqual(len(accepted), 1)
+                    if accepted: self.assertEqual((accepted[0][0], accepted[0][2]), ("sdk/batch/f0", 0))
+                else:
+                    self.assertEqual(accepted, [])
+                if boundary == "fsync":
+                    self.assertTrue(calls)
+                    self.assert_descriptors_closed(calls)
+                os.fstat(payload)
+
+    def test_two_copy_workers_owned_payload_mutation_refuses_with_no_completed_marker(self):
+        root, _, pin = self.seal("workers-held-payload")
+        real, changed = carrier._copy_regular_job, [False]
+        lock = threading.Lock()
+        def mutate(*args):
+            result = real(*args)
+            with lock:
+                if not changed[0]:
+                    changed[0] = True
+                    payload = root / "payload.bin"
+                    payload.chmod(0o600)
+                    raw = payload.read_bytes(); payload.write_bytes(raw); payload.chmod(0o444)
+            return result
+        output, emitted = self.root / "workers-held-output", io.StringIO()
+        with redirect_stderr(emitted), patch.object(carrier, "_copy_regular_job", mutate):
+            with self.assertRaises(ValueError): carrier.extract(root, pin, output, self.deadline)
+        self.assertTrue(changed[0])
+        self.assertFalse((output / "extraction-receipt.json").exists())
+        self.assertIn("copy-refused", emitted.getvalue())
+        self.assertNotIn("copy-complete", emitted.getvalue())
+        self.assertNotIn("final-proof-complete", emitted.getvalue())
+
     def fresh_fixture(self, name):
         parent = self.root / name
         parent.mkdir(mode=0o700)
@@ -1392,25 +1875,34 @@ class CarrierModels(unittest.TestCase):
             with self.subTest(reason=reason):
                 root, _, pin = self.seal("partial-" + reason)
                 output = self.root / ("partial-copy-" + reason)
-                armed, copied_parts = [False], []
-                original_read = carrier.Range.read
+                armed, first_accepted = [False], threading.Event()
+                entries = [row for row in json.loads((root / "manifest.json").read_bytes())["entries"]
+                           if row["kind"] == "file"]
+                second_offset, second_size = entries[1]["offset"], entries[1]["size"]
+                original_read, original_copy = carrier.Range.read, carrier._copy_regulars
                 def bound(unused):
                     armed[0] = True
+                def copies(owner, payload, witness, files, clock, on_copied):
+                    def accepted(*args):
+                        on_copied(*args)
+                        first_accepted.set()
+                    return original_copy(owner, payload, witness, files, clock, accepted)
                 def fail_second_copy(part, count):
-                    if armed[0] and not any(part is prior for prior in copied_parts):
-                        copied_parts.append(part)
-                        if len(copied_parts) == 2:
-                            if reason == "refusal":
-                                raise ValueError("injected copy refusal")
-                            if reason == "deadline":
-                                with patch.object(carrier.time, "monotonic", return_value=part.clock.deadline):
-                                    return original_read(part, count)
-                            part.clock.until_ns = time.monotonic_ns() + 10**9
-                            with patch.object(carrier.time, "monotonic_ns", return_value=part.clock.until_ns):
+                    if armed[0] and part.start == second_offset and part.size == second_size and not part.position:
+                        self.assertTrue(first_accepted.wait(5), "first copy was not owner-accepted")
+                        if reason == "refusal":
+                            raise ValueError("injected copy refusal")
+                        original_clock = part.clock.clock if isinstance(part.clock, carrier._CopyState) else part.clock
+                        if reason == "deadline":
+                            with patch.object(carrier.time, "monotonic", return_value=original_clock.deadline):
                                 return original_read(part, count)
+                        original_clock.until_ns = time.monotonic_ns() + 10**9
+                        with patch.object(carrier.time, "monotonic_ns", return_value=original_clock.until_ns):
+                            return original_read(part, count)
                     return original_read(part, count)
                 emitted = io.StringIO()
-                with redirect_stderr(emitted), patch.object(carrier.Range, "read", new=fail_second_copy):
+                with redirect_stderr(emitted), patch.object(carrier.Range, "read", new=fail_second_copy), \
+                        patch.object(carrier, "_copy_regulars", new=copies):
                     with self.assertRaisesRegex(ValueError, "copy refusal" if reason == "refusal" else reason):
                         carrier.extract(root, pin, output, self.deadline, on_bound=bound)
                 phases = self.extraction_phases(emitted.getvalue())
