@@ -26,6 +26,81 @@ fn enrollmentCounts(engine: *engine_module.Engine) ![2]u64 {
     return counts;
 }
 
+test "verified Codex reimport refreshes descriptive plan metadata across restart without authority inference" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const source = try fixture.connectProvider("codex");
+    defer allocator.free(source);
+    const token = try generatedValue();
+    defer {
+        std.crypto.secureZero(u8, token);
+        allocator.free(token);
+    }
+    const subject = try generatedValue();
+    defer allocator.free(subject);
+    const tenant = try generatedValue();
+    defer allocator.free(tenant);
+    const initial_response = try std.json.Stringify.valueAlloc(allocator, transport.CodexIdentity{ .account_id = tenant, .user_id = subject, .plan_type = "free" }, .{});
+    defer allocator.free(initial_response);
+    const changed_response = try std.json.Stringify.valueAlloc(allocator, transport.CodexIdentity{ .account_id = tenant, .user_id = subject, .plan_type = "future_plan" }, .{});
+    defer allocator.free(changed_response);
+    var initial = try holdProviderImport(fixture.engine.?, source, "codex", token, false, "retained label");
+    defer initial.deinit();
+    try completeImport(fixture.engine.?, source, initial, initial_response, null);
+    var before = try rpc(fixture.engine.?, .control, "state.snapshot", .{});
+    defer before.deinit();
+    const original = try before.result();
+    const original_account = control.get(original, "accounts").?.array.items[0];
+    const account_id = try control.string(original_account, "id");
+    try std.testing.expectEqualStrings("free", try control.string(original_account, "account_type"));
+    const original_grant = control.get(original, "grants").?.array.items[0];
+    const grant_id = try control.string(original_grant, "id");
+    const original_generation = control.get(original_grant, "generation").?.integer;
+    try success(fixture.engine.?, .control, "account.pause", .{ .account_id = account_id });
+    var changed = try holdProviderImport(fixture.engine.?, source, "codex", token, false, "incoming replacement label");
+    defer changed.deinit();
+    try std.testing.expect(changed.generation > initial.generation);
+    try completeImport(fixture.engine.?, source, changed, changed_response, null);
+    try expectOldImportAbsent(fixture.engine.?, source, initial, initial_response);
+    try expectOldImportAbsent(fixture.engine.?, source, changed, initial_response);
+    // The ordinary import still advances its grant generation once. Metadata
+    // refresh itself creates no entitlement, observation or renewal ownership.
+    for (0..2) |pass| {
+        if (pass == 1) try fixture.restart();
+        var current = try rpc(fixture.engine.?, .control, "state.snapshot", .{});
+        defer current.deinit();
+        const result = try current.result();
+        const accounts = control.get(result, "accounts").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), accounts.len);
+        try std.testing.expectEqualStrings(account_id, try control.string(accounts[0], "id"));
+        try std.testing.expectEqualStrings("future_plan", try control.string(accounts[0], "account_type"));
+        try std.testing.expectEqualStrings("retained label", try control.string(accounts[0], "label"));
+        try std.testing.expectEqualStrings("paused", try control.string(accounts[0], "lifecycle"));
+        try std.testing.expectEqual(@as(usize, 1), control.get(accounts[0], "source_ids").?.array.items.len);
+        const grants = control.get(result, "grants").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), grants.len);
+        try std.testing.expectEqualStrings(grant_id, try control.string(grants[0], "id"));
+        try std.testing.expectEqual(original_generation + 1, control.get(grants[0], "generation").?.integer);
+        try std.testing.expectEqualStrings("external", try control.string(grants[0], "ownership"));
+        try std.testing.expectEqualStrings("https://chatgpt.com", try control.string(grants[0], "audience"));
+        try std.testing.expectEqual(@as(usize, 0), control.get(result, "observations").?.array.items.len);
+        try expectZeroProviderSubmissions(fixture.engine.?, "fixture.providerSubmissions");
+    }
+    try assertNoPlaintext(&fixture, token);
+    fixture.close();
+    var store = try openStored(&fixture);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, saved.json, .{});
+    defer parsed.deinit();
+    const account = control.get(control.get(parsed.value, "state").?, "accounts").?.array.items[0];
+    const identity = control.get(account, "identity").?;
+    try std.testing.expectEqualStrings(subject, try control.string(identity, "subject"));
+    try std.testing.expectEqualStrings(tenant, try control.string(identity, "tenant"));
+    try std.testing.expectEqualStrings("future_plan", try control.string(account, "account_type"));
+}
+
 test "native import terminal measurements survive restart without counting start or retry" {
     var fixture = try Fixture.init();
     defer fixture.deinit();

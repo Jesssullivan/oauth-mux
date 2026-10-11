@@ -127,14 +127,14 @@ class SourceClosure(unittest.TestCase):
         cls.portable = staticmethod(functions(tools / 'rules.bzl', ('_portable_python_sources',),
             {'native': SimpleNamespace(package_name=lambda: 'tools')})['_portable_python_sources'])
 
-    def source_graph(self, selected, overrides=None):
+    def source_graph(self, selected, overrides=None, *, entrypoint='codex_native_acquisition_metadata'):
         modules = {}
         for label in selected:
             path = self.root / (label[2:].replace(':', '/') if label.startswith('//') else 'tools/' + label)
             if path.suffix == '.py':
                 self.assertNotIn(path.stem, modules, 'ambiguous declared Python module')
                 modules[path.stem] = path
-        remaining = ['codex_native_acquisition_metadata']
+        remaining = [entrypoint]
         visited = set()
         edges, unresolved = set(), set()
         while remaining:
@@ -160,8 +160,8 @@ class SourceClosure(unittest.TestCase):
                 and node.func.id == '__import__' for node in ast.walk(syntax)), 'dynamic import needs review')
         return visited, edges, unresolved
 
-    def classified_graph(self, selected, overrides=None):
-        graph = self.source_graph(selected, overrides)
+    def classified_graph(self, selected, overrides=None, *, entrypoint='codex_native_acquisition_metadata'):
+        graph = self.source_graph(selected, overrides, entrypoint=entrypoint)
         self.assertEqual(graph[2], DEFERRED_IMPORTS,
             'new/removed/moved unresolved import requires independent source review')
         self.assertTrue(all(scope for _, scope, _ in graph[2]),
@@ -179,8 +179,22 @@ class SourceClosure(unittest.TestCase):
         self.assertNotIn('portable', visited)
         self.assertNotIn('codex_native_acquisition_bridge_material', visited)
 
+    def test_sdk_syntactic_import_graph_from_actual_main_unchanged(self):
+        target = self.targets['codex_native_acquisition_sdk_export_producer']
+        entrypoint = Path(target['main']).stem
+        self.assertEqual(entrypoint, 'codex_native_acquisition_sdk_export')
+        baseline = self.classified_graph(self.shared, entrypoint=entrypoint)
+        filtered = self.classified_graph(target['srcs'], entrypoint=entrypoint)
+        self.assertEqual(filtered, baseline)
+        for name in (entrypoint, 'codex_native_acquisition_metadata',
+                'codex_native_acquisition_binding', 'codex_retained_sdk_export',
+                'codex_protocol_history_query_tools', 'native_flake_sources',
+                'nix_private_store_qualification'):
+            self.assertIn(name, filtered[0])
+        self.assertNotIn('portable', filtered[0])
+        self.assertNotIn('codex_native_acquisition_bridge_material', filtered[0])
+
     def test_unclassified_or_eager_project_import_refused(self):
-        selected = self.targets['codex_native_acquisition_metadata_producer']['srcs']
         original = ast.parse((self.root / 'tools/guard_native_seed_plan_reserved.py').read_text())
         eager = copy.deepcopy(original)
         eager.body.append(ast.Import(names=[ast.alias(name='guard_resident_enrollment_profile')]))
@@ -188,9 +202,13 @@ class SourceClosure(unittest.TestCase):
         request = next(node for node in changed.body
             if isinstance(node, ast.FunctionDef) and node.name == 'request')
         request.body.append(ast.Import(names=[ast.alias(name='unreviewed_project_dependency')]))
-        for syntax in (eager, changed):
-            with self.subTest(imports=ast.dump(syntax)[-120:]), self.assertRaises(AssertionError):
-                self.classified_graph(selected, {'guard_native_seed_plan_reserved': syntax})
+        for name in ('codex_native_acquisition_metadata_producer',
+                'codex_native_acquisition_sdk_export_producer'):
+            target = self.targets[name]
+            for syntax in (eager, changed):
+                with self.subTest(target=name, imports=ast.dump(syntax)[-120:]), self.assertRaises(AssertionError):
+                    self.classified_graph(target['srcs'], {'guard_native_seed_plan_reserved': syntax},
+                        entrypoint=Path(target['main']).stem)
 
     def test_metadata_only_loses_unused_launcher_branch(self):
         target = self.targets['codex_native_acquisition_metadata_producer']
@@ -199,9 +217,19 @@ class SourceClosure(unittest.TestCase):
         self.assertEqual(set(target['srcs']) - set(self.shared), set())
         self.assertNotIn('//delivery:portable_launcher_template', self.portable(dict(target))['srcs'])
 
+    def test_sdk_only_loses_unused_launcher_branch_and_preserves_data(self):
+        target = self.targets['codex_native_acquisition_sdk_export_producer']
+        self.assertEqual(set(self.shared) - set(target['srcs']),
+            {'//delivery:portable.py', 'codex_native_acquisition_bridge_material.py'})
+        self.assertEqual(set(target['srcs']) - set(self.shared), set())
+        self.assertNotIn('//delivery:portable_launcher_template', self.portable(dict(target))['srcs'])
+        self.assertEqual(target['data'], self.targets['codex_native_acquisition_metadata_producer']['data'])
+        self.assertTrue(set(self.arguments['parent_data'] + self.arguments['sdk_data']) <= set(target['data']))
+
     def test_other_pipeline_targets_retain_portable_and_shared_sources(self):
         for name, target in self.targets.items():
-            if name in ('codex_native_acquisition_metadata_producer', 'guard_native_acquisition_inputs_reserved_test'):
+            if name in ('codex_native_acquisition_metadata_producer',
+                    'codex_native_acquisition_sdk_export_producer', 'guard_native_acquisition_inputs_reserved_test'):
                 continue
             with self.subTest(target=name):
                 self.assertTrue(set(self.shared) <= set(target['srcs']))

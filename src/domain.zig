@@ -42,7 +42,8 @@ pub const Enrollment = struct {
     source_id: []const u8,
     identity: Identity,
     label: []const u8 = "",
-    account_type: []const u8 = "generic",
+    /// Descriptive verified metadata; omission preserves an existing account's type.
+    account_type: ?[]const u8 = null,
 };
 pub const EnrollmentResult = struct {
     status: enum { enrolled, existing, quarantined, tombstoned },
@@ -660,17 +661,31 @@ pub const State = struct {
         }
         for (self.accounts.items) |*existing| {
             if (!sameIdentity(existing.identity, input.identity)) continue;
-            if (!contains(existing.source_ids, input.source_id)) {
+            const add_source = !contains(existing.source_ids, input.source_id);
+            const account_type = input.account_type orelse existing.account_type;
+            const update_type = !eql(existing.account_type, account_type);
+            // A newly verified read may refresh descriptive account metadata.
+            // It cannot change identity, labels, lifecycle or grant authority.
+            // Stage both fields before publishing either allocation.
+            const updated_type: ?[]const u8 = if (update_type) try deepClone([]const u8, self.allocator, account_type) else null;
+            errdefer if (updated_type) |updated| deepFree([]const u8, self.allocator, updated);
+            const updated_sources: ?[]const []const u8 = if (add_source) blk: {
                 if (existing.source_ids.len >= max_list_items) return error.TooManyRecords;
                 const ids = try self.allocator.alloc([]const u8, existing.source_ids.len + 1);
                 defer self.allocator.free(ids);
                 @memcpy(ids[0..existing.source_ids.len], existing.source_ids);
                 ids[existing.source_ids.len] = input.source_id;
-                const updated = try deepClone([]const []const u8, self.allocator, ids);
+                break :blk try deepClone([]const []const u8, self.allocator, ids);
+            } else null;
+            if (updated_sources) |ids| {
                 deepFree([]const []const u8, self.allocator, existing.source_ids);
-                existing.source_ids = updated;
-                self.changed();
+                existing.source_ids = ids;
             }
+            if (updated_type) |updated| {
+                deepFree([]const u8, self.allocator, existing.account_type);
+                existing.account_type = updated;
+            }
+            if (add_source or update_type) self.changed();
             return .{ .status = .existing, .account_id = existing.id };
         }
         const source_ids = [_][]const u8{input.source_id};
@@ -678,7 +693,7 @@ pub const State = struct {
             .id = input.account_id,
             .identity = input.identity,
             .label = input.label,
-            .account_type = input.account_type,
+            .account_type = input.account_type orelse "generic",
             .source_ids = &source_ids,
         });
         self.changed();
@@ -1538,6 +1553,105 @@ test "verified identities deduplicate across sources; unverified imports quarant
     try std.testing.expectEqual(.quarantined, uncertain.status);
     try std.testing.expectEqual(@as(usize, 1), state.quarantined_imports.items.len);
 }
+
+test "verified account type refresh preserves held native work and independent authority" {
+    var state = try fixtureState();
+    defer state.deinit();
+    var external = state.grant("grant-a").?;
+    external.ownership = .external;
+    external.generation += 1;
+    _ = try state.addGrant(external);
+    const before_grant = state.grant("grant-a").?;
+    const identity = state.account("account-a").?.identity;
+    const native: native_owner.NativeRef = .{ .owner_id = @splat(1), .adapter_epoch = 1, .endpoint_generation = 1, .thread_instance_generation = 1, .attachment_generation = 1 };
+    _ = try state.bind(.{ .id = "metadata-thread", .application = "codex", .session_id = "metadata-session", .native_ref = native, .account_id = "account-a", .grant_id = "grant-a", .grant_generation = external.generation });
+    _ = try state.beginLease(.{ .id = "metadata-request", .binding_id = "metadata-thread", .native_ref = native, .account_id = "account-a", .grant_id = "grant-a", .grant_generation = external.generation, .route_generation = 1, .started_at = 1, .expires_at = 100 }, 1);
+    const before_binding = state.binding("metadata-thread").?;
+    const before_lease = state.leases.items[0];
+    var demand = fixtureDemand();
+    demand.allowed_account_ids = &.{"account-a"};
+    demand.requires_capacity = true;
+    try std.testing.expectError(error.NoEligibleAccount, state.select(demand, null));
+    const revision = state.revision;
+    const refreshed = try state.enroll(.{ .account_id = "another-handle", .source_id = "source", .identity = identity, .label = "incoming label", .account_type = "future_plan" }, 10);
+    try std.testing.expectEqual(.existing, refreshed.status);
+    try std.testing.expectEqualStrings("account-a", refreshed.account_id.?);
+    try std.testing.expectEqual(revision + 1, state.revision);
+    try std.testing.expectEqualStrings("future_plan", state.account("account-a").?.account_type);
+    try std.testing.expectEqualStrings("", state.account("account-a").?.label);
+    try std.testing.expectEqualDeep(identity, state.account("account-a").?.identity);
+    try std.testing.expectEqualDeep(before_grant, state.grant("grant-a").?);
+    try std.testing.expectEqualDeep(before_binding, state.binding("metadata-thread").?);
+    try std.testing.expectEqualDeep(before_lease, state.leases.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), state.observations.items.len);
+    try std.testing.expectError(error.NoEligibleAccount, state.select(demand, null));
+    try std.testing.expectError(error.InFlight, state.forget("account-a"));
+    try state.pause("account-a", true);
+    _ = try state.enroll(.{ .account_id = "another-handle", .source_id = "source", .identity = identity, .account_type = "changed_plan" }, 10);
+    try std.testing.expectEqual(AccountLifecycle.paused, state.account("account-a").?.lifecycle);
+    const unchanged = state.revision;
+    const borrowed = state.account("account-a").?;
+    _ = try state.enroll(.{ .account_id = borrowed.id, .source_id = borrowed.source_ids[0], .identity = borrowed.identity, .account_type = borrowed.account_type }, 10);
+    try std.testing.expectEqual(unchanged, state.revision);
+    _ = try state.connectSource(.{ .id = "metadata-second-source", .kind = .explicit });
+    _ = try state.enroll(.{ .account_id = "other-handle", .source_id = "metadata-second-source", .identity = identity }, 10);
+    try std.testing.expectEqualStrings("changed_plan", state.account("account-a").?.account_type);
+    try std.testing.expectEqual(@as(usize, 2), state.account("account-a").?.source_ids.len);
+    var restored = try State.fromSnapshot(std.testing.allocator, state.snapshot());
+    defer restored.deinit();
+    try std.testing.expectEqualStrings("changed_plan", restored.account("account-a").?.account_type);
+    try std.testing.expectEqual(AccountLifecycle.paused, restored.account("account-a").?.lifecycle);
+    try std.testing.expectEqualDeep(before_grant, restored.grant("grant-a").?);
+    try std.testing.expectEqualDeep(before_binding, restored.binding("metadata-thread").?);
+    try std.testing.expectEqualDeep(before_lease, restored.leases.items[0]);
+}
+
+test "account type refresh cannot bypass source identity tenant or forget fences" {
+    var state = try fixtureState();
+    defer state.deinit();
+    var uncertain = fixtureIdentity("alice");
+    uncertain.verified = false;
+    try std.testing.expectEqual(.quarantined, (try state.enroll(.{ .account_id = "account-a", .source_id = "source", .identity = uncertain, .account_type = "unverified_plan" }, 10)).status);
+    var tenant = fixtureIdentity("alice");
+    tenant.tenant = "fixture-tenant";
+    try std.testing.expectEqual(.quarantined, (try state.enroll(.{ .account_id = "account-a", .source_id = "source", .identity = tenant, .account_type = "other_tenant_plan" }, 10)).status);
+    try std.testing.expectEqualStrings("generic", state.account("account-a").?.account_type);
+    try std.testing.expectEqual(.enrolled, (try state.enroll(.{ .account_id = "tenant-account", .source_id = "source", .identity = tenant, .account_type = "other_tenant_plan" }, 10)).status);
+    try std.testing.expectEqualStrings("generic", state.account("account-a").?.account_type);
+    try std.testing.expectEqualStrings("fixture-tenant", state.account("tenant-account").?.identity.tenant);
+    try state.disconnectSource("source");
+    try std.testing.expectError(error.SourceUnauthorized, state.enroll(.{ .account_id = "account-a", .source_id = "source", .identity = fixtureIdentity("alice"), .account_type = "disconnected_plan" }, 10));
+    try std.testing.expectEqualStrings("generic", state.account("account-a").?.account_type);
+    _ = try state.connectSource(.{ .id = "source", .kind = .oauth });
+    try state.forget("account-a");
+    try std.testing.expectEqual(.tombstoned, (try state.enroll(.{ .account_id = "new-handle", .source_id = "source", .identity = fixtureIdentity("alice"), .account_type = "forgotten_plan" }, 10)).status);
+    try std.testing.expect(state.account("account-a") == null);
+    try std.testing.expect(state.account("new-handle") == null);
+    try std.testing.expectEqual(@as(usize, 1), state.tombstones.items.len);
+}
+
+fn exerciseAccountTypeRefreshAllocationFailures(allocator: std.mem.Allocator) !void {
+    var state = State.init(allocator);
+    defer state.deinit();
+    _ = try state.connectSource(.{ .id = "first", .kind = .explicit });
+    _ = try state.connectSource(.{ .id = "second", .kind = .explicit });
+    _ = try state.enroll(.{ .account_id = "account", .source_id = "first", .identity = fixtureIdentity("metadata-fixture"), .account_type = "initial_plan" }, 0);
+    const revision = state.revision;
+    _ = state.enroll(.{ .account_id = "other-handle", .source_id = "second", .identity = state.account("account").?.identity, .account_type = "changed_plan" }, 10) catch |err| {
+        try std.testing.expectEqual(revision, state.revision);
+        try std.testing.expectEqualStrings("initial_plan", state.account("account").?.account_type);
+        try std.testing.expectEqual(@as(usize, 1), state.account("account").?.source_ids.len);
+        return err;
+    };
+    try std.testing.expectEqual(revision + 1, state.revision);
+    try std.testing.expectEqualStrings("changed_plan", state.account("account").?.account_type);
+    try std.testing.expectEqual(@as(usize, 2), state.account("account").?.source_ids.len);
+}
+
+test "account type and new source association publish atomically under allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, exerciseAccountTypeRefreshAllocationFailures, .{});
+}
+
 test "detach retains adopted grants; forget removes metadata and requires explicit reenrollment" {
     var state = try fixtureState();
     defer state.deinit();

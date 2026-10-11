@@ -17,9 +17,10 @@ def native_acquisition_source_closure(source_sources, sdk_sources):
     ]).to_list()
 
 def native_acquisition_sources_for(name, sources):
-    # Metadata reconstructs source and regenerates the hub; it never inspects
-    # a native image. Declaring portable.py also declares its compiled launcher.
-    if name == "codex_native_acquisition_metadata_producer":
+    # Metadata and SDK export reconstruct source and regenerate the hub without
+    # inspecting a native image. portable.py also declares its compiled launcher.
+    if name in ("codex_native_acquisition_metadata_producer",
+                "codex_native_acquisition_sdk_export_producer"):
         return [src for src in sources if str(src) not in (
             "//delivery:portable.py", "codex_native_acquisition_bridge_material.py",
         )]
