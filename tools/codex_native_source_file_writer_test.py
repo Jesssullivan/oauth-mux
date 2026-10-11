@@ -170,6 +170,9 @@ class FileWriterSourceModels(unittest.TestCase):
             # Deliberate parent qualification seam: no fake actual N9 success.
             source_files = outer.files
             source_report = outer.report()
+            def __init__(self, actual_selected):
+                outer.assertIs(actual_selected, selected)
+                outer.assertEqual(actual_selected, {'source': outer.config['parent']})
             def __enter__(self):
                 return self
             def __exit__(self, *unused):
