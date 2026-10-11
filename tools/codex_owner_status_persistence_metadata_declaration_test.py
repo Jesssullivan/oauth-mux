@@ -425,7 +425,7 @@ class RuleModel(unittest.TestCase):
             "regularInputs": inputs, "watchInputs": watches, "control_raw": control}
         made = {"materialized": True, "input_count": len(inputs), "selection_sha256": helper.CONTROL_SHA,
             "plan_sha256": "a"*64, "build_sha256": "b"*64}
-        events, recorded = [], []
+        events, recorded, progress, root_reads = [], [], [], []
         bootstrap = "/nix/store/" + "a"*32 + "-bootstrap"
         python = "/nix/store/" + "b"*32 + "-python"
         native = "/nix/store/" + "c"*32 + "-native.json"
@@ -458,6 +458,8 @@ class RuleModel(unittest.TestCase):
             os = SimpleNamespace(name="linux", arch="x86_64", environ={})
             def path(self, value):
                 return FakePath(value)
+            def report_progress(self, message):
+                progress.append((message, list(events), list(root_reads)))
             def watch(self, path):
                 recorded.append(str(path))
                 events.append("watch")
@@ -472,10 +474,13 @@ class RuleModel(unittest.TestCase):
                 if value == "declared-helper.py":
                     return "declared helper bytes"
                 if value == "metadata-input.json":
+                    root_reads.append(value)
                     return control
                 if value == "metadata-input.sha256":
+                    root_reads.append(value)
                     return helper.CONTROL_SHA + "\n"
                 if value == "BUILD.bazel":
+                    root_reads.append(value)
                     return helper.build_bytes(len(inputs)).decode()
                 raise AssertionError(value)
             def execute(self, command, timeout):
@@ -493,6 +498,16 @@ class RuleModel(unittest.TestCase):
         self.assertEqual(context.assert_watches[-len(watches):], watches)
         self.assertEqual(events[events.index("plan") + 1:], ["watch"]*len(watches) + ["materialize"])
         self.assertEqual(context.assert_file, (".metadata-declaration.py", "declared helper bytes", False))
+        self.assertEqual([entry[0] for entry in progress], ["metadata declaration: " + phase for phase in
+            ("beforeplan", "acceptedplan", "registeredwatches", "beforematerialize", "acceptedmaterialize", "finalrootreadback")])
+        self.assertNotIn("plan", progress[0][1])
+        self.assertEqual(progress[1][1], progress[0][1] + ["plan"])
+        self.assertEqual(progress[2][1], progress[1][1] + ["watch"]*len(watches))
+        self.assertEqual(progress[3][1], progress[2][1])
+        self.assertEqual(progress[4][1], progress[3][1] + ["materialize"])
+        self.assertEqual(progress[5][1], progress[4][1])
+        self.assertTrue(all(not entry[2] for entry in progress[:5]))
+        self.assertEqual(progress[5][2], ["metadata-input.json", "metadata-input.sha256", "BUILD.bazel"])
         # The real source has no tree-watch or source-symlink API operation.
         calls = [node.func.attr for node in ast.walk(ast.parse(RULE_PATH.read_text()))
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
