@@ -204,11 +204,17 @@ test "browser reconciliation observes current source authority without reconnect
         }
         const snapshot = try std.json.Stringify.valueAlloc(allocator, fixture.actor.?.state.snapshot(), .{});
         defer allocator.free(snapshot);
-        const revision = fixture.actor.?.revision;
         const generation = fixture.actor.?.import_sources.items[0].generation;
-        const checkpoint = fixture.actor.?.db.?.checkpoint;
         for (0..2) |attempt| {
             if (attempt == 1) try fixture.restart();
+            const restored = try std.json.Stringify.valueAlloc(allocator, fixture.actor.?.state.snapshot(), .{});
+            defer allocator.free(restored);
+            try std.testing.expectEqualStrings(snapshot, restored);
+            try std.testing.expectEqual(generation, fixture.actor.?.import_sources.items[0].generation);
+            // Startup commits recovery before serving requests. Its revision
+            // and checkpoint are the baseline for this request's no-write fence.
+            const revision = fixture.actor.?.revision;
+            const checkpoint = fixture.actor.?.db.?.checkpoint;
             var refused = try dispatch(fixture.actor.?, .browser, reconcile);
             defer refused.deinit();
             try std.testing.expectEqualStrings("SourceUnauthorized", try refused.code());
