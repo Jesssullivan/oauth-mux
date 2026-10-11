@@ -2617,7 +2617,7 @@ test "retained PACKAGE proof binds each family target profile namespace and orig
         const contract = packageProducerContract(carrier_family);
         const other = packageProducerContract(!carrier_family);
         var selected: [5]Input = undefined;
-        for (names, &selected) |name, *input| input.* = try carrierModelRawInput(tmp.dir, try a.dupeZ(u8, name), name);
+        for (names, &selected) |name, *input| input.* = try carrierModelRawInput(tmp.dir, try a.dupeSentinel(u8, name, 0), name);
         defer {
             for (selected) |input| {
                 _ = c.close(input.descriptor);
@@ -2719,7 +2719,7 @@ test "retained PACKAGE proof binds each family target profile namespace and orig
                 else => unreachable,
             }
             carrierModelSet(&outer_doc, "native_acquisition_inputs_reservation", changed_reservation);
-            const changed_outer = try carrierModelInput(a, tmp.dir, try a.dupeZ(u8, try std.fmt.allocPrint(a, "changed-guardian-{d}", .{negative})), outer_doc);
+            const changed_outer = try carrierModelInput(a, tmp.dir, try a.dupeSentinel(u8, try std.fmt.allocPrint(a, "changed-guardian-{d}", .{negative}), 0), outer_doc);
             defer _ = c.close(changed_outer.descriptor);
             var changed = inputs;
             changed.producer_receipt = changed_outer;
