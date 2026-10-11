@@ -47,6 +47,7 @@ bool reopenedCustody(const QJsonObject &result) {
 }
 
 QString text(const QJsonObject &object, const QString &field) {
+    if (field == "status" && object.value("complete").isBool()) return "—";
     QJsonValue value = object;
     for (const auto &part : field.split('.')) value = value.toObject().value(part);
     if (value.isString()) {
@@ -83,15 +84,20 @@ QJsonArray capacityRows(const QJsonArray &records, bool connected) {
         if (!connected) record.insert("freshness", "Stale: service or custody unavailable");
         else if (!record.contains("freshness") && record.value("complete").isBool()) {
             const bool complete = record.value("complete").toBool();
-            record.insert("freshness", complete ? "Current"
-                : QString("Partial: %1 unknown or stale buckets").arg(record.value("unknown_buckets").toInteger()));
+            record.insert("freshness", complete ? "Complete at snapshot"
+                : QString("Partial at snapshot: %1 unknown or stale buckets").arg(record.value("unknown_buckets").toInteger()));
             if (!complete && record.value("buckets").toInteger() == 0)
                 record.insert("remaining", QJsonValue());
         } else if (!record.contains("freshness")) {
             const auto expiry = record.value("expires_at");
+            const auto observed = record.value("observed_at");
+            const auto start = record.value("window_start");
+            const auto end = record.value("window_end");
             const auto status = record.value("status").toString();
-            record.insert("freshness", !expiry.isDouble() || status == "unknown"
-                ? "Unknown" : expiry.toInteger() <= now ? "Stale" : "Current");
+            record.insert("freshness", !expiry.isDouble() || !observed.isDouble()
+                || !start.isDouble() || !end.isDouble() || (status != "ready" && status != "unavailable")
+                || observed.toInteger() > now || start.toInteger() > now
+                ? "Unknown" : expiry.toInteger() <= now || end.toInteger() <= now ? "Stale" : "Current");
         }
         if (record.value("freshness").toString() == "Unknown" || record.value("status").toString() == "unknown")
             record.insert("remaining", QJsonValue());
@@ -104,7 +110,7 @@ QJsonArray capacityDisplayRows(const QJsonObject &snapshot) {
     QJsonArray rows;
     for (const auto &value : snapshot.value("capacity").toArray()) {
         auto row = value.toObject();
-        row.insert("provider", row.value("provider").toString() + " (compatible total)");
+        row.insert("provider", row.value("provider").toString() + " (retained observation total)");
         rows.append(row);
     }
     for (const auto &value : snapshot.value("observations").toArray()) {
@@ -326,9 +332,10 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     tabs->addTab(page(grants_, &actions), "Grants");
     actions->addWidget(new QLabel("Authorization metadata only. Provider validity and custody authorization are independent."));
 
-    capacity_ = makeTable({"Provider", "Resource", "Scope", "Remaining", "Unit", "Window", "Freshness"});
+    capacity_ = makeTable({"Provider", "Resource", "Scope", "Remaining", "Unit", "Window", "Freshness", "Observation status"});
+    capacity_->setObjectName("capacityObservations");
     tabs->addTab(page(capacity_, &actions), "Capacity");
-    auto *capacityNote = new QLabel("Per-account observations remain separate from compatible totals. Percentages and provider decisions are not additive quotas; unknown or stale values stay explicit.");
+    auto *capacityNote = new QLabel("Totals describe retained account observations, not request eligibility. Only matching units, scopes and windows combine; shared buckets count once. Percentages and provider decisions are not additive quotas. Observation status and freshness remain separate.");
     capacityNote->setWordWrap(true);
     actions->addWidget(capacityNote);
 
@@ -423,7 +430,7 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
             message_->setText((client_.hasUncertainOperations() ? client_.uncertaintyMessage() + "\n" : QString())
                 + "Displayed account data may be stale until the service reconnects.");
             fillTable(capacity_, capacityRows(capacityDisplayRows(snapshot_), false),
-                {"provider", "resource.target", "resource.scope", "remaining", "resource.unit", "window", "freshness"});
+                {"provider", "resource.target", "resource.scope", "remaining", "resource.unit", "window", "freshness", "status"});
             if (changed && tray_.isVisible())
                 tray_.showMessage("Omux service unavailable", "Accounts and routes will refresh after reconnection.");
         } else {
@@ -605,7 +612,7 @@ void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
     updateMutationControls();
     fillTable(grants_, snapshot.value("grants").toArray(), {"account_id", "credential_kind", "ownership", "purposes", "audience", "provider_expires_at", "custody_expires_at", "generation"});
     fillTable(capacity_, capacityRows(capacityDisplayRows(snapshot), connected_ && custodyAvailable_),
-              {"provider", "resource.target", "resource.scope", "remaining", "resource.unit", "window", "freshness"});
+              {"provider", "resource.target", "resource.scope", "remaining", "resource.unit", "window", "freshness", "status"});
     fillTable(bindings_, snapshot.value("bindings").toArray(), {"application", "session_id", "account_id", "in_flight", "id"});
     fillTable(leases_, snapshot.value("leases").toArray(), {"binding_id", "account_id", "purpose", "started_at", "expires_at", "route_generation"});
     fillTable(operations_, snapshot.value("jobs").toArray(), {"kind", "status", "account_id", "id"});

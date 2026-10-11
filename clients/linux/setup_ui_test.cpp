@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QDateTime>
 #include <cstdio>
 #include <memory>
 
@@ -27,6 +28,40 @@ QJsonObject report(bool duplicate) {
             {"reason", QString(phase) == "native" ? "unknown" : "ready"},
             {"action", QString(phase) == "native" ? "inspect_capability" : "none"}});
     return {{"schema_version", 1}, {"ready", false}, {"findings", findings}, {"seamless_handoff_proven", false}};
+}
+QJsonObject capacitySnapshot(bool custodyReady) {
+    const auto now = QDateTime::currentSecsSinceEpoch();
+    const QJsonObject resource {{"kind", "api-calls"}, {"target", "core"}, {"unit", "calls"}, {"scope", "github:rest:core"}};
+    const QJsonObject total {{"provider", "github"}, {"resource", resource}, {"remaining", 42},
+        {"window_start", now - 3600}, {"window_end", now + 3600}, {"complete", true},
+        {"buckets", 1}, {"unknown_buckets", 0}};
+    auto partial = total;
+    partial.insert("complete", false);
+    partial.insert("buckets", 0);
+    partial.insert("unknown_buckets", 1);
+    partial.insert("remaining", 0);
+    const QJsonObject sample {{"account_id", "retained-fixture"}, {"resource", resource}, {"remaining", 42},
+        {"status", "ready"}, {"observed_at", now - 10}, {"expires_at", now + 3600},
+        {"window_start", now - 3600}, {"window_end", now + 3600}};
+    auto unavailable = sample;
+    unavailable.insert("status", "unavailable");
+    unavailable.insert("remaining", 0);
+    auto unknown = sample;
+    unknown.insert("status", "unknown");
+    auto expired = sample;
+    expired.insert("expires_at", now - 1);
+    auto ended = sample;
+    ended.insert("window_end", now - 1);
+    auto futureObservation = sample;
+    futureObservation.insert("observed_at", now + 1800);
+    auto futureWindow = sample;
+    futureWindow.insert("window_start", now + 3600);
+    futureWindow.insert("window_end", now + 7200);
+    return {{"revision", 1}, {"custody_available", custodyReady}, {"captured_at", now},
+        {"accounts", QJsonArray{QJsonObject{{"id", "retained-fixture"}, {"label", "Retained fixture"},
+            {"identity", QJsonObject{{"provider", "github"}}}, {"account_type", "future_plan"}, {"lifecycle", "paused"}}}},
+        {"capacity", QJsonArray{total, partial}},
+        {"observations", QJsonArray{sample, unavailable, unknown, expired, ended, futureObservation, futureWindow}}};
 }
 }
 
@@ -110,7 +145,7 @@ int main(int argc, char **argv) {
                     if (!reopenCapability.isUndefined())
                         result.insert("capabilities", QJsonObject{{"custody_reopen", reopenCapability}});
                 }
-                else if (method == "state.snapshot") result = {{"revision", 1}, {"custody_available", custodyReady}};
+                else if (method == "state.snapshot") result = capacitySnapshot(custodyReady);
                 else if (method == "setup.readiness") {
                     ++readinessRequests;
                     result = report(duplicate);
@@ -169,6 +204,25 @@ int main(int argc, char **argv) {
         auto *notice = window.findChild<QLabel *>("setupNotice");
         if (!table || !notice || !until([&] { return table->rowCount() == 7; })) return 2;
         if (table->item(6, 1)->text() != "unknown" || !notice->text().contains("Home Manager")) return 3;
+        // The real socket→applySnapshot path displays observations retained for
+        // a paused account without presenting its total as request eligibility.
+        auto *capacity = window.findChild<QTableWidget *>("capacityObservations");
+        if (!capacity || !until([&] { return capacity->rowCount() == 9; })) return 31;
+        if (capacity->item(0, 0)->text() != "github (retained observation total)"
+            || capacity->item(0, 3)->text() != "42" || capacity->item(0, 4)->text() != "calls"
+            || capacity->item(0, 2)->text() != "github:rest:core"
+            || capacity->item(0, 5)->text() == "Unknown"
+            || capacity->item(0, 6)->text() != "Complete at snapshot"
+            || capacity->item(0, 7)->text() != "—"
+            || capacity->item(1, 3)->text() != "Unknown"
+            || !capacity->item(1, 6)->text().startsWith("Partial at snapshot:")) return 32;
+        if (capacity->item(2, 6)->text() != "Current" || capacity->item(2, 7)->text() != "ready"
+            || capacity->item(3, 3)->text() != "0" || capacity->item(3, 6)->text() != "Current"
+            || capacity->item(3, 7)->text() != "unavailable") return 33;
+        for (int row : {4, 7, 8})
+            if (capacity->item(row, 3)->text() != "Unknown" || capacity->item(row, 6)->text() != "Unknown") return 34;
+        for (int row : {5, 6})
+            if (capacity->item(row, 3)->text() != "42" || capacity->item(row, 6)->text() != "Stale") return 35;
         // Ordinary connection/readiness must not trigger an automatic reopen.
         if (reopenRequests != 0) return 11;
         // A top-level success cannot override the actual unknown native row.
@@ -213,6 +267,10 @@ int main(int argc, char **argv) {
         if (!table || !notice || !until([&] {
                 return table->rowCount() == 7 && table->item(2, 1)->text() == "observation_stale";
             }) || reopenRequests != 0) return 13;
+        auto *capacity = window.findChild<QTableWidget *>("capacityObservations");
+        if (!capacity || !until([&] { return capacity->rowCount() == 9; })) return 36;
+        for (int row = 0; row < capacity->rowCount(); ++row)
+            if (capacity->item(row, 6)->text() != "Stale: service or custody unavailable") return 37;
         const int beforeReadiness = readinessRequests;
         const int beforeConnections = connections;
         bool clicked = false;

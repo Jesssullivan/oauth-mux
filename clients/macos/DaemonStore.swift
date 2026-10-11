@@ -8,6 +8,7 @@ struct StateRow: Identifiable {
     let id: String
     let value: JSONValue
     func text(_ field: String) -> String {
+        if field == "status", value["complete"].boolean != nil { return "—" }
         if field == "label", value["label"].string == "" { return value["id"].string ?? "Unnamed" }
         if field == "resource.target", value.at(field).string == "" { return value["resource"]["kind"].display }
         if field == "resource.unit", value.at(field).string == "custom" { return value["resource"]["unit_name"].display }
@@ -19,12 +20,16 @@ struct StateRow: Identifiable {
         }
         if field == "freshness", value["freshness"] == .null {
             if let complete = value["complete"].boolean {
-                return complete ? "Current" : "Partial: \(value["unknown_buckets"].display) unknown or stale buckets"
+                return complete ? "Complete at snapshot" : "Partial at snapshot: \(value["unknown_buckets"].display) unknown or stale buckets"
             }
-            guard value["status"].string != "unknown", let expiry = value["expires_at"].number else { return "Unknown" }
-            return expiry <= Date().timeIntervalSince1970 ? "Stale" : "Current"
+            let now = Date().timeIntervalSince1970
+            guard let status = value["status"].string, ["ready", "unavailable"].contains(status),
+                  let observed = value["observed_at"].number, let expiry = value["expires_at"].number,
+                  let start = value["window_start"].number, let end = value["window_end"].number,
+                  observed <= now, start <= now else { return "Unknown" }
+            return expiry <= now || end <= now ? "Stale" : "Current"
         }
-        if field == "remaining", value["status"].string == "unknown" { return "Unknown" }
+        if field == "remaining", text("freshness") == "Unknown" { return "Unknown" }
         if field == "remaining", value["complete"].boolean == false,
            value["buckets"].number == 0 { return "Unknown" }
         if field.hasSuffix("_at"), let timestamp = value.at(field).number {
@@ -81,7 +86,7 @@ final class DaemonStore: ObservableObject {
     var capacities: [StateRow] {
         let totals = rows("capacity").map { row -> StateRow in
             guard case .object(var fields) = row.value else { return row }
-            fields["provider"] = .string(row.text("provider") + " (compatible total)")
+            fields["provider"] = .string(row.text("provider") + " (retained observation total)")
             return StateRow(id: row.id, value: .object(fields))
         }
         let observations = rows("observations").map { row -> StateRow in

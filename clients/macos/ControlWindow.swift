@@ -72,7 +72,7 @@ struct ControlWindow: View {
         .confirmationDialog("Disconnect the selected source context?", isPresented: $disconnectConfirmation) {
             Button("Disconnect source", role: .destructive) { sourceAction("source.disconnect") }
         } message: {
-            Text("Ends acquisition authority for this source and removes secrets retained through it. Independent grants and native conversation history retain their own authority. Browser disappearance alone uses detachment semantics.")
+            Text("Ends acquisition authority for this source and removes secrets retained through it. Independent grants and native conversation history retain their own authority. Closing the browser does not end this source's acquisition authority or revoke access at the provider.")
         }
     }
 
@@ -149,8 +149,9 @@ struct ControlWindow: View {
                 TableColumn("Unit") { Text($0.text("resource.unit")) }
                 TableColumn("Window") { Text($0.text("window")) }
                 TableColumn("Freshness") { Text(store.connected && store.custodyAvailable ? $0.text("freshness") : "Stale: service or custody unavailable") }
+                TableColumn("Observation status") { Text($0.text("status")) }
             }
-            Text("Totals include compatible units, scopes and windows only. Unknown or stale values are shown explicitly.")
+            Text("Totals describe retained account observations, not request eligibility. Only matching units, scopes and windows combine; shared buckets count once. Percentages and provider decisions are not additive quotas. Observation status and freshness remain separate.")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(10)
     }

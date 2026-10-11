@@ -3,7 +3,7 @@
 The macOS menu-bar app uses SwiftUI and the Linux tray/settings app uses Qt6.
 Both are clients of the per-user daemon's versioned local control API. They
 manage sources, account lifecycle, enrollment/repair actions and native
-integrations, and display active bindings and compatible capacity totals.
+integrations, and display active bindings and retained observation totals.
 Credential material is absent from the control protocol and UI.
 
 The Linux Setup view's explicit "Resume after vault unlock" action uses the
@@ -53,9 +53,10 @@ that identity, but the CLI cannot gate independent future invocations. Explicit
 caller-provided operation IDs remain unchanged.
 Disconnection marks displayed data as potentially stale.
 Unknown observations remain unknown. The clients display per-account
-observations separately from daemon-computed compatible totals, without summing
-incompatible units or windows. Codex percentages and provider permission flags
-retain their custom units; unspecified shared buckets do not yield additive
+observations separately from daemon-computed retained totals. Totals describe
+observed capacity rather than request eligibility; only matching units, scopes
+and windows combine, and shared buckets count once. Codex percentages and provider
+permission flags retain their custom units; unspecified shared buckets do not yield additive
 quota or establish exact-model readiness.
 
 The Linux app falls back to a normal settings window when the desktop has no
