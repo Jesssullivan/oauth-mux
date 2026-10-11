@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "kind": "omux-native-carrier-material-config-v2",
+  "status": "awaiting-qualified-carrier-route",
+  "metadata": null,
+  "selection": null,
+  "compile": null
+}

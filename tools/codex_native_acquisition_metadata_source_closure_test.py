@@ -27,6 +27,9 @@ class DeclaredSet:
 # belong to coordinator request/command/cleanup, installation witness validation
 # or registration collection. No unknown module or newly moved eager import is
 # accepted by this classification.
+# The two carrier imports are confined to explicit kind/schema2 branches in
+# common material selection. Legacy metadata/SDK v1 never takes those branches;
+# actual carrier SDK models declare the full carrier module closure separately.
 DEFERRED_IMPORTS = {
     ('guard_native_seed_plan_reserved', 'request', 'guard_resident_enrollment_profile'),
     ('guard_native_seed_plan_reserved', 'command', 'guard_resident_enrollment_profile'),
@@ -44,6 +47,8 @@ DEFERRED_IMPORTS = {
     ('guard_native_metadata_sdk_reserved', 'request', 'guard_resident_enrollment_profile'),
     ('guard_native_metadata_sdk_reserved', 'command', 'guard_resident_enrollment_profile'),
     ('guard_resident_observation', 'InstallationWitness.__init__', 'pack'),
+    ('codex_native_acquisition_material', 'validate_selection', 'codex_native_carrier_material'),
+    ('codex_native_acquisition_material', 'qualify_selection', 'codex_native_carrier_material'),
 }
 
 

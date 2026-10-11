@@ -44,6 +44,12 @@ FALSE_FLAGS = ("sdk_export_qualified", "sdk_execution_qualified", "metadata_qual
     "installed_package_primary_qualified", "schema_producer_qualified",
     "native_support", "provider_evaluation", "credential_acquisition_qualified",
     "live_handoff_proven", "source_witnesses_replaced", "legacy_metadata_family_qualified")
+OUTPUT_FIELDS = {"schema_version", "kind", "status", "original_selection", "selector_sha256",
+    "source_inventory_sha256", "source_graph", "patch_sha256", "carrier", "extraction",
+    "extraction_receipt_sha256", "consumer_context", "consumer_deadline", "query_exit", "query_plan",
+    "output_parent_mode", "query_tool_closure_independently_rechecked",
+    "packaged_jdk_used_as_query_tool_relocation", "module_and_cargo_lock_unchanged", "retained_hub",
+    "generated_hub", "source_and_extracted_carrier_rechecked", *FALSE_FLAGS}
 _SCOPE = ContextVar("omux-native-carrier-metadata-scope", default=None)
 
 

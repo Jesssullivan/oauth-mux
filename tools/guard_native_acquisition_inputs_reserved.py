@@ -4,6 +4,7 @@ import guard_native_seed_plan_reserved as kernel
 
 SDK_CARRIER_SEAL = "native-sdk-carrier-seal-reserved"
 SDK_CARRIER_METADATA = "native-sdk-carrier-metadata-reserved"
+CARRIER_SDK = "native-sdk-carrier-sdk-export-reserved"
 MODEL = "native-acquisition-inputs-models-reserved"
 BINDING = "native-acquisition-binding-reserved"
 METADATA = "native-acquisition-metadata-reserved"
@@ -21,6 +22,7 @@ ORDINARY_MODELS = "native-acquisition-ordinary-models-reserved"
 COHORTS = {
     SDK_CARRIER_SEAL: ("//tools:codex_native_sdk_carrier_seal_producer",),
     SDK_CARRIER_METADATA: ("//tools:codex_native_carrier_metadata_producer",),
+    CARRIER_SDK: ("//tools:codex_native_carrier_sdk_export_producer",),
     ORDINARY: ("//delivery:installed_direct_native_tui_test",),
     ORDINARY_MODELS: ("//tools:guard_native_acquisition_inputs_reserved_test",
         "//delivery:direct_native_tui_contract_test", "//delivery:fresh_native_tui_contract_test", "//:docs_check"),
@@ -135,6 +137,18 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
             for key, value in sorted(bindings.items())] + [
             "--test_env=" + key + "=" + value
             for key, value in sorted(bindings.items())]
+    if profile == CARRIER_SDK:
+        from execution_guard import graph_digest
+        from pathlib import Path
+        kernel.envelope(entry, deadline)
+        graph, _ = graph_digest(Path.cwd())
+        require(type(graph) is str and re.fullmatch(r"[0-9a-f]{64}", graph) is not None
+            and re.fullmatch(r"[0-9a-f]{40}", kwargs["source_commit"]) is not None)
+        bindings = {"OMUX_NATIVE_CARRIER_MODE": profile,
+            "OMUX_NATIVE_CARRIER_ENTRY_NS": str(entry), "OMUX_NATIVE_CARRIER_DEADLINE_NS": str(deadline),
+            "OMUX_NATIVE_CARRIER_EPOCH": str(run), "OMUX_NATIVE_CARRIER_SOURCE_COMMIT": kwargs["source_commit"],
+            "OMUX_NATIVE_CARRIER_GRAPH_SHA256": graph}
+        result[index:index] = ["--test_env=" + key + "=" + value for key, value in sorted(bindings.items())]
     return result
 
 

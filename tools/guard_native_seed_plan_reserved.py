@@ -735,3 +735,6 @@ WORKLOAD_PROFILES += ("native-acquisition-ordinary-tui-reserved", "native-acquis
 
 # SDK capture uses the same bounded worker, with distinct qualified inputs.
 WORKLOAD_PROFILES += ("native-sdk-carrier-seal-reserved", "native-sdk-carrier-metadata-reserved")
+
+# Distinct SDK projection action, same original native reservation/caps.
+WORKLOAD_PROFILES += ("native-sdk-carrier-sdk-export-reserved",)

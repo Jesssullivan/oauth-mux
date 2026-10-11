@@ -22,6 +22,7 @@ load(":codex_owner_status_persistence_metadata_inputs.bzl", "codex_owner_status_
 # are parsed even when only the source/model targets below are requested.
 load(":codex_native_sdk_carrier_inputs.bzl", "codex_native_sdk_carrier_inputs", "codex_native_sdk_carrier_selected_inputs")
 load(":codex_native_sdk_carrier_proof_inputs.bzl", "codex_native_sdk_carrier_proof_inputs")
+load(":codex_native_carrier_material_inputs.bzl", "codex_native_carrier_material_inputs")
 
 _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES = [
     "codex_query_registration.py", "guard_query_registration_reserved.py",
@@ -2822,6 +2823,46 @@ python_test(
     srcs = _NATIVE_CARRIER_METADATA_SOURCES,
     data = _NATIVE_CARRIER_METADATA_DATA,
     env_inherit = _NATIVE_SDK_CARRIER_ENV,
+    tags = ["manual", "no-remote", "no-cache"], timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Carrier SDK projection and one held workload extraction; model data cannot
+# instantiate acquisition or selected material repositories.
+exports_files(["codex_native_carrier_material.py", "codex_native_carrier_sdk_export.py",
+    "codex_native_carrier_material_test.py", "codex_native_carrier_material_inputs.bzl",
+    "codex_native_carrier_material_declaration_test.py"])
+_NATIVE_CARRIER_MATERIAL_SOURCES = depset(_NATIVE_CARRIER_METADATA_SOURCES + [
+    "codex_native_carrier_material.py", "codex_native_carrier_sdk_export.py",
+]).to_list()
+_NATIVE_CARRIER_ROUTE_ENV = ["OMUX_NATIVE_CARRIER_MODE", "OMUX_NATIVE_CARRIER_ENTRY_NS",
+    "OMUX_NATIVE_CARRIER_DEADLINE_NS", "OMUX_NATIVE_CARRIER_EPOCH",
+    "OMUX_NATIVE_CARRIER_SOURCE_COMMIT", "OMUX_NATIVE_CARRIER_GRAPH_SHA256"]
+python_test(
+    name = "codex_native_carrier_material_test",
+    main = "codex_native_carrier_material_test.py",
+    srcs = _NATIVE_CARRIER_MATERIAL_SOURCES + ["codex_native_sdk_carrier_test.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "codex_native_carrier_material_declaration_test",
+    main = "codex_native_carrier_material_declaration_test.py",
+    data = ["codex_native_carrier_material_inputs.bzl", "codex_native_acquisition_inputs.bzl"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "codex_native_carrier_sdk_export_producer",
+    main = "codex_native_carrier_sdk_export.py",
+    srcs = _NATIVE_CARRIER_MATERIAL_SOURCES,
+    data = [item for item in _NATIVE_CARRIER_METADATA_DATA
+        if str(item) != "@omux_native_acquisition_metadata_inputs//:inputs"] + [
+        "@omux_native_carrier_source_inputs//:inputs",
+        "//integrations/codex-upstream:native-carrier-material-inputs.json",
+        "@omux_native_carrier_metadata_inputs//:inputs",
+    ],
+    env_inherit = _NATIVE_CARRIER_ROUTE_ENV,
     tags = ["manual", "no-remote", "no-cache"], timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )

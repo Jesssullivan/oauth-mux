@@ -203,6 +203,9 @@ def declared_controller(deadline):
 
 
 def validate_selection(document):
+    if type(document) is dict and document.get('kind') == 'omux-native-carrier-native-selection-v2':
+        import codex_native_carrier_material as carrier_material
+        return carrier_material.validate_selection(document)
     import codex_protocol_history_native as protocol
     require(type(document) is dict and set(document)=={'schema_version','kind','source','sdk',
         'controller_source_commit','controller_graph_sha256'}
@@ -224,6 +227,9 @@ def qualify_selection(document, deadline):
     """Reconstruct all ninth bytes and qualify actual SDK/evidence, under caller clock."""
     import codex_protocol_history_native as protocol
     validate_selection(document)
+    if document['schema_version'] == 2:
+        import codex_native_carrier_material as carrier_material
+        return carrier_material.qualify_selection(document, deadline)
     require(type(deadline) is float and time.monotonic()<deadline)
     producer_success(document['source'],SOURCE_TARGET,'native-source-acquisition-source',deadline)
     producer_success(document['sdk'],SDK_TARGET,'native-acquisition-sdk-export',deadline)
@@ -261,6 +267,8 @@ def producer_policy(receipt, target):
     else:
         import guard_native_acquisition_inputs_reserved as admission
         policies = {SDK_TARGET:admission.SDK, METADATA_TARGET:admission.METADATA,
+            '//tools:codex_native_carrier_metadata_producer':admission.SDK_CARRIER_METADATA,
+            '//tools:codex_native_carrier_sdk_export_producer':admission.CARRIER_SDK,
             '//tools:codex_native_acquisition_binding_producer':admission.BINDING,
             '//tools:codex_native_acquisition_plan_producer':admission.PLAN,
             '//tools:codex_native_acquisition_query_producer':admission.QUERY,
@@ -446,10 +454,29 @@ def graph_shape(root, files, deadline):
         finally:
             os.close(fd)
     visit()
-def producer_success(selection, target, output_name, deadline):
+def declared_xml_success(raw):
+    """Closed success for the new declared-reader route, including aggregates."""
+    import xml.etree.ElementTree as ET
+    xml=ET.fromstring(raw)
+    require(xml.tag in ('testsuite','testsuites'))
+    suites=[xml] if xml.tag=='testsuite' else list(xml.findall('testsuite'))
+    require(bool(suites))
+    for suite in ([xml,*suites] if xml.tag=='testsuites' else suites):
+        for name in ('failures','errors','skipped'):
+            value=suite.get(name,'0')
+            require(type(value) is str and re.fullmatch(r'[0-9]{1,12}',value) is not None and int(value)==0)
+        tests=suite.get('tests')
+        if suite in suites or tests is not None:
+            require(type(tests) is str and re.fullmatch(r'[0-9]{1,12}',tests) is not None and int(tests)>0)
+    return True
+
+
+def producer_success(selection, target, output_name, deadline, *, declared=None):
     import codex_protocol_history_native as protocol
     from codex_protocol_history_native import read_json, path, native, trusted_parent, hash_regular, tick
     import xml.etree.ElementTree as ET
+    if declared is not None:
+        read_json = declared.read_json
     value=selection['producer'];receipt=read_json(path(value['receipt']),value['sha256'],deadline)
     protocol.producer_pin(value)
     profile, targets = producer_policy(receipt, target)
@@ -492,18 +519,25 @@ def producer_success(selection, target, output_name, deadline):
         require(len(entries)==1 and entries[0]['state']=='copied', 'producer evidence not copied')
         entry=entries[0]
         require(re.fullmatch(r'[0-9a-f]{64}\.evidence',entry['file']) is not None, 'producer evidence name refused')
-        fd=trusted_parent(Path(value['receipt']).parent/'test-evidence')
+        fd=None if declared is not None else trusted_parent(Path(value['receipt']).parent/'test-evidence')
         try:
-            digest,count,raw=hash_regular(fd,entry['file'],64*1024*1024,True,
-                on_read=lambda count:tick(deadline))
+            if declared is None:
+                digest,count,raw=hash_regular(fd,entry['file'],64*1024*1024,True,
+                    on_read=lambda count:tick(deadline))
+            else:
+                raw=declared.read(Path(value['receipt']).parent/'test-evidence'/entry['file'],
+                    entry['sha256'],deadline,64*1024*1024)
+                digest,count=hashlib.sha256(raw).hexdigest(),len(raw)
             require(digest==entry['sha256'] and type(entry['bytes']) is int
                 and count==entry['bytes'] and count>0, 'producer evidence changed')
             if member=='test.xml':
+                if declared is not None: require(declared_xml_success(raw) is True)
                 xml=ET.fromstring(raw)
                 suites=[xml] if xml.tag=='testsuite' else list(xml.findall('testsuite'))
                 require(suites and all(int(suite.get('tests','0'))>0
                     and all(int(suite.get(name,'0'))==0 for name in ('failures','errors','skipped'))
                     for suite in suites) and xml.tag in ('testsuite','testsuites'),
                     'producer test XML lacks real successful cases')
-        finally:os.close(fd)
+        finally:
+            if fd is not None:os.close(fd)
     return receipt

@@ -125,14 +125,19 @@ def _implementation(ctx):
             names.append("binding-receipt.json")
             ctx.file("metadata-input.json", binding_raw, executable = False)
             ctx.file("metadata-input.sha256", binding["sha256"] + "\n", executable = False)
-    if value["sdk"] != None:
+    if not ctx.attr.source_only and value["sdk"] != None:
         _declare_sdk(ctx, value["sdk"], names)
-    if value["compile"] != None:
+    if not ctx.attr.source_only and value["compile"] != None:
         _declare_compiler(ctx, value["compile"], names)
     names += ["metadata-input.json", "metadata-input.sha256"]
     ctx.file("BUILD.bazel", "\n".join(['package(default_visibility = ["//visibility:public"])', 'exports_files({})'.format(repr(names)), 'filegroup(name = "inputs", srcs = {})'.format(repr(names)), ""]), executable = False)
 
-codex_native_acquisition_inputs = repository_rule(implementation = _implementation, local = True, attrs = {"manifest": attr.label(mandatory = True, allow_single_file = True)})
+codex_native_acquisition_inputs = repository_rule(implementation = _implementation, local = True, attrs = {
+    "manifest": attr.label(mandatory = True, allow_single_file = True),
+    # Native carrier consumers still declare every SOURCE member/proof, while
+    # their SDK transport is independently selected and authenticated in action.
+    "source_only": attr.bool(default = False),
+})
 
 def _declare(ctx, path, names):
     ctx.watch(path)
