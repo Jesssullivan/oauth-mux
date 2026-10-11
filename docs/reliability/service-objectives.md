@@ -55,7 +55,12 @@ separately. A fast refusal improves only the response-time measure.
 ## Installed lifecycle measurements
 
 The following acceptance amendments are adopted measurement requirements, not
-implemented instrumentation or achieved targets. REL-001 through REL-008 and
+achieved targets. Partial collectors and persisted terminal-outcome projections
+are implemented with the scopes described below; complete REL-013 through REL-019
+coverage remains acceptance work. `reliability.lifecycle` still marks successful
+install/activation, adopted renewal, ordinary native launch/resume and update
+phases unobserved. Complete supported-demand coverage, user end-to-end timing
+and scheduled durable baselines remain unmeasured. REL-001 through REL-008 and
 their zero-budget invariants remain unchanged. Do not invent numerical success
 targets for new phases before obtaining a version-bound baseline.
 
@@ -246,7 +251,7 @@ New explicit setup-verification source is independently reviewed. Scoped Linux
 passes include engine 228 cases and Qt transport 13/setup UI in `33452a55`, and
 CLI 16, Qt transport/setup UI, verification 28 and collector 33 in `08581f31`.
 The latter overall batch failed; passing targets do not close failed gates.
-Latest experimental Linux epoch `ef255a3e-8d6d-4bb7-a044-d9a42e20aded`
+The October 5 experimental Linux epoch `ef255a3e-8d6d-4bb7-a044-d9a42e20aded`
 passed all twelve targets with controller/workload exit zero and empty descendants:
 live self-image observation, collector hardlink recheck, engine timeout/refusal
 classification, stalled-service C bridge, CLI 16, full Qt installed custody with
