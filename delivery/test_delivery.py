@@ -603,11 +603,16 @@ class InstallationTest(DeliveryFixture):
 
     def test_desktop_invalid_executable_characters_and_unqualified_placement_refuse_before_writes(self) -> None:
         payload = self.portable_bundle("release", qt=True)
+        applications = self.root / "applications"
         for char in ("=", "\n", "\r", "\t", "\x7f", "\u00e9"):
             prefix = self.root / ("unsafe" + char + "prefix")
             with self.subTest(char=char), self.assertRaisesRegex(ValueError, "control characters"):
-                install.install_bundle(payload, prefix, self.state)
+                # Keep placement valid so the malformed executable path, not
+                # its derived desktop parent, is the exercised refusal.
+                install.install_bundle(payload, prefix, self.state, desktop_dir=applications)
             self.assertFalse(prefix.exists())
+            self.assertFalse(applications.exists())
+            self.assertFalse(self.state.exists())
         with self.assertRaisesRegex(ValueError, "channel-qualified Qt"):
             install.install_bundle(self.portable_bundle("release"), self.prefix, self.state,
                                    desktop_dir=self.root / "applications")

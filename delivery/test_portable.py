@@ -231,14 +231,20 @@ class AssemblyTest(unittest.TestCase):
             self.assemble(control, plugins, backend_max_bytes=512 * 1024 * 1024)
 
     def test_postpatch_backend_growth_remains_within_explicit_limit(self) -> None:
-        def expanding_patch(path, info, tool, backend, rpath="$ORIGIN"):
-            self.patch_fixture(path, info, tool, backend, rpath)
-            if backend:
-                self.enlarge(path, 1025)
-        with mock.patch.object(portable, "_patch", side_effect=expanding_patch):
-            with self.assertRaisesRegex(ValueError, "bounded regular files"):
-                portable.assemble_linux(self.cli, self.daemon, self.runtime, self.patchelf,
-                                       "x86_64-linux", self.ca_bundle, backend_max_bytes=1024)
+        for deadline in (None, time.monotonic() + 60):
+            forwarded = []
+            def expanding_patch(path, info, tool, backend, rpath="$ORIGIN", *, action_deadline=None):
+                self.assertEqual(action_deadline, deadline)
+                forwarded.append(action_deadline)
+                self.patch_fixture(path, info, tool, backend, rpath, action_deadline=action_deadline)
+                if backend:
+                    self.enlarge(path, 1025)
+            with self.subTest(deadline=deadline), mock.patch.object(portable, "_patch", side_effect=expanding_patch):
+                with self.assertRaisesRegex(ValueError, "bounded regular files"):
+                    portable.assemble_linux(self.cli, self.daemon, self.runtime, self.patchelf,
+                                           "x86_64-linux", self.ca_bundle, backend_max_bytes=1024,
+                                           action_deadline=deadline)
+            self.assertTrue(forwarded)
 
     def test_same_path_backend_cache_cannot_expand_loader_authority(self) -> None:
         self.cli.write_bytes(elf(interpreter=str(self.cli)))
