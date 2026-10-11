@@ -70,6 +70,23 @@ pub const Endpoint = enum {
     }
 };
 
+// Borrowed only from a trusted in-process owner that outlives Client.deinit.
+// Keeps an existing awake cutoff through allocation, queueing and curl work;
+// no epoch conversion or newly renewed relative budget is required.
+pub const AbsoluteDeadline = struct {
+    io: std.Io,
+    until: std.Io.Clock.Timestamp,
+    pub fn remaining(self: AbsoluteDeadline) !u32 {
+        if (self.until.clock != .awake) return error.InvalidDeadline;
+        const ms = self.until.durationFromNow(self.io).raw.toMilliseconds();
+        if (ms <= 0) return error.InvalidDeadline;
+        return @intCast(@min(ms, Limits.deadline_ms));
+    }
+    fn expired(self: AbsoluteDeadline) bool {
+        return self.until.clock != .awake or self.until.durationFromNow(self.io).raw.toNanoseconds() <= 0;
+    }
+};
+
 pub const Request = struct {
     endpoint: Endpoint,
     account_id: []const u8,
@@ -85,6 +102,7 @@ pub const Request = struct {
     method: enum { get, post } = .get,
     body: []const u8 = "",
     timeout_ms: u32 = 10_000,
+    absolute_deadline: ?AbsoluteDeadline = null,
     max_response_bytes: usize = 1024 * 1024,
     streaming: bool = false,
     /// Test-only fixture route; never admitted by a non-test executable.
@@ -93,6 +111,7 @@ pub const Request = struct {
     pub fn validate(self: Request) !void {
         if (!validHandle(self.account_id) or !validHandle(self.grant_id)) return error.InvalidScope;
         if (self.timeout_ms == 0 or self.timeout_ms > Limits.deadline_ms) return error.InvalidDeadline;
+        if (self.absolute_deadline) |deadline| _ = try deadline.remaining();
         if (self.max_response_bytes == 0 or self.max_response_bytes > Limits.response_bytes) return error.InvalidLimit;
         if (self.body.len > Limits.body_bytes) return error.RequestTooLarge;
         // All current declarations are observations. A future write/refresh
@@ -603,7 +622,9 @@ pub const Client = struct {
         defer self.unlock();
         if (self.stopping) return error.Stopping;
         // Allocation follows reservation: concurrent rejected submits cannot
-        // allocate outside the outstanding request budget.
+        // allocate outside the outstanding request budget. Original absolute
+        // expiry after that work refuses before any transfer is enqueued.
+        if (request.absolute_deadline) |deadline| _ = try deadline.remaining();
         transfer.* = .{ .owner = self, .id = id, .request = owned, .deadline = admitted_at + request.timeout_ms };
         std.debug.assert(self.starts.push(transfer));
         self.wakeup();
@@ -700,12 +721,12 @@ pub const Client = struct {
                 const transfer = self.starts.pop();
                 self.unlock();
                 const item = transfer orelse break;
-                if (monotonicMilliseconds() >= item.deadline) {
+                if (transferExpired(item)) {
                     self.complete(item, .deadline);
                     continue;
                 }
                 self.configure(item) catch |err| {
-                    self.complete(item, if (err == error.OutOfMemory) .allocation else .transport);
+                    self.complete(item, if (err == error.OutOfMemory) .allocation else if (err == error.InvalidDeadline) .deadline else .transport);
                     continue;
                 };
                 if (c.curl_multi_add_handle(self.multi, item.easy.?) != c.CURLM_OK) {
@@ -716,7 +737,7 @@ pub const Client = struct {
             }
             for (&self.active) |*slot| {
                 if (slot.*) |transfer| {
-                    if (monotonicMilliseconds() >= transfer.deadline) {
+                    if (transferExpired(transfer)) {
                         _ = c.curl_multi_remove_handle(self.multi, transfer.easy.?);
                         slot.* = null;
                         self.complete(transfer, .deadline);
@@ -750,7 +771,7 @@ pub const Client = struct {
                         if (transfer.easy != completed_handle) continue;
                         _ = c.curl_multi_remove_handle(self.multi, transfer.easy.?);
                         slot.* = null;
-                        self.complete(transfer, transfer.failure orelse failureFromCurl(completed_code));
+                        self.complete(transfer, if (transferExpired(transfer)) .deadline else transfer.failure orelse failureFromCurl(completed_code));
                         break;
                     }
                 }
@@ -843,8 +864,10 @@ pub const Client = struct {
         try setLong(easy, c.CURLOPT_HTTP_CONTENT_DECODING, 0);
         try setPointer(easy, c.CURLOPT_ACCEPT_ENCODING, "identity");
         try setPointer(easy, c.CURLOPT_USERAGENT, "omux/0.2.0-dev");
-        try setLong(easy, c.CURLOPT_CONNECTTIMEOUT_MS, @intCast(@min(request.timeout_ms, 10_000)));
-        try setLong(easy, c.CURLOPT_TIMEOUT_MS, @intCast(@max(1, transfer.deadline -| monotonicMilliseconds())));
+        var remaining = @max(1, transfer.deadline -| monotonicMilliseconds());
+        if (request.absolute_deadline) |deadline| remaining = @min(remaining, try deadline.remaining());
+        try setLong(easy, c.CURLOPT_CONNECTTIMEOUT_MS, @intCast(@min(remaining, 10_000)));
+        try setLong(easy, c.CURLOPT_TIMEOUT_MS, @intCast(remaining));
         try setPointer(easy, c.CURLOPT_WRITEDATA, transfer);
         if (c.curl_easy_setopt(easy, c.CURLOPT_WRITEFUNCTION, @as(*const fn ([*c]u8, usize, usize, ?*anyopaque) callconv(.c) usize, writeCallback)) != c.CURLE_OK) return error.CurlOption;
         try appendHeader(transfer, "Accept: application/json");
@@ -884,6 +907,12 @@ pub const Client = struct {
                 result.result = .{ .response = .{ .status = @intCast(status), .body = body, .streaming = transfer.request.request.streaming } };
             } else |_| result.result = .{ .failure = .allocation };
         }
+        // Allocation/readback at completion also consumes the same original
+        // trusted cutoff; a successful curl result cannot renew it.
+        if (transfer.request.request.absolute_deadline) |deadline| if (deadline.expired()) {
+            if (result.result == .response) self.allocator.free(result.result.response.body);
+            result.result = .{ .failure = .deadline };
+        };
         switch (result.result) {
             .failure => self.discardChunks(transfer.id),
             .response => {},
@@ -916,6 +945,11 @@ fn failureFromCurl(code: c.CURLcode) ?Failure {
         c.CURLE_OUT_OF_MEMORY => .allocation,
         else => .transport,
     };
+}
+
+fn transferExpired(transfer: *const Transfer) bool {
+    if (monotonicMilliseconds() >= transfer.deadline) return true;
+    return if (transfer.request.request.absolute_deadline) |deadline| deadline.expired() else false;
 }
 
 fn monotonicMilliseconds() u64 {
@@ -1031,6 +1065,7 @@ const Fixture = struct {
     thread: ?std.Thread = null,
     request_seen: std.atomic.Value(bool) = .init(false),
     authorization_seen: std.atomic.Value(bool) = .init(false),
+    delay_ms: u32 = 200,
 
     fn listen(mode: @FieldType(Fixture, "mode")) !Fixture {
         const descriptor = c.socket(c.AF_INET, c.SOCK_STREAM, 0);
@@ -1082,7 +1117,7 @@ const Fixture = struct {
             .redirect => sendAll(peer, "HTTP/1.1 302 Found\r\nLocation: https://undeclared.invalid/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
             .oversized => sendAll(peer, "HTTP/1.1 200 OK\r\nContent-Length: 64\r\nConnection: close\r\n\r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"),
             .delayed => {
-                sleepMilliseconds(200);
+                sleepMilliseconds(self.delay_ms);
                 sendAll(peer, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
             },
             .stream => {
@@ -1386,4 +1421,70 @@ test "Codex absent usage remains unknown and malformed or duplicate windows fail
         defer response.deinit(allocator);
         try std.testing.expectError(error.InvalidCapacity, response.codexUsage(allocator));
     }
+}
+
+
+test "trusted original awake cutoff remains fixed through real curl and rejects expired admission" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const expired: AbsoluteDeadline = .{ .io = io, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) }) };
+    var request: Request = .{ .endpoint = .codex_identity, .account_id = "synthetic-account", .grant_id = "synthetic-operation", .absolute_deadline = expired };
+    try std.testing.expectError(error.InvalidDeadline, request.validate());
+    var wrong_clock = expired;
+    wrong_clock.until.clock = .real;
+    request.absolute_deadline = wrong_clock;
+    try std.testing.expectError(error.InvalidDeadline, request.validate());
+    const client = try Client.init(a);
+    defer client.deinit();
+    var delayed = try Fixture.listen(.delayed);
+    defer delayed.deinit();
+    try delayed.start();
+    request = fixtureRequest(delayed.port);
+    request.timeout_ms = 5000;
+    const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(20) });
+    request.absolute_deadline = .{ .io = io, .until = until };
+    const retained = request.absolute_deadline.?.until;
+    // A loaded scheduler may consume the original short cutoff before
+    // submit's allocation/enqueue recheck. That correct refusal is a predicate,
+    // not a transport failure and never permission to extend the cutoff.
+    if (client.submit(request)) |_| {
+        var completion = try awaitResult(client);
+        defer completion.deinit(a);
+        try std.testing.expectEqual(Failure.deadline, completion.result.failure);
+    } else |err| try std.testing.expectEqual(error.InvalidDeadline, err);
+    try std.testing.expectEqual(retained, request.absolute_deadline.?.until);
+    try std.testing.expectError(error.InvalidDeadline, request.absolute_deadline.?.remaining());
+}
+
+test "original awake deadline expires after observed real curl request without renewing timestamp" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const client = try Client.init(a);
+    defer client.deinit();
+    var delayed = try Fixture.listen(.delayed);
+    delayed.delay_ms = 2000;
+    defer delayed.deinit();
+    try delayed.start();
+    var request = fixtureRequest(delayed.port);
+    request.timeout_ms = 5000;
+    const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(500) });
+    request.absolute_deadline = .{ .io = io, .until = until };
+    _ = client.submit(request) catch |err| {
+        if (err == error.InvalidDeadline) return error.SkipZigTest;
+        return err;
+    };
+    // Active-curl evidence requires the actual socket fixture to observe the
+    // request. If scheduling consumes admission/queue time instead, record a
+    // skipped active predicate, not a fabricated active-curl pass.
+    for (0..100) |_| {
+        if (delayed.request_seen.load(.acquire) or until.durationFromNow(io).raw.toNanoseconds() <= 0) break;
+        sleepMilliseconds(5);
+    }
+    var completion = try awaitResult(client);
+    defer completion.deinit(a);
+    try std.testing.expectEqual(Failure.deadline, completion.result.failure);
+    try std.testing.expectEqual(until, request.absolute_deadline.?.until);
+    try std.testing.expectError(error.InvalidDeadline, request.absolute_deadline.?.remaining());
+    if (!delayed.request_seen.load(.acquire)) return error.SkipZigTest;
+    try std.testing.expect(delayed.authorization_seen.load(.acquire));
 }

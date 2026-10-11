@@ -74,6 +74,18 @@ fn publicAccountView(account: domain.Account) PublicAccountView {
     };
 }
 
+// Durable, secret-free owner of an issued native copy. A surviving intent is
+// uncertainty after restart, never permission to recreate or replay its lease.
+const NativeSourceRotationIntent = struct {
+    operation: native_owner.OperationId,
+    context: native_source_consent.Context,
+    job_generation: u64,
+    admitted_at: i64,
+    expires_at: i64,
+    // Durable uncertainty is not renewable authority. Restart or a lost reply
+    // requires disconnect/reconnect with explicit native source consent.
+    recovery: enum { interrupted_or_reply_lost_reconnect_required } = .interrupted_or_reply_lost_reconnect_required,
+};
 const NativeSourceAuthority = struct {
     // This record is daemon-owned persisted metadata. A discovery hint
     // or a client-selected context cannot construct this consent record.
@@ -82,6 +94,10 @@ const NativeSourceAuthority = struct {
     // Older custody did not retain this tuple. Never infer it from a newly
     // advertised context or reconstruct an acquisition lease on restart.
     context: ?native_source_consent.Context = null,
+    rotation: ?NativeSourceRotationIntent = null,
+    // Keeps the automatic per-source retry cadence through known refusal and
+    // restart. A backward wall clock refuses a fresh operation, not its lease.
+    rotation_attempted_at: ?i64 = null,
 };
 const QualifiedNativeRuntime = struct {
     record_sha256: [32]u8,
@@ -677,8 +693,13 @@ const PendingImport = struct {
     native_selection_digest: ?[32]u8 = null,
     native_context: ?*NativeImportContext = null,
     native_operation: ?native_owner.OperationId = null,
+    // Set only by the actor after authenticated same-origin successor discovery
+    // and durable admission. Ordinary imports retain exact saved-context checks.
+    native_expected_authority: ?NativeSourceAuthority = null,
+    native_expected_endpoint: ?[]u8 = null,
     fn deinit(self: *PendingImport, allocator: std.mem.Allocator) void {
         if (self.native_context) |context| context.deinit(allocator);
+        if (self.native_expected_endpoint) |endpoint| allocator.free(endpoint);
         std.crypto.secureZero(u8, self.token);
         allocator.free(self.token);
         allocator.free(self.source_id);
@@ -711,7 +732,13 @@ const NativeImportFresh = struct {
     origin: native_source_consent.Handle,
     selection_digest: [32]u8,
 };
-const NativeAdoptionFence = struct { pending: PendingImport, fresh: NativeImportFresh };
+const NativeAdoptionFence = struct {
+    pending: PendingImport,
+    fresh: NativeImportFresh,
+    // Only the actor sets this after expected-old CAS and before staging the
+    // new context plus grant. The writer joins the exact staged afterimage.
+    rotation_revision: ?u64 = null,
+};
 const native_source_description_budget: usize = 8192;
 
 // One read-only check at a time, using the original endpoint and peer/context.
@@ -735,6 +762,7 @@ const NativeSourceMaintenanceTask = struct {
     failure: ?anyerror = null,
     image_verified: bool = false,
     negative_verified: bool = false,
+    observed_context: ?native_source_consent.Context = null,
     fn run(context: *anyopaque, canceled: bool) void {
         const self: *NativeSourceMaintenanceTask = @ptrCast(@alignCast(context));
         if (canceled) {
@@ -759,8 +787,8 @@ const NativeSourceMaintenanceTask = struct {
             try image.?.view(options).verify(&connection);
             self.image_verified = true;
         }
-        const selector: native_probe.SourceContextSelector = .{ .owner_id = self.authority.consent.owner.id, .native_nonce = self.authority.consent.owner.nonce, .endpoint_generation = self.authority.consent.owner.endpoint_generation, .context = .{ .id = context.id, .generation = context.generation } };
-        const current = connection.sourceContext(self.operation, selector) catch |err| {
+        const original_selector: native_probe.SourceContextSelector = .{ .owner_id = self.authority.consent.owner.id, .native_nonce = self.authority.consent.owner.nonce, .endpoint_generation = self.authority.consent.owner.endpoint_generation, .context = if (image != null) null else .{ .id = context.id, .generation = context.generation } };
+        const current = connection.sourceContext(self.operation, original_selector) catch |err| {
             switch (err) {
                 error.OutOfMemory, error.PeerDeparted, error.PeerIncarnationChanged, error.NativeOwnerPeerMismatch => return err,
                 else => {},
@@ -778,6 +806,11 @@ const NativeSourceMaintenanceTask = struct {
         if (!self.image_verified or image == null) return error.NativeImageUnavailable;
         var key = try native_source_acquisition.capabilityKey(options.capability);
         defer std.crypto.secureZero(u8, &key);
+        const observed = current.context orelse return error.NativeSourceUnavailable;
+        const candidate: native_source_consent.Context = .{ .id = observed.id, .generation = observed.generation };
+        try checkNativeContextSuccessor(context, candidate);
+        var selector = original_selector;
+        selector.context = observed;
         const origin = connection.sourceOrigin(self.operation, selector, key, image.?.view(options)) catch |err| {
             switch (err) {
                 error.OutOfMemory, error.PeerDeparted, error.PeerIncarnationChanged, error.NativeOwnerPeerMismatch, error.PeerImageMismatch => return err,
@@ -792,6 +825,7 @@ const NativeSourceMaintenanceTask = struct {
         }
         try image.?.view(options).verify(&connection);
         try native_source_acquisition.deadline(io, self.until);
+        self.observed_context = candidate;
     }
     fn recheckNegativeImage(self: *NativeSourceMaintenanceTask, image: ?OwnedSourceImage, options: ?setup.Options) !void {
         const retained = image orelse return;
@@ -817,6 +851,74 @@ const NativeSourceMaintenanceTask = struct {
         self.engine.allocator.destroy(self);
     }
 };
+// Use the durably admitted operation's wall expiry, not the longer saved
+// consent. The existing authenticated field fences the native pre-read/reply
+// effects as well as local acceptance; closing a client is not remote cancellation.
+fn nativeRotationRequest(pending: PendingImport, custody_seconds: u32) !native_source_acquisition.Request {
+    const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+    const expected = pending.native_expected_authority orelse return error.NativeSourceFreshCheckRequired;
+    const intent = expected.rotation orelse return error.NativeSourceFreshCheckRequired;
+    const request: native_source_acquisition.Request = .{ .admission = admission, .origin = expected.origin, .operation = pending.native_operation orelse return error.NativeSourceFreshCheckRequired, .custody_seconds = custody_seconds, .consent_expires_at = intent.expires_at };
+    try request.validate();
+    return request;
+}
+const NativeSourceRotationTask = struct {
+    engine: *Engine,
+    arena: *std.heap.ArenaAllocator,
+    pending: PendingImport,
+    options: setup.Options,
+    runtime_root: []const u8,
+    selected: QualifiedNativeRuntime,
+    endpoint: []const u8,
+    until: std.Io.Clock.Timestamp,
+    observed_at: i64,
+    custody_seconds: u32,
+    image: ?OwnedSourceImage = null,
+    copy: ?native_probe.OwnerConnection.AccessCopy = null,
+    request_attempted: bool = false,
+    pending_transferred: bool = false,
+    arena_transferred: bool = false,
+    job: native_work.Job,
+    failure: ?anyerror = null,
+    fn run(context: *anyopaque, canceled: bool) void {
+        const self: *NativeSourceRotationTask = @ptrCast(@alignCast(context));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.perform() catch |err| {
+            self.failure = err;
+        };
+    }
+    fn perform(self: *NativeSourceRotationTask) !void {
+        const io = self.engine.io;
+        try native_source_acquisition.deadline(io, self.until);
+        const admission = self.pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const request = try nativeRotationRequest(self.pending, self.custody_seconds);
+        self.image = try OwnedSourceImage.open(io, self.engine.allocator, self.runtime_root, self.selected, self.options);
+        var connection = try native_probe.OwnerConnection.open(io, self.arena.allocator(), self.endpoint, admission.owner.witness, self.until);
+        defer connection.deinit();
+        var key = try native_source_acquisition.capabilityKey(self.options.capability);
+        defer std.crypto.secureZero(u8, &key);
+        // Conservative issued boundary: acquireSource performs initial checks
+        // before descriptor IO, but a failed call cannot prove remote nonissue.
+        self.request_attempted = true;
+        self.copy = try connection.acquireSource(request, key, self.observed_at, self.image.?.view(self.options));
+    }
+    fn deinit(self: *NativeSourceRotationTask) void {
+        if (self.copy) |*copy| copy.deinit();
+        if (!self.pending_transferred) self.pending.deinit(self.engine.allocator);
+        if (self.image) |*image| image.deinit(self.engine.allocator);
+        if (!self.arena_transferred) {
+            self.arena.deinit();
+            self.engine.allocator.destroy(self.arena);
+        }
+        std.crypto.secureZero(u8, &self.options.key);
+        std.crypto.secureZero(u8, &self.options.capability);
+        self.engine.allocator.destroy(self);
+    }
+};
+
 const NativeSourceMaintenanceResult = struct {
     source_id: [64]u8,
     state: enum { unverified, owner_context_observed, detached },
@@ -967,6 +1069,8 @@ pub const Engine = struct {
     native_tasks: std.ArrayList(*NativeTask) = .empty,
     native_import_tasks: std.ArrayList(*NativeImportTask) = .empty,
     native_source_maintenance: ?*NativeSourceMaintenanceTask = null,
+    native_source_rotation: ?*NativeSourceRotationTask = null,
+    native_source_rotation_due: ?std.Io.Clock.Timestamp = null,
     native_source_maintenance_due: ?std.Io.Clock.Timestamp = null,
     native_source_maintenance_cursor: usize = 0,
     native_source_maintenance_result: ?NativeSourceMaintenanceResult = null,
@@ -1318,7 +1422,7 @@ pub const Engine = struct {
                 };
             }
             self.mutex.lockUncancelable(self.io);
-            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.native_source_maintenance != null or self.runtime_measurement != null or self.runtime_installation != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
+            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.native_source_maintenance != null or self.native_source_rotation != null or self.runtime_measurement != null or self.runtime_installation != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
                 self.condition.waitTimeout(self.io, &self.mutex, .{ .deadline = maintenance_due }) catch |err| switch (err) {
                     error.Timeout => {},
                     // Finish every queued stack reference before exiting. A
@@ -1334,7 +1438,7 @@ pub const Engine = struct {
                 self.completeNativeWork();
                 continue;
             }
-            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.native_source_maintenance == null and self.runtime_measurement == null and self.runtime_installation == null) {
+            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.native_source_maintenance == null and self.native_source_rotation == null and self.runtime_measurement == null and self.runtime_installation == null) {
                 self.mutex.unlock(self.io);
                 return;
             }
@@ -1794,6 +1898,14 @@ pub const Engine = struct {
             self.native_source_maintenance = null;
             defer task.deinit();
             self.completeNativeSourceMaintenance(task) catch {
+                self.fence();
+            };
+            return;
+        };
+        if (self.native_source_rotation) |task| if (job == &task.job) {
+            self.native_source_rotation = null;
+            defer task.deinit();
+            self.completeNativeSourceRotation(task) catch {
                 self.fence();
             };
             return;
@@ -2967,7 +3079,7 @@ pub const Engine = struct {
         // Serialization and capacity work may consume the remaining lifetime.
         // Fence native credential adoption at the actual writer call as well
         // as before the domain mutation. Expiry does not cancel started IO.
-        if (native) |native_fence| try self.nativeImportCheck(native_fence.pending, native_fence.fresh);
+        if (native) |native_fence| try self.nativeImportWriterCheck(native_fence);
         if (runtime) |task| try self.checkRuntimeWriterFence(task);
         self.revision = self.db.?.commit(self.revision, serialized, changes) catch |err| {
             // Ambiguous storage failure fences all further credential service.
@@ -4928,12 +5040,15 @@ pub const Engine = struct {
     }
 
     fn failImportJobCause(self: *Engine, pending: PendingImport, cause: reliability.Cause) !void {
+        var retired = false;
         for (self.state.jobs.items) |*job| if (eql(job.id, pending.job_id) and job.operation_generation == pending.job_generation and job.status == .running) {
             const previous = job.*;
             job.status = .failed;
             try self.recordImportTerminal(pending, previous, job.*, cause);
+            retired = true;
         };
         if (self.admission.lookup(pending.credit_key) != null) try self.releaseOutcome(pending.credit_key);
+        if (retired) self.retireNativeContextRotation(pending);
     }
 
     fn recordImportTerminal(self: *Engine, pending: PendingImport, previous: domain.Job, next: domain.Job, cause: reliability.Cause) !void {
@@ -5297,7 +5412,7 @@ pub const Engine = struct {
                 return;
             }
         }
-        if (self.native_source_maintenance != null) return;
+        if (self.native_source_maintenance != null or self.native_source_rotation != null) return;
         if (self.native_source_maintenance_due) |due| if (due.durationFromNow(self.io).raw.toMilliseconds() > 0) return;
         self.native_source_maintenance_due = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(1000) });
         const count = self.descriptions.items.len;
@@ -5308,6 +5423,15 @@ pub const Engine = struct {
             const description = self.descriptions.items[index];
             self.native_source_maintenance_cursor = (index + 1) % count;
             const scope = description.native_authority orelse continue;
+            // An unresolved durable copy cannot be replayed or replaced by an
+            // automatic poll, including after loss of its process-local owner.
+            if (scope.rotation != null) {
+                var unresolved_id: [64]u8 = undefined;
+                if (description.source_id.len != unresolved_id.len) return error.InvalidNativeSourceAuthority;
+                @memcpy(&unresolved_id, description.source_id);
+                self.native_source_maintenance_result = .{ .source_id = unresolved_id, .state = .unverified, .observed_at = self.now(), .reason = error.NativeSourceOperationIndeterminateReconnectRequired };
+                continue;
+            }
             if (!self.nativeSourceMaintenanceMatches(description.source_id, scope, scope.consent.source_generation)) continue;
             var source_allowed = false;
             for (self.state.sources.items) |source| if (eql(source.id, description.source_id)) {
@@ -5428,9 +5552,177 @@ pub const Engine = struct {
             self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .unverified, .observed_at = self.now(), .reason = failure };
             return;
         }
-        // Observation only: no source/grant generation, consent, account or
-        // native accepted-work state is changed on a successful fresh check.
+        const observed = task.observed_context orelse return error.NativeSourceFreshCheckRequired;
+        if (!observed.same(task.authority.context.?)) {
+            self.startNativeSourceRotation(task, observed) catch |err| {
+                if (err == error.OutOfMemory or self.poisoned) return err;
+                try self.restoreCommitted();
+                self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .unverified, .observed_at = self.now(), .reason = err };
+            };
+            return;
+        }
+        // An unchanged authenticated snapshot never copies a credential or
+        // opens a new durable operation. Account/native work state is untouched.
         self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .owner_context_observed, .observed_at = self.now() };
+    }
+
+    fn startNativeSourceRotation(self: *Engine, observation: *NativeSourceMaintenanceTask, candidate: native_source_consent.Context) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.native_workers == null) return error.NativeCustodyUnavailable;
+        if (!observation.image_verified or observation.observed_context == null or !candidate.same(observation.observed_context.?)) return error.NativeImageUnavailable;
+        if (!self.nativeSourceMaintenanceMatches(&observation.source_id, observation.authority, observation.generation) or observation.authority.rotation != null) return error.NativeSourceSuperseded;
+        try checkNativeContextSuccessor(observation.authority.context.?, candidate);
+        if (candidate.same(observation.authority.context.?)) return error.NativeSourceContextChanged;
+        if (self.native_source_rotation != null or self.pending_imports.items.len + self.native_import_tasks.items.len >= 16) return error.ServiceBusy;
+        if (self.native_source_rotation_due) |due| if (due.durationFromNow(self.io).raw.toMilliseconds() > 0) return error.NativeSourcePollTooSoon;
+        if (observation.authority.rotation_attempted_at) |previous| {
+            const elapsed = std.math.sub(i64, self.now(), previous) catch return error.NativeSourcePollTooSoon;
+            if (elapsed < 60) return error.NativeSourcePollTooSoon;
+        }
+        const job_id = try std.fmt.allocPrint(self.allocator, "reconcile-{s}", .{observation.source_id});
+        defer self.allocator.free(job_id);
+        // No automatic replacement of a pending/issued or orphaned owner.
+        for (self.state.jobs.items) |job| if (eql(job.id, job_id) and (job.status == .running or job.status == .pending)) return error.OperationIndeterminate;
+        for (self.pending_imports.items) |pending| if (eql(pending.source_id, &observation.source_id)) return error.NativeSourceOperationPending;
+        for (self.native_import_tasks.items) |task| if (eql(task.pending.source_id, &observation.source_id)) return error.NativeSourceOperationPending;
+        var label: []const u8 = "";
+        var wall_until = observation.authority.consent.expires_at;
+        for (self.state.sources.items) |source| if (eql(source.id, &observation.source_id)) {
+            label = source.label;
+            if (source.authorized_at > self.now()) return error.SourceUnauthorized;
+            if (source.authorized_until) |expiry| wall_until = @min(wall_until, expiry);
+        };
+        // Sample awake entry BEFORE the wall clock used for clipping: the
+        // intervening time is consumed, never added to the source-expiry budget.
+        const entry = std.Io.Clock.Timestamp.now(self.io, .awake);
+        const wall_entry = std.Io.Clock.real.now(self.io);
+        const acquisition_wall = wall_entry.toSeconds();
+        const remaining_wall = try std.math.sub(i64, wall_until, acquisition_wall);
+        const budget_ns = try nativeRotationBudgetNs(wall_until, wall_entry.toNanoseconds());
+        // DISTINCT acquisition admission, not an extension of the completed
+        // two-second observation. The native 13-second fallback is clipped in
+        // integer nanoseconds to source/consent expiry, including fractions.
+        const until = entry.addDuration(.{ .clock = .awake, .raw = .fromNanoseconds(budget_ns) });
+        const started = entry.raw;
+        try native_source_acquisition.deadline(self.io, until);
+        const admission = try native_source_consent.admit(.{ .source_id = observation.authority.consent.source_id, .source_generation = observation.generation, .status = .connected, .consent = observation.authority.consent, .owner = observation.authority.consent.owner, .context = candidate, .store_present = true, .forget_epoch = self.import_forget_epoch }, self.now(), 0, budget_ns);
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        errdefer self.allocator.destroy(arena);
+        arena.* = .init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var options = try retainNativeOptions(a, observation.options orelse return error.NativeImageUnavailable);
+        defer {
+            std.crypto.secureZero(u8, &options.key);
+            std.crypto.secureZero(u8, &options.capability);
+        }
+        options.deadline = until;
+        var selected = observation.selected orelse return error.NativeImageUnavailable;
+        selected.evidence = try a.dupe(u8, selected.evidence);
+        const runtime_root = try a.dupe(u8, observation.runtime_root orelse return error.NativeImageUnavailable);
+        const endpoint = try a.dupe(u8, observation.endpoint);
+        const task = try self.allocator.create(NativeSourceRotationTask);
+        errdefer self.allocator.destroy(task);
+        var pending = try emptyNativeRotationImport(self.allocator, &observation.source_id, label);
+        errdefer pending.deinit(self.allocator);
+        pending.source_generation = observation.generation;
+        pending.forget_epoch = observation.forget_epoch;
+        pending.native_admission = admission;
+        pending.native_started_at = started;
+        pending.native_selection_digest = selected.record_sha256;
+        pending.native_operation = try self.identifier();
+        pending.native_expected_endpoint = try self.allocator.dupe(u8, endpoint);
+        // Any preparation failure restores the committed beforeimage. A write
+        // ambiguity poisons service in persistWithFences and is never retried.
+        errdefer self.restoreCommitted() catch { self.poisoned = true; };
+        pending.job_generation = (try self.state.reopenJob(.{ .id = pending.job_id, .kind = .enrollment, .status = .running })).operation_generation;
+        var expected = observation.authority;
+        expected.rotation_attempted_at = acquisition_wall;
+        expected.rotation = .{ .operation = pending.native_operation.?, .context = candidate, .job_generation = pending.job_generation, .admitted_at = acquisition_wall, .expires_at = try std.math.add(i64, acquisition_wall, @min(remaining_wall, 13)) };
+        pending.native_expected_authority = expected;
+        pending.credit_key = creditKey(.import, pending.job_id, pending.job_generation);
+        const plan = try domain.importGrowth("codex", &observation.source_id, label);
+        const rotation_bytes = try snapshot_admission.countJson(expected, native_source_description_budget);
+        try self.reserveOutcome(.{ .key = pending.credit_key, .owner_id = pending.job_id, .secondary_id = &observation.source_id, .source_id = &observation.source_id, .source_generation = pending.source_generation, .provider = "codex", .label = label, .plan_bytes = try std.math.add(usize, plan.bytes, rotation_bytes), .plan_counts = plan.counts() });
+        try self.prepareImportMeasurements();
+        pending.measurement_started_at = started;
+        for (self.descriptions.items) |*description| if (eql(description.source_id, &observation.source_id)) {
+            if (!std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, observation.authority)) or !eql(description.native_endpoint, endpoint)) return error.NativeSourceSuperseded;
+            var bounded = description.*;
+            bounded.native_authority = expected;
+            bounded.label = "";
+            if (try snapshot_admission.countJson(bounded, storage.maximum_snapshot_bytes) > native_source_description_budget) return error.NativeSourceDescriptionTooLarge;
+            description.native_authority = expected;
+        };
+        try native_source_acquisition.deadline(self.io, until);
+        try self.persist(&.{}); // Intent and old context durable BEFORE copy.
+        task.* = .{ .engine = self, .arena = arena, .pending = pending, .options = options, .runtime_root = runtime_root, .selected = selected, .endpoint = endpoint, .until = until, .observed_at = acquisition_wall, .custody_seconds = @intCast(@min(remaining_wall, 3600)), .job = .{ .lane = .continuation, .context = task, .run = NativeSourceRotationTask.run } };
+        errdefer {
+            std.crypto.secureZero(u8, &task.options.key);
+            std.crypto.secureZero(u8, &task.options.capability);
+        }
+        self.native_workers.?.enqueue(&task.job) catch |err| {
+            // Enqueue failed before request issue: known terminal retirement.
+            try self.failImport(pending, diagnosticCause(err));
+            return err;
+        };
+        self.native_source_rotation_due = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(60_000) });
+        self.native_source_rotation = task;
+    }
+
+    fn completeNativeSourceRotation(self: *Engine, task: *NativeSourceRotationTask) !void {
+        if (task.failure) |failure| {
+            if (!task.request_attempted) try self.failImport(task.pending, diagnosticCause(failure));
+            // An attempted native request may have consumed its ID remotely.
+            // Preserve its durable running owner/credit on lost reply; no replay.
+            self.native_source_maintenance_result = .{ .source_id = std.fmt.bytesToHex(task.pending.native_admission.?.source_id, .lower), .state = .unverified, .observed_at = self.now(), .reason = failure };
+            return;
+        }
+        if (self.stopping or self.poisoned) return;
+        if (self.pending_imports.items.len + self.native_import_tasks.items.len >= 16) {
+            try self.failImport(task.pending, .busy);
+            return;
+        }
+        const copy = if (task.copy) |*value| value else return error.NativeSourceFreshCheckRequired;
+        if (copy.candidate.provider != .codex or copy.candidate.credential_kind != .oauth_access or copy.candidate.provider_account_id != null) return error.InvalidNativeSourcePayload;
+        const retained = try self.allocator.create(NativeImportContext);
+        retained.* = .{ .arena = task.arena, .endpoint = task.endpoint, .options = task.options, .image = task.image.?, .origin = copy.origin, .until = task.until, .registry = task.selected.registry, .epoch = task.selected.adapter_epoch };
+        task.pending.native_context = retained;
+        task.image = null;
+        task.arena_transferred = true;
+        const fresh: NativeImportFresh = .{ .origin = copy.origin, .selection_digest = task.selected.record_sha256, .declaration = .{ .owner_id = copy.binding.owner.id, .native_nonce = copy.binding.owner.nonce, .endpoint_generation = copy.binding.owner.endpoint_generation, .witness = copy.binding.owner.witness, .status = .available, .context = .{ .id = copy.binding.context.id, .generation = copy.binding.context.generation }, .store_present = true, .credential_acquisition_authorized = false } };
+        self.nativeImportCheck(task.pending, fresh) catch |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+            return;
+        };
+        const now = self.now();
+        if (copy.candidate.custody_expires_at <= now or (copy.candidate.expires_at_limit != null and copy.candidate.expires_at_limit.? <= now)) {
+            try self.failImport(task.pending, .other);
+            return;
+        }
+        const token = try self.allocator.dupe(u8, copy.candidate.access_token);
+        self.allocator.free(task.pending.token);
+        task.pending.token = token;
+        task.pending.expires_at = copy.candidate.expires_at_limit;
+        task.pending.custody_expires_at = copy.candidate.custody_expires_at;
+        try self.pending_imports.ensureUnusedCapacity(self.allocator, 1);
+        const deadline: transport.AbsoluteDeadline = .{ .io = self.io, .until = task.until };
+        const timeout_ms = try deadline.remaining();
+        task.pending.network_id = self.submitNativeRotationIdentity(task.pending, deadline, timeout_ms) catch |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+            return;
+        };
+        self.pending_imports.appendAssumeCapacity(task.pending);
+        task.pending_transferred = true;
+    }
+
+    fn submitNativeRotationIdentity(self: *Engine, pending: PendingImport, deadline: transport.AbsoluteDeadline, timeout_ms: u32) !u64 {
+        _ = try deadline.remaining();
+        if (builtin.is_test) {
+            self.fixture_identity_submissions += 1;
+            return error.TestProviderEffectDisabled;
+        }
+        const operation = pending.native_operation orelse return error.NativeSourceFreshCheckRequired;
+        return self.network.?.fetchIdentity(.{ .endpoint = .codex_identity, .account_id = pending.source_id, .grant_id = &operation, .access_token = pending.token, .timeout_ms = timeout_ms, .absolute_deadline = deadline });
     }
 
     fn pollSources(self: *Engine) !void {
@@ -5635,7 +5927,20 @@ pub const Engine = struct {
         // A fresh worker response cannot replace the persisted context authority.
         // Fence older pending imports against any later source-context change.
         const retained_context = scope.context orelse return error.NativeSourceFreshCheckRequired;
-        if (!retained_context.same(admission.context)) return error.NativeSourceContextChanged;
+        if (pending.native_expected_authority) |expected| {
+            // Only the trusted actor's admitted successor can use a new tuple.
+            // Old authority stays persisted until the atomic verified commit.
+            if (!std.meta.eql(scope, expected) or !eql(description.?.native_endpoint, pending.native_expected_endpoint orelse return error.NativeSourceFreshCheckRequired)) return error.NativeSourceSuperseded;
+            const intent = scope.rotation orelse return error.NativeSourceFreshCheckRequired;
+            if (intent.admitted_at > self.now() or intent.expires_at <= self.now()) return error.NativeSourceDeadline;
+            const operation = pending.native_operation orelse return error.NativeSourceFreshCheckRequired;
+            if (!eql(&intent.operation, &operation) or intent.job_generation != pending.job_generation or !intent.context.same(admission.context) or !self.importJobRunning(pending)) return error.NativeSourceSuperseded;
+            try checkNativeContextSuccessor(retained_context, intent.context);
+            if (retained_context.same(intent.context)) return error.NativeSourceContextChanged;
+        } else {
+            if (scope.rotation != null) return error.NativeSourceOperationPending;
+            if (!retained_context.same(admission.context)) return error.NativeSourceContextChanged;
+        }
         if (!std.crypto.timing_safe.eql([32]u8, scope.origin, fresh.origin)) return error.NativeSourceOriginChanged;
         if (fresh.declaration.status != .available or fresh.declaration.store_present != true or
             fresh.declaration.credential_acquisition_authorized) return error.NativeSourceUnavailable;
@@ -5658,6 +5963,51 @@ pub const Engine = struct {
         }, .consent = scope.consent, .owner = .{ .id = fresh.declaration.owner_id, .nonce = fresh.declaration.native_nonce, .endpoint_generation = fresh.declaration.endpoint_generation, .witness = fresh.declaration.witness }, .context = .{ .id = context.id, .generation = context.generation }, .store_present = true, .forget_epoch = self.import_forget_epoch };
     }
 
+    fn nativeImportWriterCheck(self: *Engine, fence: NativeAdoptionFence) !void {
+        var pending = fence.pending;
+        if (pending.native_expected_authority) |expected| {
+            if (fence.rotation_revision == null or fence.rotation_revision.? != self.revision) return error.NativeSourceSuperseded;
+            var after = expected;
+            after.context = pending.native_admission.?.context;
+            after.rotation = null;
+            var found = false;
+            for (self.descriptions.items) |description| if (eql(description.source_id, pending.source_id)) {
+                if (found or !std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, after)) or !eql(description.native_endpoint, pending.native_expected_endpoint orelse return error.NativeSourceFreshCheckRequired)) return error.NativeSourceSuperseded;
+                found = true;
+            };
+            if (!found) return error.NativeSourceSuperseded;
+            var terminal = false;
+            for (self.state.jobs.items) |job| if (eql(job.id, pending.job_id)) {
+                if (terminal or job.status != .completed or job.operation_generation != pending.job_generation) return error.ImportSuperseded;
+                terminal = true;
+            };
+            if (!terminal) return error.ImportSuperseded;
+            pending.native_expected_authority = null;
+        } else if (fence.rotation_revision != null) return error.NativeSourceSuperseded;
+        try self.nativeImportCheck(pending, fence.fresh);
+    }
+
+    fn stageNativeContextRotation(self: *Engine, pending: PendingImport) !void {
+        const expected = pending.native_expected_authority orelse return;
+        var found: ?*SourceDescription = null;
+        for (self.descriptions.items) |*description| if (eql(description.source_id, pending.source_id)) {
+            if (found != null or !std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, expected)) or !eql(description.native_endpoint, pending.native_expected_endpoint orelse return error.NativeSourceFreshCheckRequired)) return error.NativeSourceSuperseded;
+            found = description;
+        };
+        const description = found orelse return error.NativeSourceSuperseded;
+        var after = expected;
+        after.context = pending.native_admission.?.context;
+        after.rotation = null;
+        description.native_authority = after;
+    }
+
+    fn retireNativeContextRotation(self: *Engine, pending: PendingImport) void {
+        const expected = pending.native_expected_authority orelse return;
+        for (self.descriptions.items) |*description| if (eql(description.source_id, pending.source_id) and std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, expected))) {
+            description.native_authority.?.rotation = null;
+        };
+    }
+
     fn nativeImportCheck(self: *Engine, pending: PendingImport, fresh: NativeImportFresh) !void {
         if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.NativeCustodyUnavailable;
         const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
@@ -5676,6 +6026,45 @@ pub const Engine = struct {
         const elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
         if (elapsed < 0 or elapsed > std.math.maxInt(u64)) return error.NativeSourceDeadline;
         try native_source_consent.check(admission, try self.nativeImportCurrent(pending, fresh), self.now(), @intCast(elapsed));
+    }
+
+    fn completeNativeRotationJob(self: *Engine, pending: PendingImport) !void {
+        if (!self.importJobRunning(pending)) return error.ImportSuperseded;
+        for (self.state.jobs.items) |*job| if (eql(job.id, pending.job_id) and job.operation_generation == pending.job_generation) {
+            const previous = job.*;
+            job.status = .completed;
+            try self.recordImportTerminal(pending, previous, job.*, .none);
+        };
+        try self.releaseOutcome(pending.credit_key);
+    }
+
+    fn nativeRotationSecretUnchanged(self: *Engine, pending: PendingImport, identity: domain.Identity) !bool {
+        var same_usable = false;
+        for (self.state.grants.items) |grant| {
+            if (!eql(grant.source_id, pending.source_id) or grant.credential_kind != .oauth_access or grant.ownership != .external or !eql(grant.audience, identity.issuer)) continue;
+            const sql = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse return error.NativeSourceFreshCheckRequired;
+            if (sql.renewal_owner != .external) return error.RenewalOwnerConflict;
+            if (sql.generation != grant.generation or sql.state != .ready) return error.NativeSourceUnchangedUnusable;
+            var secret = self.db.?.loadGrant(.{ .key_id = self.root_id.?, .account_id = grant.account_id, .grant_id = grant.id, .generation = grant.generation, .purpose = "request", .scope = grant.audience }) catch return error.NativeSourceFreshCheckRequired;
+            defer secret.deinit();
+            const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, secret.bytes, .{ .allocate = .alloc_always });
+            defer {
+                control.wipeJson(parsed.value);
+                parsed.deinit();
+            }
+            const previous = try control.string(parsed.value, "access_token");
+            if (!sameNativeSecret(previous, pending.token)) continue;
+            // Same bytes cannot restore invalid/quarantined/spent authority or
+            // extend expired custody, even if an identity GET succeeds.
+            if (grant.status != .ready or (grant.provider_expires_at != null and grant.provider_expires_at.? <= self.now()) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= self.now())) return error.NativeSourceUnchangedUnusable;
+            const account = self.state.account(grant.account_id) orelse return error.NativeSourceFreshCheckRequired;
+            if (!sameVerifiedIdentity(account.identity, identity)) continue;
+            const same_provider_ceiling = if (pending.expires_at) |limit| if (grant.provider_expires_at) |retained| retained <= limit else false else true;
+            const same_custody_ceiling = if (pending.custody_expires_at) |limit| if (grant.custody_expires_at) |retained| retained <= limit else false else false;
+            if (!same_provider_ceiling or !same_custody_ceiling) return error.NativeSourceUnchangedUnusable;
+            same_usable = true;
+        }
+        return same_usable;
     }
 
     fn finishImportChecked(self: *Engine, pending: PendingImport, completion: transport.Completion, native_fresh: ?NativeImportFresh) !void {
@@ -5711,10 +6100,19 @@ pub const Engine = struct {
             break :blk .{ .subject = parsed.value.user_id, .tenant = parsed.value.account_id, .issuer = "https://chatgpt.com", .kind = parsed.value.plan_type, .provider_account_id = parsed.value.account_id };
         };
         const identity: domain.Identity = .{ .provider = pending.provider, .issuer = proof.issuer, .subject = proof.subject, .tenant = proof.tenant, .verified = true };
+        if (pending.native_expected_authority != null and try self.nativeRotationSecretUnchanged(pending, identity)) {
+            try self.nativeImportCheck(pending, native_fresh.?);
+            const revision = self.revision;
+            try self.stageNativeContextRotation(pending);
+            try self.completeNativeRotationJob(pending);
+            try self.persistWithNativeFence(&.{}, .{ .pending = pending, .fresh = native_fresh.?, .rotation_revision = revision });
+            return;
+        }
         // No native read or provider response substitutes for the actor's
         // current consent/source/forget authority. Fence again immediately
         // before the first enrollment/tombstone mutation.
         if (pending.native_admission != null) try self.nativeImportCheck(pending, native_fresh.?);
+        const rotation_revision: ?u64 = if (pending.native_expected_authority != null) self.revision else null;
         if (pending.allow_reenrollment) try self.state.permitReenrollment(identity, pending.source_id, self.now());
         const opaque_id = try self.identifier();
         const enrollment = try self.state.enroll(.{ .account_id = &opaque_id, .source_id = pending.source_id, .identity = identity, .label = if (pending.label.len != 0) pending.label else if (eql(pending.provider, "github")) "GitHub account" else "Codex account", .account_type = proof.kind }, self.now());
@@ -5743,7 +6141,8 @@ pub const Engine = struct {
             try self.recordImportTerminal(pending, previous, job.*, .none);
         };
         try self.releaseOutcome(pending.credit_key);
-        try self.persistWithNativeFence(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }}, if (native_fresh) |fresh| .{ .pending = pending, .fresh = fresh } else null);
+        try self.stageNativeContextRotation(pending);
+        try self.persistWithNativeFence(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }}, if (native_fresh) |fresh| .{ .pending = pending, .fresh = fresh, .rotation_revision = rotation_revision } else null);
     }
 
     fn acquire(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
@@ -7226,6 +7625,13 @@ fn validatePersistedAdmission(allocator: std.mem.Allocator, json: []const u8, cu
         defer verified.deinit();
         _ = try snapshot_admission.countJson(attempts, browser_attempt.maximum_snapshot_bytes);
     }
+    for (saved.source_descriptions) |description| if (description.native_authority) |authority| if (authority.rotation) |intent| {
+        const previous = authority.context orelse return error.InvalidNativeSourceAuthority;
+        try native_owner.validateOperation(intent.operation);
+        try checkNativeContextSuccessor(previous, intent.context);
+        const interval = std.math.sub(i64, intent.expires_at, intent.admitted_at) catch return error.InvalidNativeSourceAuthority;
+        if (previous.same(intent.context) or intent.job_generation == 0 or interval <= 0 or interval > 13 or intent.expires_at > authority.consent.expires_at) return error.InvalidNativeSourceAuthority;
+    };
     var state = try domain.State.fromSnapshot(allocator, saved.state);
     defer state.deinit();
     var requests = try request_authority.Ledger.fromSnapshot(allocator, 4096, saved.request_authority);
@@ -7616,6 +8022,112 @@ test "native import joins actual source lifecycle with retained consent and fres
     var pending: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"), .credential_kind = .oauth_access, .source_generation = 1, .credit_key = undefined, .forget_epoch = 0, .job_id = @constCast(""), .token = @constCast(""), .label = @constCast(""), .expires_at = null, .native_admission = admission };
     var fresh: NativeImportFresh = .{ .origin = @splat(6), .selection_digest = @splat(0), .declaration = .{ .owner_id = owner.id, .native_nonce = owner.nonce, .endpoint_generation = 1, .witness = witness, .status = .available, .context = .{ .id = context.id, .generation = 1 }, .store_present = true, .credential_acquisition_authorized = false } };
     try native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0);
+    // A durable successor intent alone cannot authorize either ordinary tuple.
+    const successor: native_source_consent.Context = .{ .id = @splat(8), .generation = 2 };
+    const operation: native_owner.OperationId = @splat('a');
+    const job = try current.state.reopenJob(.{ .id = "rotation-model", .kind = .enrollment, .status = .running });
+    var expected = current.descriptions.items[0].native_authority.?;
+    const admitted_wall = current.now();
+    const source_expiry = admitted_wall + 7;
+    current.state.sources.items[0].authorized_until = source_expiry;
+    expected.rotation = .{ .operation = operation, .context = successor, .job_generation = job.operation_generation, .admitted_at = admitted_wall, .expires_at = @min(@min(source_expiry, expected.consent.expires_at), admitted_wall + 13) };
+    current.descriptions.items[0].native_authority = expected;
+    try std.testing.expectError(error.NativeSourceOperationPending, current.nativeImportCurrent(pending, fresh));
+    var rotated = pending;
+    var successor_admission = admission;
+    successor_admission.context = successor;
+    rotated.native_admission = successor_admission;
+    rotated.native_expected_authority = expected;
+    rotated.native_expected_endpoint = @constCast("");
+    rotated.native_operation = operation;
+    rotated.job_id = @constCast("rotation-model");
+    rotated.job_generation = job.operation_generation;
+    // Exercise the production request constructor and actual authenticated
+    // encoding, not a simulated remote copy or cancellation. Source expiry is
+    // tighter than both saved consent and the new operation's 13-second budget.
+    const copy_request = try nativeRotationRequest(rotated, 1);
+    try std.testing.expectEqual(source_expiry, copy_request.consent_expires_at);
+    try std.testing.expectEqual(permission.expires_at, expected.consent.expires_at);
+    try std.testing.expect(copy_request.consent_expires_at < expected.consent.expires_at);
+    var request_arena = std.heap.ArenaAllocator.init(allocator);
+    defer request_arena.deinit();
+    const wire = try native_source_acquisition.fields(request_arena.allocator(), copy_request);
+    const encoded_expiry = try std.fmt.allocPrint(request_arena.allocator(), "{d}", .{source_expiry});
+    try std.testing.expectEqualStrings(encoded_expiry, wire.consentExpiresAt);
+    try std.testing.expectEqualStrings(encoded_expiry, wire.ordered()[10]);
+    const tightened_proof = try native_source_acquisition.requestProof(request_arena.allocator(), copy_request, @splat(11));
+    var longer_request = copy_request;
+    longer_request.consent_expires_at = expected.consent.expires_at;
+    const longer_proof = try native_source_acquisition.requestProof(request_arena.allocator(), longer_request, @splat(11));
+    try std.testing.expect(!std.mem.eql(u8, &tightened_proof, &longer_proof));
+    fresh.declaration.context = .{ .id = successor.id, .generation = successor.generation };
+    try native_source_consent.check(successor_admission, try current.nativeImportCurrent(rotated, fresh), current.now(), 0);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.context.?.same(context));
+    // Every old-owner/CAS dimension remains a refusal, including same-path
+    // replacement, altered consent, origin, job generation and lost owner.
+    current.descriptions.items[0].native_endpoint = try allocator.dupe(u8, "/fixture/replacement.sock");
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    allocator.free(current.descriptions.items[0].native_endpoint);
+    current.descriptions.items[0].native_endpoint = try allocator.dupe(u8, "");
+    current.descriptions.items[0].native_authority.?.consent.owner.nonce = @splat(9);
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    current.descriptions.items[0].native_authority.?.consent.generation += 1;
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    current.descriptions.items[0].native_authority.?.origin = @splat(9);
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    rotated.job_generation += 1;
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    rotated.job_generation = job.operation_generation;
+    current.state.jobs.items[0].status = .failed;
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.state.jobs.items[0].status = .running;
+    current.descriptions.items[0].native_authority.?.rotation.?.expires_at = current.now();
+    rotated.native_expected_authority = current.descriptions.items[0].native_authority;
+    try std.testing.expectError(error.NativeSourceDeadline, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    rotated.native_expected_authority = expected;
+    rotated.credit_key = creditKey(.import, rotated.job_id, rotated.job_generation);
+    // Known pre-issue cancellation retires only its original running owner;
+    // a stale callback cannot clear a later operation's durable intent.
+    var stale = rotated;
+    stale.job_generation += 1;
+    stale.credit_key = creditKey(.import, stale.job_id, stale.job_generation);
+    try current.failImportJobCause(stale, .operator_shutdown);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.rotation != null);
+    try current.failImportJobCause(rotated, .operator_shutdown);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.rotation == null);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.context.?.same(context));
+    try std.testing.expectEqual(.failed, current.state.jobs.items[0].status);
+    current.state.jobs.items[0].status = .running;
+    current.descriptions.items[0].native_authority = expected;
+    // Atomic staging is explicit; ordinary old admission cannot be resurrected.
+    try current.stageNativeContextRotation(rotated);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.rotation == null);
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    var ordinary_successor = pending;
+    ordinary_successor.native_admission = successor_admission;
+    try native_source_consent.check(successor_admission, try current.nativeImportCurrent(ordinary_successor, fresh), current.now(), 0);
+    // Cancellation closes a real task's owned pending strings and arena;
+    // no selected image/descriptor/provider effect is fabricated.
+    const canceled_task = try allocator.create(NativeSourceRotationTask);
+    const canceled_arena = try allocator.create(std.heap.ArenaAllocator);
+    canceled_arena.* = .init(allocator);
+    canceled_task.* = .{ .engine = &current, .arena = canceled_arena, .pending = try emptyNativeRotationImport(allocator, &source_id, "synthetic-cancel"), .options = .{ .state_dir = "/fixture", .home = "/fixture", .adapter = .codex, .capability = @splat('a'), .broker_socket = "/fixture/unused.sock", .omux_version = product.version, .key = @splat(1) }, .runtime_root = "", .selected = undefined, .endpoint = "/fixture/unused.sock", .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(13_000) }), .observed_at = current.now(), .custody_seconds = 1, .job = undefined };
+    NativeSourceRotationTask.run(canceled_task, true);
+    try std.testing.expectEqual(error.ServiceStopping, canceled_task.failure.?);
+    try std.testing.expect(!canceled_task.request_attempted);
+    try std.testing.expect(canceled_task.copy == null and canceled_task.image == null);
+    canceled_task.deinit();
+    // Restore fixture beforeimage; no qualified writer/provider is simulated.
+    current.descriptions.items[0].native_authority = expected;
+    current.descriptions.items[0].native_authority.?.rotation = null;
+    fresh.declaration.context = .{ .id = context.id, .generation = context.generation };
+    current.state.jobs.clearRetainingCapacity();
+    allocator.free(job.id);
+    allocator.free(job.account_id);
     // Keep the pending admission and worker response unchanged while the saved
     // source authority disappears or advances. Neither may authorize the old copy.
     current.descriptions.items[0].native_authority.?.context = null;
@@ -7654,6 +8166,149 @@ test "native import joins actual source lifecycle with retained consent and fres
     try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
     try current.state.disconnectSource(&source_id);
     try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+}
+
+test "native successor context requires both a new opaque ID and increasing generation" {
+    const previous: native_source_consent.Context = .{ .id = @splat(1), .generation = 7 };
+    try checkNativeContextSuccessor(previous, previous);
+    try checkNativeContextSuccessor(previous, .{ .id = @splat(2), .generation = 8 });
+    for ([_]native_source_consent.Context{
+        .{ .id = @splat(2), .generation = 7 },
+        .{ .id = @splat(2), .generation = 6 },
+        .{ .id = previous.id, .generation = 8 },
+    }) |candidate| try std.testing.expectError(error.NativeSourceContextChanged, checkNativeContextSuccessor(previous, candidate));
+    try std.testing.expectError(error.InvalidNativeSourceAuthority, checkNativeContextSuccessor(previous, .{ .id = @splat(0), .generation = 8 }));
+    try std.testing.expectError(error.InvalidNativeSourceAuthority, checkNativeContextSuccessor(previous, .{ .id = @splat(2), .generation = 0 }));
+}
+
+test "native successor identical secret joins encrypted SQL owner identity and original expiry without renewal transfer" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]storage.RenewalOwner{ .external, .omux }) |sql_owner| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const prefix = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(prefix);
+        const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{prefix}, 0);
+        defer a.free(database);
+        var current: Engine = .{
+            .allocator = a, .io = io, .state_dir = try a.dupe(u8, prefix),
+            .state = domain.State.init(a), .observers = observer.Coordinator.init(a),
+            .requests = request_authority.Ledger.init(a, 4096),
+            .mutations = try mutation_authority.Ledger.init(a, 4096),
+            .admission = snapshot_admission.Ledger.init(a), .native_owners = native_owner.Ledger.init(a),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+            .root_id = try a.dupeSentinel(u8, "fixture-root", 0), .root_key = @splat(19),
+            .db = try storage.Store.openRoot(io, a, database, "fixture-root", @splat(19)),
+        };
+        defer {
+            current.db.?.close();
+            current.release();
+            a.free(current.state_dir);
+        }
+        const identity: domain.Identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-rotation-subject", .tenant = "synthetic-rotation-workspace", .verified = true };
+        _ = try current.state.connectSource(.{ .id = "synthetic-rotation-source", .kind = .native_store, .provider = "codex" });
+        _ = try current.state.enroll(.{ .account_id = "synthetic-rotation-account", .source_id = "synthetic-rotation-source", .identity = identity }, current.now());
+        _ = try current.state.addGrant(.{ .id = "synthetic-rotation-grant", .account_id = "synthetic-rotation-account", .source_id = "synthetic-rotation-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = identity.issuer, .provider_expires_at = current.now() + 30, .custody_expires_at = current.now() + 30 });
+        const context: envelope.Context = .{ .key_id = "fixture-root", .account_id = "synthetic-rotation-account", .grant_id = "synthetic-rotation-grant", .generation = 1, .purpose = "request", .scope = identity.issuer };
+        _ = try current.db.?.commit(0, "{}", &.{.{ .put = .{ .context = context, .plaintext = "{\"access_token\":\"synthetic-rotation-secret\"}", .renewal_owner = sql_owner } }});
+        const checkpoint = current.db.?.checkpoint;
+        var pending = try emptyNativeRotationImport(a, "synthetic-rotation-source", "");
+        defer pending.deinit(a);
+        a.free(pending.token);
+        pending.token = try a.dupe(u8, "synthetic-rotation-secret");
+        pending.expires_at = current.now() + 60;
+        pending.custody_expires_at = current.now() + 60;
+        if (sql_owner == .omux) {
+            try std.testing.expectError(error.RenewalOwnerConflict, current.nativeRotationSecretUnchanged(pending, identity));
+        } else {
+            try std.testing.expect(try current.nativeRotationSecretUnchanged(pending, identity));
+            var switched = identity;
+            switched.tenant = "synthetic-other-workspace";
+            try std.testing.expect(!try current.nativeRotationSecretUnchanged(pending, switched));
+            a.free(pending.token);
+            pending.token = try a.dupe(u8, "synthetic-replacement-secret");
+            try std.testing.expect(!try current.nativeRotationSecretUnchanged(pending, identity));
+            a.free(pending.token);
+            pending.token = try a.dupe(u8, "synthetic-rotation-secret");
+            pending.custody_expires_at = current.now() + 1;
+            try std.testing.expectError(error.NativeSourceUnchangedUnusable, current.nativeRotationSecretUnchanged(pending, identity));
+            pending.custody_expires_at = current.now() + 60;
+            current.state.grants.items[0].status = .quarantined;
+            try std.testing.expectError(error.NativeSourceUnchangedUnusable, current.nativeRotationSecretUnchanged(pending, identity));
+        }
+        try std.testing.expect(checkpoint.eql(current.db.?.checkpoint));
+        try std.testing.expectEqual(@as(u64, 1), current.state.grants.items[0].generation);
+        try std.testing.expectEqual(.external, current.state.grants.items[0].ownership);
+        const sql = (try current.db.?.readGrantStatus(context.account_id, context.grant_id)).?;
+        try std.testing.expectEqual(sql_owner, sql.renewal_owner);
+        try std.testing.expectEqual(@as(u64, 1), sql.generation);
+        try std.testing.expectEqual(@as(usize, 0), current.fixture_identity_submissions);
+    }
+}
+
+// Pure checked wall arithmetic. The caller binds this duration once to an
+// earlier awake entry; no in-flight observation or acquisition is extended.
+fn nativeRotationBudgetNs(wall_until: i64, wall_now_ns: i128) !u64 {
+    const expiry_ns = try std.math.mul(i128, wall_until, 1_000_000_000);
+    const available = try std.math.sub(i128, expiry_ns, wall_now_ns);
+    if (available <= 0) return error.NativeSourceUnauthorized;
+    return @intCast(@min(available, 13 * 1_000_000_000));
+}
+
+test "native successor acquisition clips fractional source expiry to original wall admission" {
+    const second: i128 = 1_000_000_000;
+    try std.testing.expectEqual(@as(u64, 13 * 1_000_000_000), try nativeRotationBudgetNs(100, 50 * second + 999_999_999));
+    try std.testing.expectEqual(@as(u64, 1), try nativeRotationBudgetNs(51, 50 * second + 999_999_999));
+    try std.testing.expectEqual(@as(u64, 12 * 1_000_000_000 + 1), try nativeRotationBudgetNs(63, 50 * second + 999_999_999));
+    try std.testing.expectError(error.NativeSourceUnauthorized, nativeRotationBudgetNs(51, 51 * second));
+    try std.testing.expectError(error.NativeSourceUnauthorized, nativeRotationBudgetNs(51, 51 * second + 1));
+    try std.testing.expectError(error.Overflow, nativeRotationBudgetNs(1, std.math.minInt(i128)));
+}
+
+fn sameVerifiedIdentity(previous: domain.Identity, candidate: domain.Identity) bool {
+    return previous.verified and candidate.verified and eql(previous.provider, candidate.provider) and eql(previous.issuer, candidate.issuer) and eql(previous.subject, candidate.subject) and eql(previous.tenant, candidate.tenant);
+}
+
+fn sameNativeSecret(previous: []const u8, candidate: []const u8) bool {
+    if (previous.len != candidate.len) return false;
+    var difference: u8 = 0;
+    for (previous, candidate) |a, b| difference |= a ^ b;
+    return difference == 0;
+}
+
+fn checkNativeContextSuccessor(previous: native_source_consent.Context, candidate: native_source_consent.Context) !void {
+    try previous.validate();
+    try candidate.validate();
+    if (previous.same(candidate)) return;
+    if (candidate.generation <= previous.generation or std.crypto.timing_safe.eql([32]u8, previous.id, candidate.id)) return error.NativeSourceContextChanged;
+}
+
+fn retainNativeOptions(a: std.mem.Allocator, input: setup.Options) !setup.Options {
+    var result = input;
+    result.state_dir = try a.dupe(u8, input.state_dir);
+    result.home = try a.dupe(u8, input.home);
+    result.xdg_config_home = if (input.xdg_config_home) |value| try a.dupe(u8, value) else null;
+    result.codex_home = if (input.codex_home) |value| try a.dupe(u8, value) else null;
+    result.config_path = if (input.config_path) |value| try a.dupe(u8, value) else null;
+    result.broker_socket = try a.dupe(u8, input.broker_socket);
+    result.native_socket = if (input.native_socket) |value| try a.dupe(u8, value) else null;
+    result.omux_version = try a.dupe(u8, input.omux_version);
+    return result;
+}
+
+fn emptyNativeRotationImport(a: std.mem.Allocator, source_id: []const u8, label: []const u8) !PendingImport {
+    const owned_id = try a.dupe(u8, source_id);
+    errdefer a.free(owned_id);
+    const provider = try a.dupe(u8, "codex");
+    errdefer a.free(provider);
+    const job = try std.fmt.allocPrint(a, "reconcile-{s}", .{source_id});
+    errdefer a.free(job);
+    const token = try a.dupe(u8, "");
+    errdefer a.free(token);
+    const owned_label = try a.dupe(u8, label);
+    return .{ .network_id = 0, .source_id = owned_id, .provider = provider, .credential_kind = .oauth_access, .allow_reenrollment = false, .source_generation = 0, .credit_key = undefined, .forget_epoch = 0, .job_id = job, .token = token, .label = owned_label, .expires_at = null };
 }
 
 fn sameOptionalNativeRef(a: ?native_owner.NativeRef, b: ?native_owner.NativeRef) bool {
@@ -9369,6 +10024,82 @@ const NativeMaintenanceTest = struct {
         }
     }
 };
+
+
+test "native issued successor intent survives actual encrypted store restart without copy or replay" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const fixture = try @import("native_owner_fixture.zig").Fixture.create(io, a);
+    defer fixture.destroy();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+    var generation: u64 = 0;
+    const candidate: native_source_consent.Context = .{ .id = @splat(0xab), .generation = 2 };
+    {
+        var current: Engine = .{
+            .allocator = a, .io = io, .state_dir = try a.dupe(u8, path),
+            .state = domain.State.init(a), .observers = observer.Coordinator.init(a),
+            .requests = request_authority.Ledger.init(a, 4096),
+            .mutations = try mutation_authority.Ledger.init(a, 4096),
+            .admission = snapshot_admission.Ledger.init(a), .native_owners = native_owner.Ledger.init(a),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }), .test_key = NativeMaintenanceTest.key,
+        };
+        defer {
+            if (current.network) |network| network.deinit();
+            if (current.db) |*database| database.close();
+            current.release();
+            a.free(current.state_dir);
+        }
+        try current.bootstrap();
+        var pending = try emptyNativeRotationImport(a, &NativeMaintenanceTest.source_id, "");
+        defer pending.deinit(a);
+        pending.source_generation = 1;
+        pending.job_generation = (try current.state.reopenJob(.{ .id = pending.job_id, .kind = .enrollment, .status = .running })).operation_generation;
+        generation = pending.job_generation;
+        pending.native_operation = @splat('a');
+        var authority = current.descriptions.items[0].native_authority.?;
+        authority.rotation = .{ .operation = pending.native_operation.?, .context = candidate, .job_generation = generation, .admitted_at = current.now(), .expires_at = current.now() + 13 };
+        pending.native_expected_authority = authority;
+        pending.native_expected_endpoint = try a.dupe(u8, fixture.endpoint);
+        pending.native_admission = .{ .source_id = authority.consent.source_id, .source_generation = 1, .consent_id = authority.consent.id, .consent_generation = 1, .owner = authority.consent.owner, .context = candidate, .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 13_000_000_000 };
+        pending.credit_key = creditKey(.import, pending.job_id, generation);
+        const growth = try domain.importGrowth("codex", &NativeMaintenanceTest.source_id, "");
+        try current.reserveOutcome(.{ .key = pending.credit_key, .owner_id = pending.job_id, .secondary_id = &NativeMaintenanceTest.source_id, .source_id = &NativeMaintenanceTest.source_id, .source_generation = 1, .provider = "codex", .plan_bytes = growth.bytes + 8192, .plan_counts = growth.counts() });
+        current.descriptions.items[0].native_authority = authority;
+        try current.persist(&.{});
+        const before = current.revision;
+        // Exercise the real actor completion's lost-reply branch, not a fake
+        // successful descriptor/image. It may not retire or advance authority.
+        var task: NativeSourceRotationTask = .{ .engine = &current, .arena = undefined, .pending = pending, .options = undefined, .runtime_root = "", .selected = undefined, .endpoint = fixture.endpoint, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(13_000) }), .observed_at = current.now(), .custody_seconds = 1, .job = undefined, .request_attempted = true, .failure = error.PeerConnectionClosed };
+        try current.completeNativeSourceRotation(&task);
+        try std.testing.expectEqual(before, current.revision);
+        try std.testing.expect(current.importJobRunning(pending));
+        try std.testing.expect(current.admission.lookup(pending.credit_key) != null);
+        try std.testing.expect(current.descriptions.items[0].native_authority.?.context.?.generation == 1);
+        try std.testing.expectEqual(@as(usize, 0), current.fixture_identity_submissions);
+    }
+    const restored = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+    defer restored.deinit();
+    var enabled = try reopenTestReply(restored, "fixture.nativeSourceMaintenance", .control);
+    defer enabled.deinit();
+    var observed = try NativeMaintenanceTest.wait(restored, "unverified");
+    defer observed.deinit();
+    const result = control.get(observed.value, "result").?;
+    try NativeMaintenanceTest.retained(result, "connected");
+    try std.testing.expectEqualStrings("NativeSourceOperationIndeterminateReconnectRequired", try control.string(control.get(result, "native_source_maintenance").?, "reason"));
+    try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+    // Read authenticated persisted state through the actual snapshot API: the
+    // actor did not mint a new clock, operation generation or copy owner.
+    const jobs = control.get(result, "jobs").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), jobs.len);
+    try std.testing.expectEqualStrings("running", try control.string(jobs[0], "status"));
+    try std.testing.expectEqual(@as(i64, @intCast(generation)), control.get(jobs[0], "operation_generation").?.integer);
+}
 
 test "native maintenance actor clock expires fileless consent without warming or owner IO and retains independent custody" {
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;

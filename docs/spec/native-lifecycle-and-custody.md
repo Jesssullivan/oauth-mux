@@ -56,8 +56,8 @@ access reacquisition; it still prevents speculative capacity-observation request
 The same source/forget/job-generation fences, import admission reservations,
 pending-import limit, provider deadline and custody ceilings apply. Missing files
 detach without erasing independent authority; malformed or unavailable sources
-cannot authorize imports or clear tombstones. This policy separation does not
-implement refresh adoption, provider renewal or fileless native reacquisition.
+cannot authorize imports or clear tombstones. This file-source policy separation does not implement refresh adoption or
+provider renewal. Supervised native reacquisition has its own authority below.
 
 Supervised fileless native sources have a separate actor-clock maintenance pass,
 independent of alternative-route warming. New verified connections retain their
@@ -65,11 +65,11 @@ exact selected context ID/generation beside the original owner, endpoint, consen
 and origin. Older records without a context pin remain unverified; an advertised
 replacement cannot fill the missing authority. Consent expiry detaches the exact
 source without native IO. One read-only check at a time uses a two-second awake
-deadline, the original peer witness and context selector, then the existing
-qualified installed-image and origin protocol. It neither copies credentials nor
+deadline, the original peer witness and selected owner, then the existing
+qualified installed-image and origin protocol. Only a qualified original image
+can discover a successor context; unqualified checks retain the exact old selector. It neither copies credentials nor
 calls a provider. Kernel-verified departure/replacement of the original owner or
-executable-image mismatch detaches that acquisition source. Context/store/owner
-declaration or origin change requires the independently selected executable
+executable-image mismatch detaches that acquisition source. Store/owner declaration or origin change requires the independently selected executable
 image to verify before and after the response. An unsuccessful protocol channel
 is never reset: a post-response image check reopens only the same saved endpoint
 with the original peer witness, under the unchanged cutoff, using the existing
@@ -88,9 +88,51 @@ advance a grant, reconnect, restore spent authorization, reconstruct an
 acquisition lease on restart or replay accepted native work. The redacted
 `native_source_maintenance` snapshot field is the last process-local categorical
 observation, not current eligibility, a durable attempt denominator, renewal
-success or a live integration proof. This path does not implement rotated-token
-reacquisition or automatic periodic enrollment. An ordinary installed qualified
-native producer/origin gate remains necessary for those outcomes.
+success or a live integration proof.
+
+A changed context is eligible for a separate automatic acquisition only when the
+opaque ID changes and generation increases, the same original peer/owner/image
+and authenticated origin verify, and consent/source/forget/runtime authority
+remain current. Before credential IO, the actor persists a secret-free operation
+ID, exact old authority, candidate context, job generation and original expiry.
+The old saved context remains unchanged until verified identity and encrypted
+grant adoption commit with the context successor in the same SQLite transaction.
+Ordinary imports still require exact saved-context equality; a new declaration
+alone cannot revive an older admission or transfer consent to a new owner.
+
+The acquisition has its own original awake cutoff: at most the native contract's
+13-second fallback, shortened by source/consent expiry. It does not extend the
+two-second observation. The copy request's existing authenticated expiry field
+carries the durable operation expiry, no later than original source/consent expiry
+and admission plus 13 seconds; saved consent is unchanged. Native pre-read and
+reply checks receive that tighter wall cutoff. Client timeout does not prove
+remote cancellation. The verified sealed-descriptor copy, fixed identity GET,
+final supervised native check and actual writer fence all retain that cutoff.
+Only one copy worker runs; pending/final import work keeps its existing bound and
+new automatic attempts are rate-limited to once per minute per source, with
+that admitted time retained across refusal/restart. Exact unchanged
+contexts never copy or submit an identity GET. A rewritten context still needs
+independent provider identity, including workspace switches with identical bytes.
+Verified same-identity, same-secret usable authority keeps its grant generation
+and custody ceilings; invalid, quarantined, expired or writer-conflicting
+predecessors cannot become usable through that shortcut. SQL renewal ownership
+must remain external, and ordinary replacement conflicts propagate unchanged.
+
+An issued request with lost reply, or interrupted process-local operation, leaves
+a durable unresolved owner. Maintenance exposes
+`NativeSourceOperationIndeterminateReconnectRequired`; it neither reconstructs
+a lease, reissues the copy nor records renewal success. This diagnosis does not
+expire or revoke a separately valid grant. Known pre-issue cancellation can
+retire only its own running job/intent. A running operation cannot be falsely
+cancelled as unissued. Explicit source disconnect ends the affected source's
+acquisition/grant authority using the existing policy; a new authorized native
+connection requires fresh consent and verified identity. Independent grants,
+account pause/drain state, history and tombstones keep their existing rules.
+
+These source semantics require their declared tests and ordinary installed
+qualified producer/origin/provider gates. They are not executed acquisition,
+renewal, ordinary resume or same-process handoff evidence. No native auth file,
+session/history file or accepted work is written or replayed by this route.
 
 ## Separate lifecycle operations
 
@@ -258,3 +300,12 @@ attachment where existing-process attachment is claimed, compatible handoff in
 the unchanged process and preserved native
 history/tools/approvals without routine prompts. These lifecycle predicates alone
 cannot establish that product outcome.
+
+The periodic successor copy path observes an independently changed authorized
+native source; it does not schedule the original native refresh-token writer.
+The maintained broker-bound model request path bypasses ambient native auth and
+refresh, and native prewarming/global account operations are fenced while broker
+custody is active. A separately qualified original-owner refresh progress path
+remains necessary for indefinite renewal when every request is broker-bound.
+External ownership is preserved; an access-only copy or successful source CAS
+does not prove that the original owner will refresh again.
