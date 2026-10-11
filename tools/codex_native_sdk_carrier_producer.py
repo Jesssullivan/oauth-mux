@@ -5,6 +5,7 @@ its original cutoff; no phase acquires a fresh allowance. This entrypoint never
 selects an origin, reads a legacy repository, or qualifies a native runtime.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -94,27 +95,103 @@ def seal(directory, absolute_deadline, producer_context):
             'files': report['files']}
 
 
+class HeldLeaves:
+    """Four live nofollow descriptors; no proof survives this qualification.
+
+    Full binding is still required once on this same held Root. Repeated full
+    byte equality preserves that binding's manifest/NAR/lineage proof; these
+    descriptors authenticate publication custody, not an independent SDK.
+    """
+    def __init__(self, root):
+        self.root, self.files = root, {}
+        try:
+            carrier.names(root.fd, set(carrier.FILES), root.clock)
+            for name in carrier.FILES:
+                fd, witness = root.open(name)
+                self.files[name] = (fd, witness)
+                limit = carrier.MAX_BYTES if name == 'payload.bin' else carrier.MAX_METADATA
+                need(witness[6] <= limit and stat.S_IMODE(witness[4]) == 0o444,
+                     'held-publication-size-mode')
+            self.check()
+        except BaseException:
+            self.close()
+            raise
+
+    def check(self):
+        self.root.check()
+        carrier.names(self.root.fd, set(carrier.FILES), self.root.clock)
+        for name, (fd, witness) in self.files.items():
+            self.root.clock.tick()
+            need(carrier.identity(os.fstat(fd)) == witness
+                 and carrier.identity(os.stat(name, dir_fd=self.root.fd,
+                                              follow_symlinks=False)) == witness,
+                 'held-publication-custody')
+        self.root.check()
+
+    def readback(self):
+        self.check()
+        rows = []
+        for name in carrier.FILES:
+            fd, witness = self.files[name]
+            os.lseek(fd, 0, os.SEEK_SET)
+            digest, count = hashlib.sha256(), 0
+            while True:
+                self.root.clock.tick()
+                block = os.read(fd, 65536)
+                if not block:
+                    break
+                count += len(block)
+                need(count <= witness[6], 'held-publication-byte-bound')
+                digest.update(block)
+            need(count == witness[6] and carrier.identity(os.fstat(fd)) == witness,
+                 'held-publication-readback')
+            rows.append({'name': name, 'sha256': digest.hexdigest(), 'size': count})
+        self.check()
+        return rows
+
+    def close(self):
+        for fd, _ in self.files.values():
+            os.close(fd)
+        self.files = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
 def qualify(receipt_leaf, outputs, producer_context, cutoff):
     clock = carrier.Clock(cutoff)
     selected = Path(receipt_leaf).resolve(strict=True)
     need(selected.name == 'receipt.json', 'declared-receipt-leaf')
-    with carrier.Root(selected.parent, clock) as source:
+    with carrier.Root(selected.parent, clock) as source, HeldLeaves(source) as held_source:
         raw = carrier.read(source, 'receipt.json', carrier.MAX_METADATA)
         pin = carrier.sha(raw)
-        receipt = carrier.validate_binding(source.path, pin, cutoff)
+        receipt, _, _, _ = carrier.binding(source, pin, clock)
         need(receipt['producer_context'] == producer_context and
              receipt['origin']['receipt_sha256'] == ORIGIN_SHA and
              receipt['origin']['root'] == ORIGIN, 'actual-acquisition-context')
-        original_publication = carrier.publication_report(source.path, pin, cutoff)
+        original_files = held_source.readback()
+        expected_files = {
+            'receipt.json': (pin, len(raw)),
+            'origin-receipt.json': (receipt['origin']['receipt_sha256'], receipt['origin']['receipt_bytes']),
+            'manifest.json': (receipt['manifest_sha256'], receipt['manifest_bytes']),
+            'payload.bin': (receipt['payload_sha256'], receipt['payload_bytes'])}
+        need(all((row['sha256'], row['size']) == expected_files[row['name']]
+                 for row in original_files), 'held-binding-publication-join')
         with private_child(outputs, 'sdk-private', clock) as private:
             destination = carrier.Output(private.path / 'sdk-carrier', clock)
+            retained_leaves = None
             try:
                 for name in FILES:
-                    incoming, before = source.open(name)
+                    held_source.check()
+                    incoming, before = held_source.files[name]
+                    os.lseek(incoming, 0, os.SEEK_SET)
                     outgoing = None
                     try:
                         outgoing = destination.create(name)
-                        count = 0
+                        digest, count = hashlib.sha256(), 0
                         while True:
                             clock.tick()
                             block = os.read(incoming, 65536)
@@ -122,22 +199,35 @@ def qualify(receipt_leaf, outputs, producer_context, cutoff):
                                 break
                             count += len(block)
                             need(count <= before[6], 'retained-copy-size')
+                            digest.update(block)
                             carrier.write_all(outgoing, block, clock)
-                        need(count == before[6] and carrier.identity(os.fstat(incoming)) == before,
+                        need((digest.hexdigest(), count) == expected_files[name]
+                             and carrier.identity(os.fstat(incoming)) == before,
                              'retained-copy-readback')
                         os.fsync(outgoing)
                         os.fchmod(outgoing, 0o444)
+                        created = carrier.identity(os.fstat(outgoing))
+                        need(stat.S_ISREG(created[4]) and created[5] == 1
+                             and carrier.identity(os.stat(name, dir_fd=destination.root.fd,
+                                                          follow_symlinks=False)) == created,
+                             'retained-created-leaf-custody')
+                        destination.materialized[name] = created
+                        destination.root.leaves[name] = created
                     finally:
-                        os.close(incoming)
                         if outgoing is not None:
                             os.close(outgoing)
-                source.check()
+                held_source.check()
                 destination.finish()
-                retained = carrier.publication_report(destination.path, pin, cutoff)
+                # Fresh retained descriptors join the exclusive writer witnesses.
+                # Actual full bytes must equal the already fully bound source;
+                # no prior origin or NAR proof is accepted for different bytes.
+                retained_leaves = HeldLeaves(destination.root)
+                retained_files = retained_leaves.readback()
+                need(retained_files == original_files, 'retained-full-byte-binding')
                 program = {'kind': 'omux-native-sdk-carrier-producer-v1',
                            'producer': '//tools:codex_native_sdk_carrier_seal_producer',
                            'carrier_receipt_sha256': pin, 'origin_receipt_sha256': ORIGIN_SHA,
-                           'producer_context': producer_context, 'files': retained['files'],
+                           'producer_context': producer_context, 'files': retained_files,
                            'all_four_leaves_rechecked': True, 'sdk_execution_qualified': False,
                            'metadata_qualified': False, 'compiler_qualified': False,
                            'runtime_qualified': False}
@@ -154,10 +244,9 @@ def qualify(receipt_leaf, outputs, producer_context, cutoff):
                     program_identity = carrier.identity(os.fstat(out))
                 finally:
                     os.close(out)
-                source.check()
-                need(carrier.publication_report(source.path, pin, cutoff) == original_publication,
+                need(held_source.readback() == original_files,
                      'final-source-carrier-publication')
-                need(carrier.publication_report(destination.path, pin, cutoff) == retained,
+                need(retained_leaves.readback() == retained_files,
                      'final-retained-carrier-publication')
                 need(carrier.read(private, 'native-sdk-carrier-producer.json', 65536)
                      == carrier.encoded(program), 'final-program-publication')
@@ -165,8 +254,12 @@ def qualify(receipt_leaf, outputs, producer_context, cutoff):
                                                follow_symlinks=False)) == program_identity,
                      'named-program-publication')
                 private.check()
+                held_source.check()
+                retained_leaves.check()
                 return program
             finally:
+                if retained_leaves is not None:
+                    retained_leaves.close()
                 destination.close()
 
 

@@ -281,6 +281,147 @@ class ProducerRetentionModels(unittest.TestCase):
         self.assertEqual((outputs / 'sdk-private/sdk-carrier/foreign').read_bytes(), b'foreign owner data')
         self.assertFalse((outputs / 'sdk-private/native-sdk-carrier-producer.json').exists())
 
+    def test_qualifier_runs_full_binding_once_and_preserves_actual_nar_proof(self):
+        source, _, _ = fixtures.CarrierModels.seal(self)
+        outputs = self.root / 'test.outputs'
+        outputs.mkdir(mode=0o700)
+        with (patch.object(producer, 'ORIGIN', str(self.origin)),
+              patch.object(producer, 'ORIGIN_SHA', self.pin),
+              patch.object(producer.carrier, 'binding', wraps=producer.carrier.binding) as full,
+              patch.object(producer.carrier.nar, 'hash_descriptor',
+                           wraps=producer.carrier.nar.hash_descriptor) as nars):
+            program = producer.qualify(source / 'receipt.json', outputs, self.context, self.deadline)
+        self.assertEqual(full.call_count, 1)
+        self.assertEqual(nars.call_count, 2)
+        self.assertEqual([row['name'] for row in program['files']], list(producer.carrier.FILES))
+        for row in program['files']:
+            raw = (outputs / 'sdk-private/sdk-carrier' / row['name']).read_bytes()
+            self.assertEqual((producer.carrier.sha(raw), len(raw)), (row['sha256'], row['size']))
+
+    def test_corrupt_initial_payload_refuses_before_retained_root_creation(self):
+        source, _, _ = fixtures.CarrierModels.seal(self)
+        payload = source / 'payload.bin'
+        raw = payload.read_bytes()
+        payload.chmod(0o600)
+        payload.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        payload.chmod(0o444)
+        outputs = self.root / 'test.outputs'
+        outputs.mkdir(mode=0o700)
+        with patch.object(producer, 'ORIGIN', str(self.origin)), patch.object(producer, 'ORIGIN_SHA', self.pin):
+            with self.assertRaisesRegex(ValueError, 'payload-file-digest'):
+                producer.qualify(source / 'receipt.json', outputs, self.context, self.deadline)
+        self.assertFalse((outputs / 'sdk-private').exists())
+
+    def test_source_change_during_copy_refuses_with_original_held_descriptors(self):
+        source, _, _ = fixtures.CarrierModels.seal(self)
+        outputs = self.root / 'test.outputs'
+        outputs.mkdir(mode=0o700)
+        original = producer.carrier.write_all
+        mutated = False
+        def change(fd, raw, clock):
+            nonlocal mutated
+            original(fd, raw, clock)
+            if not mutated:
+                mutated = True
+                payload = source / 'payload.bin'
+                contents = payload.read_bytes()
+                payload.chmod(0o600)
+                payload.write_bytes(bytes([contents[0] ^ 1]) + contents[1:])
+                payload.chmod(0o444)
+        with (patch.object(producer, 'ORIGIN', str(self.origin)),
+              patch.object(producer, 'ORIGIN_SHA', self.pin),
+              patch.object(producer.carrier, 'write_all', side_effect=change)):
+            with self.assertRaises(ValueError):
+                producer.qualify(source / 'receipt.json', outputs, self.context, self.deadline)
+        self.assertTrue(mutated)
+        self.assertFalse((outputs / 'sdk-private/native-sdk-carrier-producer.json').exists())
+
+    def test_same_byte_retained_leaf_replacement_refuses_writer_identity_join(self):
+        source, _, _ = fixtures.CarrierModels.seal(self)
+        outputs = self.root / 'test.outputs'
+        outputs.mkdir(mode=0o700)
+        original = producer.carrier.Output.finish
+        def replace(output):
+            original(output)
+            output.path.chmod(0o700)
+            leaf = output.path / 'manifest.json'
+            contents = leaf.read_bytes()
+            leaf.rename(output.path.with_name('detached-manifest'))
+            self.write(leaf, contents)
+            output.path.chmod(0o555)
+        with (patch.object(producer, 'ORIGIN', str(self.origin)),
+              patch.object(producer, 'ORIGIN_SHA', self.pin),
+              patch.object(producer.carrier.Output, 'finish', new=replace)):
+            with self.assertRaisesRegex(ValueError, 'named-root-leaf'):
+                producer.qualify(source / 'receipt.json', outputs, self.context, self.deadline)
+        self.assertTrue((outputs / 'sdk-private/detached-manifest').exists())
+        self.assertFalse((outputs / 'sdk-private/native-sdk-carrier-producer.json').exists())
+
+    def test_late_source_or_destination_change_refuses_after_program_write(self):
+        for name in ('source', 'destination'):
+            with self.subTest(name=name):
+                source, _, _ = fixtures.CarrierModels.seal(self, name + '-carrier')
+                outputs = self.root / (name + '-outputs')
+                outputs.mkdir(mode=0o700)
+                original = producer.carrier.write_all
+                changed = False
+                def change(fd, raw, clock):
+                    nonlocal changed
+                    original(fd, raw, clock)
+                    if b'"kind":"omux-native-sdk-carrier-producer-v1"' in raw:
+                        changed = True
+                        root = source if name == 'source' else outputs / 'sdk-private/sdk-carrier'
+                        leaf = root / 'payload.bin'
+                        contents = leaf.read_bytes()
+                        leaf.chmod(0o600)
+                        leaf.write_bytes(bytes([contents[0] ^ 1]) + contents[1:])
+                        leaf.chmod(0o444)
+                with (patch.object(producer, 'ORIGIN', str(self.origin)),
+                      patch.object(producer, 'ORIGIN_SHA', self.pin),
+                      patch.object(producer.carrier, 'write_all', side_effect=change)):
+                    with self.assertRaises(ValueError):
+                        producer.qualify(source / 'receipt.json', outputs, self.context, self.deadline)
+                self.assertTrue(changed)
+
+    def test_held_descriptors_close_on_expiry_without_replacing_original_clock(self):
+        source, _, _ = fixtures.CarrierModels.seal(self)
+        clock = producer.carrier.Clock(self.deadline)
+        with producer.carrier.Root(source, clock) as root:
+            held = producer.HeldLeaves(root)
+            descriptors = [fd for fd, _ in held.files.values()]
+            with patch.object(producer.carrier.time, 'monotonic', return_value=self.deadline):
+                with self.assertRaisesRegex(ValueError, 'deadline'):
+                    with held:
+                        held.readback()
+            self.assertEqual(clock.deadline, self.deadline)
+            self.assertEqual(held.files, {})
+            for fd in descriptors:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+
+    def test_late_source_parent_substitution_preserves_foreign_and_refuses(self):
+        source, _, _ = fixtures.CarrierModels.seal(self)
+        outputs = self.root / 'test.outputs'
+        outputs.mkdir(mode=0o700)
+        original = producer.carrier.write_all
+        changed = False
+        def change(fd, raw, clock):
+            nonlocal changed
+            original(fd, raw, clock)
+            if b'"kind":"omux-native-sdk-carrier-producer-v1"' in raw:
+                changed = True
+                source.rename(self.root / 'detached-source')
+                source.mkdir(mode=0o700)
+                self.write(source / 'foreign', b'foreign owner data')
+                source.chmod(0o555)
+        with (patch.object(producer, 'ORIGIN', str(self.origin)),
+              patch.object(producer, 'ORIGIN_SHA', self.pin),
+              patch.object(producer.carrier, 'write_all', side_effect=change)):
+            with self.assertRaisesRegex(ValueError, 'named-ancestor'):
+                producer.qualify(source / 'receipt.json', outputs, self.context, self.deadline)
+        self.assertTrue(changed)
+        self.assertEqual((source / 'foreign').read_bytes(), b'foreign owner data')
+
 
 if __name__ == '__main__':
     unittest.main()
