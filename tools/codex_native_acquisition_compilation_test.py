@@ -1,5 +1,6 @@
 """Actual sealed-file admission fixtures; models never mutate a Root ledger."""
 import copy
+from contextvars import ContextVar
 import hashlib
 import os
 from pathlib import Path
@@ -24,7 +25,11 @@ class CompilationTests(unittest.TestCase):
             return {'exit':0,'source_commit':'f'*40,'graph_sha256':'e'*64}
         self.outer=outer
         self.addCleanup(patch.stopall)
-        patch.dict(sys.modules,{'codex_native_acquisition_material':SimpleNamespace(producer_success=outer)}).start()
+        carrier_session=ContextVar('compilation-fixture-carrier-session',default=None)
+        token=carrier_session.set(None)
+        self.addCleanup(carrier_session.reset,token)
+        patch.dict(sys.modules,{'codex_native_acquisition_material':SimpleNamespace(
+            producer_success=outer,CARRIER_SESSION=carrier_session)}).start()
         patch.object(compilation,'controller_inputs',return_value='a'*64).start()
         patch.object(compilation,'PUBLIC_ROOT',self.root).start()
         self.material={'source_inventory_sha256':'1'*64,'sdk_inventory_sha256':'2'*64,
