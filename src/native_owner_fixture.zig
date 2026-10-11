@@ -14,6 +14,10 @@ extern "c" fn socketpair(domain: c_int, kind: c_int, protocol: c_int, sockets: *
 pub const Method = enum { identify, register, unregister, announce, capabilities, threads, source_context };
 pub const Mode = enum { normal, wrong_nonce, wrong_operation, wrong_owner, wrong_generation, numeric_generation, duplicate_keys, wrong_thread, false_success, protocol_v1, ambiguous_envelope, server_request, noncanonical_generation, identify_wrong_thread, oversized_packet, drop_reply, stock_capabilities, capabilities_extra, capabilities_missing, capabilities_nonboolean, native_version_oversized, threads_extra, threads_duplicate, threads_numeric_generation, threads_zero_generation, threads_oversized_packet, threads_identity_mismatch };
 pub const Options = struct {
+    // Metadata-only fixture: this declaration never enables credential copy.
+    source_store_present: bool = false,
+    source_context_delay_ms: u32 = 0,
+    source_context_eof: bool = false,
     source_context_mode: enum { available, rotated_context, unavailable, unavailable_nonnull, acquisition_true, acquisition_nonboolean, extra, missing, partial_null, unknown_status, wrong_owner, wrong_nonce, wrong_endpoint, wrong_context, wrong_context_generation, numeric_context_generation, duplicate_context } = .available,
     mode: Mode = .normal,
     owner_id: ?[32]u8 = null,
@@ -558,6 +562,8 @@ pub const Fixture = struct {
         if (version != .integer or version.integer != 2 or !std.mem.eql(u8, try control.string(params, "ownerId"), &owner_hex) or
             !std.mem.eql(u8, try control.string(params, "processNonce"), &nonce_hex) or try probe.parseOwnerGeneration(params.object.get("endpointGeneration").?) != self.options.endpoint_generation) return error.FixtureParamsInvalid;
         _ = self.counts[@backingInt(Method.source_context)].fetchAdd(1, .acq_rel);
+        if (self.options.source_context_eof) return error.FixtureResponseDropped;
+        if (self.options.source_context_delay_ms != 0) try self.io.sleep(.fromMilliseconds(self.options.source_context_delay_ms), .awake);
         const mode = self.options.source_context_mode;
         var result: std.json.ObjectMap = .empty;
         try result.put(a, "protocolVersion", .{ .integer = 2 });
@@ -567,7 +573,7 @@ pub const Fixture = struct {
         try result.put(a, "status", .{ .string = if (mode == .unavailable or mode == .unavailable_nonnull) "unavailable" else if (mode == .unknown_status) "ready" else "available" });
         try result.put(a, "sourceContextId", if (mode == .unavailable or mode == .partial_null) .null else .{ .string = if ((mode == .wrong_context or mode == .rotated_context)) "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" else "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
         try result.put(a, "sourceContextGeneration", if (mode == .unavailable) .null else if (mode == .numeric_context_generation) .{ .integer = 1 } else .{ .string = if ((mode == .wrong_context_generation or mode == .rotated_context)) "2" else "1" });
-        try result.put(a, "storePresent", if (mode == .unavailable) .null else .{ .bool = false });
+        try result.put(a, "storePresent", if (mode == .unavailable) .null else .{ .bool = self.options.source_store_present });
         try result.put(a, "credentialAcquisitionAuthorized", if (mode == .acquisition_nonboolean) .{ .integer = 0 } else .{ .bool = mode == .acquisition_true });
         if (mode == .extra) try result.put(a, "authPath", .{ .string = "/synthetic/forbidden" });
         if (mode == .missing) _ = result.swapRemove("storePresent");

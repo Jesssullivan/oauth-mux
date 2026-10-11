@@ -49,6 +49,39 @@ and manual OAuth imports default to one hour. Explicit custody is bounded to
 one second through 30 days and cannot extend a known provider expiry. Expiry is
 checked again at admission and materialization, not only on initial import.
 
+Supervised fileless native sources have a separate actor-clock maintenance pass,
+independent of alternative-route warming. New verified connections retain their
+exact selected context ID/generation beside the original owner, endpoint, consent
+and origin. Older records without a context pin remain unverified; an advertised
+replacement cannot fill the missing authority. Consent expiry detaches the exact
+source without native IO. One read-only check at a time uses a two-second awake
+deadline, the original peer witness and context selector, then the existing
+qualified installed-image and origin protocol. It neither copies credentials nor
+calls a provider. Kernel-verified departure/replacement of the original owner or
+executable-image mismatch detaches that acquisition source. Context/store/owner
+declaration or origin change requires the independently selected executable
+image to verify before and after the response. An unsuccessful protocol channel
+is never reset: a post-response image check reopens only the same saved endpoint
+with the original peer witness, under the unchanged cutoff, using the existing
+installed-image verifier. Unqualified metadata or failed postverify cannot prove
+that change. Unsupported image/protocol, malformed response
+and inconclusive transport failure remain unverified. A timeout is not evidence
+of disappearance. Transport EOF is also inconclusive. Completion rechecks the
+original monotonic cutoff before any IO-failure-derived detach, plus source/forget
+generations, endpoint, runtime/registry/adapter epoch and custody before changing source status. It
+cannot supersede disconnect, forget or a newly connected source.
+
+Detachment retains independent grant custody, external renewal ownership,
+account identity/tenant, labels, pause/drain state and tombstones. Successful
+maintenance records only a historical observation: it does not extend consent,
+advance a grant, reconnect, restore spent authorization, reconstruct an
+acquisition lease on restart or replay accepted native work. The redacted
+`native_source_maintenance` snapshot field is the last process-local categorical
+observation, not current eligibility, a durable attempt denominator, renewal
+success or a live integration proof. This path does not implement rotated-token
+reacquisition or automatic periodic enrollment. An ordinary installed qualified
+native producer/origin gate remains necessary for those outcomes.
+
 ## Separate lifecycle operations
 
 | Operation | Required effect | Current implementation boundary |

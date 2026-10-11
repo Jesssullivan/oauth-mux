@@ -79,6 +79,9 @@ const NativeSourceAuthority = struct {
     // or a client-selected context cannot construct this consent record.
     consent: native_source_consent.Consent,
     origin: native_source_consent.Handle,
+    // Older custody did not retain this tuple. Never infer it from a newly
+    // advertised context or reconstruct an acquisition lease on restart.
+    context: ?native_source_consent.Context = null,
 };
 const QualifiedNativeRuntime = struct {
     record_sha256: [32]u8,
@@ -711,6 +714,122 @@ const NativeImportFresh = struct {
 const NativeAdoptionFence = struct { pending: PendingImport, fresh: NativeImportFresh };
 const native_source_description_budget: usize = 8192;
 
+// One read-only check at a time, using the original endpoint and peer/context.
+// No credential descriptor, import, consent extension or accepted work replay.
+const NativeSourceMaintenanceTask = struct {
+    engine: *Engine,
+    arena: *std.heap.ArenaAllocator,
+    source_id: [64]u8,
+    authority: NativeSourceAuthority,
+    generation: u64,
+    forget_epoch: u64,
+    epoch: u64,
+    registry: ?setup.RegistryWitness,
+    selected: ?QualifiedNativeRuntime,
+    runtime_root: ?[]const u8,
+    options: ?setup.Options,
+    endpoint: []const u8,
+    until: std.Io.Clock.Timestamp,
+    operation: native_owner.OperationId,
+    job: native_work.Job,
+    failure: ?anyerror = null,
+    image_verified: bool = false,
+    negative_verified: bool = false,
+    fn run(context: *anyopaque, canceled: bool) void {
+        const self: *NativeSourceMaintenanceTask = @ptrCast(@alignCast(context));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.perform() catch |err| { self.failure = err; };
+    }
+    fn perform(self: *NativeSourceMaintenanceTask) !void {
+        const io = self.engine.io;
+        const a = self.arena.allocator();
+        const context = self.authority.context orelse return error.NativeSourceFreshCheckRequired;
+        try native_source_acquisition.deadline(io, self.until);
+        var connection = try native_probe.OwnerConnection.open(io, a, self.endpoint, self.authority.consent.owner.witness, self.until);
+        defer connection.deinit();
+        var image: ?OwnedSourceImage = null;
+        defer if (image) |*opened| opened.deinit(self.engine.allocator);
+        if (self.options) |options| {
+            image = try OwnedSourceImage.open(io, self.engine.allocator, self.runtime_root orelse return error.NativeImageUnavailable, self.selected orelse return error.NativeImageUnavailable, options);
+            try image.?.view(options).verify(&connection);
+            self.image_verified = true;
+        }
+        const selector: native_probe.SourceContextSelector = .{ .owner_id = self.authority.consent.owner.id, .native_nonce = self.authority.consent.owner.nonce, .endpoint_generation = self.authority.consent.owner.endpoint_generation, .context = .{ .id = context.id, .generation = context.generation } };
+        const current = connection.sourceContext(self.operation, selector) catch |err| {
+            switch (err) {
+                error.OutOfMemory, error.PeerDeparted, error.PeerIncarnationChanged, error.NativeOwnerPeerMismatch => return err,
+                else => {},
+            }
+            try self.recheckNegativeImage(image, self.options);
+            return err;
+        };
+        if (current.status != .available or current.store_present != true or current.credential_acquisition_authorized) {
+            try self.recheckNegativeImage(image, self.options);
+            return error.NativeSourceUnavailable;
+        }
+        // Metadata alone cannot qualify the executable or stable origin. The
+        // existing installed-image and origin protocol must also verify.
+        const options = self.options orelse return error.NativeImageUnavailable;
+        if (!self.image_verified or image == null) return error.NativeImageUnavailable;
+        var key = try native_source_acquisition.capabilityKey(options.capability);
+        defer std.crypto.secureZero(u8, &key);
+        const origin = connection.sourceOrigin(self.operation, selector, key, image.?.view(options)) catch |err| {
+            switch (err) {
+                error.OutOfMemory, error.PeerDeparted, error.PeerIncarnationChanged, error.NativeOwnerPeerMismatch, error.PeerImageMismatch => return err,
+                else => {},
+            }
+            try self.recheckNegativeImage(image, options);
+            return err;
+        };
+        if (!std.crypto.timing_safe.eql([32]u8, origin, self.authority.origin)) {
+            try self.recheckNegativeImage(image, options);
+            return error.NativeSourceOriginChanged;
+        }
+        try image.?.view(options).verify(&connection);
+        try native_source_acquisition.deadline(io, self.until);
+    }
+    fn recheckNegativeImage(self: *NativeSourceMaintenanceTask, image: ?OwnedSourceImage, options: ?setup.Options) !void {
+        const retained = image orelse return;
+        const captured = options orelse return;
+        // sourceContext/sourceOrigin mark an unsuccessful protocol connection
+        // failed. Never reset that fence. Reopen the same saved endpoint with
+        // the exact original peer witness solely for the existing image check,
+        // under the original cutoff; no new consent or protocol request.
+        try native_source_acquisition.deadline(self.engine.io, self.until);
+        var after = try native_probe.OwnerConnection.open(self.engine.io, self.arena.allocator(), self.endpoint, self.authority.consent.owner.witness, self.until);
+        defer after.deinit();
+        try retained.view(captured).verify(&after);
+        try native_source_acquisition.deadline(self.engine.io, self.until);
+        self.negative_verified = true;
+    }
+    fn deinit(self: *NativeSourceMaintenanceTask) void {
+        if (self.options) |*options| {
+            std.crypto.secureZero(u8, &options.key);
+            std.crypto.secureZero(u8, &options.capability);
+        }
+        self.arena.deinit();
+        self.engine.allocator.destroy(self.arena);
+        self.engine.allocator.destroy(self);
+    }
+};
+const NativeSourceMaintenanceResult = struct {
+    source_id: [64]u8,
+    state: enum { unverified, owner_context_observed, detached },
+    observed_at: i64,
+    reason: ?anyerror = null,
+};
+const NativeSourceMaintenanceView = struct {
+    source_id: []const u8,
+    state: []const u8,
+    observed_at: i64,
+    reason: ?[]const u8,
+    freshness: []const u8 = "historical_observation",
+    acquisition_authority_granted: bool = false,
+};
+
 const NativeImportTask = struct {
     engine: *Engine,
     pending: PendingImport,
@@ -845,6 +964,11 @@ pub const Engine = struct {
     native_workers: ?*native_work.Supervisor = null,
     native_tasks: std.ArrayList(*NativeTask) = .empty,
     native_import_tasks: std.ArrayList(*NativeImportTask) = .empty,
+    native_source_maintenance: ?*NativeSourceMaintenanceTask = null,
+    native_source_maintenance_due: ?std.Io.Clock.Timestamp = null,
+    native_source_maintenance_cursor: usize = 0,
+    native_source_maintenance_result: ?NativeSourceMaintenanceResult = null,
+    fixture_native_maintenance_enabled: bool = false,
     active_credit: ?snapshot_admission.Key = null,
     committed_nonledger_bytes: usize = 0,
     committed_counts: snapshot_admission.Counts = .{},
@@ -1192,7 +1316,7 @@ pub const Engine = struct {
                 };
             }
             self.mutex.lockUncancelable(self.io);
-            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.runtime_measurement != null or self.runtime_installation != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
+            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.native_source_maintenance != null or self.runtime_measurement != null or self.runtime_installation != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
                 self.condition.waitTimeout(self.io, &self.mutex, .{ .deadline = maintenance_due }) catch |err| switch (err) {
                     error.Timeout => {},
                     // Finish every queued stack reference before exiting. A
@@ -1208,7 +1332,7 @@ pub const Engine = struct {
                 self.completeNativeWork();
                 continue;
             }
-            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.runtime_measurement == null and self.runtime_installation == null) {
+            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.native_source_maintenance == null and self.runtime_measurement == null and self.runtime_installation == null) {
                 self.mutex.unlock(self.io);
                 return;
             }
@@ -1226,6 +1350,9 @@ pub const Engine = struct {
                     self.fence();
                 };
                 if (!self.poisoned) self.expireLeases() catch {
+                    self.fence();
+                };
+                if (!self.poisoned) self.pollNativeSources() catch {
                     self.fence();
                 };
                 if (!self.poisoned and !builtin.is_test) self.pollSources() catch {
@@ -1661,6 +1788,12 @@ pub const Engine = struct {
 
     fn completeNativeWork(self: *Engine) void {
         const job = self.native_workers.?.takeCompleted() orelse return;
+        if (self.native_source_maintenance) |task| if (job == &task.job) {
+            self.native_source_maintenance = null;
+            defer task.deinit();
+            self.completeNativeSourceMaintenance(task) catch { self.fence(); };
+            return;
+        };
         for (self.native_import_tasks.items, 0..) |task, index| if (job == &task.job) {
             _ = self.native_import_tasks.orderedRemove(index);
             self.completeNativeImport(task) catch |err| {
@@ -1778,7 +1911,7 @@ pub const Engine = struct {
         _ = try std.fmt.hexToBytes(&consent_handle, &consent_id);
         const owner: native_source_consent.Owner = .{ .id = current.owner_id, .nonce = current.native_nonce, .endpoint_generation = current.endpoint_generation, .witness = current.witness };
         const observed_at = self.now();
-        const authority: NativeSourceAuthority = .{ .origin = task.source_origin orelse return error.NativeSourceOriginChanged, .consent = .{ .id = consent_handle, .generation = 1, .source_id = source_handle, .source_generation = 1, .owner = owner, .expires_at = try std.math.add(i64, observed_at, selection.consent_seconds), .purpose = .native_access_copy_for_identity_and_request, .allow_reenrollment = selection.allow_reenrollment, .forget_epoch = self.import_forget_epoch } };
+        const authority: NativeSourceAuthority = .{ .origin = task.source_origin orelse return error.NativeSourceOriginChanged, .context = .{ .id = context.id, .generation = context.generation }, .consent = .{ .id = consent_handle, .generation = 1, .source_id = source_handle, .source_generation = 1, .owner = owner, .expires_at = try std.math.add(i64, observed_at, selection.consent_seconds), .purpose = .native_access_copy_for_identity_and_request, .allow_reenrollment = selection.allow_reenrollment, .forget_epoch = self.import_forget_epoch } };
         const admission = try native_source_consent.admit(.{ .source_id = source_handle, .source_generation = 1, .status = .connected, .consent = authority.consent, .owner = owner, .context = .{ .id = context.id, .generation = context.generation }, .store_present = true, .forget_epoch = self.import_forget_epoch }, observed_at, 0, @intCast(remaining));
         if (try self.admitNativeControl(task)) return true;
         self.active_credit = task.credit;
@@ -3714,6 +3847,18 @@ pub const Engine = struct {
             }
             return control.success(allocator, request.id, .{ .identity_submissions = self.fixture_identity_submissions, .observation_submissions = self.fixture_observation_submissions });
         }
+        if (builtin.is_test and eql(method, "fixture.nativeSourceMaintenanceStatus")) {
+            if (channel != .control) return error.WrongChannel;
+            return control.success(allocator, request.id, .{ .in_flight = self.native_source_maintenance != null });
+        }
+        if (builtin.is_test and eql(method, "fixture.nativeSourceMaintenance")) {
+            if (channel != .control) return error.WrongChannel;
+            if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
+            self.fixture_native_maintenance_enabled = true;
+            self.native_source_maintenance_due = null;
+            // Exercise the ordinary actor-clock path, not dispatch-time IO.
+            return control.success(allocator, request.id, .{ .enabled = true });
+        }
         if (builtin.is_test and eql(method, "fixture.externalEffect")) {
             if (channel != .control) return error.WrongChannel;
             const fd = try paths.openPrivateRoot(self.allocator, self.state_dir, false);
@@ -4305,6 +4450,14 @@ pub const Engine = struct {
             .accounts = accounts,
             .sources = self.state.sources.items,
             .source_descriptions = descriptions,
+            // A historical read-only observation never grants acquisition,
+            // enrollment, renewal or native accepted-work authority.
+            .native_source_maintenance = if (self.native_source_maintenance_result) |result| @as(?NativeSourceMaintenanceView, .{
+                .source_id = result.source_id[0..],
+                .state = @tagName(result.state),
+                .observed_at = result.observed_at,
+                .reason = if (result.reason) |reason| @as(?[]const u8, @errorName(reason)) else null,
+            }) else null,
             .grants = self.state.grants.items,
             .leases = self.state.leases.items,
             .bindings = self.state.bindings.items,
@@ -4823,6 +4976,197 @@ pub const Engine = struct {
                 return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, explicit_authorization, null);
             },
         }
+    }
+
+    fn nativeSourceMaintenanceMatches(self: *Engine, source_id: []const u8, scope: NativeSourceAuthority, generation: u64) bool {
+        if (source_id.len != 64 or generation == 0 or generation != scope.consent.source_generation or
+            !eql(source_id, &std.fmt.bytesToHex(scope.consent.source_id, .lower))) return false;
+        var found_source = false;
+        for (self.state.sources.items) |source| if (eql(source.id, source_id)) {
+            if (found_source or source.kind != .native_store or !eql(source.provider, "codex") or source.status != .connected) return false;
+            found_source = true;
+        };
+        var found_generation = false;
+        for (self.import_sources.items) |authority| if (eql(authority.source_id, source_id)) {
+            if (found_generation or authority.generation != generation) return false;
+            found_generation = true;
+        };
+        var found_description = false;
+        for (self.descriptions.items) |description| if (eql(description.source_id, source_id)) {
+            if (found_description or description.path.len != 0 or !eql(description.provider, "codex") or
+                !std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, scope))) return false;
+            found_description = true;
+        };
+        return found_source and found_generation and found_description;
+    }
+
+    fn detachMaintainedNativeSource(self: *Engine, source_id: []const u8, scope: NativeSourceAuthority, generation: u64, reason: anyerror) !void {
+        if (!self.nativeSourceMaintenanceMatches(source_id, scope, generation)) return;
+        var id: [64]u8 = undefined;
+        @memcpy(&id, source_id);
+        // Detach ends this exact acquisition context, retaining independent
+        // grants/history. Never disconnect, forget, reconnect or extend consent.
+        try self.detachImportSource(source_id);
+        self.persist(&.{}) catch |err| {
+            try self.restoreCommitted();
+            return err;
+        };
+        self.native_source_maintenance_result = .{ .source_id = id, .state = .detached, .observed_at = self.now(), .reason = reason };
+    }
+
+    fn pollNativeSources(self: *Engine) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.native_workers == null) return;
+        if (builtin.is_test and !self.fixture_native_maintenance_enabled) return;
+        // Cheap expiry checks are independent of route warming and native IO.
+        // Visit at most one changed record per actor tick, avoiding borrowed
+        // metadata across a persist/restore that replaces its owned strings.
+        for (self.descriptions.items) |description| {
+            const scope = description.native_authority orelse continue;
+            var expired = scope.consent.expires_at <= self.now();
+            for (self.state.sources.items) |source| if (eql(source.id, description.source_id)) {
+                expired = expired or (source.authorized_until != null and source.authorized_until.? <= self.now());
+            };
+            if (expired and self.nativeSourceMaintenanceMatches(description.source_id, scope, scope.consent.source_generation)) {
+                try self.detachMaintainedNativeSource(description.source_id, scope, scope.consent.source_generation, error.NativeSourceUnauthorized);
+                return;
+            }
+        }
+        if (self.native_source_maintenance != null) return;
+        if (self.native_source_maintenance_due) |due| if (due.durationFromNow(self.io).raw.toMilliseconds() > 0) return;
+        self.native_source_maintenance_due = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(1000) });
+        const count = self.descriptions.items.len;
+        if (count == 0) return;
+        const offset = self.native_source_maintenance_cursor % count;
+        for (0..count) |step| {
+            const index = (offset + step) % count;
+            const description = self.descriptions.items[index];
+            self.native_source_maintenance_cursor = (index + 1) % count;
+            const scope = description.native_authority orelse continue;
+            if (!self.nativeSourceMaintenanceMatches(description.source_id, scope, scope.consent.source_generation)) continue;
+            var source_allowed = false;
+            for (self.state.sources.items) |source| if (eql(source.id, description.source_id)) {
+                source_allowed = source.authorized_at <= self.now() and (source.authorized_until == null or source.authorized_until.? > self.now());
+            };
+            var id: [64]u8 = undefined;
+            @memcpy(&id, description.source_id);
+            if (!source_allowed or scope.consent.forget_epoch != self.import_forget_epoch or scope.context == null or description.native_endpoint.len == 0 or builtin.os.tag != .linux) {
+                self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = error.NativeSourceFreshCheckRequired };
+                return;
+            }
+            scope.consent.validate() catch |err| {
+                self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = err };
+                return;
+            };
+            scope.context.?.validate() catch |err| {
+                self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = err };
+                return;
+            };
+            const arena = try self.allocator.create(std.heap.ArenaAllocator);
+            errdefer self.allocator.destroy(arena);
+            arena.* = .init(self.allocator);
+            errdefer arena.deinit();
+            const a = arena.allocator();
+            const endpoint = try a.dupe(u8, description.native_endpoint);
+            const until: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+            const selected = self.qualified_native_runtime;
+            var options: ?setup.Options = null;
+            defer if (options) |*captured| {
+                std.crypto.secureZero(u8, &captured.key);
+                std.crypto.secureZero(u8, &captured.capability);
+            };
+            var runtime_root: ?[]const u8 = null;
+            var runtime_record: ?QualifiedNativeRuntime = null;
+            if (selected) |retained| if (self.native_deployment_selection) |deployment| {
+                if (retained.adapter_epoch == self.adapter_epochs[0] and retained.registry != null and std.meta.eql(retained.registry, self.native_registry) and self.integrationInstalled("codex") and self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) == null) {
+                    var captured = self.setupOptions(a, .codex, .null) catch |err| {
+                        if (err == error.OutOfMemory) return err;
+                        self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = err };
+                        arena.deinit();
+                        self.allocator.destroy(arena);
+                        return;
+                    };
+                    defer {
+                        std.crypto.secureZero(u8, &captured.key);
+                        std.crypto.secureZero(u8, &captured.capability);
+                    }
+                    captured.home = try a.dupe(u8, captured.home);
+                    captured.codex_home = if (captured.codex_home) |value| try a.dupe(u8, value) else null;
+                    captured.config_path = if (captured.config_path) |value| try a.dupe(u8, value) else null;
+                    captured.xdg_config_home = if (captured.xdg_config_home) |value| try a.dupe(u8, value) else null;
+                    captured.deadline = until;
+                    options = captured;
+                    runtime_root = try a.dupe(u8, deployment.installation_root);
+                    var copied = retained;
+                    copied.evidence = try a.dupe(u8, retained.evidence);
+                    runtime_record = copied;
+                }
+            };
+            const task = try self.allocator.create(NativeSourceMaintenanceTask);
+            errdefer self.allocator.destroy(task);
+            task.* = .{ .engine = self, .arena = arena, .source_id = id, .authority = scope, .generation = scope.consent.source_generation, .forget_epoch = self.import_forget_epoch, .epoch = self.adapter_epochs[0], .registry = self.native_registry, .selected = runtime_record, .runtime_root = runtime_root, .options = options, .endpoint = endpoint, .until = until, .operation = try self.identifier(), .job = .{ .lane = .continuation, .context = task, .run = NativeSourceMaintenanceTask.run } };
+            errdefer if (task.options) |*captured| {
+                std.crypto.secureZero(u8, &captured.key);
+                std.crypto.secureZero(u8, &captured.capability);
+            };
+            self.native_workers.?.enqueue(&task.job) catch |err| {
+                // Existing native work owns priority. Retain round-robin progress
+                // and try another bounded pass; never block the actor on IO.
+                if (err == error.NativeWorkCapacity) {
+                    task.deinit();
+                    return;
+                }
+                return err;
+            };
+            self.native_source_maintenance = task;
+            return;
+        }
+    }
+
+    fn completeNativeSourceMaintenance(self: *Engine, task: *NativeSourceMaintenanceTask) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return;
+        if (!self.nativeSourceMaintenanceMatches(&task.source_id, task.authority, task.generation)) return;
+        if (task.forget_epoch != self.import_forget_epoch) return;
+        for (self.descriptions.items) |description| if (eql(description.source_id, &task.source_id)) {
+            if (!eql(description.native_endpoint, task.endpoint)) return;
+        };
+        for (self.state.sources.items) |source| if (eql(source.id, &task.source_id)) {
+            if (source.authorized_at > self.now()) return;
+            if (source.authorized_until != null and source.authorized_until.? <= self.now()) return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, error.NativeSourceUnauthorized);
+        };
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry)) return;
+        if (task.selected) |retained| {
+            if (!self.integrationInstalled("codex") or self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return;
+            const current = self.qualified_native_runtime orelse return;
+            if (!std.crypto.timing_safe.eql([32]u8, current.record_sha256, retained.record_sha256) or current.adapter_epoch != retained.adapter_epoch or
+                !std.meta.eql(current.registry, retained.registry)) return;
+            const options = task.options orelse return;
+            if (!std.crypto.timing_safe.eql(envelope.Key, options.key, self.root_key)) return;
+        }
+        if (task.failure) |failure| if (failure == error.OutOfMemory) return failure;
+        if (task.authority.consent.expires_at <= self.now()) return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, error.NativeSourceUnauthorized);
+        // An IO observation cannot outlive its original monotonic cutoff. The
+        // independent metadata expiry above needs no worker authority.
+        native_source_acquisition.deadline(self.io, task.until) catch |err| {
+            self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .unverified, .observed_at = self.now(), .reason = err };
+            return;
+        };
+        if (task.failure) |failure| {
+            switch (failure) {
+                error.NativeSourceUnavailable, error.NativeSourceContextMismatch, error.NativeSourceOriginChanged,
+                error.NativeOwnerIdentityMismatch => {
+                    if (task.image_verified and task.negative_verified) return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, failure);
+                },
+                error.NativeOwnerPeerMismatch, error.PeerIncarnationChanged, error.PeerDeparted, error.PeerImageMismatch =>
+                    return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, failure),
+                error.OutOfMemory => return failure,
+                else => {},
+            }
+            self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .unverified, .observed_at = self.now(), .reason = failure };
+            return;
+        }
+        // Observation only: no source/grant generation, consent, account or
+        // native accepted-work state is changed on a successful fresh check.
+        self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .owner_context_observed, .observed_at = self.now() };
     }
 
     fn pollSources(self: *Engine) !void {
@@ -8527,6 +8871,331 @@ test "source enrollment generation reply stays bound to the admitted job and pre
     try std.testing.expectError(error.InvalidParams, engine.preflightMutationResult(allocator, "enrollment.start", malformed.value));
     try std.testing.expectEqual(before, engine.revision);
     try std.testing.expectError(error.NotFound, engine.sourceReconcileReply(allocator, .{ .integer = 3 }, "missing-job", true));
+}
+
+const NativeMaintenanceTest = struct {
+    const source_id = std.fmt.bytesToHex(@as([32]u8, @splat(0x41)), .lower);
+    const key: envelope.Key = @splat(0x67);
+
+    fn seed(path: []const u8, endpoint: []const u8, owner: native_source_consent.Owner, expires_at: i64, legacy: bool) !void {
+        const a = std.testing.allocator;
+        var state = domain.State.init(a);
+        defer state.deinit();
+        _ = try state.connectSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex" });
+        _ = try state.connectSource(.{ .id = "maintenance-independent-source", .kind = .explicit, .provider = "codex" });
+        _ = try state.enroll(.{ .account_id = "maintenance-account", .source_id = &source_id, .label = "synthetic-maintenance-label", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-maintenance-subject", .tenant = "synthetic-maintenance-tenant", .verified = true } }, 1);
+        _ = try state.enroll(.{ .account_id = "unused-deduplicated-account", .source_id = "maintenance-independent-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-maintenance-subject", .tenant = "synthetic-maintenance-tenant", .verified = true } }, 1);
+        try state.pause("maintenance-account", true);
+        _ = try state.enroll(.{ .account_id = "maintenance-forgotten", .source_id = "maintenance-independent-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-forgotten-subject", .verified = true } }, 1);
+        try state.forget("maintenance-forgotten");
+        _ = try state.addGrant(.{ .id = "maintenance-native-grant", .account_id = "maintenance-account", .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        _ = try state.addGrant(.{ .id = "maintenance-independent-grant", .account_id = "maintenance-account", .source_id = "maintenance-independent-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        const authority: NativeSourceAuthority = .{
+            .origin = @splat(0xbb),
+            .context = if (legacy) null else .{ .id = @splat(0xaa), .generation = 1 },
+            .consent = .{ .id = @splat(0x42), .generation = 1, .source_id = @splat(0x41), .source_generation = 1, .owner = owner, .expires_at = expires_at, .purpose = .native_access_copy_for_identity_and_request },
+        };
+        const metadata = try std.json.Stringify.valueAlloc(a, Persisted{
+            .state = state.snapshot(),
+            .policy = .{ .warm_alternatives = false },
+            .source_descriptions = &.{.{ .source_id = &source_id, .provider = "codex", .native_endpoint = endpoint, .native_authority = authority }},
+            .import_source_authority = &.{.{ .source_id = @constCast(&source_id), .generation = 1 }},
+        }, .{});
+        defer a.free(metadata);
+        const without_context: ?[]u8 = if (legacy) blk: {
+            // Persist an actual pre-context record, rather than a new-format
+            // null field. The typed decoder must supply its safe default.
+            const field = ",\"context\":null";
+            const at = std.mem.indexOf(u8, metadata, field) orelse return error.LegacyContextFieldMissing;
+            const old = try a.alloc(u8, metadata.len - field.len);
+            @memcpy(old[0..at], metadata[0..at]);
+            @memcpy(old[at..], metadata[at + field.len ..]);
+            break :blk old;
+        } else null;
+        defer if (without_context) |old| a.free(old);
+        const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(database);
+        var store = try storage.Store.openRootWithSnapshotValidator(std.testing.io, a, database, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, without_context orelse metadata, &.{
+            .{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "maintenance-account", .grant_id = "maintenance-native-grant", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-native-maintenance-payload", .renewal_owner = .external } },
+            .{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "maintenance-account", .grant_id = "maintenance-independent-grant", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-independent-maintenance-payload", .renewal_owner = .external } },
+        });
+    }
+
+    fn owner(fixture: *@import("native_owner_fixture.zig").Fixture) !native_source_consent.Owner {
+        const info = try native_probe.inspectOwnerWithDeadline(std.testing.io, std.testing.allocator, fixture.endpoint, "fixture", .fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) }));
+        defer info.deinit(std.testing.allocator);
+        return .{ .id = info.owner_id, .nonce = info.native_nonce, .endpoint_generation = info.endpoint_generation, .witness = info.witness };
+    }
+
+    fn wait(current: *Engine, wanted: []const u8) !std.json.Parsed(std.json.Value) {
+        const until: std.Io.Clock.Timestamp = .fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(5000) });
+        while (until.durationFromNow(std.testing.io).raw.toMilliseconds() > 0) {
+            var snapshot = try reopenTestReply(current, "state.snapshot", .control);
+            const result = control.get(snapshot.value, "result") orelse {
+                snapshot.deinit();
+                return error.MaintenanceSnapshotRefused;
+            };
+            const observed = control.get(result, "native_source_maintenance").?;
+            if (observed == .object and eql(try control.string(observed, "state"), wanted)) return snapshot;
+            snapshot.deinit();
+            try std.testing.io.sleep(.fromMilliseconds(10), .awake);
+        }
+        return error.MaintenanceFixtureTimeout;
+    }
+
+    fn retained(result: std.json.Value, status: []const u8) !void {
+        const sources = control.get(result, "sources").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), sources.len);
+        try std.testing.expectEqualStrings(status, try control.string(sources[0], "status"));
+        try std.testing.expectEqualStrings("connected", try control.string(sources[1], "status"));
+        const accounts = control.get(result, "accounts").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), accounts.len);
+        try std.testing.expectEqualStrings("paused", try control.string(accounts[0], "lifecycle"));
+        try std.testing.expectEqualStrings("synthetic-maintenance-label", try control.string(accounts[0], "label"));
+        const grants = control.get(result, "grants").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), grants.len);
+        for (grants) |grant| {
+            try std.testing.expectEqualStrings("ready", try control.string(grant, "status"));
+            try std.testing.expectEqualStrings("external", try control.string(grant, "ownership"));
+            try std.testing.expectEqual(@as(i64, 1), control.get(grant, "generation").?.integer);
+        }
+    }
+};
+
+test "native maintenance actor clock expires fileless consent without warming or owner IO and retains independent custody" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const fixture = try fixture_mod.Fixture.create(io, a);
+    defer fixture.destroy();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    // Legacy metadata has no context pin. The clock still expires consent;
+    // no new declaration can fill its missing authority or reset the deadline.
+    try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3, true);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+    defer if (current) |engine| engine.deinit();
+    var enabled = try reopenTestReply(current.?, "fixture.nativeSourceMaintenance", .control);
+    defer enabled.deinit();
+    var unverified = try NativeMaintenanceTest.wait(current.?, "unverified");
+    defer unverified.deinit();
+    try std.testing.expectEqualStrings("NativeSourceFreshCheckRequired", try control.string(control.get(control.get(unverified.value, "result").?, "native_source_maintenance").?, "reason"));
+    var detached = try NativeMaintenanceTest.wait(current.?, "detached");
+    defer detached.deinit();
+    try NativeMaintenanceTest.retained(control.get(detached.value, "result").?, "detached");
+    try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+    current.?.deinit();
+    current = null;
+    const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(database);
+    var store = try storage.Store.openRoot(io, a, database, instance.Selection.default.vaultRoot(), NativeMaintenanceTest.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    var metadata = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(u64, 2), metadata.value.import_source_authority[0].generation);
+    try std.testing.expectEqual(@as(u64, 1), metadata.value.source_descriptions[0].native_authority.?.consent.source_generation);
+    try std.testing.expect(metadata.value.source_descriptions[0].native_authority.?.context == null);
+    try std.testing.expectEqualStrings("synthetic-maintenance-tenant", metadata.value.state.accounts[0].identity.tenant);
+    try std.testing.expectEqual(@as(usize, 1), metadata.value.state.tombstones.len);
+    const retained = try store.readGrantStatus("maintenance-account", "maintenance-independent-grant");
+    try std.testing.expectEqual(.ready, retained.?.state);
+}
+
+test "native maintenance actual worker reports unqualified owner context changes without image authority or custody mutation" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]u8{ 0, 1, 2, 3, 4, 5 }) |case| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_eof = case == 5, .source_context_mode = switch (case) { 0, 5 => .available, 1 => .rotated_context, 2 => .unavailable, 3 => .wrong_owner, 4 => .unknown_status, else => unreachable } });
+        defer fixture.destroy();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+        const current = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+        defer current.deinit();
+        var enabled = try reopenTestReply(current, "fixture.nativeSourceMaintenance", .control);
+        defer enabled.deinit();
+        var snapshot = try NativeMaintenanceTest.wait(current, "unverified");
+        defer snapshot.deinit();
+        const result = control.get(snapshot.value, "result").?;
+        try NativeMaintenanceTest.retained(result, "connected");
+        const maintenance = control.get(result, "native_source_maintenance").?;
+        const reason: []const u8 = switch (case) { 0 => "NativeImageUnavailable", 1 => "NativeSourceContextMismatch", 2 => "NativeSourceUnavailable", 3 => "NativeOwnerIdentityMismatch", 4 => "InvalidNativeSourceContext", 5 => "PeerConnectionClosed", else => unreachable };
+        try std.testing.expectEqualStrings(reason, try control.string(maintenance, "reason"));
+        try std.testing.expectEqualStrings("historical_observation", try control.string(maintenance, "freshness"));
+        try std.testing.expectEqual(false, control.get(maintenance, "acquisition_authority_granted").?.bool);
+        try std.testing.expect(fixture.methodCount(.source_context) >= 1);
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        // There is no credential copy/import call or provider submission on
+        // this path, including the apparently available metadata case.
+        var capability = try current.capabilityForTest("enrollment");
+        defer std.crypto.secureZero(u8, &capability);
+        const request = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "fixture.providerSubmissions", .params = .{ .application = "enrollment", .capability = capability[0..] } }, .{});
+        defer a.free(request);
+        const response = try current.dispatch(a, request, .adapter);
+        defer a.free(response);
+        var submissions = try std.json.parseFromSlice(std.json.Value, a, response, .{});
+        defer submissions.deinit();
+        const submitted = control.get(submissions.value, "result").?;
+        try std.testing.expectEqual(@as(i64, 0), control.get(submitted, "identity_submissions").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(submitted, "observation_submissions").?.integer);
+    }
+}
+
+test "native maintenance completed worker cannot publish a negative observation past original cutoff" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_mode = .rotated_context });
+    defer fixture.destroy();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+    // An actual SQLite writer and supervised socket worker, with actor
+    // consumption deliberately held. No fake image qualification is supplied.
+    var current: Engine = .{
+        .allocator = a,
+        .io = io,
+        .state_dir = try a.dupe(u8, path),
+        .state = domain.State.init(a),
+        .observers = observer.Coordinator.init(a),
+        .requests = request_authority.Ledger.init(a, 4096),
+        .mutations = try mutation_authority.Ledger.init(a, 4096),
+        .admission = snapshot_admission.Ledger.init(a),
+        .native_owners = native_owner.Ledger.init(a),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .test_key = NativeMaintenanceTest.key,
+        .fixture_native_maintenance_enabled = true,
+    };
+    defer {
+        if (current.native_workers) |workers| {
+            current.stopping = true;
+            workers.stop();
+            while (current.native_source_maintenance != null) {
+                current.completeNativeWork();
+                io.sleep(.fromMilliseconds(1), .awake) catch @panic("owned worker join interrupted");
+            }
+            workers.deinit();
+        }
+        if (current.network) |network| network.deinit();
+        if (current.db) |*database| database.close();
+        current.release();
+        a.free(current.state_dir);
+    }
+    try current.bootstrap();
+    const Quiet = struct { fn signal(_: *anyopaque) void {} };
+    current.native_workers = try native_work.Supervisor.create(io, a, .{ .context = &current, .signal = Quiet.signal });
+    try current.pollNativeSources();
+    const task = current.native_source_maintenance orelse return error.MaintenanceNotScheduled;
+    const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) });
+    while (!current.native_workers.?.hasCompleted()) {
+        if (until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.MaintenanceFixtureTimeout;
+        try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+    // Keep the original task cutoff unchanged and delay only consumption.
+    while (task.until.durationFromNow(io).raw.toMilliseconds() >= 0) try io.sleep(.fromMilliseconds(10), .awake);
+    const before = current.revision;
+    current.completeNativeWork();
+    try std.testing.expect(current.native_source_maintenance == null);
+    try std.testing.expectEqual(error.NativeSourceDeadline, current.native_source_maintenance_result.?.reason.?);
+    try std.testing.expectEqual(.unverified, current.native_source_maintenance_result.?.state);
+    try std.testing.expectEqual(.connected, current.state.sources.items[0].status);
+    try std.testing.expectEqual(before, current.revision);
+    try std.testing.expectEqual(@as(u64, 1), current.import_sources.items[0].generation);
+}
+
+test "native maintenance late worker cannot supersede explicit disconnect or forget" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |forget| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_mode = .rotated_context, .source_context_delay_ms = 1000 });
+        defer fixture.destroy();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+        var current: ?*Engine = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+        defer if (current) |engine| engine.deinit();
+        var enabled = try reopenTestReply(current.?, "fixture.nativeSourceMaintenance", .control);
+        defer enabled.deinit();
+        const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+        while (fixture.methodCount(.source_context) == 0) {
+            if (until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.MaintenanceFixtureTimeout;
+            try io.sleep(.fromMilliseconds(1), .awake);
+        }
+        var health = try reopenTestReply(current.?, "system.health", .control);
+        defer health.deinit();
+        const revision = control.get(control.get(health.value, "result").?, "revision").?;
+        const params = if (forget)
+            try std.json.Stringify.valueAlloc(a, .{ .operation_id = "maintenance-forget", .expected_revision = revision, .account_id = "maintenance-account" }, .{})
+        else
+            try std.json.Stringify.valueAlloc(a, .{ .operation_id = "maintenance-disconnect", .expected_revision = revision, .source_id = NativeMaintenanceTest.source_id[0..] }, .{});
+        defer a.free(params);
+        const payload = try std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\",\"params\":{s}}}", .{ if (forget) "account.forget" else "source.disconnect", params });
+        defer a.free(payload);
+        const reply = try current.?.dispatch(a, payload, .control);
+        defer a.free(reply);
+        var changed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+        defer changed.deinit();
+        try std.testing.expect(control.get(changed.value, "result") != null);
+        // Let the actor consume the real negative completion while running;
+        // the source/forget fence, rather than shutdown, must reject it.
+        const completed_until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) });
+        while (true) {
+            var status = try reopenTestReply(current.?, "fixture.nativeSourceMaintenanceStatus", .control);
+            defer status.deinit();
+            if (!control.get(control.get(status.value, "result").?, "in_flight").?.bool) break;
+            if (completed_until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.MaintenanceFixtureTimeout;
+            try io.sleep(.fromMilliseconds(10), .awake);
+        }
+        var after = try reopenTestReply(current.?, "state.snapshot", .control);
+        defer after.deinit();
+        const observed = control.get(control.get(after.value, "result").?, "native_source_maintenance").?;
+        if (observed != .null) {
+            // A later pass can truthfully report the now-stale forget consent;
+            // neither it nor the old worker may detach or regain authority.
+            try std.testing.expect(forget);
+            try std.testing.expectEqualStrings("unverified", try control.string(observed, "state"));
+            try std.testing.expectEqualStrings("NativeSourceFreshCheckRequired", try control.string(observed, "reason"));
+        }
+        current.?.deinit();
+        current = null;
+        const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(database);
+        var store = try storage.Store.openRoot(io, a, database, instance.Selection.default.vaultRoot(), NativeMaintenanceTest.key);
+        defer store.close();
+        var saved = try store.readSnapshot();
+        defer saved.deinit();
+        var metadata = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+        defer metadata.deinit();
+        try std.testing.expectEqual(if (forget) domain.SourceStatus.connected else .disconnected, metadata.value.state.sources[0].status);
+        try std.testing.expectEqual(@as(u64, if (forget) 1 else 2), metadata.value.import_source_authority[0].generation);
+        try std.testing.expectEqual(@as(usize, if (forget) 0 else 1), metadata.value.state.accounts.len);
+        try std.testing.expectEqual(@as(usize, if (forget) 3 else 1), metadata.value.state.tombstones.len);
+        try std.testing.expectEqual(@as(u64, if (forget) 1 else 0), metadata.value.import_forget_epoch);
+    }
 }
 
 test "native context engine joins actual hint and peer metadata without source or credential admission" {
