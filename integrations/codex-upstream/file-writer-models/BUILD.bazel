@@ -1,0 +1,18 @@
+# Maintained native model delta inputs only; no acquisition or execution target.
+exports_files([
+    "native-source-controls.json",
+    "native-model-target.patch",
+    "native-model-manifest.json",
+    "expected-tests.json",
+])
+
+filegroup(
+    name = "inputs",
+    srcs = [
+        "native-source-controls.json",
+        "native-model-target.patch",
+        "native-model-manifest.json",
+        "expected-tests.json",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,104 @@
+diff --git a/codex-rs/login/BUILD.bazel b/codex-rs/login/BUILD.bazel
+--- a/codex-rs/login/BUILD.bazel
++++ b/codex-rs/login/BUILD.bazel
+@@ -1,4 +1,6 @@
+-load("//:defs.bzl", "codex_rust_crate")
++load("//:defs.bzl", "codex_rust_crate", "workspace_root_test")
++load("@crates//:defs.bzl", "all_crate_deps")
++load("@rules_rust//rust:defs.bzl", "rust_test")
+ 
+ codex_rust_crate(
+     name = "login",
+@@ -14,3 +16,57 @@
+     },
+     unit_test_timeout = "long",
+ )
++
++# Same native production crate and actual storage model bodies. The dedicated
++# feature excludes only two unrelated tests that require core_test_support;
++# the ordinary login-unit-tests target above retains its complete dev graph.
++rust_test(
++    name = "login-file-writer-storage-tests-bin",
++    crate = ":login",
++    crate_features = ["omux-native-file-writer-storage-models"],
++    deps = all_crate_deps(normal = True) + all_crate_deps(normal_dev = True, cargo_only = True),
++    rustc_env = {"BAZEL_PACKAGE": "codex-rs/login"},
++    rustc_flags = [
++        '--check-cfg=cfg(feature, values("omux-native-file-writer-storage-models"))',
++        "--deny=unexpected_cfgs",
++        "--remap-path-prefix=../codex-rs=",
++        "--remap-path-prefix=codex-rs=",
++    ],
++    tags = ["manual"],
++    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
++)
++
++workspace_root_test(
++    name = "login-file-writer-storage-tests",
++    test_bin = ":login-file-writer-storage-tests-bin",
++    workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
++    env = {"INSTA_WORKSPACE_ROOT": ".", "INSTA_SNAPSHOT_PATH": "src"},
++    args = [
++        "auth::storage::tests::managed_file_writer_models::independent_descriptors_take_one_nonblocking_original_file_lock",
++        "auth::storage::tests::managed_file_writer_models::issued_journal_survives_drop_and_reopen_without_reissue_or_mutation",
++        "auth::storage::tests::managed_file_writer_models::conditional_success_changes_only_native_file_then_clean_sequence",
++        "auth::storage::tests::managed_file_writer_models::changed_owner_refuses_commit_and_retains_issued_predecessor",
++        "auth::storage::tests::managed_file_writer_models::complete_native_identity_required_and_successor_cannot_change_it",
++        "auth::storage::tests::managed_file_writer_models::same_bytes_new_inode_and_same_size_in_place_edit_both_refuse_commit",
++        "auth::storage::tests::managed_file_writer_models::trusted_profile_never_downgrades_after_directory_or_lock_replacement",
++        "auth::storage::tests::managed_file_writer_models::original_cutoff_is_not_restarted_by_storage_and_large_budget_refused",
++        "auth::storage::tests::managed_file_writer_models::authenticated_unknown_duplicate_missing_and_bad_sequence_payloads_refuse",
++        "auth::storage::tests::managed_file_writer_models::symlink_hardlink_writable_leaf_and_missing_journal_refuse",
++        "auth::storage::tests::managed_file_writer_models::lost_journal_readback_never_returns_an_issued_transaction",
++        "auth::storage::tests::managed_file_writer_models::lost_successor_readback_preserves_new_file_and_blocks_predecessor_retry",
++        "auth::storage::tests::managed_file_writer_models::explicit_uncertainty_is_durable_and_never_a_recovery_api",
++        "auth::storage::tests::managed_file_writer_models::enrolled_unsupported_cleanup_refuses_before_keyring_or_fallback_effects",
++        "auth::storage::tests::managed_file_writer_models::clean_native_save_and_delete_share_reservation_without_authority_promotion",
++        "auth::storage::tests::managed_file_writer_models::sequence_exhaustion_refuses_before_any_native_publication",
++        "auth::storage::tests::managed_file_writer_models::auth_mutation_after_clean_journal_never_returns_success_or_readmits",
++        "auth::storage::tests::managed_file_writer_models::journal_replacement_after_final_auth_read_refuses_commit_and_old_operation",
++        "auth::storage::tests::managed_file_writer_models::ordinary_mutation_cannot_erase_or_reinterpret_committed_refresh_terminal",
++        "--exact",
++        "--format=pretty",
++        "--color=never",
++        "--test-threads=1",
++    ],
++    tags = ["manual"],
++    timeout = "long",
++    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
++)
+diff --git a/codex-rs/login/Cargo.toml b/codex-rs/login/Cargo.toml
+--- a/codex-rs/login/Cargo.toml
++++ b/codex-rs/login/Cargo.toml
+@@ -59,3 +59,8 @@
+ 
+ [lib]
+ doctest = false
++
++# Selects only the dedicated Bazel storage-model test configuration; default
++# native auth and the ordinary login unit-test target keep their existing behavior.
++[features]
++omux-native-file-writer-storage-models = []
+diff --git a/codex-rs/login/src/auth/default_client.rs b/codex-rs/login/src/auth/default_client.rs
+--- a/codex-rs/login/src/auth/default_client.rs
++++ b/codex-rs/login/src/auth/default_client.rs
+@@ -449,6 +449,6 @@
+     std::env::var("CODEX_SANDBOX").as_deref() == Ok("seatbelt")
+ }
+ 
+-#[cfg(test)]
++#[cfg(all(test, not(feature = "omux-native-file-writer-storage-models")))]
+ #[path = "default_client_tests.rs"]
+ mod tests;
+diff --git a/codex-rs/login/src/auth/revoke.rs b/codex-rs/login/src/auth/revoke.rs
+--- a/codex-rs/login/src/auth/revoke.rs
++++ b/codex-rs/login/src/auth/revoke.rs
+@@ -152,7 +152,7 @@
+     Some(url.to_string())
+ }
+ 
+-#[cfg(test)]
++#[cfg(all(test, not(feature = "omux-native-file-writer-storage-models")))]
+ mod tests {
+     use super::*;
+     use codex_http_client::ClientRouteClass;
