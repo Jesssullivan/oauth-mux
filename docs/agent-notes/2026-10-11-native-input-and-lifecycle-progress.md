@@ -86,3 +86,42 @@ RQM1 compiled/linked C-bridge evidence is at `/srv/fast-local/jess/state/codex/o
 The frozen checkpoint's pending NV4 observation is now terminal. On exact b40 source, NV4 epoch 8e0e13c4-0f4e-4c10-a88d-b869987ff57e completed **0/0**: the current user's normal default Secret Service collection exists and is **Locked**, with matching identity in both observations. No Unlock/Prompt, factor, item, key, Omux-datastore or provider access occurred. Generic cleanup remains empty/unproved, readbacks0; original cgroup absence supplies no ownership qualification.
 
 Original execution receipt SHA256 is 0285dce2bb23bed71c0d4053f941952fcc94dc52ec653bb71a13c04d893bafff; metadata SHA256 is ab1e7bf787e0a058694fe62c2c17b611e020150cfb3a00a4826eb7a4fa1df1af. The result 2026-10-11-integrated-models-NV4-result.json under the absolute root above has SHA256 9967c4a05fb3e03607431ef50e47e4b1142dcf6cdfc7ef90d240787ed827434f, recorded at 2026-10-11T03:24:29.254209Z. This fresh collection observation supersedes the pending status, while retaining NV3's original evidence. It reads no account count and proves neither loaded resident custody nor two-account enrollment. The normal OS unlock/restoration prerequisite remains open.
+
+
+## Root implementation and terminal proof continuation — 2026-10-11
+
+This continuation supersedes pending execution status above without changing the original checkpoint or its failures. Current implementation source is `233c122b82f19a42d07e3590b5432fc019709079`, parent `e0e914ccaefec7b94d695c2db714bad27c0caff0`, tree `f9a66f428a68a6ddb861317a990a62a3b03ea2bc`, declared graph SHA256 `c778b81971686a1aa7f77270c6ebd6b4af9acd283f5229136272ec40810d1fe3` /432 files. Commits were pushed without force; the original mixed index and nine protected helpers remained unchanged.
+
+The genuine metadata producer's unused delivery dependencies were removed at `67fa270e8bf8c94d7422c1100f37a753e1a6dfc1`. IM1 then genuinely failed its new source-closure fixture: an imported function became an instance-bound method, and an exact existing deferred `pack` import was omitted from the fixture's classification. The correction at e0 uses `staticmethod` and the explicit existing import tuple. It does not relax production verification or ignore imports broadly. Original IM1 exits **3/3** remain; corrected IM2 passes its five source-closure models **0/0**.
+
+At 233, verified account enrollment refreshes supplied descriptive account type; omission retains the existing type and new accounts default to generic. Identity/source/tenant/tombstone gates remain before mutation; allocations are staged before changing the source association and type. This confers no quota, entitlement, grant, renewal or native-session authority. Four meaningful regressions cover held native work and omission, refusal fences, allocation failures, and the encrypted import/replay-refusal/restart path.
+
+The same successor isolates SDK export from exactly two unused delivery modules. All SDK leaf inputs, declared data, byte/NAR/lineage verification and original deadlines remain. SDK export still regenerates metadata inside its own original 600-second phase. Source isolation is not metadata-output reuse, a qualified SDK, a measured speedup or a timeout diagnosis.
+
+| Terminal gate / exact epoch | Source | Actual result | Cleanup scope |
+| --- | --- | --- | --- |
+| IM1 `b1e107e7-ae20-4f54-95ba-333353ac3b30` | 67fa270e | Metadata23 and docs PASS; source-closure fixture FAILED with one failure and fifteen errors. Original **3/3** retained. | Generic empty/unproved, readbacks0. |
+| IM2 `750f875d-dfab-44a5-8e1f-b2b171719fb1` | e0e914cc | Corrected source-closure five models PASS; **0/0**. | Generic empty/unproved, readbacks0. |
+| NM2 `e9af2ab5-1131-4f53-954b-5973ee5296db` | e0e914cc | Genuine metadata producer FAILED at original analysis deadline; **125/124**, 114 packages /56121 targets configured. Zero tests and zero metadata outputs; no selector admitted. | Exact owned stop; **two** verified cleanup readbacks. |
+| IM3 `90998832-c4e3-4e20-b121-1655cd8519b3` | 233c122b | Domain53, snapshot-import15, source-closure7, SDK/metadata23 models and format PASS; all five declared targets **0/0**. These are model/regression predicates, including encrypted persistence, rather than installed/live proof. | Generic empty/unproved, readbacks0. |
+
+NM2 completed before 233 was adopted. Its terminal SDK repository observation retained 60569 aliases, without repository BUILD or metadata JSON publication. Earlier samples showed partial alias materialization and bounded resources. Those observations locate unfinished declaration work; they do not identify a complete root cause. No unchanged NM3, SDK export, final compiler dispatch or budget increase was admitted.
+
+The next native implementation candidate is a Bazel-invoked locked-Python repository declaration helper. The source-only boundary review remains a finding, with no implemented helper or performance result: it must preserve every leaf input, physical/link/absence checks, retained-root and external-target invalidation, top-level metadata contracts, failure publication and all downstream action authentication. Complete watches and partial-repository rejection require independent qualification before another genuine attempt.
+
+The metadata/SDK/compiler/runtime/ordinary-TUI selectors remain unqualified; compiler7/8 stays HOLD. NV4 remains the latest normal default collection observation: **Locked**, metadata-only, no fresh account-count or loaded resident-custody observation. Normal two-account custody, renewal adoption, actual Codex package, ordinary native resume and same-process handoff remain open. Installed browser consent/provider acquisition, current fleet activation/update/removal, Darwin, signing and deployed successor downloads also remain open. The original fifteen-hour goal stays active, overdue and incomplete.
+
+The completed source-only documentation readback found all four earlier authority corrections already present at e0; no duplicate patch was adopted. Linear's seven own comments and PR541 received an exact-readback factual checkpoint while NM2 was live. A final terminal reconciliation follows this appended note; no issue acceptance, scope, completion state or historical proof is promoted by a comment.
+
+
+| Added durable artifact | SHA256 |
+| --- | --- |
+| `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-integrated-models-IM1-result.json` | `469baf49bc9daa7928adb8f630671ba0fe54e5607b4ae198dd3878713b10e9b2` |
+| `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-integrated-models-IM2-result.json` | `9e7ac8498be1c48830d6d55bed6db8903cd9f6aa8c0a4382e20c2c9fdc9626de` |
+| `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-integrated-models-NM2-result.json` | `0a251bcf6b0e2a79d309415c9b82c275d603bf5b2ecbc2d4000ce3d3ceea77a7` |
+| `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-integrated-models-IM3-result.json` | `ece9b612aa48ea50305d1c23886e9651869b9f4a9a076b7a1c820729b982b265` |
+| `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-NM2-terminal-declaration-observation.json` | `4b7bb3fde8c89fec3e7612eeecc771ed554ba3b2551487d035d184ab15d31082` |
+| `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-account-metadata-sdk-isolation-adoption-result.json` | `824df8dd5dcef8ccc5dd279ea274822744ae155cfb805d963cf7267ec2e211ac` |
+| `/home/jess/.local/state/omux-proposals-20261010/estate_home_manager/docs/agent-notes/2026-10-11-native-metadata-repository-boundary-review.md` | `3ec274a5ddd815351bda4b5ffa580d5a5dd46047c40b522e709b7f0032b06beb` |
+| `/home/jess/.local/state/omux-proposals-20261010/estate_docs_authority/docs/agent-notes/2026-10-11-docs-authority-e0e914cc-no-change-readback.txt` | `d4798df4feda45ff5eaa1ab81f9e7ee928a3b2fdbfca15686680e00c0eb7777a` |
+| `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-estate-tracker-reconciliation-v3-live-result.json` | `3d2203b50758c87ad02ec9808eca05bb0640df8902e5f809676d6ab8428e39c9` |
