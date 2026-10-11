@@ -46,6 +46,26 @@ class NativeHostSetupTest(unittest.TestCase):
         self.assertEqual(setup.remove("chromium", "b" * 32, self.binary, development, "development"), "removed")
         self.assertTrue(self.destination.is_file())
 
+    def test_firefox_development_registration_coexists_and_rejects_cross_channel_ids(self):
+        development_id = "browser-sources-dev@omux.xoxd.ai"
+        development = self.hosts / "ai.xoxd.omux.dev.json"
+        self.assertEqual(self.install("firefox", FIREFOX_ID), "installed")
+        release_before = self.destination.read_bytes()
+        self.assertEqual(setup.install("firefox", development_id, self.binary, development, "development"), "installed")
+        self.assertEqual(setup.install("firefox", development_id, self.binary, development, "development"), "unchanged")
+        output = json.loads(development.read_text())
+        self.assertEqual(output["name"], "ai.xoxd.omux.dev")
+        self.assertEqual(output["allowed_extensions"], [development_id])
+        self.assertNotIn("allowed_origins", output)
+        for identity, channel in ((FIREFOX_ID, "development"), (development_id, "release")):
+            with self.subTest(identity=identity, channel=channel):
+                with self.assertRaises(setup.SetupError):
+                    setup.manifest("firefox", identity, self.binary, channel)
+        with self.assertRaises(setup.SetupError):
+            setup.remove("firefox", development_id, self.binary, self.destination, "development")
+        self.assertEqual(setup.remove("firefox", development_id, self.binary, development, "development"), "removed")
+        self.assertEqual(self.destination.read_bytes(), release_before)
+
     def test_dangling_declarative_registration_is_preserved_with_guidance(self):
         target = "/nix/store/nonexistent-home-manager-files/native-host.json"
         self.destination.symlink_to(target)

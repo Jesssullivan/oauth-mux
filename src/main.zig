@@ -57,7 +57,7 @@ pub fn main(init: std.process.Init) !void {
         return daemon.run(io, init.gpa, locations);
     }
     if (std.mem.eql(u8, command, "native-host")) {
-        if (native_default) try validateNativeArguments(parameters) else if (parameters.len != 0) return error.InvalidArguments;
+        if (native_default) try validateNativeArguments(parameters, selection) else if (parameters.len != 0) return error.InvalidArguments;
         return nativeHost(io, init.gpa, locations, if (native_default) parameters else &.{});
     }
     if (std.mem.eql(u8, command, "git-credential")) {
@@ -388,7 +388,7 @@ fn nativeFailure(allocator: std.mem.Allocator, id: []const u8, failure: anyerror
 
 /// Browser metadata selects no provider and grants no identity authority.
 /// The installed browser host manifest also restricts exact extension IDs.
-pub fn validateNativeArguments(arguments: []const []const u8) !void {
+pub fn validateNativeArguments(arguments: []const []const u8, selection: instance.Selection) !void {
     if (arguments.len == 0) return; // Manual stdin bridge diagnostics.
     if (arguments.len == 1) {
         const prefix = "chrome-extension://";
@@ -397,7 +397,11 @@ pub fn validateNativeArguments(arguments: []const []const u8) !void {
         for (origin[prefix.len .. origin.len - 1]) |byte| if (byte < 'a' or byte > 'p') return error.InvalidNativeHostCaller;
         return;
     }
-    if (arguments.len == 2 and std.mem.eql(u8, arguments[1], "browser-sources@omux.xoxd.ai")) {
+    const firefox_id = switch (selection) {
+        .default => "browser-sources@omux.xoxd.ai",
+        .dev => "browser-sources-dev@omux.xoxd.ai",
+    };
+    if (arguments.len == 2 and std.mem.eql(u8, arguments[1], firefox_id)) {
         try paths.validateAbsolute(arguments[0]);
         if (!std.mem.endsWith(u8, arguments[0], ".json")) return error.InvalidNativeHostCaller;
         return;
@@ -663,8 +667,10 @@ test "control request serialization keeps JSON parameters out of argv" {
 }
 
 test "native messaging launch metadata accepts only supported browser shapes" {
-    try validateNativeArguments(&.{"chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"});
-    try validateNativeArguments(&.{ "/tmp/ai.xoxd.omux.json", "browser-sources@omux.xoxd.ai" });
-    try std.testing.expectError(error.InvalidNativeHostCaller, validateNativeArguments(&.{"https://fixture.invalid"}));
-    try std.testing.expectError(error.InvalidNativeHostCaller, validateNativeArguments(&.{ "/tmp/ai.xoxd.omux.json", "other@fixture.invalid" }));
+    inline for (.{ instance.Selection.default, instance.Selection.dev }) |selection| {
+        try validateNativeArguments(&.{}, selection); // Manual diagnostics remain available.
+        try validateNativeArguments(&.{"chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"}, selection);
+        try std.testing.expectError(error.InvalidNativeHostCaller, validateNativeArguments(&.{"https://fixture.invalid"}, selection));
+        try std.testing.expectError(error.InvalidNativeHostCaller, validateNativeArguments(&.{ "/tmp/ai.xoxd.omux.json", "other@fixture.invalid" }, selection));
+    }
 }

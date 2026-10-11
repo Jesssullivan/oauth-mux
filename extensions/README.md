@@ -167,6 +167,21 @@ The release-channel artifacts are `bazel-bin/extensions/chromium_package.zip` an
 and shared modules. Tests use synthetic browser APIs and verify package contents;
 they do not establish live browser or application handoff support.
 
+The unsigned local Firefox development artifact is
+`//extensions:firefox_dev_package`, producing
+`bazel-bin/extensions/firefox_dev_package.xpi`. It retains the release permission
+scope and uses the existing exact development identity
+`browser-sources-dev@omux.xoxd.ai`, channel `development`, instance `dev` and host
+`ai.xoxd.omux.dev`. Register that exact ID with `//extensions:host_setup` using
+`--browser firefox --channel development`, the installed development host alias
+and an explicit destination ending in `ai.xoxd.omux.dev.json`. Runtime launch
+validation admits the Firefox ID for its selected instance only. The release
+identity remains `browser-sources@omux.xoxd.ai` / `ai.xoxd.omux` / default.
+This package supplies no signing or store identity and does not establish Firefox
+installation, consent, account acquisition or fleet activation. Chromium remains
+the first installed-browser proof lane; Firefox temporary installation and future
+Mozilla-signed delivery retain their separate requirements.
+
 ## Register the native host
 
 Use a stable, installed executable or alias named `omux-native-host`. Its absolute

@@ -988,7 +988,7 @@ test("generated manifests grant no blanket sites, page scripts, browser debuggin
 });
 
 test("Bazel extension archives contain complete root manifests and local module dependencies", async () => {
-  for (const kind of ["chromium", "firefox"]) {
+  for (const kind of ["chromium", "firefox", "firefoxDev"]) {
     const argument = process.argv.find(value => value.startsWith(`--${kind}Archive=`));
     assert.ok(argument, "Bazel must supply the packaged browser artifact");
     const bytes = await readFile(argument.slice(argument.indexOf("=") + 1));
@@ -1013,6 +1013,22 @@ test("Bazel extension archives contain complete root manifests and local module 
     }
     assert.equal(bytes.readUInt32LE(offset), 0x02014b50, "archive must contain a central directory");
     const manifest = JSON.parse(entries.get("manifest.json").toString("utf8"));
+    if (kind.startsWith("firefox")) {
+      const development = kind === "firefoxDev";
+      const source = JSON.parse(await readFile(new URL("../firefox/manifest.json", import.meta.url), "utf8"));
+      const expected = structuredClone(source);
+      if (development) {
+        expected.name += " (development)";
+        expected.browser_specific_settings.gecko.id = "browser-sources-dev@omux.xoxd.ai";
+      }
+      assert.deepEqual(manifest, expected, "channel packaging changes only the name and exact Gecko identity");
+      assert.equal(Object.hasOwn(manifest, "key"), false);
+      const expectedChannel = development
+        ? 'export const CHANNEL = "development";\nexport const INSTANCE = "dev";\nexport const NATIVE_HOST = "ai.xoxd.omux.dev";\n'
+        : await readFile(new URL("./channel.mjs", import.meta.url), "utf8");
+      assert.equal(entries.get("shared/channel.mjs").toString("utf8"), expectedChannel);
+      assert.equal([...entries.keys()].some(name => name.startsWith("META-INF/")), false, "local archives remain unsigned");
+    }
     for (const resource of [manifest.action.default_popup, manifest.background.service_worker, ...(manifest.background.scripts ?? [])].filter(Boolean)) assert.ok(entries.has(resource), `missing extension resource ${resource}`);
     for (const name of ["shared/service.mjs", "shared/protocol.mjs", "shared/adapters.mjs", "shared/acquisition.mjs", "shared/native.mjs", "shared/popup.mjs", "shared/popup.css"]) assert.ok(entries.has(name));
     assert.equal([...entries.keys()].some(name => name.endsWith(".test.mjs")), false);

@@ -256,6 +256,61 @@ class ControlPeer(AdapterPeer):
         return json.dumps(reply, separators=(",", ":")).encode() + b"\n"
 
 
+class NativeHostLaunchCliTest(unittest.TestCase):
+    """Built launch admission only; EOF avoids daemon, browser and vault IO."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory(dir=str(Path("/tmp").resolve()))
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.root.chmod(0o700)
+        self.alias = self.root / "omux-native-host"
+        self.alias.symlink_to(OMUX.resolve(strict=True))
+        self.states = {}
+        for selection in ("default", "dev"):
+            state = self.root / selection
+            state.mkdir(mode=0o700)
+            (state / "run").mkdir(mode=0o700)
+            self.states[selection] = state
+
+    def invoke(self, selection: str, caller: list[str]) -> subprocess.CompletedProcess:
+        environment = dict(os.environ)
+        environment.pop("XDG_RUNTIME_DIR", None)
+        environment["OMUX_INSTANCE"] = selection
+        return subprocess.run(
+            [str(self.alias), "--state-dir", str(self.states[selection]), *caller],
+            input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, timeout=10, check=False,
+        )
+
+    def test_firefox_launch_admits_only_its_selected_instance_id(self) -> None:
+        release = [str(self.root / "ai.xoxd.omux.json"), "browser-sources@omux.xoxd.ai"]
+        development = [str(self.root / "ai.xoxd.omux.dev.json"), "browser-sources-dev@omux.xoxd.ai"]
+        for selection, admitted, crossed in (("default", release, development), ("dev", development, release)):
+            with self.subTest(selection=selection):
+                result = self.invoke(selection, admitted)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, b"")
+                result = self.invoke(selection, crossed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"InvalidNativeHostCaller", result.stderr)
+                self.assertEqual(result.stdout, b"")
+        self.assertFalse(any((state / "run" / "browser.sock").exists() for state in self.states.values()))
+
+    def test_launch_shape_and_manual_diagnostics_remain_bounded(self) -> None:
+        for selection in ("default", "dev"):
+            with self.subTest(selection=selection):
+                for caller in ([], ["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]):
+                    self.assertEqual(self.invoke(selection, caller).returncode, 0)
+                identity = "browser-sources-dev@omux.xoxd.ai" if selection == "dev" else "browser-sources@omux.xoxd.ai"
+                for caller in ([str(self.root / "host.txt"), identity],
+                               [str(self.root / "host.json"), identity + ".extra"],
+                               ["https://fixture.invalid"]):
+                    result = self.invoke(selection, caller)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b"InvalidNativeHostCaller", result.stderr)
+
+
 class MutationCliTest(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory(dir=str(Path("/tmp").resolve()))
