@@ -1,6 +1,31 @@
 {
   "schema_version": 2,
   "kind": "omux-native-sdk-carrier-metadata-input-v2",
-  "status": "awaiting-qualified-sdk-carrier",
-  "selection": null
+  "status": "selected-qualified-carrier-for-metadata",
+  "selection": {
+    "original_selection": {
+      "kind": "omux-native-source-acquisition-metadata-input-v1",
+      "source_root": "/home/jess/.local/state/omux-execution-20261005/7cf215c2-a7eb-4983-bc7b-3f29cd20b5ba/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_acquisition_source_producer/test.outputs/native-source-acquisition-source",
+      "source_receipt_sha256": "9e18ed5731a4474d0e9981cfb08da6e3f3e130014615a2dd9a8e26f06246e344",
+      "source_inventory_sha256": "8542cbe124d74046f20c92df2e304661cd2a9bd9bc5b2df1bc700ce7bf867762",
+      "export_root": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/e5b17d7e-d19d-4cb2-be22-41a86b98af7b/sdk-private/sdk-export",
+      "export_receipt_sha256": "1aa4c87d689f464e576a5c6a51b4c6350a8f0346f6b94299856d01db5147d4f0",
+      "binding_receipt_sha256": "506e05870f323c7c148bc50c99b7f2422db39f669c460074e0770f67a1329a84"
+    },
+    "carrier": {
+      "receipt_sha256": "18e5743783a59757eb619fac189ee84c1e797bb7c52af320a23ee749a56b0398"
+    },
+    "qualification": {
+      "producer": {
+        "receipt": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/ab09d29e-f91f-4e56-940c-c3cee6ab32f5/receipt.json",
+        "sha256": "5778d9189358e9cfdec958b8980d8e0adc60c03841415b74143dc5207b35f313",
+        "source_commit": "2f8f617645ab8c2ecefd29e63f946fee162df408",
+        "graph_sha256": "0fc879ae85b5ce47ee6143279b114333010a336b4b899544395af1fc3d6e5184"
+      },
+      "report": {
+        "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/ab09d29e-f91f-4e56-940c-c3cee6ab32f5/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_sdk_carrier_seal_producer/test.outputs/sdk-private/native-sdk-carrier-producer.json",
+        "sha256": "9f7ce93f5b88619a2b9b421ba5914947f4e9358b877ecc4ef6df7e3f4bdc8885"
+      }
+    }
+  }
 }

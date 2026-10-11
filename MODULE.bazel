@@ -276,13 +276,18 @@ native_sdk_carrier_acquisition(
     origin_receipt_sha256 = "1aa4c87d689f464e576a5c6a51b4c6350a8f0346f6b94299856d01db5147d4f0",
 )
 
-# Cold until a genuine successful sealing/qualification run is independently
-# retained and reviewed. Empty attributes select no future artifact or digest.
+# Select the actual CS2 retained sealing output and four observed digests.
+# The independent metadata consumer must requalify these bytes; no SDK or native support claim.
 native_sdk_carrier_selected = use_repo_rule("//tools:codex_native_sdk_carrier_inputs.bzl", "codex_native_sdk_carrier_selected_inputs")
 native_sdk_carrier_selected(
     name = "omux_native_sdk_carrier_inputs",
-    carrier_root = "",
-    digests = {},
+    carrier_root = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/ab09d29e-f91f-4e56-940c-c3cee6ab32f5/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_sdk_carrier_seal_producer/test.outputs/sdk-private/sdk-carrier",
+    digests = {
+        "manifest.json": "6e9a5bd1915bd592a0454fb5f977b54e1a63c70de532d4869b703aa121e92446",
+        "origin-receipt.json": "1aa4c87d689f464e576a5c6a51b4c6350a8f0346f6b94299856d01db5147d4f0",
+        "payload.bin": "d196c4b9165dba690fc86c732512ec6dc15e882a409ac3509f4a85c3bd225835",
+        "receipt.json": "18e5743783a59757eb619fac189ee84c1e797bb7c52af320a23ee749a56b0398",
+    },
 )
 native_sdk_carrier_proof = use_repo_rule("//tools:codex_native_sdk_carrier_proof_inputs.bzl", "codex_native_sdk_carrier_proof_inputs")
 native_sdk_carrier_proof(
