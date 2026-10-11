@@ -260,3 +260,56 @@ Root artifact hashes bind retained files under /home/jess/.local/state/omux-prop
 | `2026-10-11-BD2-seed-shadow-adoption-result.json` | `7e1c70459ab4052d99d3622b99c25086a29b6172abe1d948fe73c51ba1f7a791` |
 | `2026-10-11-BD3-seed-epoch-adoption-result.json` | `6ac4401ff6f42b09076a9fdbd0c267886d6d8955663241d483c2ba5cb7748739` |
 | `2026-10-11-estate-v6-fresh-issues-readback.json` | `ed839f2b39d966a7bc8e6611450ce17ebe55a836ac6e654ea929c7dd763e47f4` |
+
+
+## Native diagnostics, carrier qualification and custody continuation — 2026-10-11
+
+Authority remains AGENTS.md, the native account-lifecycle reset and R-N13. This append preserves the entire preceding checkpoint and every historical failure. Authored source is clean, pushed experimental `f1c71fe92836f02abfc77c7d18412df443fbdee7`, tree `52b1fc8d666e67b4d4d99dfceec0017084c33712`, graph `ad475e36a39456c7ff43d775797c3b5afab41f3d7f218948e59242f93da99f19` /434. The document preimage is unchanged from `0405a38d`. Root remains sole adopter/executor.
+
+| Actual gate / epoch | Source | Result and scope |
+| --- | --- | --- |
+| MD1 `2d913aca-bc7e-493b-adf1-7e293d9584b7` | 9d54b390 | **0/0**: real mapper parse/load, 22 declaration models and docs PASS. Six static diagnostics are implemented; no genuine metadata qualification follows. |
+| NM6 `f1a32365-f3c5-44a9-8dc7-419d6112fb50` | 9d54b390 | Genuine changed-input metadata FAILED **125/124** at its original deadline, with no executed tests or qualified metadata output. Exact owned stop and two cleanup readbacks verified. |
+| DI1 `22bd13e3-d507-4469-85ca-1d4184c381f5` | 0405a38d | **0/0**, all four targets PASS: 22 Darwin bundle fixtures, 101 execution-guard cases, 23 site-guard cases and docs. These are fixture/carrier predicates, not Apple SDK or installed/site proof. |
+| NV5 `995e06db-d7cf-4560-bcb8-24f4eb1ccf61` | 1007d778 | **0/0**, normal default Secret Service collection **Locked**, metadata only, recorded `2026-10-11T08:01:03.388593+00:00`. No unlock/factor/item/key/datastore/provider or account-count read. |
+
+MD1, DI1 and NV5 retain generic cleanup empty/ownership-unproved/readbacks0; absent cgroups do not establish ownership. Suite populations are not summed. NM6 preserved the original **1170/1200-second** work/cleanup clocks and **4GiB/512-task** aggregate limits. Its retained log contains `beforeplan` and `acceptedplan`; the latter is the last retained marker. One bounded ownership-checked JVM sample names Skyframe `batchPrefetch` and `hashCode`. Neither missing later markers nor that sample establishes a source phase, cause, performance improvement or RCA. Earlier NM failures remain unchanged; native metadata/SDK/compiler/runtime/package selectors remain unqualified and compiler7/8 remains HOLD.
+
+Darwin `b119c6b4` now conservatively refuses external legacy-service presence/inspection uncertainty and packages a regular declared native-host CLI alias. Owned-site carrier `0405a38d` admits an independent private physical checkout and separates exact retained reference imports from extension metadata, preserving raw JSON/digest output fences. DI1 qualifies those bounded tests. Apple SDK compilation, actual services/GUI/browser registration/signing, full owned website capture, selected reference import and current site/archive/download artifacts remain open. Dirty website provenance and the producer's null revision/dirty flag are not rewritten into clean-source claims.
+
+Custody V4 `f1c71fe9` is implemented and independently source-reviewed: actor-owned bounded observation joins authenticated metadata/checkpoint with an exact-keyed five-table commitment; integrity/rollback failures fence the store and actor. CU1 epoch `0214f6db-25df-47c4-8910-ece0e11b8d72` is **LIVE / terminal pending at this authored checkpoint**. No V4 tests are claimed passed, no authenticated socket collector is proved and deployment/activation authority remains false. NV5 remains the latest normal-vault observation; current key readiness, loaded custody and retained account count remain unobserved. Historical C8/private Linux/Keychain receipts retain their exact limits.
+
+Next priorities retain the existing product scope:
+
+1. Establish normal OS unlock/restoration, original-key readiness and explicit same-actor custody reopening.
+2. Qualify genuine native metadata/compiler/runtime and the exact candidate package, then ordinary launch and accepted-history resume; retain prerequisite order and compiler HOLD.
+3. Complete attended Yoga Chromium permission/lifecycle proof, separately from provider-field, identity and usable-authority qualification.
+4. Qualify actual Home Manager installation/activation/owned updates and selected website reference/import/archive artifacts.
+5. Retain two independently verified usable compatible accounts and prove live same-process handoff with native history/tools/approvals preserved and no accepted-work replay.
+
+Stock support, adopted renewal, complete installed/browser/Darwin/signing/publication and achieved SLO/SLA gates remain open. The original **2026-10-05T04:03:36Z–19:03:36Z fifteen-hour goal remains ACTIVE, overdue and incomplete**; this append starts no new clock. Its document check and any factual tracker current-pointer reconciliation require separate root receipts. This author performed private source/receipt drafting only, without project execution, shared edits or service/provider/tracker actions.
+
+Added root artifacts remain under `/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/`; these hashes bind retained files.
+
+| Root artifact filename | SHA256 |
+| --- | --- |
+| `2026-10-11-integrated-models-MD1-result.json` | `c0f3800413eba9dc725f3dd641dee77b10f9ca718a7d5d11a92064a468e04ef3` |
+| `2026-10-11-integrated-models-NM6-result.json` | `a33ac66056c4fdeef9ab9868a1faa579dff17f9a0f4d11447a669fbc7cb3fabe` |
+| `2026-10-11-NM6-terminal-diagnostics.json` | `bbe98ebde373ec13d0127a8c21cfcde3610e3de20e75def600cdd2320fee1639` |
+| `2026-10-11-NM6-terminal-workload.evidence` | `9daa5303570ceab47ba19ce36af4f232c13730ec9306499531e615a0e7bd1d76` |
+| `2026-10-11-NM6-owned-jvm-diagnostic-selected-observation.json` | `c4a60b529c875abec2438bdb36e9f6a2729809a410c17a2b6a3cdbff1f4144be` |
+| `2026-10-11-integrated-models-DI1-result.json` | `c1870fca0562120e52522a75124e1c15277874c0643f479530936bf758335051` |
+| `2026-10-11-integrated-models-NV5-result.json` | `e4d5e43091f155ea3075a06b21aff766b76bee0294e7c4cdf49d9cdb08b98b3b` |
+| `2026-10-11-custody-observation-v4-adoption-result.json` | `0f92bb0c186c483d9c73799a524cf17a35bebf3e033ff5530e3d2b7df0025e6c` |
+
+## Custody correction and declared website qualification inputs — 2026-10-11 09:03 UTC
+
+The preceding CU1 LIVE wording is the preserved authored checkpoint, superseded by the actual terminal records here. CU1 at f1c71fe9 ended **1/1**: control, reference, envelope, recovery, update-planner and documentation targets passed; storage and engine failed to build on the unsupported captured errdefer syntax, and format failed. That failed cohort remains failed.
+
+The independently reviewed wrapper/helper correction was adopted at48a2dcba. CU2 epoch ec00f76f-a654-4ef1-9cb0-d90a8df68dc2 ended **3/3**: storage117 and engine309 cases passed, while format failed on layout. Those overlapping suites are not summed. The seven added observation models are exercised within their stated suites. Actor readback covers bounded committed metadata/checkpoint and keyed exact-state commitment; actual SQL integrity/rollback failures fence Store and actor without restoration. This is unit/actor proof, not a real authenticated socket collector, held update fence, artifact compatibility, deployment authority or live account custody.
+
+CF1 epoch ed2cb3a7-43f2-4af0-8922-511f0cfbc828 ran the declared Bazel formatter **0/0**. All106 tracked source preimages were retained; only src/storage.zig changed, joining the same22 error names into a switch arm. Postimages were captured and all106 original byte images restored before separate review/adoption. Formatter success proves no tests. Required final format and documentation checks remain pending at this written checkpoint.
+
+At8d3dfcc5, the two website qualification helpers and their declared target/data edges now consume copied public version/flake/lock/root/selection inputs. Shared website fallback reads are removed; fixed evidence pins, full bounded NAR checks and post-work rechecks remain. Their focused models, actual owned website capture and tool qualification, genuine runtime reference selection/import, site archive build and publication remain separate, unproved gates at this checkpoint.
+
+The first-use product priorities and original goal clock remain unchanged. Latest NV5 normal-vault metadata is dated Locked; current key readiness, loaded custody and account count are unobserved. No ordinary maintained-Codex resume, live same-process handoff, production browser export, signed store delivery, public successor download, achieved SLO or contractual SLA is established by these local checks.
