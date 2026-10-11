@@ -119,6 +119,8 @@ class MainCallerTests(unittest.TestCase):
         env={'OMUX_NATIVE_RUNTIME_MODE':runtime.PROFILE,'OMUX_NATIVE_RUNTIME_ENTRY_NS':str(entry),
             'OMUX_NATIVE_RUNTIME_DEADLINE_NS':str(entry+1200*10**9)}
         self.assertEqual(runtime.runtime_deadline(env),(entry+1170*10**9)/10**9)
+        self.assertEqual(runtime.runtime_envelope(env),(entry,entry+1200*10**9,
+            (entry+1170*10**9)/10**9))
         for change in ({'OMUX_NATIVE_RUNTIME_MODE':'standard'},
             {'OMUX_NATIVE_RUNTIME_DEADLINE_NS':str(entry+1201*10**9)},
             {'OMUX_NATIVE_RUNTIME_ENTRY_NS':'01'}):
@@ -129,6 +131,87 @@ class MainCallerTests(unittest.TestCase):
         with patch.object(runtime.sys,'argv',['producer']),patch.dict(runtime.os.environ,{},clear=True),\
                 patch.object(runtime,'qualify_runtime',side_effect=AssertionError('no native IO')):
             with self.assertRaises(ValueError):runtime.main()
+
+    def test_actual_main_joins_original_envelope_declares_then_qualifies_without_renewal(self):
+        import codex_native_acquisition_binding as binding
+        import codex_native_acquisition_material as material
+        query=runtime.query_tools;events=[];selected={'fixture':'runtime-selection'}
+        env={'OMUX_NATIVE_RUNTIME_MODE':runtime.PROFILE,'OMUX_NATIVE_RUNTIME_ENTRY_NS':str(100*10**9),
+            'OMUX_NATIVE_RUNTIME_DEADLINE_NS':str(1300*10**9)}
+        def declared(path,maximum):
+            phase=query._CONSUMER_PHASE.get()
+            self.assertEqual((phase.entry_ns,phase.original_deadline_ns),(100*10**9,1300*10**9))
+            events.append(('selection',phase.query_deadline));return b'fixture-input'
+        def controller(deadline):
+            events.append(('controller',deadline,query.verification_deadline(deadline)))
+        def qualify(document,deadline,original):
+            self.assertIs(document,selected)
+            events.append(('qualification',deadline,original,query.verification_deadline(deadline)))
+            raise RuntimeError('fixture-stop-before-runtime')
+        with patch.object(runtime.sys,'argv',['producer']),patch.dict(runtime.os.environ,env), \
+                patch.object(runtime.time,'monotonic_ns',return_value=400*10**9), \
+                patch.object(runtime.time,'monotonic',return_value=400.0), \
+                patch.object(binding.ninth.parent,'declared',side_effect=declared), \
+                patch.object(runtime,'runtime_selection',return_value=selected), \
+                patch.object(material,'declared_controller',side_effect=controller), \
+                patch.object(runtime,'qualify_runtime',side_effect=qualify), \
+                patch.object(query,'consumer_phase',wraps=query.consumer_phase) as capture:
+            with self.assertRaisesRegex(RuntimeError,'fixture-stop-before-runtime'):runtime.main()
+            capture.assert_called_once_with(100*10**9,1300*10**9)
+        self.assertEqual(events,[('selection',700.0),('controller',1270.0,700.0),
+            ('qualification',1270.0,1300.0,700.0)])
+        self.assertIsNone(query._CONSUMER_PHASE.get())
+
+    def test_main_expired_phase_or_wrong_clock_join_refuses_before_declaration(self):
+        import codex_native_acquisition_binding as binding
+        import codex_native_acquisition_material as material
+        env={'OMUX_NATIVE_RUNTIME_MODE':runtime.PROFILE,'OMUX_NATIVE_RUNTIME_ENTRY_NS':str(100*10**9),
+            'OMUX_NATIVE_RUNTIME_DEADLINE_NS':str(1300*10**9)}
+        with patch.object(runtime.sys,'argv',['producer']),patch.dict(runtime.os.environ,env), \
+                patch.object(runtime.time,'monotonic_ns',return_value=701*10**9), \
+                patch.object(runtime.time,'monotonic',return_value=701.0), \
+                patch.object(binding.ninth.parent,'declared',side_effect=AssertionError('no selected IO')), \
+                patch.object(material,'declared_controller',side_effect=AssertionError('no repository IO')), \
+                patch.object(runtime,'qualify_runtime',side_effect=AssertionError('no runtime IO')):
+            with self.assertRaises(ValueError):runtime.main()
+        for envelope in ((100*10**9,1300*10**9,1271.0),(100*10**9,1301*10**9,1270.0)):
+            with self.subTest(envelope=envelope),patch.object(runtime.sys,'argv',['producer']), \
+                    patch.object(runtime,'runtime_envelope',return_value=envelope), \
+                    patch.object(runtime.time,'monotonic',return_value=400.0), \
+                    patch.object(runtime.time,'monotonic_ns',return_value=400*10**9), \
+                    patch.object(binding.ninth.parent,'declared',side_effect=AssertionError('no selected IO')):
+                with self.assertRaises(ValueError):runtime.main()
+        self.assertIsNone(runtime.query_tools._CONSUMER_PHASE.get())
+
+    def test_actual_main_preserves_nonround_large_envelope_entry_and_cutoffs(self):
+        import codex_native_acquisition_binding as binding
+        import codex_native_acquisition_material as material
+        query=runtime.query_tools
+        for entry in ((1<<53)+123456789,10**18+123456789):
+            until=entry+1200*10**9;now=entry+300*10**9;seen=[]
+            env={'OMUX_NATIVE_RUNTIME_MODE':runtime.PROFILE,'OMUX_NATIVE_RUNTIME_ENTRY_NS':str(entry),
+                'OMUX_NATIVE_RUNTIME_DEADLINE_NS':str(until)}
+            def controller(deadline):
+                phase=query._CONSUMER_PHASE.get()
+                self.assertEqual((phase.entry_ns,phase.original_deadline_ns),(entry,until))
+                self.assertEqual(phase.query_deadline_ns,entry+600*10**9)
+                seen.append(query.verification_deadline(deadline))
+            def qualify(selected,deadline,original):
+                self.assertEqual(deadline,(until-30*10**9)/10**9)
+                self.assertEqual(original,until/10**9)
+                seen.append(query.verification_deadline(deadline))
+                raise RuntimeError('fixture-no-runtime')
+            with self.subTest(entry=entry),patch.object(runtime.sys,'argv',['producer']), \
+                    patch.dict(runtime.os.environ,env), \
+                    patch.object(runtime.time,'monotonic_ns',return_value=now), \
+                    patch.object(runtime.time,'monotonic',return_value=now/10**9), \
+                    patch.object(binding.ninth.parent,'declared',return_value=b'fixture-input'), \
+                    patch.object(runtime,'runtime_selection',return_value={}), \
+                    patch.object(material,'declared_controller',side_effect=controller), \
+                    patch.object(runtime,'qualify_runtime',side_effect=qualify):
+                with self.assertRaisesRegex(RuntimeError,'fixture-no-runtime'):runtime.main()
+            self.assertEqual(seen,[(entry+600*10**9)/10**9]*2)
+            self.assertIsNone(query._CONSUMER_PHASE.get())
 
     def test_metadata_duplicate_wrong_id_error_and_extra_payload_refuse(self):
         self.assertEqual(runtime.metadata_reply(b'{"jsonrpc":"2.0","id":"owner/source/context","result":{}}',

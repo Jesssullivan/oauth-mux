@@ -11,6 +11,8 @@ from pathlib import Path
 import tempfile
 import time
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import unittest
 from unittest.mock import patch
 
@@ -118,6 +120,126 @@ class ConsumerDeadlineModels(unittest.TestCase):
                 capture.assert_called_once_with(100.0,840)
             self.assertEqual(seen,[700.0,700.0])
             self.assertEqual(namespace['DEADLINE'],700.0)
+
+
+class RuntimeQueryPhaseModels(unittest.TestCase):
+    def test_elapsed_entry_strict_clock_join_nested_refusal_and_exception_reset(self):
+        with patch.object(query.time,'monotonic',return_value=500.0), \
+                patch.object(query.time,'monotonic_ns',side_effect=lambda:int(query.time.monotonic()*10**9)), \
+                patch.dict(os.environ,{'OMUX_NATIVE_RUNTIME_MODE':'runtime-model'}):
+            self.assertIsNone(query._CONSUMER_PHASE.get())
+            with self.assertRaisesRegex(RuntimeError,'fixture-exit'):
+                with query.consumer_phase(100*10**9,1300*10**9) as phase:
+                    self.assertEqual(phase.entry_ns,100*10**9)
+                    self.assertEqual(phase.original_deadline_ns,1300*10**9)
+                    self.assertEqual((phase.query_deadline_ns,phase.work_deadline_ns),
+                        (700*10**9,1270*10**9))
+                    self.assertEqual((phase.query_deadline,phase.work_deadline,phase.original_deadline),
+                        (700.0,1270.0,1300.0))
+                    self.assertEqual(query.verification_deadline(1270.0),700.0)
+                    with self.assertRaises(AttributeError):phase.query_deadline=1100.0
+                    for deadline in (1300.0,1271.0,700.0,True,float('nan')):
+                        with self.subTest(deadline=deadline),self.assertRaises(ValueError):
+                            query.verification_deadline(deadline)
+                    with self.assertRaises(ValueError):
+                        with query.consumer_phase(500*10**9,1700*10**9):self.fail('nested renewal')
+                    self.assertIs(query._CONSUMER_PHASE.get(),phase)
+                    raise RuntimeError('fixture-exit')
+            self.assertIsNone(query._CONSUMER_PHASE.get())
+            # No unscoped fallback after the relative remainder drops below600.
+            with patch.object(query.time,'monotonic',return_value=699.0),self.assertRaises(ValueError):
+                query.verification_deadline(1270.0)
+        for entry,until,now in ((100*10**9,1300*10**9,700.0),
+                (100*10**9,1300*10**9,701.0),(100*10**9,1301*10**9,500.0),
+                (True,1200*10**9+1,500.0),(100.0,1200000000100.0,500.0),
+                (600*10**9,1800*10**9,500.0),(10**100,10**100+1200*10**9,500.0)):
+            with self.subTest(entry=entry,until=until,now=now), \
+                    patch.object(query.time,'monotonic',return_value=now), \
+                    patch.object(query.time,'monotonic_ns',return_value=int(now*10**9)),self.assertRaises(ValueError):
+                with query.consumer_phase(entry,until):self.fail('invalid phase admitted')
+            self.assertIsNone(query._CONSUMER_PHASE.get())
+
+    def test_nonround_large_original_nanoseconds_join_before_float_conversion(self):
+        for entry in ((1<<53)+123456789,(1<<56)-300*10**9+987654321,10**18+123456789):
+            until=entry+1200*10**9
+            with self.subTest(entry=entry), \
+                    patch.object(query.time,'monotonic',return_value=(entry+300*10**9)/10**9), \
+                    patch.object(query.time,'monotonic_ns',return_value=entry+300*10**9), \
+                    query.consumer_phase(entry,until) as phase:
+                self.assertEqual(phase.query_deadline_ns-entry,600*10**9)
+                self.assertEqual(phase.work_deadline_ns-entry,1170*10**9)
+                self.assertEqual(phase.original_deadline_ns-phase.work_deadline_ns,30*10**9)
+                self.assertEqual(phase.query_deadline,(entry+600*10**9)/10**9)
+                self.assertEqual(phase.work_deadline,(until-30*10**9)/10**9)
+                self.assertEqual(phase.original_deadline,until/10**9)
+                self.assertEqual(query.verification_deadline(phase.work_deadline),phase.query_deadline)
+                with patch.object(query.time,'monotonic_ns',return_value=phase.query_deadline_ns), \
+                        self.assertRaises(ValueError):query.verification_deadline(phase.work_deadline)
+
+    def test_concurrent_contexts_are_isolated_and_missing_runtime_context_refuses(self):
+        overlap=Barrier(2)
+        with patch.object(query.time,'monotonic',return_value=500.0), \
+                patch.object(query.time,'monotonic_ns',return_value=500*10**9), \
+                patch.dict(os.environ,{'OMUX_NATIVE_RUNTIME_MODE':'runtime-model'}), \
+                query.consumer_phase(100*10**9,1300*10**9) as parent:
+            def independent(entry):
+                self.assertIsNone(query._CONSUMER_PHASE.get())
+                with self.assertRaises(ValueError):query.verification_deadline(parent.work_deadline)
+                with query.consumer_phase(entry*10**9,(entry+1200)*10**9) as phase:
+                    overlap.wait(timeout=5)
+                    result=query.verification_deadline(phase.work_deadline)
+                    self.assertEqual(query._CONSUMER_PHASE.get(),phase)
+                self.assertIsNone(query._CONSUMER_PHASE.get())
+                return result
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                futures=[workers.submit(independent,entry) for entry in (200,300)]
+                self.assertEqual([future.result() for future in futures],[800.0,900.0])
+            self.assertIs(query._CONSUMER_PHASE.get(),parent)
+            self.assertEqual(query.verification_deadline(parent.work_deadline),700.0)
+        self.assertIsNone(query._CONSUMER_PHASE.get())
+
+    def test_initial_final_full_repository_calls_and_real_admit_reuse_one_phase(self):
+        content,bundle,_,_=source_models.NativeFlakeSourcesTest().fixture()
+        descriptor=json.dumps(bundle).encode();clock=[500.0];reads=[];admissions=[]
+        def read(parent,name,bound,deadline):
+            reads.append(deadline);query.proof.tick(deadline)
+            return b'a'*64+b'\n' if name.endswith('.sha256') else b'{}'
+        def qualify(*args):
+            deadline=args[-1];admissions.append(deadline)
+            query.sources.admit(content,descriptor,deadline=deadline)
+            return {'query_tools':{}}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(query.time,'monotonic',side_effect=lambda:clock[0]), \
+                patch.object(query.time,'monotonic_ns',side_effect=lambda:int(clock[0]*10**9)), \
+                patch.dict(os.environ,{'OMUX_NATIVE_RUNTIME_MODE':'runtime-model'}), \
+                patch.object(query,'repository_read',side_effect=read), \
+                patch.object(query,'qualify',side_effect=qualify), \
+                query.consumer_phase(100*10**9,1300*10**9) as phase:
+            self.assertEqual(query.verify_repository(Path(temporary),1270.0),{'query_tools':{}})
+            clock[0]=699.0
+            self.assertEqual(query.verify_repository(Path(temporary),1270.0),{'query_tools':{}})
+            self.assertEqual(admissions,[700.0,700.0]);self.assertEqual(set(reads),{700.0})
+            clock[0]=700.0;before=len(reads)
+            with self.assertRaises(ValueError):query.verify_repository(Path(temporary),1270.0)
+            self.assertEqual(len(reads),before)
+            self.assertEqual(phase.query_deadline,700.0)
+
+    def test_full_repository_final_readback_expiry_cannot_return_success(self):
+        clock=[500.0];qualified=[False];reads=[]
+        def read(parent,name,bound,deadline):
+            reads.append(deadline)
+            # Simulate the last helper return crossing the retained cutoff.
+            if qualified[0]:clock[0]=700.0
+            return b'a'*64+b'\n' if name.endswith('.sha256') else b'{}'
+        def qualify(*args):qualified[0]=True;return {'query_tools':{}}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(query.time,'monotonic',side_effect=lambda:clock[0]), \
+                patch.object(query.time,'monotonic_ns',side_effect=lambda:int(clock[0]*10**9)), \
+                patch.object(query,'repository_read',side_effect=read), \
+                patch.object(query,'qualify',side_effect=qualify), \
+                query.consumer_phase(100*10**9,1300*10**9):
+            with self.assertRaises(ValueError):query.verify_repository(Path(temporary),1270.0)
+        self.assertEqual(set(reads),{700.0});self.assertIsNone(query._CONSUMER_PHASE.get())
 
 
 class BootstrapMetadataModels(unittest.TestCase):

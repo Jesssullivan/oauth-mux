@@ -4,6 +4,8 @@ The exact fixed tools must be ready outputs of the archived current graph.
 A successful reserved missing-plan action is a prerequisite, not seed authority.
 """
 import argparse
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import math
 import os
@@ -13,6 +15,7 @@ import sys
 import stat
 import time
 from decimal import Decimal
+from typing import NamedTuple
 import xml.etree.ElementTree as ET
 
 import native_flake_seed_plan_inputs as inputs
@@ -51,6 +54,19 @@ PATH = [TOOLS[name].rsplit("/", 1)[0] for name in ("bash", "coreutils", "python"
 require = seed.require
 
 
+class _ConsumerPhase(NamedTuple):
+    entry_ns: int
+    original_deadline_ns: int
+    work_deadline_ns: int
+    query_deadline_ns: int
+    work_deadline: float
+    original_deadline: float
+    query_deadline: float
+
+
+_CONSUMER_PHASE = ContextVar("omux-query-consumer-phase", default=None)
+
+
 def consumer_deadline(entry, seconds):
     """Capture once at consumer entry; reuse for the whole action and rechecks.
 
@@ -63,6 +79,50 @@ def consumer_deadline(entry, seconds):
         and type(seconds) is int and 1 <= seconds <= 840)
     deadline = entry + min(seconds, sources.MAX_SECONDS)
     require(math.isfinite(deadline) and 0 < deadline - now <= sources.MAX_SECONDS)
+    return deadline
+
+
+@contextmanager
+def consumer_phase(entry_ns, original_deadline_ns):
+    """One immutable query cutoff from the original guarded runtime envelope.
+
+    This does not shorten or renew the runtime/cleanup clocks. The caller must
+    pass the original entry and cutoff, not a later phase-entry observation.
+    """
+    require(_CONSUMER_PHASE.get() is None and type(entry_ns) is int and 0 < entry_ns < 10**19
+        and type(original_deadline_ns) is int and 0 < original_deadline_ns < 10**19
+        and original_deadline_ns - entry_ns == 1200 * 10**9)
+    work_deadline_ns = original_deadline_ns - 30 * 10**9
+    query_deadline_ns = entry_ns + sources.MAX_SECONDS * 10**9
+    require(work_deadline_ns - entry_ns == 1170 * 10**9
+        and entry_ns < query_deadline_ns <= work_deadline_ns < original_deadline_ns)
+    require(entry_ns <= time.monotonic_ns() < query_deadline_ns)
+    # Join integers first. Float(entry_ns / 1e9) + 600 can round differently
+    # from the one original integer cutoff passed to the protected helper.
+    phase = _ConsumerPhase(entry_ns, original_deadline_ns, work_deadline_ns,
+        query_deadline_ns, float(work_deadline_ns / 10**9),
+        float(original_deadline_ns / 10**9), float(query_deadline_ns / 10**9))
+    require(0 < phase.query_deadline - time.monotonic() <= sources.MAX_SECONDS)
+    token = _CONSUMER_PHASE.set(phase)
+    try:
+        yield phase
+    finally:
+        _CONSUMER_PHASE.reset(token)
+
+
+def verification_deadline(deadline):
+    """Join the caller clock to its retained phase; never create a new one."""
+    require(type(deadline) is float and math.isfinite(deadline))
+    phase = _CONSUMER_PHASE.get()
+    if phase is None:
+        # An unscoped runtime call must refuse even late in its 1170s window,
+        # when remaining time alone could masquerade as an ordinary 600s call.
+        require(os.environ.get("OMUX_NATIVE_RUNTIME_MODE") is None)
+    else:
+        require(type(phase) is _ConsumerPhase and deadline == phase.work_deadline)
+        require(time.monotonic_ns() < phase.query_deadline_ns)
+        deadline = phase.query_deadline
+    require(0 < deadline - time.monotonic() <= sources.MAX_SECONDS)
     return deadline
 
 
@@ -504,8 +564,9 @@ def repository_read(parent, name, maximum, deadline):
 
 
 def verify_repository(parent, deadline):
-    """Consumer gate under the caller's ONE original absolute deadline."""
-    require(type(deadline) is float and math.isfinite(deadline))
+    """Full proof under the caller's retained original query cutoff."""
+    caller_deadline = deadline
+    deadline = verification_deadline(deadline)
     proof.tick(deadline)
     parent = Path(parent)
     require(parent.is_absolute() and parent.resolve(strict=True) == parent)
@@ -524,6 +585,8 @@ def verify_repository(parent, deadline):
         raw["wrapper.nix"],{name:seed.sha(raw[name]) for name in IMPLEMENTATIONS},deadline)
     require(decode(raw["codex-metadata-query-tools.json"]) == result["query_tools"])
     require({name:repository_read(parent,name,bound,deadline) for name,bound in names.items()} == raw)
+    require(verification_deadline(caller_deadline) == deadline)
+    proof.tick(deadline)
     return result
 
 

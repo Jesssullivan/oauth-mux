@@ -18,6 +18,7 @@ import struct
 import sys
 import time
 import codex_native_acquisition_compilation as compilation
+import codex_protocol_history_query_tools as query_tools
 
 KIND='omux-native-acquisition-runtime-qualification-v1'
 TARGET='//tools:codex_native_acquisition_runtime_qualification_producer'
@@ -281,7 +282,7 @@ RUNTIME_CONFIG='integrations/codex-upstream/native-acquisition-runtime-inputs.js
 RUNTIME_INPUT_KIND='omux-native-acquisition-runtime-inputs-v1'
 
 
-def runtime_deadline(environment):
+def runtime_envelope(environment):
     """The existing guardian's original absolute clock; no restarted budget."""
     import guard_native_seed_plan_reserved as kernel
     require(environment.get('OMUX_NATIVE_RUNTIME_MODE')==PROFILE)
@@ -292,7 +293,11 @@ def runtime_deadline(environment):
     require(until-entry==1200*10**9)
     deadline=(until-30*10**9)/10**9
     compilation.tick(deadline)
-    return deadline
+    return entry,until,deadline
+
+
+def runtime_deadline(environment):
+    return runtime_envelope(environment)[2]
 
 
 def runtime_selection(raw):
@@ -623,10 +628,16 @@ def qualify_runtime(selected,deadline,original_deadline):
 
 def main():
     require(len(sys.argv)==1)
-    deadline=runtime_deadline(os.environ)
+    entry,until,deadline=runtime_envelope(os.environ)
     import codex_native_acquisition_binding as binding
-    selected=runtime_selection(binding.ninth.parent.declared(RUNTIME_CONFIG,16384))
-    receipt=qualify_runtime(selected,deadline,deadline+30.0)
+    import codex_native_acquisition_material as material
+    with query_tools.consumer_phase(entry,until) as phase:
+        require(deadline==phase.work_deadline)
+        selected=runtime_selection(binding.ninth.parent.declared(RUNTIME_CONFIG,16384))
+        # Fresh process readback needs this genuine repository qualification
+        # before controller_inputs can join the compiler inventory.
+        material.declared_controller(deadline)
+        receipt=qualify_runtime(selected,deadline,phase.original_deadline)
     compilation.tick(deadline)
     output=os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR')
     require(type(output) is str and Path(output).is_absolute())
