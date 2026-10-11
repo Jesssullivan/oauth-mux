@@ -229,7 +229,7 @@ try {
   await evaluate(first.sessionId, `chrome.storage.local.set({
     omuxSourceMetadataV1:[${JSON.stringify(syntheticSource)}],
     omuxSourceStatesV1:{${JSON.stringify(sourceId)}:'pending_connection'},
-    omuxSourceRequestsV1:{${JSON.stringify(sourceId)}:${JSON.stringify(pendingConnect)}}).then(()=>true)`);
+    omuxSourceRequestsV1:{${JSON.stringify(sourceId)}:${JSON.stringify(pendingConnect)}}}).then(()=>true)`);
   // This explicit synthetic setup request is not a toolbar gesture or the
   // service's fresh permission admission. Only real daemon source metadata is
   // committed; the recorder drops its accepted reply, never its execution.
@@ -329,7 +329,7 @@ try {
   await evaluate(second.sessionId, `chrome.storage.local.set({
     omuxSourceMetadataV1:[${JSON.stringify(syntheticSource)}],
     omuxSourceStatesV1:{${JSON.stringify(sourceId)}:'completion_unknown'},
-    omuxSourceRequestsV1:{${JSON.stringify(sourceId)}:${JSON.stringify(historical)}}).then(()=>true)`);
+    omuxSourceRequestsV1:{${JSON.stringify(sourceId)}:${JSON.stringify(historical)}}}).then(()=>true)`);
   const beforeHistorical = await observedRequests();
   await close();
   const third = await launch();
