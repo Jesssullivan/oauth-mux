@@ -11,7 +11,7 @@ def main():
     entry=float(time.monotonic())
     seconds=min(840,int(os.environ["TEST_TIMEOUT"])-60)
     producer.require(1<=seconds<=840)
-    producer.DEADLINE=entry+seconds
+    producer.DEADLINE=producer.query_tools.consumer_deadline(entry,seconds)
     runfiles = Path(os.environ["TEST_SRCDIR"]).resolve(strict=True)
     with (runfiles/"_repo_mapping").open("rb") as stream:
         raw = stream.read(1024*1024 + 1)

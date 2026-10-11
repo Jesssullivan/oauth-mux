@@ -5,10 +5,12 @@ six real query roots exist or that a real missing-plan action succeeded.
 """
 import copy
 import ast
+import json
 import os
 from pathlib import Path
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +18,106 @@ import codex_protocol_history_query_tools as query
 import native_flake_seed_plan_carrier_test as carrier_models
 import nar_descriptor as nar
 import nix_private_store_seed as seed
+import native_flake_sources_test as source_models
+
+
+class ConsumerDeadlineModels(unittest.TestCase):
+    CALLERS = (
+        "codex_metadata_query_tools_descriptor_test.py",
+        "codex_protocol_history_metadata_producer.py",
+        "codex_owner_status_persistence_metadata_producer.py",
+        "codex_native_acquisition_metadata.py",
+        "codex_protocol_history_sdk_export.py",
+        "codex_owner_status_persistence_sdk_export.py",
+        "codex_native_acquisition_sdk_export.py",
+        "codex_native_acquisition_preflight.py",
+        "codex_native_acquisition_compilation.py",
+    )
+
+    def test_unmodified_source_admission_refuses_840_and_accepts_retained_600(self):
+        # Genuine three-role descriptor and lock; no admission predicate stub.
+        content, bundle, _, _ = source_models.NativeFlakeSourcesTest().fixture()
+        raw = json.dumps(bundle).encode()
+        with patch.object(query.time, "monotonic", return_value=100.0):
+            with self.assertRaisesRegex(ValueError, "native-source-deadline"):
+                query.sources.admit(content, raw, deadline=940.0)
+            deadline = query.consumer_deadline(100.0, 840)
+            self.assertEqual(deadline, 700.0)
+            admitted = query.sources.admit(content, raw, deadline=deadline)
+            self.assertEqual(admitted[3], {"regular/00000000", "regular/00000001", "regular/00000002"})
+        with patch.object(query.time, "monotonic", return_value=699.0):
+            self.assertEqual(query.sources.admit(content, raw, deadline=deadline)[3], admitted[3])
+        with patch.object(query.time, "monotonic", return_value=700.0):
+            with self.assertRaisesRegex(ValueError, "native-source-deadline"):
+                query.sources.admit(content, raw, deadline=deadline)
+            with self.assertRaises(ValueError):query.consumer_deadline(100.0, 840)
+
+    def test_smaller_original_budget_elapsed_entry_and_invalid_values(self):
+        with patch.object(query.time, "monotonic", return_value=110.0):
+            self.assertEqual(query.consumer_deadline(100.0, 30), 130.0)
+            self.assertEqual(query.consumer_deadline(100.0, 840), 700.0)
+            for entry, seconds in ((100,840),(True,840),(float('nan'),840),
+                    (float('inf'),840),(111.0,840),(-1.0,840),(100.0,0),
+                    (100.0,841),(100.0,True),(100.0,600.0),(100.0,10)):
+                with self.subTest(entry=entry,seconds=seconds), self.assertRaises(ValueError):
+                    query.consumer_deadline(entry,seconds)
+
+    def test_all_consumer_main_prefixes_capture_original_entry_once(self):
+        # Execute each actual main's initialization prefix only. The remaining
+        # source/query/SDK/compiler body is excluded, not replaced with success.
+        for filename in self.CALLERS:
+            tree = ast.parse((Path(__file__).parent/filename).read_text())
+            main = next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name == 'main')
+            prefix = []
+            for node in main.body:
+                if isinstance(node,(ast.Import,ast.ImportFrom)):continue
+                prefix.append(node)
+                if isinstance(node,ast.Assign) and any(isinstance(call,ast.Call)
+                        and isinstance(call.func,ast.Attribute) and call.func.attr == 'consumer_deadline'
+                        for call in ast.walk(node.value)):
+                    result = ast.parse(ast.unparse(node.targets[0]),mode='eval').body
+                    prefix.append(ast.Return(value=result));break
+            else:self.fail(filename+' lacks shared consumer deadline initialization')
+            main.body = prefix
+            namespace = {'os':SimpleNamespace(umask=lambda _:None,environ={'TEST_TIMEOUT':'900'}),
+                'sys':SimpleNamespace(argv=['model']), 'time':time, 'float':float, 'query_tools':query,
+                'producer':SimpleNamespace(query_tools=query,require=query.require),
+                'metadata':SimpleNamespace(query_tools=query), 'require':query.require}
+            definition = ast.fix_missing_locations(ast.Module(body=[main],type_ignores=[]))
+            exec(compile(definition,'<actual-consumer-entry-prefix>','exec'),namespace)
+            for timeout,now,expected in (('900',150.0,700.0),('90',110.0,130.0)):
+                namespace['os'].environ['TEST_TIMEOUT']=timeout
+                with self.subTest(caller=filename,timeout=timeout), \
+                        patch.object(query.time,'monotonic',side_effect=[100.0,now]), \
+                        patch.object(query,'consumer_deadline',wraps=query.consumer_deadline) as capture:
+                    value=namespace['main']('plan') if main.args.args else namespace['main']()
+                    self.assertEqual(value,expected)
+                    capture.assert_called_once_with(100.0,min(840,int(timeout)-60))
+
+    def test_actual_metadata_main_final_verifier_refuses_after_original_cutoff(self):
+        tree=ast.parse((Path(__file__).parent/'codex_protocol_history_metadata_producer.py').read_text())
+        main=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='main')
+        clock=[100.0];seen=[]
+        with tempfile.TemporaryDirectory() as temporary:
+            namespace={'os':SimpleNamespace(umask=lambda _:None,environ={'TEST_TIMEOUT':'900',
+                    'TEST_TMPDIR':temporary,'TEST_UNDECLARED_OUTPUTS_DIR':temporary}),
+                'time':time,'Path':Path,'query_tools':query,'require':query.require,
+                'PHASE':'selection','DEADLINE':None,'QUERY_REPOSITORY':None}
+            def selection():
+                seen.append(namespace['DEADLINE'])
+                namespace['QUERY_REPOSITORY']=Path(temporary)
+                return {},'model-pin'
+            def produced(*args,absolute_deadline):
+                seen.append(absolute_deadline);clock[0]=701.0
+            namespace.update(declared_selection=selection,produce=produced)
+            exec(compile(ast.Module(body=[main],type_ignores=[]),'<actual-metadata-main>','exec'),namespace)
+            with patch.object(query.time,'monotonic',side_effect=lambda:clock[0]), \
+                    patch.object(query,'consumer_deadline',wraps=query.consumer_deadline) as capture, \
+                    patch.object(query,'repository_read',side_effect=AssertionError('expired verifier opened metadata')):
+                with self.assertRaises(ValueError):namespace['main']()
+                capture.assert_called_once_with(100.0,840)
+            self.assertEqual(seen,[700.0,700.0])
+            self.assertEqual(namespace['DEADLINE'],700.0)
 
 
 class BootstrapMetadataModels(unittest.TestCase):

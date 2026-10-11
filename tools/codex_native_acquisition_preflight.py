@@ -99,9 +99,10 @@ def produce(mode,document,work,output,deadline,repository):
     return value
 
 def main(mode):
+    entry=float(time.monotonic())
     require(len(sys.argv)==1 and mode in ('plan','query'))
     seconds=min(840,int(os.environ['TEST_TIMEOUT'])-60);require(1<=seconds<=840)
-    deadline=time.monotonic()+seconds
+    deadline=metadata.query_tools.consumer_deadline(entry,seconds)
     source.DEADLINE=metadata.DEADLINE=deadline
     try:
         # Genuine declared runfiles query repository is held and qualified by the

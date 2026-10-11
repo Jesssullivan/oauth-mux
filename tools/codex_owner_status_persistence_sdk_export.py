@@ -193,7 +193,7 @@ def main():
     entry=float(time.monotonic())
     seconds=min(840,int(os.environ["TEST_TIMEOUT"])-60)
     require(1<=seconds<=840)
-    deadline=entry+seconds
+    deadline=producer.query_tools.consumer_deadline(entry,seconds)
     producer.DEADLINE=deadline;producer.QUERY_REPOSITORY=None
     document,pin=producer.declared_selection()
     require(producer.QUERY_REPOSITORY is not None)

@@ -14,6 +14,15 @@ import codex_protocol_history_metadata as metadata
 import codex_native_acquisition_metadata as producer
 import codex_native_acquisition_sdk_export as selected
 import codex_retained_sdk_export as sdk
+import codex_protocol_history_metadata_test as alias_models
+
+
+class AcquisitionDeclaredAliasModels(alias_models.QueryToolsBindingModels):
+    def setUp(self):
+        # Reuse the genuine runfiles/physical-leaf models against this family's
+        # own production validator; only the independent byte gate is stubbed.
+        binding = patch.object(alias_models, 'producer', producer)
+        binding.start();self.addCleanup(binding.stop)
 
 
 class AcquisitionMetadataSdkTests(unittest.TestCase):
@@ -213,9 +222,9 @@ class AcquisitionMetadataSdkTests(unittest.TestCase):
                 return document, producer.BINDING_SHA
             with patch.dict(os.environ, env), patch.object(selected.os, "umask"), patch.object(producer, "declared_selection", side_effect=declare), patch.object(selected.time, "monotonic", return_value=100.0), patch.object(producer, "produce") as generated, patch.object(selected, "export") as exported, patch.object(producer.query_tools, "verify_repository", return_value={"inputs_rechecked": True}) as verified:
                 selected.main()
-                self.assertEqual(generated.call_args.kwargs["absolute_deadline"], 940.0)
-                self.assertEqual(exported.call_args.args[-1], 940.0)
-                verified.assert_called_once_with(repository, 940.0)
+                self.assertEqual(generated.call_args.kwargs["absolute_deadline"], 700.0)
+                self.assertEqual(exported.call_args.args[-1], 700.0)
+                verified.assert_called_once_with(repository, 700.0)
             with patch.dict(os.environ, env), patch.object(selected.os, "umask"), patch.object(producer, "declared_selection", return_value=(document, producer.BINDING_SHA)), patch.object(producer, "produce") as generated, patch.object(selected, "export") as exported, self.assertRaises(ValueError):
                 selected.main()
             generated.assert_not_called()

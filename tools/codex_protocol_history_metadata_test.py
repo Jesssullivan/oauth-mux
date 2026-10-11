@@ -1,5 +1,6 @@
 """Metadata orchestration models; no generator/native success is fabricated."""
 import json
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import re
@@ -73,6 +74,106 @@ class ProtocolHistoryMetadataTests(unittest.TestCase):
 
 
 class QueryToolsBindingModels(unittest.TestCase):
+    def input_alias_fixture(self, root, stack):
+        runfiles=root/'producer.sh.runfiles';runfiles.mkdir()
+        canonical='+metadata_inputs+'+producer.INPUT_NAME
+        declared=runfiles/canonical;declared.mkdir()
+        repository=root/'output-base/external'/canonical;repository.mkdir(parents=True)
+        if hasattr(producer,'binding'):
+            # Inert binding bytes; replace only source-lineage reconstruction.
+            # The family's actual parse_selection digest predicate stays real.
+            binding_document={'fixture':'public-binding-metadata'}
+            data=source.encoded(binding_document)
+            selected={'fixture':'selected-document'}
+            stack.enter_context(patch.object(producer,'BINDING_SHA',source.sha(data)))
+            if hasattr(producer,'BINDING_BYTES'):
+                stack.enter_context(patch.object(producer,'BINDING_BYTES',len(data)))
+            stack.enter_context(patch.object(producer.binding,'bind',return_value=binding_document))
+            stack.enter_context(patch.object(producer,'selected_document',return_value=selected))
+        else:
+            selected={'kind':producer.KIND,
+                'source_root':'/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/'
+                    '00000000-0000-4000-8000-000000000001/output-base/execroot/_main/bazel-out/'
+                    'k8-fastbuild/testlogs/tools/codex_protocol_history_source_producer/test.outputs/protocol-history-source',
+                'source_receipt_sha256':'a'*64,'export_root':str(producer.EXPORT_ROOT),
+                'export_receipt_sha256':producer.EXPORT_SHA}
+            data=source.encoded(selected)
+        digest=source.sha(data)
+        aliases=[]
+        for name,raw in (('metadata-input.json',data),('metadata-input.sha256',(digest+'\n').encode())):
+            physical=repository/name;physical.write_bytes(raw);physical.chmod(0o644)
+            alias=declared/name;alias.symlink_to(physical);aliases.append(alias)
+        rows=[['',producer.INPUT_NAME,canonical]]
+        (runfiles/'_repo_mapping').write_text(','.join(rows[0])+'\n')
+        deadline=float(producer.time.monotonic()+60)
+        stack.enter_context(patch.object(producer,'DEADLINE',deadline))
+        stack.enter_context(patch.object(source,'DEADLINE',deadline))
+        stack.enter_context(patch.object(producer.sys,'argv',['model']))
+        stack.enter_context(patch.dict(os.environ,{'TEST_SRCDIR':str(runfiles),
+            'TEST_UNDECLARED_OUTPUTS_DIR':str(root),'TEST_TIMEOUT':'900'}))
+        # Query-tool proof is independently covered; this fixture isolates the
+        # actual selection mapper, physical readers and family digest/parser.
+        stack.enter_context(patch.object(producer,'declared_query_tools',return_value=True))
+        return runfiles,repository,aliases,data,digest,selected,rows
+
+    def test_materialized_input_alias_pair_requires_one_exact_mapped_repository(self):
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root=Path(temporary)
+            runfiles,repository,aliases,data,digest,selected,rows=self.input_alias_fixture(root,stack)
+            self.assertEqual(producer.declared_selection(),(selected,digest))
+            for mapping in ([],rows+rows,[['foreign',producer.INPUT_NAME,rows[0][2]]],
+                    [['',producer.INPUT_NAME,'../escape']],[['',producer.INPUT_NAME,'wrong-repository']]):
+                (runfiles/'_repo_mapping').write_text(''.join(','.join(row)+'\n' for row in mapping))
+                with self.subTest(mapping=mapping),self.assertRaises(ValueError):producer.declared_selection()
+            (runfiles/'_repo_mapping').write_text(','.join(rows[0])+'\n')
+            for index,location in ((0,root/'outside'/rows[0][2]/'metadata-input.json'),
+                    (0,repository/'wrong.json'),(0,repository.parent/'wrong-canonical'/'metadata-input.json'),
+                    (1,root/'another-output/external'/rows[0][2]/'metadata-input.sha256')):
+                location.parent.mkdir(parents=True,exist_ok=True)
+                location.write_bytes(data if index==0 else (digest+'\n').encode());location.chmod(0o644)
+                aliases[index].unlink();aliases[index].symlink_to(location)
+                with self.subTest(location=location),self.assertRaises(ValueError):producer.declared_selection()
+                aliases[index].unlink();aliases[index].symlink_to(repository/aliases[index].name)
+
+    def test_input_alias_pair_preserves_independent_sha_custody_and_readback_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root=Path(temporary)
+            _,repository,aliases,data,digest,_,rows=self.input_alias_fixture(root,stack)
+            selection=repository/'metadata-input.json';pin=repository/'metadata-input.sha256'
+            for changed in (b'0'*64+b'\n',b'unconfigured\n',b'0'*64):
+                pin.write_bytes(changed)
+                with self.subTest(pin=changed),self.assertRaises(ValueError):producer.declared_selection()
+            pin.write_bytes((digest+'\n').encode())
+            selection.write_bytes(data.replace(b'"',b'\'',1))
+            with self.assertRaises(ValueError):producer.declared_selection()
+            selection.write_bytes(data)
+            for physical in (selection,pin):
+                physical.chmod(0o666)
+                with self.subTest(writable=physical),self.assertRaises(ValueError):producer.declared_selection()
+                physical.chmod(0o644)
+            pin.unlink();pin.mkdir()
+            with self.assertRaises(ValueError):producer.declared_selection()
+            pin.rmdir();pin.write_bytes((digest+'\n').encode());pin.chmod(0o644)
+            aliases[0].unlink();aliases[0].symlink_to(repository/'missing')
+            with self.assertRaises(OSError):producer.declared_selection()
+            aliases[0].unlink();aliases[0].symlink_to(selection)
+            actual_parser=producer.parse_selection
+            other=root/'different-output/external'/rows[0][2]/pin.name
+            other.parent.mkdir(parents=True);other.write_bytes((digest+'\n').encode());other.chmod(0o644)
+            def redirect(raw,sha):
+                document=actual_parser(raw,sha)
+                aliases[1].unlink();aliases[1].symlink_to(other)
+                return document
+            with patch.object(producer,'parse_selection',side_effect=redirect),self.assertRaises(ValueError):
+                producer.declared_selection()
+            aliases[1].unlink();aliases[1].symlink_to(pin)
+            clock=[producer.time.monotonic()]
+            def expire(raw,sha):
+                document=actual_parser(raw,sha);clock[0]=producer.DEADLINE;return document
+            with patch.object(producer.time,'monotonic',side_effect=lambda:clock[0]), \
+                    patch.object(producer,'parse_selection',side_effect=expire),self.assertRaises(ValueError):
+                producer.declared_selection()
+
     def descriptor(self):
         paths = producer.LOCKED_PATH.split(":")
         tools = dict(zip(("bash", "coreutils", "python", "git"),

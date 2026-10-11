@@ -111,9 +111,9 @@ class SelectedSdkModels(unittest.TestCase):
                     selected.producer,"produce") as generate,patch.object(selected,"export") as export,patch.object(
                     selected.producer.query_tools,"verify_repository",return_value={"inputs_rechecked":True}) as verify:
                 selected.main()
-            self.assertEqual(generate.call_args.kwargs["absolute_deadline"],940.0)
-            self.assertEqual(export.call_args.args[-1],940.0)
-            verify.assert_called_once_with(repository,940.0)
+            self.assertEqual(generate.call_args.kwargs["absolute_deadline"],700.0)
+            self.assertEqual(export.call_args.args[-1],700.0)
+            verify.assert_called_once_with(repository,700.0)
 
     def test_same_absolute_deadline_cannot_be_extended_by_copy(self):
         with tempfile.TemporaryDirectory() as temporary:

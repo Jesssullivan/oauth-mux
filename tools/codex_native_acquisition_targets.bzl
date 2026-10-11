@@ -66,7 +66,8 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
             target_data = target_data + ["//:native_peer_runtime_bridge.so"]
         if name == "codex_native_acquisition_runtime_qualification_producer":
             target_data = target_data + ["//integrations/codex-upstream:native_acquisition_runtime_configuration"]
-        python_test(name = name, main = main, srcs = depset(sources + [main]).to_list(),
+        model_sources = ["codex_protocol_history_metadata_test.py", "codex_live_source_test.py"] if name == "codex_native_acquisition_metadata_sdk_test" else []
+        python_test(name = name, main = main, srcs = depset(sources + [main] + model_sources).to_list(),
             data = target_data,
             timeout = "long", tags = ["manual", "no-remote", "no-cache"])
     python_test(name = "guard_native_acquisition_inputs_reserved_test",

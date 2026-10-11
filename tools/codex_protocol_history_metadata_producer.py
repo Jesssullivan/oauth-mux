@@ -125,15 +125,25 @@ def declared_selection():
         and row[1] == INPUT_NAME]
     require(len(selected) == 1 and re.fullmatch(r"[A-Za-z0-9_+.-]{1,256}",selected[0]) is not None
         and (selected[0] == INPUT_NAME or selected[0].endswith("+"+INPUT_NAME)))
-    parent = (runfiles/selected[0]).resolve(strict=True)
-    require(parent.name == selected[0] and "external" in parent.parts)
+    # Both generated selection leaves belong to the one mapped repository.
+    # Resolve runfiles aliases, then keep physical reads strictly nofollow.
+    aliases = [runfiles/selected[0]/name for name in
+        ("metadata-input.json", "metadata-input.sha256")]
+    physical = [alias.resolve(strict=True) for alias in aliases]
+    parent = physical[0].parent
+    require(parent.name == selected[0] and parent.parent.name == "external"
+        and all(path.name == alias.name and path.parent == parent
+            for alias,path in zip(aliases,physical)))
     fd = source.directory(parent)
     try:
         data,_ = source.read(fd,"metadata-input.json",8192)
         pin,_ = source.read(fd,"metadata-input.sha256",65)
     finally:os.close(fd)
     require(re.fullmatch(rb"[0-9a-f]{64}\n",pin) is not None)
-    return parse_selection(data,pin.decode().strip()),source.sha(data)
+    document = parse_selection(data,pin.decode().strip())
+    require(all(alias.resolve(strict=True) == path for alias,path in zip(aliases,physical)))
+    tick()
+    return document,source.sha(data)
 
 
 def identity(info):
@@ -349,7 +359,7 @@ def main():
     entry = float(time.monotonic())
     seconds = min(840,int(os.environ["TEST_TIMEOUT"])-60)
     require(1 <= seconds <= 840)
-    DEADLINE = entry+seconds
+    DEADLINE = query_tools.consumer_deadline(entry, seconds)
     QUERY_REPOSITORY = None
     document,pin = declared_selection()
     require(QUERY_REPOSITORY is not None)

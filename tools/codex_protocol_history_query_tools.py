@@ -51,6 +51,21 @@ PATH = [TOOLS[name].rsplit("/", 1)[0] for name in ("bash", "coreutils", "python"
 require = seed.require
 
 
+def consumer_deadline(entry, seconds):
+    """Capture once at consumer entry; reuse for the whole action and rechecks.
+
+    Consumer actions retain their outer Bazel/guardian cutoff, but their work
+    budget cannot exceed the protected source-admission budget. Never renew it
+    at a verifier call or after metadata generation.
+    """
+    now = time.monotonic()
+    require(type(entry) is float and math.isfinite(entry) and 0 <= entry <= now
+        and type(seconds) is int and 1 <= seconds <= 840)
+    deadline = entry + min(seconds, sources.MAX_SECONDS)
+    require(math.isfinite(deadline) and 0 < deadline - now <= sources.MAX_SECONDS)
+    return deadline
+
+
 def decode(raw, maximum=inputs.MAX_METADATA):
     return inputs.decode(raw, maximum)
 

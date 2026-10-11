@@ -1832,7 +1832,8 @@ python_test(
 python_test(
     name = "codex_owner_status_persistence_metadata_sdk_test",
     main = "codex_owner_status_persistence_metadata_sdk_test.py",
-    srcs = depset(_OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + ["codex_owner_status_persistence_metadata_producer.py", "codex_owner_status_persistence_sdk_export.py"]).to_list(),
+    srcs = depset(_OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + ["codex_owner_status_persistence_metadata_producer.py", "codex_owner_status_persistence_sdk_export.py",
+        "codex_protocol_history_metadata_producer.py", "codex_protocol_history_metadata_test.py", "codex_live_source_test.py"]).to_list(),
 )
 
 # Requires actual new query group; old cached native manifests cannot supply it.
@@ -2354,7 +2355,12 @@ python_test(
         "native_flake_seed_plan_test.py", "native_flake_schedule_test.py",
         "native_flake_sources_test.py", "nix_private_store_qualification_test.py",
     ],
-    data = ["protocol_history_query_tools_repository.bzl"],
+    data = ["protocol_history_query_tools_repository.bzl",
+        "codex_metadata_query_tools_descriptor_test.py",
+        "codex_protocol_history_metadata_producer.py", "codex_owner_status_persistence_metadata_producer.py",
+        "codex_native_acquisition_metadata.py", "codex_protocol_history_sdk_export.py",
+        "codex_owner_status_persistence_sdk_export.py", "codex_native_acquisition_sdk_export.py",
+        "codex_native_acquisition_preflight.py", "codex_native_acquisition_compilation.py"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )

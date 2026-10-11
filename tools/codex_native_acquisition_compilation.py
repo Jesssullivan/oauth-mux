@@ -421,9 +421,10 @@ def produce(document,output,deadline):
 
 def main():
     import codex_native_acquisition_binding as binding
-    entry=time.monotonic();require(len(sys.argv)==1)
+    import codex_protocol_history_query_tools as query_tools
+    entry=float(time.monotonic());require(len(sys.argv)==1)
     timeout=os.environ.get('TEST_TIMEOUT');require(type(timeout) is str and timeout.isdigit())
-    deadline=entry+min(840,int(timeout)-60);tick(deadline)
+    deadline=query_tools.consumer_deadline(entry,min(840,int(timeout)-60));tick(deadline)
     binding.source.DEADLINE=deadline
     config=binding.config();row=config['compile']
     require(type(row) is dict and set(row)=={'path','sha256'})
