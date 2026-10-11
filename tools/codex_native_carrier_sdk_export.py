@@ -103,8 +103,9 @@ def metadata_program(selected,inputs,deadline):
     return report
 
 
-def produce(configuration,inputs,carrier_root,aliases,declaration,seal_inputs,selected_carrier,temporary,output,deadline):
+def produce(configuration,inputs,carrier_root,aliases,declaration,seal_inputs,selected_carrier,temporary,output,deadline,*,_publication_stack=None):
     material.tick(deadline)
+    require(_publication_stack is None or type(_publication_stack) is ExitStack)
     require(configuration['selection'] is None and configuration['compile'] is None and configuration['metadata'] is not None)
     selected = configuration['metadata']; material.program(selected)
     initial_metadata = metadata_program(selected,inputs,deadline)
@@ -165,7 +166,8 @@ def produce(configuration,inputs,carrier_root,aliases,declaration,seal_inputs,se
             'mapping_sha256':graph_rows['MODULE.bazel.lock']['sha256'],'patch_sha256':source_report['patch_sha256'],
             'sdk_export_qualified':True,'source_and_carrier_rechecked':True,**{name:False for name in material.FALSE_FLAGS}}
         material.report_shape(report,authority_raw)
-        published = material.ProjectionOutput(output,carrier.Clock(deadline)); stack.callback(published.close)
+        published = material.ProjectionOutput(output,carrier.Clock(deadline))
+        (stack if _publication_stack is None else _publication_stack).callback(published.close)
         write_members(published,'hub',hub,hub_rows); write_members(published,'graph',graph,graph_rows)
         published.file('authority.json',authority_raw)
         require(material.projection_read(published.root,report,published.clock,complete=False) == {'hub':hub,'graph':graph})
@@ -203,7 +205,39 @@ def produce(configuration,inputs,carrier_root,aliases,declaration,seal_inputs,se
         fresh_custody.check()
         for root in fresh.values(): root.check()
         material.tick(deadline)
-        return report
+        return report if _publication_stack is None else (report,published)
+
+
+def publication_names(published,report):
+    """Complete cheap namespace fence after every potentially long body read."""
+    root,clock = published.root,published.clock
+    root.check()
+    carrier.names(root.fd,{'hub','graph','authority.json','sdk-receipt.json'},clock)
+    for role in ('hub','graph'):
+        children = {role:set()}
+        for name in report[role+'_files']:
+            clock.tick(); parts = (role+'/'+name).split('/')
+            for index in range(1,len(parts)):
+                children.setdefault('/'.join(parts[:index]),set()).add(parts[index])
+        for parent,expected in children.items():
+            fd,_ = root.parent(parent+'/selected-entry')
+            try:
+                require(stat.S_IMODE(os.fstat(fd).st_mode) == 0o555)
+                carrier.names(fd,expected,clock)
+            finally:os.close(fd)
+    root.check()
+
+
+def readback_publication(published,report,raw,deadline):
+    """Join actual original writer custody after the final selector/encoding IO."""
+    require(type(published) is material.ProjectionOutput and published.clock.deadline == deadline)
+    material.tick(deadline)
+    authority = carrier.read(published.root,'authority.json',material.MAX_DOCUMENT,report['authority_sha256'])
+    material.report_shape(report,authority)
+    material.projection_read(published.root,report,published.clock)
+    require(carrier.read(published.root,'sdk-receipt.json',material.MAX_DOCUMENT) == raw)
+    publication_names(published,report)
+    material.tick(deadline)
 
 
 def main():
@@ -225,14 +259,21 @@ def main():
         require(initial_query['inputs_rechecked'] is True)
         root,aliases,declaration = metadata.declared_carrier(runfiles,rows,selected,deadline)
         proofs = metadata.declared_proofs(runfiles,rows,selected,deadline)
-        with material.DeclaredInputs(runfiles,rows,deadline,stage='metadata') as inputs:
-            report = produce(configuration,inputs,root,aliases,declaration,proofs,selected,
-                Path(os.environ['TEST_TMPDIR']).resolve(strict=True)/'native-carrier-sdk-work',
-                Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True)/OUTPUT,deadline)
-            require(material.config()[1] == config_pin)
-            require(binding.ninth.parent.declared(metadata.CONFIG,16384) == selected_raw)
-            material.tick(deadline)
-    print('omux-native-carrier-sdk-output-sha256=' + carrier.sha(carrier.encoded(report)),flush=True)
+        with ExitStack() as publication_stack:
+            with material.DeclaredInputs(runfiles,rows,deadline,stage='metadata') as inputs:
+                report,published = produce(configuration,inputs,root,aliases,declaration,proofs,selected,
+                    Path(os.environ['TEST_TMPDIR']).resolve(strict=True)/'native-carrier-sdk-work',
+                    Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True)/OUTPUT,deadline,
+                    _publication_stack=publication_stack)
+                require(material.config()[1] == config_pin)
+                require(binding.ninth.parent.declared(metadata.CONFIG,16384) == selected_raw)
+                raw = carrier.encoded(report)
+                output_pin = carrier.sha(raw)
+                material.tick(deadline)
+            # Declared-input cleanup also precedes the last original output fence.
+            readback_publication(published,report,raw,deadline)
+    material.tick(deadline)
+    print('omux-native-carrier-sdk-output-sha256=' + output_pin,flush=True)
 
 
 if __name__ == '__main__': main()

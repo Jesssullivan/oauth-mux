@@ -491,30 +491,85 @@ class CarrierMaterialModels(unittest.TestCase):
         self.assertIsNone(material._SCOPE.get())
         self.assertEqual(events,['initial-fence','source-finish','closed'])
 
-    def run_sdk_main_boundary(self,*,changed_selector=False):
+    def run_sdk_main_boundary(self,*,changed_selector=False,fault='none'):
         from contextlib import ExitStack,redirect_stdout
         import io
-        runfiles = self.root/'main-runfiles'; runfiles.mkdir()
+        runfiles = self.root/('main-runfiles-'+fault); runfiles.mkdir()
         (runfiles/'_repo_mapping').write_bytes(b'_main,fixture,fixture\n')
-        output = self.root/'main-output'; output.mkdir()
-        temporary = self.root/'main-tmp'; temporary.mkdir()
+        output = self.root/('main-output-'+fault); output.mkdir()
+        temporary = self.root/('main-tmp-'+fault); temporary.mkdir()
         selected = {'original_selection':self.original,'carrier':{'receipt_sha256':'a'*64},
             'qualification':{'producer':self.actor,'report':{'path':'/model/seal-program.json','sha256':'b'*64}}}
         selector = carrier.encoded({'schema_version':2,'kind':material.metadata.KIND,
             'status':'selected-qualified-carrier-for-metadata','selection':selected})
         reads = []; published = output/export.OUTPUT/'sdk-receipt.json'
-        result = {'kind':material.SDK_KIND,'model_only':True}
+        result = copy.deepcopy(self.report)
+        held = []; descriptors = []; mutations = []; config_reads = []
+        events = []; expired = []
+        encoded = carrier.encoded; monotonic = time.monotonic; read = carrier.read
+        def mutate():
+            self.assertEqual(len(held),1)
+            owner = held[0]; owner.root.check()
+            self.assertEqual(carrier.identity(os.fstat(owner.root.fd),True),owner.root.chain[-1][2])
+            path = published if fault in ('material-selector-bytes','input-close-bytes') else owner.path/'hub/BUILD.bazel'
+            if fault == 'root-replacement':
+                owner.path.rename(output/'displaced-original'); owner.path.mkdir(mode=0o555)
+            elif fault == 'namespace':
+                owner.path.chmod(0o700); (owner.path/'extra').write_bytes(b'extra')
+                (owner.path/'extra').chmod(0o444); owner.path.chmod(0o555)
+            elif fault == 'same-byte-replacement':
+                raw = path.read_bytes(); path.parent.chmod(0o700)
+                path.rename(self.root/('displaced-'+fault)); path.write_bytes(raw); path.chmod(0o444); path.parent.chmod(0o555)
+            else:
+                path.chmod(0o600); path.write_bytes(b'changed published bytes'); path.chmod(0o444)
+            mutations.append(True)
         def declared(name,maximum):
             self.assertEqual((name,maximum),(material.metadata.CONFIG,16384))
             reads.append(name)
+            if len(reads)==2 and fault in ('metadata-selector-bytes','same-byte-replacement','root-replacement','namespace'):
+                mutate()
             return selector+b'changed' if changed_selector and len(reads)==2 else selector
-        def produce(*args):
+        def configuration():
+            config_reads.append(True)
+            if len(config_reads)==2 and fault == 'material-selector-bytes':mutate()
+            return {'metadata':self.program},'c'*64
+        def serialize(value):
+            raw = encoded(value)
+            if value is result and len(reads)==2 and not mutations and fault == 'serialization-bytes':mutate()
+            if value is result and len(reads)==2 and fault == 'serialization-expiry':expired.append(True)
+            return raw
+        def read_output(root,name,*args,**kwargs):
+            raw = read(root,name,*args,**kwargs)
+            if name == 'sdk-receipt.json' and len(reads)==2 and fault in ('final-receipt-extra-root','final-receipt-extra-hub','final-receipt-extra-graph'):
+                held[0].root.check()
+                parent = held[0].path
+                if fault != 'final-receipt-extra-root':parent /= 'hub' if fault.endswith('hub') else 'graph'
+                parent.chmod(0o700); (parent/'unselected-final').write_bytes(b'extra after final body read')
+                (parent/'unselected-final').chmod(0o444); parent.chmod(0o555)
+                mutations.append(True)
+            return raw
+        def produce(*args,_publication_stack=None):
+            # SDK/source qualification is the explicit trusted seam. Actual
+            # ProjectionOutput writers, final main IO and cleanup are exercised.
             self.assertEqual(material.metadata._SCOPE.get(),args[-1])
-            published.parent.mkdir(); published.write_bytes(carrier.encoded(result))
-            return result
+            self.assertIsInstance(_publication_stack,ExitStack)
+            owner = material.ProjectionOutput(args[-2],carrier.Clock(args[-1])); held.append(owner)
+            def close():
+                events.append('publisher-close'); owner.close()
+                if fault == 'close-failure':raise OSError('modeled publisher close failure')
+            _publication_stack.callback(close)
+            export.write_members(owner,'hub',self.hub,self.hub_rows)
+            export.write_members(owner,'graph',self.graph,self.graph_rows)
+            owner.file('authority.json',self.raw); owner.file('sdk-receipt.json',encoded(result)); owner.finish()
+            self.assertEqual(material.projection_read(owner.root,result,owner.clock),{'hub':self.hub,'graph':self.graph})
+            descriptors.extend(fd for _,fd,_ in owner.root.chain)
+            for parent,leaf,_ in owner.root.projection_leaves.values():descriptors.extend((parent,leaf))
+            return result,owner
         class Inputs:
             def __enter__(unused): return unused
-            def __exit__(unused,*args): return None
+            def __exit__(unused,*args):
+                events.append('input-close')
+                if fault == 'input-close-bytes' and args[0] is None:mutate()
         entry = time.monotonic_ns()
         env = {'OMUX_NATIVE_CARRIER_MODE':export.PROFILE,'OMUX_NATIVE_CARRIER_ENTRY_NS':str(entry),
             'OMUX_NATIVE_CARRIER_DEADLINE_NS':str(entry+1200*10**9),
@@ -530,7 +585,7 @@ class CarrierMaterialModels(unittest.TestCase):
             stack.enter_context(patch.object(export.os,'umask',return_value=0o077))
             stack.enter_context(patch.object(material.metadata.legacy,'configure_selection'))
             stack.enter_context(patch.object(material.binding.ninth.parent,'declared',side_effect=declared))
-            stack.enter_context(patch.object(material,'config',return_value=({'metadata':self.program},'c'*64)))
+            stack.enter_context(patch.object(material,'config',side_effect=configuration))
             stack.enter_context(patch.object(material.metadata.legacy,'declared_query_tools',return_value=True))
             stack.enter_context(patch.object(export.query_tools,'verify_repository',
                 return_value={'status':'declared-fixed-query-tools-byte-qualified','inputs_rechecked':True}))
@@ -538,14 +593,26 @@ class CarrierMaterialModels(unittest.TestCase):
             stack.enter_context(patch.object(material.metadata,'declared_proofs',return_value=object()))
             stack.enter_context(patch.object(material,'DeclaredInputs',return_value=Inputs()))
             stack.enter_context(patch.object(export,'produce',side_effect=produce))
+            stack.enter_context(patch.object(carrier,'encoded',side_effect=serialize))
+            stack.enter_context(patch.object(carrier,'read',side_effect=read_output))
+            stack.enter_context(patch.object(time,'monotonic',side_effect=lambda:float((entry+601*10**9)/10**9) if expired else monotonic()))
             stack.enter_context(redirect_stdout(stream))
-            if changed_selector:
-                with self.assertRaises(ValueError): export.main()
+            if changed_selector or fault != 'none':
+                with self.assertRaises(OSError if fault == 'close-failure' else ValueError): export.main()
             else: export.main()
         self.assertIsNone(material.metadata._SCOPE.get())
         self.assertEqual(len(reads),2)
-        self.assertTrue(published.is_file())
-        return stream.getvalue(),published.read_bytes()
+        if fault == 'root-replacement':
+            self.assertTrue((output/'displaced-original/sdk-receipt.json').is_file())
+            self.assertTrue(published.parent.is_dir()); self.assertFalse(published.exists())
+        else:self.assertTrue(published.is_file())
+        self.assertEqual(events,['input-close','publisher-close'])
+        for fd in descriptors:
+            with self.assertRaises(OSError):os.fstat(fd)
+        if fault not in ('none','serialization-expiry','close-failure'):self.assertEqual(mutations,[True])
+        if fault == 'serialization-expiry':self.assertTrue(expired)
+        if changed_selector or fault != 'none':self.assertNotIn('omux-native-carrier-sdk-output-sha256=',stream.getvalue())
+        return stream.getvalue(),published.read_bytes() if published.is_file() else b''
 
     def test_sdk_actual_main_marker_binds_publication_and_two_selector_reads(self):
         output,raw = self.run_sdk_main_boundary()
@@ -554,5 +621,11 @@ class CarrierMaterialModels(unittest.TestCase):
     def test_sdk_selector_changed_after_publication_has_no_success_marker(self):
         output,_ = self.run_sdk_main_boundary(changed_selector=True)
         self.assertNotIn('omux-native-carrier-sdk-output-sha256=',output)
+
+    def test_sdk_final_selector_serialization_and_cleanup_mutations_refuse_with_closed_original_fds(self):
+        for fault in ('material-selector-bytes','metadata-selector-bytes','same-byte-replacement',
+                'root-replacement','namespace','serialization-bytes','input-close-bytes','serialization-expiry','close-failure',
+                'final-receipt-extra-root','final-receipt-extra-hub','final-receipt-extra-graph'):
+            with self.subTest(fault=fault):self.run_sdk_main_boundary(fault=fault)
 
 if __name__ == '__main__': unittest.main()
