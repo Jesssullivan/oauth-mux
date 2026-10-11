@@ -101,3 +101,5 @@ The index lists24distinct Sol6.1 review workstreams and25 original artifacts, wi
 - 2026-10-11-docs-authority-correction-adoption.json
 
 Lab's October10 allocation notice onTIN-5338 identifies older home output trees on an unquotaed shared NVMe. Current new payload roots use the declared fast-local project namespace; coordination alone does not confer a quota on historical home trees. The cache cleanup is scoped and preserved proof/source/credentials. A durable retention/allocation policy remains open; sampled free space is not a hard quota.
+
+October 11 continuation: [native input and lifecycle progress](2026-10-11-native-input-and-lifecycle-progress.md) records later source adoptions and scoped LC1/DM1/DM2/QD4/NM1/RQM1 results through b40de948. The original review, failed epochs, open acceptance gates and active overdue fifteen-hour clock above remain preserved.
