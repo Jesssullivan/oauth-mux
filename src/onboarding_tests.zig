@@ -118,7 +118,6 @@ test "otherwise ready artifacts still require a known matching channel" {
     try std.testing.expectEqual(model.Reason.channel_unknown, result.findings[0].reason);
 }
 
-
 test "retained unavailable vault diagnoses give restoration guidance without asserting permanent loss or unlock" {
     const cases = [_]struct { state: model.State, reason: model.Reason, action: model.Action }{
         .{ .state = .key_unavailable, .reason = .vault_key_unavailable, .action = .restore_original_vault_key },
