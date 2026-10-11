@@ -8892,17 +8892,18 @@ const NativeMaintenanceTest = struct {
         try state.forget("maintenance-forgotten");
         _ = try state.addGrant(.{ .id = "maintenance-native-grant", .account_id = "maintenance-account", .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
         _ = try state.addGrant(.{ .id = "maintenance-independent-grant", .account_id = "maintenance-account", .source_id = "maintenance-independent-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        var seeded: Persisted = .{
+            .state = state.snapshot(),
+            .policy = .{ .warm_alternatives = false },
+            .import_source_authority = &.{.{ .source_id = @constCast(&source_id), .generation = 1 }},
+        };
         const authority: NativeSourceAuthority = .{
             .origin = @splat(0xbb),
             .context = if (legacy) null else .{ .id = @splat(0xaa), .generation = 1 },
-            .consent = .{ .id = @splat(0x42), .generation = 1, .source_id = @splat(0x41), .source_generation = 1, .owner = consent_owner, .expires_at = expires_at, .purpose = .native_access_copy_for_identity_and_request },
+            .consent = .{ .id = @splat(0x42), .generation = 1, .source_id = @splat(0x41), .source_generation = 1, .owner = consent_owner, .expires_at = expires_at, .purpose = .native_access_copy_for_identity_and_request, .forget_epoch = seeded.import_forget_epoch },
         };
-        const metadata = try std.json.Stringify.valueAlloc(a, Persisted{
-            .state = state.snapshot(),
-            .policy = .{ .warm_alternatives = false },
-            .source_descriptions = &.{.{ .source_id = &source_id, .provider = "codex", .native_endpoint = endpoint, .native_authority = authority }},
-            .import_source_authority = &.{.{ .source_id = @constCast(&source_id), .generation = 1 }},
-        }, .{});
+        seeded.source_descriptions = &.{.{ .source_id = &source_id, .provider = "codex", .native_endpoint = endpoint, .native_authority = authority }};
+        const metadata = try std.json.Stringify.valueAlloc(a, seeded, .{});
         defer a.free(metadata);
         const without_context: ?[]u8 = if (legacy) blk: {
             // Persist an actual pre-context record, rather than a new-format
