@@ -180,6 +180,127 @@ class CarrierMaterialModels(unittest.TestCase):
             with self.assertRaises(ValueError): material.projection_read(output.root,self.report,output.clock)
         finally: output.close()
 
+    def retained_projection_fixture(self,name,*,normalized=False):
+        """Real compact writer, then optional fixture-only Bazel0555 retention."""
+        modes = {name:'100644' for name in self.hub}
+        modes['defs.bzl'] = '100755'
+        hub_rows = export.mapped_members(self.hub,modes)
+        core = copy.deepcopy(self.core)
+        core['hub_inventory_sha256'] = carrier.sha(carrier.encoded(hub_rows))
+        raw = carrier.encoded(core);pin = carrier.sha(raw)
+        report = {**copy.deepcopy(self.report),**core,'kind':material.SDK_KIND,
+            'authority_sha256':pin,'inventory_sha256':pin,'hub_files':hub_rows}
+        self.assertEqual(material.report_shape(report,raw),core)
+        output = material.ProjectionOutput(self.root/name,carrier.Clock(self.deadline))
+        try:
+            export.write_members(output,'hub',self.hub,hub_rows)
+            export.write_members(output,'graph',self.graph,self.graph_rows)
+            output.file('authority.json',raw);output.file('sdk-receipt.json',carrier.encoded(report));output.finish()
+            self.assertTrue(output.root.owned)
+            self.assertEqual(material.projection_read(output.root,report,output.clock),{'hub':self.hub,'graph':self.graph})
+            self.assertEqual((output.path/'hub/empty').stat().st_mode & 0o777,0o444)
+            self.assertEqual((output.path/'hub/defs.bzl').stat().st_mode & 0o777,0o555)
+        finally:output.close()
+        if normalized:
+            # Only closed synthetic owned bytes are normalized, never live/original artifacts.
+            for leaf in output.path.rglob('*'):
+                if leaf.is_file():leaf.chmod(0o555)
+        return output.path,report,raw
+
+    def test_retained_projection_public_read_preserves_selected_bytes_and_logical_modes(self):
+        for normalized in (False,True):
+            with self.subTest(normalized=normalized):
+                path,report,raw = self.retained_projection_fixture('retained-' + str(normalized),normalized=normalized)
+                clock = carrier.Clock(self.deadline)
+                with material.ProjectionRoot(path,clock) as root:
+                    self.assertFalse(root.owned)
+                    authority = carrier.read(root,'authority.json',material.MAX_DOCUMENT,report['authority_sha256'])
+                    receipt = carrier.read(root,'sdk-receipt.json',material.MAX_DOCUMENT,carrier.sha(carrier.encoded(report)))
+                    self.assertEqual(authority,raw)
+                    self.assertEqual(material.report_shape(json.loads(receipt),authority),json.loads(raw))
+                    self.assertEqual(material.projection_read(root,report,clock),{'hub':self.hub,'graph':self.graph})
+                    self.assertEqual(report['hub_files']['empty']['mode'],'100644')
+                    self.assertEqual(report['hub_files']['empty']['bytes'],0)
+                    self.assertEqual(report['hub_files']['defs.bzl']['mode'],'100755')
+                    root.check()
+                self.assertEqual((path/'authority.json').stat().st_mode & 0o777,0o555 if normalized else 0o444)
+
+    def test_fresh_owned_projection_nonexecutables_remain_exact444(self):
+        for index,name in enumerate(('authority.json','sdk-receipt.json','hub/empty','graph/MODULE.bazel')):
+            with self.subTest(name=name):
+                # The original owned Output also reaches the exact fresh mode predicate,
+                # without ProjectionOutput's additional created-leaf witness refusal.
+                output = carrier.Output(self.root/('fresh-mode-' + str(index)),carrier.Clock(self.deadline))
+                try:
+                    export.write_members(output,'hub',self.hub,self.hub_rows)
+                    export.write_members(output,'graph',self.graph,self.graph_rows)
+                    output.file('authority.json',self.raw);output.file('sdk-receipt.json',carrier.encoded(self.report));output.finish()
+                    self.assertTrue(output.root.owned)
+                    (output.path/name).chmod(0o555)
+                    with self.assertRaises(ValueError):material.projection_read(output.root,self.report,output.clock)
+                finally:output.close()
+
+    def test_retained_projection_writable_modes_and_executable_downgrade_refuse(self):
+        for name in ('authority.json','sdk-receipt.json','hub/empty','graph/MODULE.bazel'):
+            for mode in (0o600,0o644,0o666,0o755):
+                with self.subTest(name=name,mode=mode):
+                    path,report,_ = self.retained_projection_fixture('bad-mode-' + name.replace('/','-') + '-' + str(mode),normalized=True)
+                    (path/name).chmod(mode);clock = carrier.Clock(self.deadline)
+                    with material.ProjectionRoot(path,clock) as root:
+                        with self.assertRaises(ValueError):material.projection_read(root,report,clock)
+        path,report,_ = self.retained_projection_fixture('bad-executable',normalized=True)
+        (path/'hub/defs.bzl').chmod(0o444);clock = carrier.Clock(self.deadline)
+        with material.ProjectionRoot(path,clock) as root:
+            with self.assertRaises(ValueError):material.projection_read(root,report,clock)
+
+    def test_retained_projection_selected_hash_namespace_and_symlink_refuse(self):
+        path,report,_ = self.retained_projection_fixture('bad-auth',normalized=True)
+        clock = carrier.Clock(self.deadline)
+        with material.ProjectionRoot(path,clock) as root:
+            with self.assertRaises(ValueError):carrier.read(root,'authority.json',material.MAX_DOCUMENT,'b'*64)
+        changed = copy.deepcopy(report);changed['hub_files']['empty']['mode'] = '100755'
+        with self.assertRaises(ValueError):material.report_shape(changed,(path/'authority.json').read_bytes())
+        for action in ('extra','symlink','bytes'):
+            with self.subTest(action=action):
+                path,report,_ = self.retained_projection_fixture('bad-selected-' + action,normalized=True)
+                if action == 'extra':
+                    path.chmod(0o700);(path/'unselected').write_bytes(b'extra');(path/'unselected').chmod(0o555);path.chmod(0o555)
+                elif action == 'symlink':
+                    parent = path/'hub';parent.chmod(0o700);(parent/'empty').unlink()
+                    (parent/'empty').symlink_to(path/'authority.json');parent.chmod(0o555)
+                else:
+                    leaf = path/'graph/MODULE.bazel';leaf.chmod(0o600);leaf.write_bytes(b'changed');leaf.chmod(0o555)
+                clock = carrier.Clock(self.deadline)
+                with material.ProjectionRoot(path,clock) as root:
+                    with self.assertRaises((ValueError,OSError)):material.projection_read(root,report,clock)
+
+    def test_retained_projection_allowed_mode_and_same_byte_identity_races_refuse(self):
+        for action in ('mode','replace','bytes'):
+            with self.subTest(action=action):
+                path,report,_ = self.retained_projection_fixture('retained-race-' + action,normalized=True)
+                clock = carrier.Clock(self.deadline)
+                with material.ProjectionRoot(path,clock) as root:
+                    self.assertEqual(material.projection_read(root,report,clock),{'hub':self.hub,'graph':self.graph})
+                    leaf = path/'hub/empty'
+                    if action == 'mode':leaf.chmod(0o444)
+                    elif action == 'replace':
+                        leaf.parent.chmod(0o700);leaf.rename(self.root/'old-empty')
+                        leaf.write_bytes(b'');leaf.chmod(0o555);leaf.parent.chmod(0o555)
+                    else:leaf.chmod(0o600);leaf.write_bytes(b'changed');leaf.chmod(0o555)
+                    with self.assertRaises(ValueError):root.check()
+                    with self.assertRaises(ValueError):material.projection_read(root,report,clock)
+
+    def test_retained_projection_original_clock_is_not_renewed(self):
+        path,report,_ = self.retained_projection_fixture('expired-projection',normalized=True)
+        with self.assertRaises(ValueError):material.ProjectionRoot(path,carrier.Clock(float(time.monotonic()-1)))
+        clock = carrier.Clock(self.deadline)
+        with material.ProjectionRoot(path,clock) as root:
+            material.projection_read(root,report,clock)
+            with patch.object(carrier.time,'monotonic',return_value=self.deadline+1):
+                with self.assertRaises(ValueError):material.projection_read(root,report,clock)
+                with self.assertRaises(ValueError):root.check()
+            self.assertEqual(clock.deadline,self.deadline)
+
     def test_projection_named_parent_replacement_refuses_before_write(self):
         output = carrier.Output(self.root/'projection',carrier.Clock(self.deadline))
         try:

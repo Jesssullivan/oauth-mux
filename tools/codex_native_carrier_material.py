@@ -380,12 +380,20 @@ def seal_marker(proofs,report,deadline):
     proofs.recheck(deadline)
 
 
+def projection_leaf_mode(root,witness,logical_mode='100644'):
+    """Keep fresh writer modes exact; admit read-only retained nonexecutables."""
+    require(logical_mode in ('100644','100755'))
+    expected = 0o555 if logical_mode == '100755' else 0o444
+    modes = (expected,) if root.owned or logical_mode == '100755' else (0o444,0o555)
+    require(stat.S_IMODE(witness[4]) in modes)
+
+
 def projection_read(root,report,clock,*,complete=True):
     expected_root = {'hub','graph','authority.json'} | ({'sdk-receipt.json'} if complete else set())
     carrier.names(root.fd,expected_root,clock)
     for name in (('authority.json','sdk-receipt.json') if complete else ('authority.json',)):
         fd,witness = root.open(name)
-        try: require(stat.S_IMODE(witness[4]) == 0o444)
+        try: projection_leaf_mode(root,witness)
         finally: os.close(fd)
     values = {}
     for role in ('hub','graph'):
@@ -404,7 +412,7 @@ def projection_read(root,report,clock,*,complete=True):
         for name,row in report[role + '_files'].items():
             clock.tick(); fd,witness = root.open(role + '/' + name)
             try:
-                require(stat.S_IMODE(witness[4]) == (0o555 if row['mode'] == '100755' else 0o444))
+                projection_leaf_mode(root,witness,row['mode'])
             finally: os.close(fd)
             raw = carrier.read(root,role + '/' + name,MAX_DOCUMENT,row['sha256'])
             require(len(raw) == row['bytes']); values[role][name] = raw
