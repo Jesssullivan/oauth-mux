@@ -5633,7 +5633,9 @@ pub const Engine = struct {
         pending.native_expected_endpoint = try self.allocator.dupe(u8, endpoint);
         // Any preparation failure restores the committed beforeimage. A write
         // ambiguity poisons service in persistWithFences and is never retried.
-        errdefer self.restoreCommitted() catch { self.poisoned = true; };
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
         pending.job_generation = (try self.state.reopenJob(.{ .id = pending.job_id, .kind = .enrollment, .status = .running })).operation_generation;
         var expected = observation.authority;
         expected.rotation_attempted_at = acquisition_wall;
@@ -5694,8 +5696,8 @@ pub const Engine = struct {
             try self.failImport(task.pending, diagnosticCause(err));
             return;
         };
-        const now = self.now();
-        if (copy.candidate.custody_expires_at <= now or (copy.candidate.expires_at_limit != null and copy.candidate.expires_at_limit.? <= now)) {
+        const copy_checked_at = self.now();
+        if (copy.candidate.custody_expires_at <= copy_checked_at or (copy.candidate.expires_at_limit != null and copy.candidate.expires_at_limit.? <= copy_checked_at)) {
             try self.failImport(task.pending, .other);
             return;
         }
@@ -5963,10 +5965,10 @@ pub const Engine = struct {
         }, .consent = scope.consent, .owner = .{ .id = fresh.declaration.owner_id, .nonce = fresh.declaration.native_nonce, .endpoint_generation = fresh.declaration.endpoint_generation, .witness = fresh.declaration.witness }, .context = .{ .id = context.id, .generation = context.generation }, .store_present = true, .forget_epoch = self.import_forget_epoch };
     }
 
-    fn nativeImportWriterCheck(self: *Engine, fence: NativeAdoptionFence) !void {
-        var pending = fence.pending;
+    fn nativeImportWriterCheck(self: *Engine, adoption_fence: NativeAdoptionFence) !void {
+        var pending = adoption_fence.pending;
         if (pending.native_expected_authority) |expected| {
-            if (fence.rotation_revision == null or fence.rotation_revision.? != self.revision) return error.NativeSourceSuperseded;
+            if (adoption_fence.rotation_revision == null or adoption_fence.rotation_revision.? != self.revision) return error.NativeSourceSuperseded;
             var after = expected;
             after.context = pending.native_admission.?.context;
             after.rotation = null;
@@ -5983,8 +5985,8 @@ pub const Engine = struct {
             };
             if (!terminal) return error.ImportSuperseded;
             pending.native_expected_authority = null;
-        } else if (fence.rotation_revision != null) return error.NativeSourceSuperseded;
-        try self.nativeImportCheck(pending, fence.fresh);
+        } else if (adoption_fence.rotation_revision != null) return error.NativeSourceSuperseded;
+        try self.nativeImportCheck(pending, adoption_fence.fresh);
     }
 
     fn stageNativeContextRotation(self: *Engine, pending: PendingImport) !void {
@@ -8193,13 +8195,18 @@ test "native successor identical secret joins encrypted SQL owner identity and o
         const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{prefix}, 0);
         defer a.free(database);
         var current: Engine = .{
-            .allocator = a, .io = io, .state_dir = try a.dupe(u8, prefix),
-            .state = domain.State.init(a), .observers = observer.Coordinator.init(a),
+            .allocator = a,
+            .io = io,
+            .state_dir = try a.dupe(u8, prefix),
+            .state = domain.State.init(a),
+            .observers = observer.Coordinator.init(a),
             .requests = request_authority.Ledger.init(a, 4096),
             .mutations = try mutation_authority.Ledger.init(a, 4096),
-            .admission = snapshot_admission.Ledger.init(a), .native_owners = native_owner.Ledger.init(a),
+            .admission = snapshot_admission.Ledger.init(a),
+            .native_owners = native_owner.Ledger.init(a),
             .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
-            .root_id = try a.dupeSentinel(u8, "fixture-root", 0), .root_key = @splat(19),
+            .root_id = try a.dupeSentinel(u8, "fixture-root", 0),
+            .root_key = @splat(19),
             .db = try storage.Store.openRoot(io, a, database, "fixture-root", @splat(19)),
         };
         defer {
@@ -10025,7 +10032,6 @@ const NativeMaintenanceTest = struct {
     }
 };
 
-
 test "native issued successor intent survives actual encrypted store restart without copy or replay" {
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
     const a = std.testing.allocator;
@@ -10042,12 +10048,17 @@ test "native issued successor intent survives actual encrypted store restart wit
     const candidate: native_source_consent.Context = .{ .id = @splat(0xab), .generation = 2 };
     {
         var current: Engine = .{
-            .allocator = a, .io = io, .state_dir = try a.dupe(u8, path),
-            .state = domain.State.init(a), .observers = observer.Coordinator.init(a),
+            .allocator = a,
+            .io = io,
+            .state_dir = try a.dupe(u8, path),
+            .state = domain.State.init(a),
+            .observers = observer.Coordinator.init(a),
             .requests = request_authority.Ledger.init(a, 4096),
             .mutations = try mutation_authority.Ledger.init(a, 4096),
-            .admission = snapshot_admission.Ledger.init(a), .native_owners = native_owner.Ledger.init(a),
-            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }), .test_key = NativeMaintenanceTest.key,
+            .admission = snapshot_admission.Ledger.init(a),
+            .native_owners = native_owner.Ledger.init(a),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+            .test_key = NativeMaintenanceTest.key,
         };
         defer {
             if (current.network) |network| network.deinit();
