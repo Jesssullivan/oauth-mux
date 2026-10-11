@@ -316,7 +316,9 @@ test "R-N13 unresolved legacy startup rejects before actual pending rotation rec
         var token = std.fmt.bytesToHex(random, .lower);
         defer std.crypto.secureZero(u8, &token);
         const context: envelope.Context = .{ .key_id = store.key_id, .account_id = fixture.account, .grant_id = fixture.grant, .generation = 2, .purpose = "request", .scope = "https://github.com" };
-        _ = try store.commit(snapshot.revision, encoded, &.{.{ .put = .{ .context = context, .plaintext = &token, .renewal_owner = .omux } }});
+        // Explicit synthetic fixture recreation seeds unsupported future SQL
+        // custody; ordinary replacement must not transfer the imported writer.
+        _ = try store.commit(snapshot.revision, encoded, &.{ .{ .delete = .{ .account_id = fixture.account, .grant_id = fixture.grant } }, .{ .put = .{ .context = context, .plaintext = &token, .renewal_owner = .omux } } });
         const begun = try store.beginRotation(context, operation);
         try std.testing.expect(begun.may_issue and begun.status == .started);
         try std.testing.expect(try store.isTombstoned(fixture.forgotten));
@@ -344,7 +346,8 @@ fn pendingRotation(fixture: *const Fixture, json: []const u8, operation: []const
     var token = std.fmt.bytesToHex(random, .lower);
     defer std.crypto.secureZero(u8, &token);
     const context: envelope.Context = .{ .key_id = store.key_id, .account_id = fixture.account, .grant_id = fixture.grant, .generation = 2, .purpose = "request", .scope = "https://github.com" };
-    _ = try store.commit(snapshot.revision, json, &.{.{ .put = .{ .context = context, .plaintext = &token, .renewal_owner = .omux } }});
+    // Seed a separate synthetic SQL lineage, not an implicit writer transfer.
+    _ = try store.commit(snapshot.revision, json, &.{ .{ .delete = .{ .account_id = fixture.account, .grant_id = fixture.grant } }, .{ .put = .{ .context = context, .plaintext = &token, .renewal_owner = .omux } } });
     const begun = try store.beginRotation(context, operation);
     try std.testing.expect(begun.may_issue and begun.status == .started);
     try std.testing.expect(try store.isTombstoned(fixture.forgotten));

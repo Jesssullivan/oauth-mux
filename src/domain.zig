@@ -1213,7 +1213,8 @@ fn validateScopes(scopes: []const []const u8) !void {
     }
 }
 fn sameGrantAuthority(a: Grant, b: Grant) bool {
-    if (a.credential_kind != b.credential_kind or !eql(a.audience, b.audience) or a.scopes.len != b.scopes.len or a.purposes.len != b.purposes.len) return false;
+    // Ordinary credential replacement is not renewal-writer adoption.
+    if (a.ownership != b.ownership or a.credential_kind != b.credential_kind or !eql(a.audience, b.audience) or a.scopes.len != b.scopes.len or a.purposes.len != b.purposes.len) return false;
     for (a.scopes) |scope| if (!contains(b.scopes, scope)) return false;
     for (a.purposes) |purpose| if (!hasPurpose(b, purpose)) return false;
     return true;
@@ -1388,12 +1389,15 @@ test "R-N13 native acquisition growth includes complete immutable references at 
     try std.testing.expectError(error.GenerationConflict, acquisitionGrowth(binding, legacy_lease));
 }
 fn fixtureState() !State {
+    return fixtureStateWithOwnership(.omux);
+}
+fn fixtureStateWithOwnership(ownership: RenewalOwnership) !State {
     var state = State.init(std.testing.allocator);
     errdefer state.deinit();
     _ = try state.connectSource(.{ .id = "source", .kind = .oauth });
     _ = try state.enroll(.{ .account_id = "account-a", .source_id = "source", .identity = fixtureIdentity("alice") }, 0);
     _ = try state.enroll(.{ .account_id = "account-b", .source_id = "source", .identity = fixtureIdentity("bob") }, 0);
-    _ = try state.addGrant(.{ .id = "grant-a", .account_id = "account-a", .source_id = "source", .credential_kind = .oauth_access, .ownership = .omux, .audience = "https://api.example", .purposes = &.{.request} });
+    _ = try state.addGrant(.{ .id = "grant-a", .account_id = "account-a", .source_id = "source", .credential_kind = .oauth_access, .ownership = ownership, .audience = "https://api.example", .purposes = &.{.request} });
     _ = try state.addGrant(.{ .id = "grant-b", .account_id = "account-b", .source_id = "source", .credential_kind = .oauth_access, .ownership = .omux, .audience = "https://api.example", .purposes = &.{.request} });
     return state;
 }
@@ -1555,7 +1559,7 @@ test "verified identities deduplicate across sources; unverified imports quarant
 }
 
 test "verified account type refresh preserves held native work and independent authority" {
-    var state = try fixtureState();
+    var state = try fixtureStateWithOwnership(.external);
     defer state.deinit();
     var external = state.grant("grant-a").?;
     external.ownership = .external;
@@ -1733,7 +1737,7 @@ test "draining prevents new leases while existing leases complete; route generat
     try std.testing.expectEqualStrings("account-b", state.binding("thread").?.account_id);
 }
 test "external refresh ownership never silently transfers; reconciliation detects stale generation" {
-    var state = try fixtureState();
+    var state = try fixtureStateWithOwnership(.external);
     defer state.deinit();
     var g = state.grant("grant-a").?;
     g.generation = 2;
@@ -1743,6 +1747,38 @@ test "external refresh ownership never silently transfers; reconciliation detect
     try std.testing.expectError(error.GenerationConflict, state.reconcile(.{ .grant_id = "grant-a", .expected_generation = 1, .next_generation = 3, .status = .quarantined }));
     try state.reconcile(.{ .grant_id = "grant-a", .expected_generation = 2, .next_generation = 3, .status = .quarantined });
     try std.testing.expectEqual(.quarantined, state.grant("grant-a").?.status);
+}
+test "ordinary grant replacements preserve writer authority and held work" {
+    for ([_]RenewalOwnership{ .external, .adopted, .omux }) |owner| {
+        var state = try fixtureStateWithOwnership(owner);
+        defer state.deinit();
+        _ = try state.bind(.{ .id = "writer-thread", .application = "native", .session_id = "session", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1 });
+        _ = try state.beginLease(.{ .id = "held-work", .binding_id = "writer-thread", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1, .started_at = 1, .expires_at = 100 }, 1);
+        const before = try std.json.Stringify.valueAlloc(std.testing.allocator, state.snapshot(), .{});
+        defer std.testing.allocator.free(before);
+        for ([_]RenewalOwnership{ .external, .adopted, .omux }) |replacement_owner| {
+            if (owner == replacement_owner) continue;
+            var replacement = state.grant("grant-a").?;
+            replacement.generation += 1;
+            replacement.ownership = replacement_owner;
+            try std.testing.expectError(error.InvalidRecord, state.addGrant(replacement));
+            const after = try std.json.Stringify.valueAlloc(std.testing.allocator, state.snapshot(), .{});
+            defer std.testing.allocator.free(after);
+            try std.testing.expectEqualStrings(before, after);
+        }
+        var replacement = state.grant("grant-a").?;
+        replacement.generation += 1;
+        _ = try state.addGrant(replacement);
+        try std.testing.expectEqual(owner, state.grant("grant-a").?.ownership);
+        try std.testing.expectEqual(@as(u64, 2), state.grant("grant-a").?.generation);
+        try std.testing.expectEqual(@as(u64, 1), state.grant("grant-b").?.generation);
+        try std.testing.expectEqual(RenewalOwnership.omux, state.grant("grant-b").?.ownership);
+        try std.testing.expectEqual(@as(u64, 1), state.leases.items[0].grant_generation);
+        var restored = try State.fromSnapshot(std.testing.allocator, state.snapshot());
+        defer restored.deinit();
+        try std.testing.expectEqual(owner, restored.grant("grant-a").?.ownership);
+        try std.testing.expectEqual(@as(u64, 1), restored.leases.items[0].grant_generation);
+    }
 }
 test "snapshot is JSON serializable and validates foreign keys and schema" {
     var state = try fixtureState();

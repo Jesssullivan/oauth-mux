@@ -727,7 +727,7 @@ pub const Store = struct {
     fn put(self: *Store, grant: GrantPut, ciphertext: []const u8) !void {
         if (try self.isTombstoned(grant.context.account_id)) return error.AccountForgotten;
         if (grant.context.generation != try self.nextGeneration(grant.context.account_id, grant.context.grant_id)) return error.StaleGeneration;
-        const lookup = try self.prepare("SELECT generation,state FROM grants WHERE account_id=?1 AND grant_id=?2;");
+        const lookup = try self.prepare("SELECT generation,state,renewal_owner FROM grants WHERE account_id=?1 AND grant_id=?2;");
         defer finalize(lookup);
         try bindText(lookup, 1, grant.context.account_id);
         try bindText(lookup, 2, grant.context.grant_id);
@@ -736,6 +736,9 @@ pub const Store = struct {
                 const old_generation = try integerColumn(lookup, 0);
                 if (old_generation == std.math.maxInt(i64) or grant.context.generation != old_generation + 1) return error.StaleGeneration;
                 if (std.mem.eql(u8, try textColumn(lookup, 1), "refreshing")) return error.RotationInProgress;
+                // A next generation is not evidence that a prior writer retired.
+                const owner = std.meta.stringToEnum(RenewalOwner, try textColumn(lookup, 2)) orelse return error.DatabaseCorrupt;
+                if (owner != grant.renewal_owner) return error.RenewalOwnerConflict;
             },
             c.SQLITE_DONE => {},
             else => |result| try check(result),
@@ -1999,6 +2002,70 @@ test "external renewal authority is never adopted implicitly" {
     var secret = try store.loadGrant(test_context);
     defer secret.deinit();
     try std.testing.expectEqualStrings("browser-owned", secret.bytes);
+}
+
+test "ordinary replacement cannot transfer a durable writer and rolls back the entire batch" {
+    const allocator = std.testing.allocator;
+    const key: envelope.Key = @splat(38);
+    for ([_]RenewalOwner{ .none, .external, .omux }) |owner| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try testPath(allocator, tmp);
+        defer allocator.free(path);
+        var independent = test_context;
+        independent.grant_id = "independent-grant";
+        var next = test_context;
+        next.generation = 2;
+        var independent_next = independent;
+        independent_next.generation = 2;
+        {
+            var store = try Store.open(std.testing.io, allocator, path, key);
+            defer store.close();
+            _ = try store.commit(0, "{\"phase\":\"original\"}", &.{
+                .{ .put = .{ .context = test_context, .plaintext = "synthetic-original", .renewal_owner = owner } },
+                .{ .put = .{ .context = independent, .plaintext = "synthetic-independent", .renewal_owner = .external } },
+            });
+            const checkpoint = store.checkpoint;
+            for ([_]RenewalOwner{ .none, .external, .omux }) |replacement_owner| {
+                if (owner == replacement_owner) continue;
+                try std.testing.expectError(error.RenewalOwnerConflict, store.commit(1, "{\"phase\":\"unverified_transfer\"}", &.{
+                    .{ .put = .{ .context = independent_next, .plaintext = "synthetic-should-rollback", .renewal_owner = .external } },
+                    .{ .put = .{ .context = next, .plaintext = "synthetic-unverified", .renewal_owner = replacement_owner } },
+                }));
+                try std.testing.expect(checkpoint.eql(store.checkpoint));
+                var snapshot = try store.readSnapshot();
+                defer snapshot.deinit();
+                try std.testing.expectEqual(@as(u64, 1), snapshot.revision);
+                try std.testing.expectEqualStrings("{\"phase\":\"original\"}", snapshot.json);
+                const status = (try store.readGrantStatus(test_context.account_id, test_context.grant_id)).?;
+                try std.testing.expectEqual(owner, status.renewal_owner);
+                try std.testing.expectEqual(GrantState.ready, status.state);
+                try std.testing.expectEqual(@as(u64, 1), status.generation);
+                try std.testing.expectEqual(@as(u64, 2), try store.nextGeneration(test_context.account_id, test_context.grant_id));
+                try std.testing.expectEqual(@as(u64, 2), try store.nextGeneration(independent.account_id, independent.grant_id));
+                var original = try store.loadGrant(test_context);
+                defer original.deinit();
+                try std.testing.expectEqualStrings("synthetic-original", original.bytes);
+                var retained = try store.loadGrant(independent);
+                defer retained.deinit();
+                try std.testing.expectEqualStrings("synthetic-independent", retained.bytes);
+                try std.testing.expect((try store.readOperation("forbidden-takeover")) == null);
+            }
+            if (owner != .omux) try std.testing.expectError(error.RenewalNotOwned, store.beginRotation(test_context, "forbidden-takeover"));
+            try std.testing.expectEqual(@as(u64, 2), try store.commit(1, "{\"phase\":\"same_writer\"}", &.{.{ .put = .{ .context = next, .plaintext = "synthetic-successor", .renewal_owner = owner } }}));
+        }
+        var reopened = try Store.open(std.testing.io, allocator, path, key);
+        defer reopened.close();
+        const status = (try reopened.readGrantStatus(next.account_id, next.grant_id)).?;
+        try std.testing.expectEqual(owner, status.renewal_owner);
+        try std.testing.expectEqual(@as(u64, 2), status.generation);
+        try std.testing.expectEqual(GrantState.ready, status.state);
+        var successor = try reopened.loadGrant(next);
+        defer successor.deinit();
+        try std.testing.expectEqualStrings("synthetic-successor", successor.bytes);
+        try std.testing.expectEqual(@as(u64, 1), (try reopened.readGrantStatus(independent.account_id, independent.grant_id)).?.generation);
+        try std.testing.expect((try reopened.readOperation("forbidden-takeover")) == null);
+    }
 }
 
 test "missing initialized custody records fail closed and are never recreated" {
