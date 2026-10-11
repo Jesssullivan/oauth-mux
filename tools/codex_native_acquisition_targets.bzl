@@ -1,8 +1,8 @@
 """Separate ninth metadata/SDK targets; legacy source families remain unchanged."""
 load(":rules.bzl", "python_test")
 
-def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources, parent_data, sdk_data):
-    sources = depset(source_sources + sdk_sources + [
+def native_acquisition_source_closure(source_sources, sdk_sources):
+    return depset(source_sources + sdk_sources + [
         "codex_native_acquisition_binding.py", "codex_native_acquisition_metadata.py",
         "codex_native_acquisition_sdk_export.py", "codex_native_acquisition_material.py",
         "guard_native_acquisition_inputs_reserved.py", "guard_resident_native_source_acquisition_source_reserved.py",
@@ -15,6 +15,18 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         "codex_native_acquisition_bridge_material.py", "nix_interpreter_closure.py",
         "//delivery:portable.py",
     ]).to_list()
+
+def native_acquisition_sources_for(name, sources):
+    # Metadata reconstructs source and regenerates the hub; it never inspects
+    # a native image. Declaring portable.py also declares its compiled launcher.
+    if name == "codex_native_acquisition_metadata_producer":
+        return [src for src in sources if str(src) not in (
+            "//delivery:portable.py", "codex_native_acquisition_bridge_material.py",
+        )]
+    return sources
+
+def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources, parent_data, sdk_data):
+    sources = native_acquisition_source_closure(source_sources, sdk_sources)
     data = depset(parent_data + sdk_data + [
         "//integrations/codex-upstream:native_source_context_patch",
         "//integrations/codex-upstream:native_acquisition_input_configuration",
@@ -67,7 +79,7 @@ def native_acquisition_input_targets(source_sources, sdk_sources, guard_sources,
         if name == "codex_native_acquisition_runtime_qualification_producer":
             target_data = target_data + ["//integrations/codex-upstream:native_acquisition_runtime_configuration"]
         model_sources = ["codex_protocol_history_metadata_test.py", "codex_live_source_test.py"] if name == "codex_native_acquisition_metadata_sdk_test" else []
-        python_test(name = name, main = main, srcs = depset(sources + [main] + model_sources).to_list(),
+        python_test(name = name, main = main, srcs = depset(native_acquisition_sources_for(name, sources) + [main] + model_sources).to_list(),
             data = target_data,
             timeout = "long", tags = ["manual", "no-remote", "no-cache"])
     python_test(name = "guard_native_acquisition_inputs_reserved_test",
