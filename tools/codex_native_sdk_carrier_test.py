@@ -117,9 +117,11 @@ class CarrierModels(unittest.TestCase):
             receipt["payload_bytes"] = len(payload)
         if manifest is not None:
             raw = carrier.encoded(manifest)
+            (root / "manifest.json").chmod(0o600)
             self.write(root / "manifest.json", raw)
             receipt["manifest_sha256"], receipt["manifest_bytes"] = carrier.sha(raw), len(raw)
             receipt["entry_count"] = len(manifest["entries"])
+        (root / "receipt.json").chmod(0o600)
         self.write(root / "receipt.json", carrier.encoded(receipt))
         root.chmod(0o555)
         return carrier.sha(carrier.encoded(receipt))
