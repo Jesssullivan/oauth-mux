@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AcquisitionError, makeEnvelope, makeHealthEnvelope, validateEnvelope, validateHealthResponse } from "./protocol.mjs";
+import { AcquisitionError, makeEnvelope, makeHealthEnvelope, validateEnvelope, validateHealthResponse, validateConnectOutcome } from "./protocol.mjs";
 import { getAdapter } from "./adapters.mjs";
 import { sendNativeRequest } from "./native.mjs";
 
@@ -50,6 +50,35 @@ test("envelope makers derive channel intent from the packaged configuration", ()
   const args = { requestId: "mutation-1", sourceId: "source-1", adapter, method: "browser.reconcile", extra: { provenance: principal } };
   assert.equal(makeEnvelope(args, { allowFixture: true }).params.provenance.channel, "release");
   assert.throws(() => makeEnvelope({ ...args, extra: { provenance: { ...principal, channel: "development" } } }, { allowFixture: true }), failCode("incompatible_native_host"));
+});
+
+test("Connect outcome wire has separate operation intent and exact u64 authority bounds", () => {
+  const adapter = getAdapter("codex");
+  const query = makeEnvelope({ requestId: "correlation", sourceId: "source", adapter, method: "browser.connectOutcome", extra: { operationId: "operation", expectedRevision: "18446744073709551615", provenance } });
+  assert.notEqual(query.id, query.params.operationId);
+  assert.equal(query.params.expectedRevision, "18446744073709551615");
+  for (const value of [1, "01", "-1", "18446744073709551616", "1.0", ""]) assert.throws(() => validateEnvelope({ ...query, params: { ...query.params, expectedRevision: value } }));
+  for (const extra of [{ capsule: {} }, { expectedGeneration: "1" }, { identity: "inferred" }]) assert.throws(() => validateEnvelope({ ...query, params: { ...query.params, ...extra } }), failCode("invalid_fields"));
+  assert.throws(() => validateEnvelope({ ...query, params: { ...query.params, provenance: { ...provenance, channel: "development" } } }), failCode("incompatible_native_host"));
+  const connect = { ...query, method: "browser.connect" };
+  assert.throws(() => validateEnvelope({ ...connect, params: { sourceId: "source", adapter: "codex", origin: adapter.origin, provenance, operationId: "operation" } }), failCode("invalid_fields"));
+  const remove = { ...query, method: "browser.disconnect" };
+  assert.throws(() => validateEnvelope(remove), failCode("invalid_fields"));
+  assert.equal(validateEnvelope({ ...remove, params: { ...remove.params, expectedGeneration: "1" } }).params.expectedGeneration, "1");
+  assert.throws(() => validateEnvelope({ ...remove, params: { ...remove.params, expectedGeneration: "0" } }));
+});
+
+test("Connect outcome rejects wrong operation, context and malformed authority while retaining disabled export", () => {
+  const result = { outcome: "committed", source_id: "source", operation_id: "operation", connect_generation: "1", connect_revision: "2", current_generation: "1", current_revision: "3", source_status: "connected", authorized: true };
+  const outcome = value => ({ version: 1, id: "query", result: { ...result, ...value } });
+  assert.equal(validateConnectOutcome(outcome({}), "query", "source", "operation").authorized, true);
+  for (const value of [{ source_id: "other" }, { operation_id: "other" }, { connect_revision: "4" }, { current_generation: 1 }, { source_status: "disconnected" }, { outcome: "unknown" }, { capsule: {} }, { current_revision: "03" }]) assert.throws(() => validateConnectOutcome(outcome(value), "query", "source", "operation"));
+  assert.equal(validateConnectOutcome(outcome({ outcome: "unknown", connect_generation: null, connect_revision: null }), "query", "source", "operation").outcome, "unknown");
+  const health = validateHealthResponse(response({ capabilities: { source_connection: true, production_export: false, connect_recovery: true } }), "health-1");
+  assert.equal(health.capabilities.connect_recovery, true);
+  assert.equal(health.capabilities.production_export, false);
+  assert.equal(validateHealthResponse(response(), "health-1").capabilities.connect_recovery, undefined);
+  assert.throws(() => validateHealthResponse(response({ capabilities: { source_connection: true, production_export: false, connect_recovery: "true" } }), "health-1"));
 });
 
 test("invalid transport deadline refuses without opening a native port", async () => {

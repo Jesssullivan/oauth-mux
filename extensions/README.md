@@ -266,13 +266,50 @@ Changing the provider or saved context clears Connect consent. Delayed status
 and removal replies cannot replace feedback for a newer UI selection.
 
 An unknown original Connect outcome is distinct from an unconfirmed Disconnect
-reply. In the former case removal remains pending, with the original source and
-request identity retained: neither retry nor an ordinary Disconnect reply can
-cancel a delayed original Connect. Authoritative original-outcome recovery is
-not implemented. In the latter case retry sends the retained Disconnect only.
-The saved list and pending-operation labels are local metadata, not verified
-identity, daemon authority or proof that a removal completed. Production grant
-export remains disabled; browser-presence detachment remains unimplemented.
+reply. A recovery-capable daemon advertises `connect_recovery` in provider-free
+health. A fresh consent-bound Connect then carries a separate opaque operation
+ID and an exact expected revision; its effect and immutable source-generation
+receipt commit together in the existing bounded mutation ledger. JSON-RPC IDs
+remain correlation only. Exact operation retries return the original receipt
+without renewing source authority; changing context or intent with that ID is
+refused. Authority revisions/generations use canonical decimal strings on this
+wire to preserve u64 precision in browser JavaScript.
+
+`browser.connectOutcome` is a read-only native-messaging query for that retained
+operation and exact browser/extension/provider/source context. It reports the
+original committed generation separately from current generation and current
+clock-checked source authorization. After a lost reply or worker/popup restart,
+the extension recovers source connection only when that generation is still
+current and provider permission still holds. Startup and removal never replay
+Connect or a credential capsule. Recovery establishes no verified identity,
+usable grant, renewal ownership or application capability.
+
+Revoked permission or explicit saved-context removal can use a committed matching
+generation to send removal with its own operation ID, expected revision and
+generation fence. The retained original identity remains attached until genuine
+removal ACK. A lost removal reply retries that removal operation; it does not
+advance source generation again or reconnect. The removal descriptor stays saved
+through metadata/state retirement and is cleared only after source metadata is
+observed absent; interrupted local retirement cannot create a fresh unfenced
+removal. A removal receipt proves that original generation was removed at its
+commit, not that a later independently authorized generation is absent. Other
+source/grant authority stays
+independent. Eight-operation/ten-second startup bounds remain; a separate durable
+opaque continuation hint prevents failed outcome queries from starving later
+contexts across workers. Neither continuation hint is source authority.
+
+Connection recovery stays held for unknown outcome, custody failure and
+stale/unauthorized current generations. Historical pending Connect records without the operation contract remain
+uncertain: a current connected label or an ordinary Disconnect ACK cannot settle
+them or cancel a delayed original Connect. New clients retain the previous
+explicit-gesture connection behavior against hosts without the recovery
+capability; those connections have no new outcome guarantee. Older clients reject
+the added capability field, so extension and native host must be updated together.
+The saved list and pending-outcome labels are local categorical metadata; only
+the bounded daemon query establishes recovery evidence at its readback point.
+Production grant export remains disabled; browser-presence detachment remains
+unimplemented and unproved. These source models are not an installed recovery or
+human-consent proof.
 
 Use the exact browser, extension ID, binary and destination from installation:
 

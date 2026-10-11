@@ -11,7 +11,7 @@ pub const max_secret_bytes = 8 * 1024;
 pub const max_capsule_bytes = 128 * 1024;
 pub const max_json_depth = 32;
 
-pub const Method = enum { health, connect, import_grant, observation, reconcile, disconnect };
+pub const Method = enum { health, connect, connect_outcome, import_grant, observation, reconcile, disconnect };
 pub const Channel = enum { release, development };
 pub const Provenance = struct {
     browser: []const u8,
@@ -49,6 +49,9 @@ pub const Validated = struct {
     source_id: []const u8 = "",
     origin: []const u8 = "",
     provenance: Provenance,
+    operation_id: ?[]const u8 = null,
+    expected_revision: ?u64 = null,
+    expected_generation: ?u64 = null,
     capsule: ?std.json.Value = null,
     observation: ?std.json.Value = null,
     browser_bound: bool = false,
@@ -124,8 +127,8 @@ fn identifier(value: std.json.Value, max_len: usize) Error![]const u8 {
 }
 
 fn parseMethod(s: []const u8) Error!Method {
-    const names = [_][]const u8{ "browser.health", "browser.connect", "browser.importGrant", "browser.observation", "browser.reconcile", "browser.disconnect" };
-    const methods = [_]Method{ .health, .connect, .import_grant, .observation, .reconcile, .disconnect };
+    const names = [_][]const u8{ "browser.health", "browser.connect", "browser.connectOutcome", "browser.importGrant", "browser.observation", "browser.reconcile", "browser.disconnect" };
+    const methods = [_]Method{ .health, .connect, .connect_outcome, .import_grant, .observation, .reconcile, .disconnect };
     for (names, methods) |name, method| if (std.mem.eql(u8, s, name)) return method;
     return error.UnsupportedMethod;
 }
@@ -151,6 +154,14 @@ fn timestamp(value: std.json.Value) Error!i64 {
     const result = try integer(value);
     if (result < 0) return error.InvalidRequest;
     return result;
+}
+
+// Decimal strings preserve exact revision/generation authority in JS clients.
+fn authorityNumber(value: std.json.Value) Error!u64 {
+    const text = try string(value);
+    if (text.len == 0 or text.len > 20 or (text.len > 1 and text[0] == '0')) return error.InvalidRequest;
+    for (text) |byte| if (!std.ascii.isDigit(byte)) return error.InvalidRequest;
+    return std.fmt.parseInt(u64, text, 10) catch return error.InvalidRequest;
 }
 
 fn finiteNumber(value: std.json.Value) Error!f64 {
@@ -226,11 +237,20 @@ pub fn validateIngress(value: std.json.Value, allow_fixture: bool) Error!Validat
     const extras: []const []const u8 = switch (method) {
         .health => unreachable,
         .connect => &.{},
+        .connect_outcome => &.{"operationId"},
         .import_grant => &.{"capsule"},
         .observation => &.{"observation"},
         .reconcile, .disconnect => &.{},
     };
-    try fields(params, &.{ "sourceId", "adapter", "origin", "provenance" }, extras);
+    const optional: []const []const u8 = switch (method) {
+        .connect => &.{ "operationId", "expectedRevision" },
+        .connect_outcome => &.{ "operationId", "expectedRevision" },
+        .disconnect => &.{ "expectedGeneration", "operationId", "expectedRevision" },
+        .health => unreachable,
+        .import_grant, .observation => extras,
+        .reconcile => &.{},
+    };
+    try fields(params, &.{ "sourceId", "adapter", "origin", "provenance" }, optional);
     // Method-specific extras are required, not merely permitted.
     for (extras) |extra| _ = try member(params, extra);
     const source_id = try identifier(try member(params, "sourceId"), 128);
@@ -238,7 +258,14 @@ pub fn validateIngress(value: std.json.Value, allow_fixture: bool) Error!Validat
     if (adapter == .fixture and (!allow_fixture or !builtin.is_test)) return error.FixtureDisabled;
     const origin = try string(try member(params, "origin"));
     if (!std.mem.eql(u8, origin, policy(adapter).origin)) return error.OriginMismatch;
-    return .{ .id = id, .method = method, .adapter = adapter, .source_id = source_id, .origin = origin, .provenance = try validateProvenance(try member(params, "provenance")) };
+    const operation_id = if (params.object.get("operationId")) |value| try identifier(value, 64) else null;
+    if (operation_id) |operation| if (std.mem.eql(u8, operation, id)) return error.InvalidIdentifier;
+    const expected_revision = if (params.object.get("expectedRevision")) |value| try authorityNumber(value) else null;
+    const expected_generation = if (params.object.get("expectedGeneration")) |value| try authorityNumber(value) else null;
+    if ((method == .connect or method == .disconnect) and (operation_id == null) != (expected_revision == null)) return error.InvalidRequest;
+    if (method == .disconnect and operation_id != null and expected_generation == null) return error.InvalidRequest;
+    if (expected_generation != null and expected_generation.? == 0) return error.InvalidRequest;
+    return .{ .id = id, .method = method, .adapter = adapter, .source_id = source_id, .origin = origin, .provenance = try validateProvenance(try member(params, "provenance")), .operation_id = operation_id, .expected_revision = expected_revision, .expected_generation = expected_generation };
 }
 
 pub fn validateRequest(value: std.json.Value, allow_fixture: bool, now_unix: i64) Error!Validated {
@@ -250,7 +277,7 @@ pub fn validateRequest(value: std.json.Value, allow_fixture: bool, now_unix: i64
     const params = try member(value, "params");
     switch (method) {
         .health => unreachable,
-        .connect => {},
+        .connect, .connect_outcome => {},
         .import_grant => {
             if (policy(adapter).export_capability == .needs_provider_adapter_proof) return error.NeedsProviderAdapterProof;
             const capsule = try member(params, "capsule");
@@ -454,6 +481,29 @@ const fixture_connect =
 const fixture_import =
     \\{"version":1,"id":"r2","method":"browser.importGrant","params":{"provenance":{"channel":"release","browser":"firefox","extensionId":"omux@xoxd.ai"},"sourceId":"source-1","adapter":"fixture","origin":"https://fixture.invalid","capsule":{"kind":"browser_session","purpose":"identity_observation","renewalAuthority":"external","browserBound":false,"capturedAt":1000,"expiresAt":2000,"cookies":[{"name":"omux_fixture_session","value":"fake-fixture-value","domain":"fixture.invalid","path":"/","secure":true,"httpOnly":true,"hostOnly":true,"session":false,"sameSite":"strict","storeId":"firefox-container-1","expirationDate":2000,"partitionKey":{"topLevelSite":"https://fixture.invalid","hasCrossSiteAncestor":false},"firstPartyDomain":"fixture.invalid"}],"storage":[]}}}
 ;
+
+test "native outcome query and mutation intent preserve exact authority numbers and reject extra acquisition fields" {
+    const query = "{\"version\":1,\"id\":\"query\",\"method\":\"browser.connectOutcome\",\"params\":{\"sourceId\":\"source\",\"adapter\":\"codex\",\"origin\":\"https://chatgpt.com\",\"provenance\":{\"browser\":\"chromium\",\"extensionId\":\"extension\",\"channel\":\"release\"},\"operationId\":\"original-operation\",\"expectedRevision\":\"18446744073709551615\"}}";
+    var decoded = try decodeRequest(std.testing.allocator, query, false, 1000);
+    defer decoded.deinit();
+    try std.testing.expectEqual(Method.connect_outcome, decoded.validated.method);
+    try std.testing.expectEqual(std.math.maxInt(u64), decoded.validated.expected_revision.?);
+    try std.testing.expectEqualStrings("original-operation", decoded.validated.operation_id.?);
+    const rejected = [_][]const u8{
+        "{\"version\":1,\"id\":\"query\",\"method\":\"browser.connectOutcome\",\"params\":{\"sourceId\":\"source\",\"adapter\":\"codex\",\"origin\":\"https://chatgpt.com\",\"provenance\":{\"browser\":\"chromium\",\"extensionId\":\"extension\",\"channel\":\"release\"}}}",
+        "{\"version\":1,\"id\":\"query\",\"method\":\"browser.connectOutcome\",\"params\":{\"sourceId\":\"source\",\"adapter\":\"codex\",\"origin\":\"https://chatgpt.com\",\"provenance\":{\"browser\":\"chromium\",\"extensionId\":\"extension\",\"channel\":\"release\"},\"operationId\":\"operation\",\"expectedRevision\":\"01\"}}",
+        "{\"version\":1,\"id\":\"query\",\"method\":\"browser.connectOutcome\",\"params\":{\"sourceId\":\"source\",\"adapter\":\"codex\",\"origin\":\"https://chatgpt.com\",\"provenance\":{\"browser\":\"chromium\",\"extensionId\":\"extension\",\"channel\":\"release\"},\"operationId\":\"operation\",\"capsule\":{}}}",
+        "{\"version\":1,\"id\":\"request\",\"method\":\"browser.connect\",\"params\":{\"sourceId\":\"source\",\"adapter\":\"codex\",\"origin\":\"https://chatgpt.com\",\"provenance\":{\"browser\":\"chromium\",\"extensionId\":\"extension\",\"channel\":\"release\"},\"operationId\":\"operation\"}}",
+        "{\"version\":1,\"id\":\"request\",\"method\":\"browser.disconnect\",\"params\":{\"sourceId\":\"source\",\"adapter\":\"codex\",\"origin\":\"https://chatgpt.com\",\"provenance\":{\"browser\":\"chromium\",\"extensionId\":\"extension\",\"channel\":\"release\"},\"operationId\":\"operation\",\"expectedRevision\":\"1\"}}",
+    };
+    for (rejected) |payload| {
+        if (decodeRequest(std.testing.allocator, payload, false, 1000)) |parsed| {
+            var unexpected = parsed;
+            unexpected.deinit();
+            return error.ExpectedProtocolRefusal;
+        } else |_| {}
+    }
+}
 
 test "native messaging frame rejects truncation, trailing data, oversized lengths" {
     const allocator = std.testing.allocator;

@@ -4660,10 +4660,140 @@ pub const Engine = struct {
         return try std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .@"error" = .{ .code = "NeedsProviderAdapterProof", .message = "Browser request was not admitted." } }, .{});
     }
 
+    fn browserSourceOperation(self: *const Engine, operation_id: []const u8) [64]u8 {
+        var namespace: [32]u8 = undefined;
+        std.crypto.auth.hmac.sha2.HmacSha256.create(&namespace, "omux.browser-source.operation.v1", &self.root_key);
+        defer std.crypto.secureZero(u8, &namespace);
+        var digest: [32]u8 = undefined;
+        std.crypto.auth.hmac.sha2.HmacSha256.create(&digest, operation_id, &namespace);
+        return std.fmt.bytesToHex(digest, .lower);
+    }
+
+    fn browserSourceIntent(self: *const Engine, allocator: std.mem.Allocator, input: browser.Validated, method: []const u8) ![32]u8 {
+        const canonical = try std.json.Stringify.valueAlloc(allocator, .{
+            .method = method,
+            .source_id = input.source_id,
+            .adapter = @tagName(input.adapter),
+            .origin = input.origin,
+            .browser = input.provenance.browser,
+            .extension_id = input.provenance.extension_id,
+            .channel = @tagName(input.provenance.channel),
+            .operation_id = input.operation_id.?,
+            .expected_revision = input.expected_revision orelse return error.ExpectedRevisionRequired,
+            .expected_generation = if (eql(method, "browser.disconnect")) input.expected_generation else null,
+        }, .{});
+        defer allocator.free(canonical);
+        return browser_attempt.fingerprint(self.root_key, canonical);
+    }
+
+    fn currentBrowserGeneration(self: *const Engine, source_id: []const u8) ?u64 {
+        for (self.import_sources.items) |authority| if (eql(authority.source_id, source_id)) return authority.generation;
+        return null;
+    }
+
+    const BrowserConnectResult = struct {
+        accepted: bool = true,
+        source_id: []const u8,
+        operation_id: []const u8,
+        generation: []const u8,
+        revision: []const u8,
+    };
+
+    fn browserConnectOutcome(self: *Engine, allocator: std.mem.Allocator, input: browser.Validated) ![]u8 {
+        const operation = self.browserSourceOperation(input.operation_id.?);
+        const record = try self.mutations.lookup(&operation);
+        var original: ?std.json.Parsed(BrowserConnectResult) = null;
+        defer if (original) |*parsed| parsed.deinit();
+        if (record) |found| {
+            const fingerprint = try self.browserSourceIntent(allocator, input, "browser.connect");
+            if (!eql(found.method[0..found.method_len], "browser.connect") or found.kind != .local_atomic or
+                found.expected_revision != input.expected_revision.? or !std.crypto.timing_safe.eql([32]u8, found.fingerprint, fingerprint)) return error.OperationIdConflict;
+            if (found.state != .completed) return error.OperationIndeterminate;
+            original = try std.json.parseFromSlice(BrowserConnectResult, allocator, found.result[0..found.result_len], .{});
+            if (!original.?.value.accepted or !eql(original.?.value.source_id, input.source_id) or !eql(original.?.value.operation_id, input.operation_id.?)) return error.InvalidMutationResult;
+        }
+        const generation = self.currentBrowserGeneration(input.source_id);
+        const current_generation = if (generation) |value| try std.fmt.allocPrint(allocator, "{d}", .{value}) else null;
+        defer if (current_generation) |value| allocator.free(value);
+        const revision = try std.fmt.allocPrint(allocator, "{d}", .{self.revision});
+        defer allocator.free(revision);
+        var source_status: []const u8 = "absent";
+        var authorized = false;
+        const timestamp = self.now();
+        for (self.state.sources.items) |source| if (eql(source.id, input.source_id)) {
+            source_status = @tagName(source.status);
+            authorized = source.status == .connected and source.authorized_at <= timestamp and
+                (source.authorized_until == null or source.authorized_until.? > timestamp);
+            break;
+        };
+        return std.json.Stringify.valueAlloc(allocator, .{
+            .version = 1,
+            .id = input.id,
+            .result = .{
+                .outcome = if (original != null) "committed" else "unknown",
+                .source_id = input.source_id,
+                .operation_id = input.operation_id.?,
+                .connect_generation = if (original) |parsed| parsed.value.generation else null,
+                .connect_revision = if (original) |parsed| parsed.value.revision else null,
+                .current_generation = current_generation,
+                .current_revision = revision,
+                .source_status = source_status,
+                .authorized = authorized,
+            },
+        }, .{});
+    }
+
+    fn commitBrowserSourceChange(self: *Engine, allocator: std.mem.Allocator, input: browser.Validated, context_label: []const u8) ![]u8 {
+        const operation = self.browserSourceOperation(input.operation_id.?);
+        const method: []const u8 = if (input.method == .connect) "browser.connect" else "browser.disconnect";
+        const fingerprint = try self.browserSourceIntent(allocator, input, method);
+        const slot = switch (try self.mutations.begin(&operation, method, fingerprint, input.expected_revision, self.revision, .local_atomic)) {
+            .replay => |cached| {
+                const parsed = try std.json.parseFromSlice(BrowserConnectResult, allocator, cached, .{});
+                defer parsed.deinit();
+                // Return the immutable original outcome, never renew authority.
+                return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = parsed.value }, .{});
+            },
+            .indeterminate => return error.OperationIndeterminate,
+            .execute => |index| index,
+        };
+        _ = try self.snapshotUsage();
+        var changes: std.ArrayList(storage.GrantChange) = .empty;
+        defer changes.deinit(allocator);
+        if (input.method == .connect) {
+            _ = try self.connectImportSource(.{ .id = input.source_id, .kind = .browser, .provider = @tagName(input.adapter), .label = context_label, .authorized_at = self.now() });
+        } else {
+            var exists = false;
+            for (self.state.sources.items) |source| if (eql(source.id, input.source_id)) {
+                exists = true;
+            };
+            if (!exists) return error.NotFound;
+            const generation = self.currentBrowserGeneration(input.source_id) orelse return error.GenerationConflict;
+            if (generation != input.expected_generation.?) return error.GenerationConflict;
+            for (self.state.grants.items) |grant| if (eql(grant.source_id, input.source_id)) try changes.append(allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });
+            try self.disconnectImportSource(input.source_id);
+        }
+        const generation = try self.importSourceGeneration(input.source_id);
+        const generation_text = try std.fmt.allocPrint(allocator, "{d}", .{generation});
+        defer allocator.free(generation_text);
+        const revision_text = try std.fmt.allocPrint(allocator, "{d}", .{try std.math.add(u64, self.revision, 1)});
+        defer allocator.free(revision_text);
+        const result: BrowserConnectResult = .{ .source_id = input.source_id, .operation_id = input.operation_id.?, .generation = generation_text, .revision = revision_text };
+        const cached = try std.json.Stringify.valueAlloc(allocator, result, .{});
+        defer allocator.free(cached);
+        try self.mutations.complete(slot, cached);
+        const reply = try std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = result }, .{});
+        errdefer allocator.free(reply);
+        // Local effect + terminal receipt share the authenticated transaction.
+        // The executeBrowser owner restores committed state on every failure.
+        try self.persist(changes.items);
+        return reply;
+    }
+
     fn handleBrowser(self: *Engine, allocator: std.mem.Allocator, input: browser.Validated) ![]u8 {
         const expected: browser.Channel = if (self.instance_selection == .dev) .development else .release;
         if (input.provenance.channel != expected) return error.BrowserChannelMismatch;
-        if (input.method == .health) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = .{ .status = if (self.poisoned) "repair_required" else "ready", .custody_available = !self.poisoned, .provider_access = false, .protocolVersion = 1, .channel = if (self.instance_selection == .dev) "development" else "release", .capabilities = .{ .source_connection = true, .production_export = false } } }, .{});
+        if (input.method == .health) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = .{ .status = if (self.poisoned) "repair_required" else "ready", .custody_available = !self.poisoned, .provider_access = false, .protocolVersion = 1, .channel = if (self.instance_selection == .dev) "development" else "release", .capabilities = .{ .source_connection = true, .production_export = false, .connect_recovery = true } } }, .{});
         var provenance_hash = std.crypto.hash.sha2.Sha256.init(.{});
         for ([_][]const u8{ input.provenance.browser, input.provenance.extension_id, input.source_id }) |part| {
             provenance_hash.update(part);
@@ -4678,9 +4808,12 @@ pub const Engine = struct {
             if (source.kind != .browser or !eql(source.provider, @tagName(input.adapter)) or !eql(source.label, context_label)) return error.BrowserContextMismatch;
             source_exists = true;
         };
+        if (input.method == .connect_outcome) return self.browserConnectOutcome(allocator, input);
+        if (input.operation_id != null and (input.method == .connect or input.method == .disconnect)) return self.commitBrowserSourceChange(allocator, input, context_label);
         if (input.method != .connect and !source_exists) return error.NotFound;
         switch (input.method) {
             .health => unreachable,
+            .connect_outcome => unreachable,
             .connect => {
                 _ = try self.connectImportSource(.{ .id = input.source_id, .kind = .browser, .provider = @tagName(input.adapter), .label = context_label, .authorized_at = self.now() });
                 // Bind future diagnostic ingress IDs to this explicit source
@@ -4689,6 +4822,10 @@ pub const Engine = struct {
                 try self.persist(&.{});
             },
             .disconnect => {
+                if (input.expected_generation) |expected_generation| {
+                    const current_generation = self.currentBrowserGeneration(input.source_id) orelse return error.GenerationConflict;
+                    if (current_generation != expected_generation) return error.GenerationConflict;
+                }
                 var changes: std.ArrayList(storage.GrantChange) = .empty;
                 defer changes.deinit(allocator);
                 for (self.state.grants.items) |grant| if (eql(grant.source_id, input.source_id)) try changes.append(allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });

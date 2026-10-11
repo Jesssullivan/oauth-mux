@@ -14,7 +14,7 @@ let storedSources = [];
 const messages = {
   connected_schema_unproven: "Browser context connected. Account import is not yet available for this provider.",
   grant_submitted: "Account access submitted to Omux for identity verification.",
-  disconnected: "Selected browser context disconnected. Access from other sources is preserved.",
+  disconnected: "Disconnect acknowledged for the selected context. This does not prove a later authorization in Omux is absent. Access from other sources is preserved.",
   provider_permission_required: "Allow access to this provider to connect its browser context.",
   open_provider_tab: "Open this provider's account tab in a regular browser window, then try again.",
   cookie_store_unavailable: "This browser context is unavailable. Reopen the provider tab and try again.",
@@ -26,7 +26,8 @@ const messages = {
   source_limit_reached: "The source limit has been reached. Manage connected sources in Omux.",
   select_source_context: "Open the connected provider context you want to manage, then try again.",
   disconnect_pending: "Removal is pending. Select its saved context to inspect the unresolved operation before retrying Disconnect.",
-  connect_outcome_unknown: "The original Connect outcome is unknown. Removal remains pending. Retrying cannot cancel a delayed Connect, and Omux cannot yet confirm or cancel that original operation. Connect would authorize acquisition again.",
+  connect_outcome_unknown: "The original Connect outcome is unknown. Removal remains pending. Omux can check a retained operation on a recovery-capable host; historical requests cannot be recovered this way. Retrying does not cancel a delayed Connect. Connect would authorize acquisition again.",
+  source_authority_changed: "The original Connect completed, but its authority is no longer current. Removal remains pending. Check this source in Omux; recovery cannot renew or remove a different authorization generation.",
   uncertain_operation: "A previous operation has not been confirmed. Omux has kept its identity; retrying a different operation cannot establish its original outcome.",
 };
 const labels = {
@@ -41,7 +42,9 @@ function updateButtons() {
 }
 function showRemovalNote() {
   const selected = storedSources.find(source => source.sourceId === storedContext.value);
-  removalNote.textContent = selected?.pendingOperation === "connect" ? messages.connect_outcome_unknown
+  removalNote.textContent = selected?.pendingOutcome === "stale" ? messages.source_authority_changed
+    : selected?.pendingOutcome === "committed" ? "The original Connect completed. Removal remains pending; retry Disconnect to check its current generation in Omux. This does not reconnect."
+    : selected?.pendingOperation === "connect" ? messages.connect_outcome_unknown
     : selected?.pendingOperation === "disconnect" ? "The previous Disconnect reply was not confirmed. Keep Omux available and retry Disconnect for this saved context. This sends removal only; it does not reconnect."
     : selected?.pendingOperation ? "A previous source operation is unresolved. Removal may remain pending; check source status in Omux. No credential capsule is replayed."
     : "Choose a saved connection to disconnect without provider read access. These local records are not verified accounts.";
