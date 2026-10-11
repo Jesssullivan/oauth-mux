@@ -8879,7 +8879,7 @@ const NativeMaintenanceTest = struct {
     const source_id = std.fmt.bytesToHex(@as([32]u8, @splat(0x41)), .lower);
     const key: envelope.Key = @splat(0x67);
 
-    fn seed(path: []const u8, endpoint: []const u8, owner: native_source_consent.Owner, expires_at: i64, legacy: bool) !void {
+    fn seed(path: []const u8, endpoint: []const u8, consent_owner: native_source_consent.Owner, expires_at: i64, legacy: bool) !void {
         const a = std.testing.allocator;
         var state = domain.State.init(a);
         defer state.deinit();
@@ -8895,7 +8895,7 @@ const NativeMaintenanceTest = struct {
         const authority: NativeSourceAuthority = .{
             .origin = @splat(0xbb),
             .context = if (legacy) null else .{ .id = @splat(0xaa), .generation = 1 },
-            .consent = .{ .id = @splat(0x42), .generation = 1, .source_id = @splat(0x41), .source_generation = 1, .owner = owner, .expires_at = expires_at, .purpose = .native_access_copy_for_identity_and_request },
+            .consent = .{ .id = @splat(0x42), .generation = 1, .source_id = @splat(0x41), .source_generation = 1, .owner = consent_owner, .expires_at = expires_at, .purpose = .native_access_copy_for_identity_and_request },
         };
         const metadata = try std.json.Stringify.valueAlloc(a, Persisted{
             .state = state.snapshot(),
