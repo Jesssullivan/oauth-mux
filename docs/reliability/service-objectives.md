@@ -292,9 +292,13 @@ or `unknown`. Timing is process-local admission-to-terminal before commit only.
 `reliability.lifecycle.setup_verification` derives its bounded summary from
 immutable results in the existing 4096-entry mutation ledger, with no new ledger,
 persisted field or migration. Started/indeterminate uncertainty, old-window,
-future-clock and missing-timing records remain visible. Empty refresh/passive
-polls add no attempts. No end-to-end latency, coverage baseline, achieved SLO or
-SLA is established by this source.
+future-clock and missing-timing records remain visible. The source projection's
+`retained_identified_attempts` counts only retained identified verification rows;
+`in_window_terminal_attempts` counts only in-window verification completions plus
+safe refusals. Unresolved rows have no terminal timestamp and remain outside that
+window cohort. Neither count is an installation-success or complete user-demand
+denominator. Empty refresh/passive polls add no attempts. No end-to-end latency,
+coverage baseline, achieved SLO or SLA is established by this source.
 Joint-readiness projection passed `//:reliability_readiness_test` in `c5d684a2`:
 248 cases (six new and 242 imported), plus setup-verification, docs and source
 capture targets. The fourteen-target batch exited 3 with empty descendants;

@@ -127,6 +127,12 @@ pub const Summary = struct {
     schema_version: u8 = 1,
     scope: enum { explicit_setup_verification_not_installation_success } = .explicit_setup_verification_not_installation_success,
     window_start_utc_s: i64,
+    /// All retained identified setup.refresh rows, including unresolved and
+    /// terminal rows outside the window. Not all user installation demands.
+    retained_identified_attempts: u64 = 0,
+    /// In-window terminal verification/refusal cohort only. Unresolved rows
+    /// have no terminal timestamp and are not assigned to this window.
+    in_window_terminal_attempts: u64 = 0,
     phase_names: @TypeOf(phase_order) = phase_order,
     phases: [7]PhaseSummary = @splat(.{}),
     joint_readiness: JointReadiness = .{},
@@ -160,6 +166,7 @@ pub fn summarize(allocator: std.mem.Allocator, saved: mutation.Snapshot, now_s: 
         for (saved.records[0..index]) |previous| if (std.mem.eql(u8, previous.id[0..previous.id_len], record.id[0..record.id_len])) return error.InvalidSetupVerificationSnapshot;
         if (!std.mem.eql(u8, record.method[0..record.method_len], method)) continue;
         try validateRecordIdentity(record);
+        result.retained_identified_attempts += 1;
         switch (record.state) {
             .started => {
                 result.unresolved_started += 1;
@@ -182,6 +189,7 @@ pub fn summarize(allocator: std.mem.Allocator, saved: mutation.Snapshot, now_s: 
             result.old_window_records += 1;
             continue;
         }
+        result.in_window_terminal_attempts += 1;
         switch (fact.outcome) {
             .verification_completed => {
                 result.verification_completed += 1;
@@ -300,13 +308,19 @@ test "summary distinguishes immutable terminal results uncertainty clock windows
     _ = try ledger.begin("pending", method, @splat(1), 0, 0, .external);
     const unresolved = (try ledger.begin("uncertain", method, @splat(1), 0, 0, .external)).execute;
     try ledger.markIndeterminate(unresolved);
+    // Another mutation belongs to the same authority snapshot, not this cohort.
+    _ = try ledger.begin("unrelated", "policy.set", @splat(1), 0, 0, .local_atomic);
     const summary = try summarize(std.testing.allocator, ledger.snapshot(), now);
+    try std.testing.expectEqual(@as(u64, 6), summary.retained_identified_attempts);
+    try std.testing.expectEqual(@as(u64, 2), summary.in_window_terminal_attempts);
     try std.testing.expectEqual(@as(u64, 1), summary.verification_completed);
     try std.testing.expectEqual(@as(u64, 1), summary.safe_refusals);
     try std.testing.expectEqual(@as(u64, 1), summary.unresolved_started);
     try std.testing.expectEqual(@as(u64, 1), summary.unresolved_indeterminate);
     try std.testing.expectEqual(@as(u64, 1), summary.old_window_records);
     try std.testing.expectEqual(@as(u64, 1), summary.future_clock_records);
+    try std.testing.expectEqual(summary.in_window_terminal_attempts, summary.verification_completed + summary.safe_refusals);
+    try std.testing.expectEqual(summary.retained_identified_attempts, summary.in_window_terminal_attempts + summary.unresolved_started + summary.unresolved_indeterminate + summary.old_window_records + summary.future_clock_records);
     try std.testing.expectEqual(@as(u64, 1), summary.completed_timing.missing_latency);
     try std.testing.expect(!summary.achieved_slo);
     try std.testing.expect(!summary.end_to_end_latency_measured);
@@ -326,6 +340,15 @@ test "collector timeout is immutable safe refusal without phase or completion la
     try ledger.complete(slot, bytes);
     try std.testing.expectEqualStrings(bytes, (try ledger.begin(refusal.operation_id, method, @splat(1), 0, 1, .external)).replay);
     const summary = try summarize(allocator, ledger.snapshot(), refusal.observed_at);
+    try std.testing.expectEqual(@as(u64, 1), summary.retained_identified_attempts);
+    try std.testing.expectEqual(@as(u64, 1), summary.in_window_terminal_attempts);
+    const checkpoint = try std.json.Stringify.valueAlloc(allocator, ledger.snapshot(), .{});
+    defer allocator.free(checkpoint);
+    const parsed_checkpoint = try std.json.parseFromSlice(mutation.Snapshot, allocator, checkpoint, .{});
+    defer parsed_checkpoint.deinit();
+    var restored = try mutation.Ledger.fromSnapshot(allocator, parsed_checkpoint.value);
+    defer restored.deinit();
+    try std.testing.expectEqualDeep(summary, try summarize(allocator, restored.snapshot(), refusal.observed_at));
     try std.testing.expectEqual(@as(u64, 0), summary.verification_completed);
     try std.testing.expectEqual(@as(u64, 1), summary.safe_refusals);
     try std.testing.expectEqual(@as(u64, 1), summary.collection_timed_out_refusals);
