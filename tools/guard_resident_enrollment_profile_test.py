@@ -619,6 +619,39 @@ class PlatformActivationModels(unittest.TestCase):
 
 
 class OwnedRecoveryModels(unittest.TestCase):
+    def test_desktop_record_is_default_directory_exact_channel_and_control_only(self):
+        for change in (None, "external-directory", "cross-channel", "wrong-name", "wrong-mode", "missing-control", "missing-desktop"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+                selected,unit,_,record_path,_,_ = self.prepare(Path(temporary))
+                prefix = Path(selected["prefix"])
+                directory = prefix/"share/applications"
+                directory.mkdir(parents=True,mode=0o700)
+                desktop = directory/"ai.xoxd.omux.desktop"
+                desktop.write_bytes(b"synthetic already-verified desktop ownership row")
+                desktop.chmod(0o644)
+                control = prefix/"bin/omux-control"
+                control.parent.mkdir(mode=0o700)
+                control.write_bytes(b"synthetic already-verified control row")
+                control.chmod(0o755)
+                record = json.loads(record_path.read_text())
+                record["artifact"]["channel"] = "release"
+                record["desktopDirectory"] = str(directory)
+                record["files"] += [{"path":str(path),"mode":mode,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+                    for path,mode in ((desktop,0o644),(control,0o755))]
+                if change == "external-directory": record["desktopDirectory"] = str(Path(temporary)/"applications")
+                elif change == "cross-channel": record["artifact"]["channel"] = "development"
+                elif change == "wrong-name": record["files"][1]["path"] = str(directory/"other.desktop")
+                elif change == "wrong-mode": record["files"][1]["mode"] = 0o755
+                elif change == "missing-control": record["files"].pop(2)
+                elif change == "missing-desktop": record["files"].pop(1)
+                record_path.write_text(json.dumps(record))
+                if change is None:
+                    custody = resident.OwnedUnitCustody(selected)
+                    try: custody.recheck()
+                    finally: custody.close()
+                else:
+                    with self.assertRaises(ValueError): resident.OwnedUnitCustody(selected)
+
     def prepare(self,home):
         selected = manifest()
         selected.update(action="activate-existing-and-enroll",

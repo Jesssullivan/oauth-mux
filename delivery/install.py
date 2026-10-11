@@ -18,6 +18,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from pack import BINARIES, MAX_FILES, digest, json_bytes, read_bundle, verify_bundle
+from portable import desktop_entry, desktop_file
 
 RECORD = "install.json"
 
@@ -111,6 +112,15 @@ def _record(prefix: Path, state_dir: Path) -> dict | None:
     if result.get("schemaVersion") != 1 or result.get("prefix") != str(prefix):
         raise ValueError("ownership record does not match installation")
     known = {str(prefix / "bin" / name) for name in (*BINARIES, "omux-control")}
+    desktop_path = None
+    desktop_directory = result.get("desktopDirectory")
+    if desktop_directory is not None:
+        if not isinstance(desktop_directory, str) or any(ord(char) < 32 or ord(char) == 127 for char in desktop_directory):
+            raise ValueError("invalid desktop ownership directory")
+        directory = _absolute(Path(desktop_directory))
+        channel = result.get("artifact", {}).get("channel")
+        desktop_path = str(directory / Path(desktop_file(channel)).name)
+        known.add(desktop_path)
     if result.get("userService") is not None:
         known.add(result["userService"])
     files = result.get("files", [])
@@ -125,6 +135,8 @@ def _record(prefix: Path, state_dir: Path) -> dict | None:
         runtime_path = re.fullmatch(r"lib/omux/(?:lib/[A-Za-z0-9_.+-]+|libexec/omuxd?\.bin|share/ca-bundle\.crt|qt/lib/[A-Za-z0-9_.+-]+|qt/libexec/(?:omux-control\.bin|qt\.conf)|qt/plugins/platforms/[A-Za-z0-9_.+-]+\.so)", relative)
         if (item["path"] not in known and not runtime_path) or item["mode"] not in [0o600, 0o644, 0o755]:
             raise ValueError("ownership record contains an unmanaged path")
+        if item["path"] == desktop_path and item["mode"] != 0o644:
+            raise ValueError("desktop ownership mode must remain data-only")
         _absolute(Path(item["path"]))
     return result
 
@@ -140,8 +152,24 @@ def _matches(path: Path, entry: dict) -> bool:
         return False
 
 
+def _desktop_directory(manifest, files, prefix, desktop_dir):
+    desktops = [name for name in files if name.startswith("share/applications/")]
+    if not desktops:
+        if desktop_dir is not None:
+            raise ValueError("desktop placement requires a channel-qualified Qt archive entry")
+        return None
+    channel = manifest.get("channel")
+    if (not manifest["target"].endswith("-linux") or "bin/omux-control" not in files
+            or desktops != [desktop_file(channel)] or files[desktops[0]] != desktop_entry(channel)):
+        raise ValueError("invalid desktop installation input")
+    directory = _absolute(desktop_dir if desktop_dir is not None else prefix / "share/applications")
+    if any(ord(char) < 32 or ord(char) == 127 for char in str(directory)):
+        raise ValueError("invalid desktop placement directory")
+    return directory
+
+
 def installation_plan(manifest, files, prefix, state_dir, user_service=None, platform="linux",
-                      *, daemon_state_dir=None):
+                      *, daemon_state_dir=None, desktop_dir=None):
     """Render exact public placement; callers must independently verify archive bytes."""
     _absolute(prefix)
     _absolute(state_dir)
@@ -164,6 +192,10 @@ def installation_plan(manifest, files, prefix, state_dir, user_service=None, pla
     destinations = [(prefix / "bin" / name, files["bin/" + name], 0o755) for name in BINARIES]
     if "bin/omux-control" in files:
         destinations.append((prefix / "bin/omux-control", files["bin/omux-control"], 0o755))
+    desktop_directory = _desktop_directory(manifest, files, prefix, desktop_dir)
+    if desktop_directory is not None:
+        destinations.append((desktop_directory / Path(desktop_file(channel)).name,
+                             desktop_entry(channel, str(prefix / "bin/omux-control")), 0o644))
     artifact_modes = {item["path"]: int(item["mode"], 8) for item in manifest["artifacts"]}
     for name in sorted(files):
         if name.startswith("lib/omux/"):
@@ -208,7 +240,8 @@ def installation_plan(manifest, files, prefix, state_dir, user_service=None, pla
 
 def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                    user_service: Path | None = None, platform: str = "linux",
-                   *, daemon_state_dir: Path | None = None, _owned_update=None, _owned_prepare=None) -> dict:
+                   *, daemon_state_dir: Path | None = None, desktop_dir: Path | None = None,
+                   _owned_update=None, _owned_prepare=None) -> dict:
     if _owned_prepare is not None and _owned_update is not None:
         raise ValueError("owned installation purposes overlap")
     bounded_owned = _owned_update is not None or _owned_prepare is not None
@@ -218,7 +251,8 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
             raise ValueError("owned preparation deadline expired")
     manifest, files = verify_bundle(payload)
     destinations = installation_plan(manifest, files, prefix, state_dir, user_service, platform,
-                                    daemon_state_dir=daemon_state_dir)
+                                    daemon_state_dir=daemon_state_dir, desktop_dir=desktop_dir)
+    desktop_directory = _desktop_directory(manifest, files, prefix, desktop_dir)
     # Validate the complete file layout before creating either custody lock.
     # A service cannot replace a payload, ownership record or active lock, nor
     # can a requested file occupy a directory required by another such file.
@@ -237,6 +271,8 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
             before_prepare()
         if previous and previous["userService"] != (str(user_service) if user_service else None):
             raise ValueError("remove the owned installation before changing service placement")
+        if previous and previous.get("desktopDirectory") is not None and desktop_directory is not None and previous["desktopDirectory"] != str(desktop_directory):
+            raise ValueError("remove the owned installation before changing desktop placement")
         if _owned_update is not None:
             expected_archive, before_replace, after_replace, deadline_ns = _owned_update
             if previous is None or previous["artifact"]["archiveSha256"] != expected_archive:
@@ -278,6 +314,8 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                          "manifestSha256": digest(files["release-manifest.json"])},
             "files": [{"path": str(path), "sha256": digest(data), "mode": mode} for path, data, mode in destinations],
         }
+        if desktop_directory is not None:
+            result["desktopDirectory"] = str(desktop_directory)
         try:
             for path, data, mode in destinations:
                 if bounded_owned and time.monotonic_ns() >= deadline_ns:
@@ -373,13 +411,15 @@ def main() -> None:
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--user-service", type=Path)
     parser.add_argument("--daemon-state-dir", type=Path)
+    parser.add_argument("--desktop-dir", type=Path,
+                        help="Exact user applications directory; defaults to PREFIX/share/applications for new channel-qualified Qt archives.")
     parser.add_argument("--platform", choices=["linux", "macos"], default="linux")
     args = parser.parse_args()
     if args.operation == "install":
         if args.bundle is None:
             parser.error("install requires --bundle")
         result = install_bundle(read_bundle(args.bundle), args.prefix, args.state_dir, args.user_service, args.platform,
-                                daemon_state_dir=args.daemon_state_dir)
+                                daemon_state_dir=args.daemon_state_dir, desktop_dir=args.desktop_dir)
     else:
         result = uninstall(args.prefix, args.state_dir)
     print(json.dumps(result, sort_keys=True))
@@ -387,4 +427,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

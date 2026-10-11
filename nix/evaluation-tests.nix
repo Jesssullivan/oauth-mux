@@ -27,6 +27,7 @@ let
       assertions = mkOption { type = types.listOf types.anything; default = []; };
       home.packages = mkOption { type = types.listOf types.package; default = []; };
       xdg.configFile = mkOption { type = types.attrsOf types.anything; default = {}; };
+      xdg.desktopEntries = mkOption { type = types.attrsOf types.anything; default = {}; };
       xdg.stateHome = mkOption { type = types.str; default = "/home/evaluation/.local/state"; };
       xdg.configHome = mkOption { type = types.str; default = "/home/evaluation/.config"; };
       xdg.dataHome = mkOption { type = types.str; default = "/home/evaluation/.local/share"; };
@@ -131,6 +132,26 @@ let
     exactReleaseOrigin = releaseHost.allowed_origins == [ "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/" ];
     isolatedHostPaths = developmentHost.path != releaseHost.path && lib.hasSuffix "/omux-native-host-dev" developmentHost.path;
     isolatedServices = builtins.attrNames config.systemd.user.services == [ "ai.xoxd.omux" "ai.xoxd.omux.dev" ];
+    isolatedDesktopIds = builtins.attrNames config.xdg.desktopEntries == [ "ai.xoxd.omux" "ai.xoxd.omux.dev" ];
+    desktopNames = config.xdg.desktopEntries."ai.xoxd.omux".name == "Omux"
+      && config.xdg.desktopEntries."ai.xoxd.omux.dev".name == "Omux (Development)";
+    desktopUsesInstanceLaunchers = builtins.all (channel:
+      let
+        identity = if channel == "development" then "ai.xoxd.omux.dev" else "ai.xoxd.omux";
+        suffix = if channel == "development" then "-dev" else "";
+        matching = builtins.filter (item: "${item}/bin/omux-native-host${suffix}"
+          == (if channel == "development" then developmentHost.path else releaseHost.path)) config.home.packages;
+      in builtins.length matching == 1
+        && config.xdg.desktopEntries.${identity}.exec == "${builtins.head matching}/bin/omux-control${suffix}"
+        && lib.hasInfix "export OMUX_INSTANCE=${if channel == "development" then "dev" else "default"}"
+          (builtins.head matching).omuxLauncherScripts.omux-control
+        && lib.hasInfix "export XDG_DATA_HOME=" (builtins.head matching).omuxLauncherScripts.omux-control)
+      [ "development" "release" ];
+    desktopThemeAndWindow = builtins.all (entry: entry.icon == "network-server" && entry.terminal == false
+      && entry.categories == [ "Utility" "Network" ]) (builtins.attrValues config.xdg.desktopEntries);
+    disabledInstanceHasNoDesktop = builtins.attrNames (evaluate {
+      programs.omux.instances.development.enable = lib.mkForce false;
+    }).xdg.desktopEntries == [ "ai.xoxd.omux" ];
     explicitDaemonCommand = lib.hasSuffix "/omuxd-dev daemon" config.systemd.user.services."ai.xoxd.omux.dev".Service.ExecStart;
     privateServiceMask = config.systemd.user.services."ai.xoxd.omux.dev".Service.UMask == "0077";
     duplicateExtensionRejected = !allAssertions (evaluate {

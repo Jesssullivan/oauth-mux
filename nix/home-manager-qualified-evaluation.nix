@@ -29,6 +29,10 @@ let
     };
   };
   config = evaluation.config;
+  desktop = config.xdg.desktopEntries.${identity};
+  host = builtins.fromJSON config.xdg.configFile."chromium/NativeMessagingHosts/${identity}.json".text;
+  suffix = if channel == "development" then "-dev" else "";
+  launcherRoot = lib.removeSuffix "/bin/omux-native-host${suffix}" host.path;
   unit = config.systemd.user.services.${identity};
   witness = import ./service-witness.nix {
     inherit lib channel unitName unit;
@@ -42,6 +46,10 @@ assert builtins.elem channel [ "development" "release" ];
 assert config.xdg.configFile."systemd/user/default.target.wants/${unitName}".source
   == config.xdg.configFile."systemd/user/${unitName}".source;
 assert config.xdg.configFile ? "omux/instances/${channel}/service.json";
+assert desktop.name == (if channel == "development" then "Omux (Development)" else "Omux");
+assert desktop.exec == "${launcherRoot}/bin/omux-control${suffix}";
+assert desktop.icon == "network-server" && desktop.terminal == false
+  && desktop.categories == [ "Utility" "Network" ];
 {
   scope = "genuine-module-evaluation-only";
   activation = "unproved";

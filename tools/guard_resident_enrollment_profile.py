@@ -435,13 +435,21 @@ class OwnedUnitCustody:
                 require(len(raw) == info.st_size)
                 self.files.append((path,parent,descriptor,file_identity(info),raw,stable(os.fstat(parent))))
             record = json.loads(self.files[0][4],object_pairs_hook=unique)
-            require(type(record) is dict and set(record) == {"schemaVersion","prefix","product","userService",
-                "serviceActivated","artifact","files"} and type(record["schemaVersion"]) is int
+            keys = {"schemaVersion","prefix","product","userService","serviceActivated","artifact","files"}
+            require(type(record) is dict and set(record) in (keys, keys | {"desktopDirectory"}) and type(record["schemaVersion"]) is int
                 and record["schemaVersion"] == 1 and record["prefix"] == str(prefix)
                 and record["userService"] == str(unit) and type(record["serviceActivated"]) is bool
                 and type(record["artifact"]) is dict
                 and type(record["artifact"].get("archiveSha256")) is str
                 and re.fullmatch(r"[0-9a-f]{64}",record["artifact"]["archiveSha256"]))
+            desktop_path = None
+            if "desktopDirectory" in record:
+                channel = record["artifact"].get("channel")
+                require(channel in ("release","development")
+                    and record["desktopDirectory"] == str(prefix/"share/applications"))
+                identity = "ai.xoxd.omux.dev" if channel == "development" else "ai.xoxd.omux"
+                require(unit.name == identity + ".service")
+                desktop_path = prefix/"share/applications"/(identity + ".desktop")
             rows = record["files"]
             require(type(rows) is list and 0 < len(rows) <= 256)
             seen = set()
@@ -454,11 +462,14 @@ class OwnedUnitCustody:
                 require(path not in seen)
                 seen.add(path)
                 relative = str(path.relative_to(prefix)) if prefix in path.parents else ""
-                require(path == unit or relative in ("bin/omux","bin/omuxd","bin/oauth-mux",
+                require(path == unit or path == desktop_path or relative in ("bin/omux","bin/omuxd","bin/oauth-mux",
                     "bin/omux-native-host","bin/git-credential-omux","bin/omux-control")
                     or re.fullmatch(r"lib/omux/(?:lib/[A-Za-z0-9_.+-]+|libexec/omuxd?\.bin|share/ca-bundle\.crt|qt/lib/[A-Za-z0-9_.+-]+|qt/libexec/(?:omux-control\.bin|qt\.conf)|qt/plugins/platforms/[A-Za-z0-9_.+-]+\.so)",relative))
                 if path == unit:
                     unit_row = row
+                if path == desktop_path:
+                    require(row["mode"] == 0o644)
+            require(desktop_path is None or (desktop_path in seen and prefix/"bin/omux-control" in seen))
             require(unit_row is not None and unit_row["mode"] == 0o600
                 and hashlib.sha256(self.files[1][4]).hexdigest() == unit_row["sha256"])
             self.recheck()

@@ -196,6 +196,30 @@ class ResidentContract(unittest.TestCase):
             with self.subTest(record=changed), self.assertRaises(ValueError):
                 resident.owned_record_inventory(changed, artifact, files, "b" * 64, prefix, unit)
 
+    def test_owned_desktop_inventory_uses_installed_exec_and_refuses_external_scope(self):
+        prefix, unit, artifact, files, record = self.record_fixture()
+        artifact["target"] = "x86_64-linux"
+        name = "share/applications/ai.xoxd.omux.desktop"
+        files["bin/omux-control"] = b"synthetic declared control"
+        files[name] = resident.install.desktop_entry("release")
+        artifact["artifacts"] += [{"path": "bin/omux-control", "mode": "0755"}, {"path": name, "mode": "0644"}]
+        record["desktopDirectory"] = str(prefix / "share/applications")
+        content = resident.install.desktop_entry("release", str(prefix / "bin/omux-control"))
+        record["files"] += [
+            {"path": str(prefix / "bin/omux-control"), "sha256": resident.hashlib.sha256(files["bin/omux-control"]).hexdigest(), "mode": 0o755},
+            {"path": str(prefix / name), "sha256": resident.hashlib.sha256(content).hexdigest(), "mode": 0o644},
+        ]
+        self.assertEqual(resident.owned_record_inventory(record, artifact, files, "b" * 64, prefix, unit), record["files"])
+        for change in ("external-directory", "archive-exec", "mode", "missing-desktop", "cross-channel"):
+            changed = copy.deepcopy(record)
+            if change == "external-directory": changed["desktopDirectory"] = "/outside/applications"
+            elif change == "archive-exec": changed["files"][-1]["sha256"] = resident.hashlib.sha256(files[name]).hexdigest()
+            elif change == "mode": changed["files"][-1]["mode"] = 0o755
+            elif change == "missing-desktop": changed["files"].pop()
+            elif change == "cross-channel": changed["files"][-1]["path"] = str(prefix / "share/applications/ai.xoxd.omux.dev.desktop")
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                resident.owned_record_inventory(changed, artifact, files, "b" * 64, prefix, unit)
+
     def test_recovery_is_explicit_owned_activation_and_never_reinstalls_bad_files(self):
         value = self.manifest()
         value["action"] = "activate-existing-and-enroll"

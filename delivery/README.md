@@ -107,6 +107,11 @@ The archive contains `omux`, `omuxd`, and same-bytes `oauth-mux`,
 documentation bundle, service templates, a file manifest and SHA256SUMS. Linux
 archives also include the genuine Qt `omux-control` tray client and its declared
 platform plugins and library closure.
+New channel-qualified Qt archives include `share/applications/ai.xoxd.omux.desktop`
+for release or `ai.xoxd.omux.dev.desktop` for development, with distinct menu
+names and the host theme's `network-server` icon. Older archives without these
+entries keep their original installation scope. Archive entries use the portable
+control command; installation binds the entry to its absolute installed launcher.
 Verification checks every member, payload, mode and
 checksum before installation. Archives reject traversal, special files,
 duplicates and oversized compressed or decompressed payloads. Generation uses
@@ -170,6 +175,28 @@ launchd agent template. Specify `--platform macos` for a matching macOS bundle.
 Installation does not activate the service. Service activation and stopping
 are explicit operator actions through the declared platform execution path.
 Stop an activated service before removing its installation.
+
+For new Linux channel-qualified Qt archives, installation also owns the desktop
+entry in `PREFIX/share/applications`. With the example `PREFIX=$HOME/.local`,
+this is the default XDG user applications directory. A custom prefix or
+`XDG_DATA_HOME` requires explicit `--desktop-dir /absolute/data/home/applications`
+for user-menu discovery, or separately configured `XDG_DATA_DIRS` that includes
+the prefix's share directory. No ambient desktop directory is guessed. The entry
+uses a quoted absolute `omux-control` path and has no service-start or shell action.
+Executable paths containing `=`, non-ASCII or control characters refuse before
+installation writes, following Desktop Entry Exec's command grammar.
+Release and development entries coexist by distinct IDs and separate installed
+prefixes. Desktop placement stays fixed across upgrades; removal preserves a
+modified entry and its ownership record. A desktop-free replacement removes only
+an unchanged owned entry. Unowned and Home Manager symlinks refuse overwrite.
+
+Home Manager declares matching `xdg.desktopEntries` with its immutable per-channel
+launchers, retaining explicit XDG and instance bindings. Those user menu entries
+remain declaratively owned; the archive installer must not replace them. The
+bounded resident installer/carrier admits only its prefix-owned applications
+directory, not arbitrary external user desktop placement. Entry generation and
+modeled ownership checks do not prove menu discovery, interactive rendering,
+tray availability, fleet activation, or native continuity.
 
 Known-channel portable Linux launchers bind `development` to `OMUX_INSTANCE=dev`
 and `release` to `OMUX_INSTANCE=default`. A conflicting explicit instance exits

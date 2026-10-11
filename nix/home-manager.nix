@@ -142,6 +142,17 @@ in {
       message = "Omux ${channel} package must come from the matching digest-bound Bazel consumer.";
     }) channels;
     home.packages = builtins.attrValues launchers;
+    # Home Manager owns the user menu entries. Use its immutable channel/XDG
+    # launcher rather than the raw archive's PATH-based portable entry.
+    xdg.desktopEntries = lib.mapAttrs' (channel: _:
+      lib.nameValuePair (identity channel) {
+        name = if channel == "development" then "Omux (Development)" else "Omux";
+        comment = "Manage accounts and routes in the Omux user service";
+        exec = "${launchers.${channel}}/bin/omux-control${if channel == "development" then "-dev" else ""}";
+        icon = "network-server";
+        terminal = false;
+        categories = [ "Utility" "Network" ];
+      }) channels;
     xdg.configFile = browserFiles // witnessFiles // serviceRecordFiles;
     systemd.user.services = lib.mapAttrs' (channel: instance:
       lib.nameValuePair (identity channel) {

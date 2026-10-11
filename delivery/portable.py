@@ -676,10 +676,45 @@ def verify_linux_runtime(files: dict[str, bytes], manifest: dict) -> None:
         raise ValueError("portable daemon does not match the confined launcher")
 
 
+def desktop_file(channel: str) -> str:
+    if channel not in {"development", "release"}:
+        raise ValueError("desktop entry requires an explicit artifact channel")
+    identity = "ai.xoxd.omux.dev" if channel == "development" else "ai.xoxd.omux"
+    return "share/applications/" + identity + ".desktop"
+
+
+def desktop_entry(channel: str, executable: str | None = None) -> bytes:
+    """Canonical channel metadata; installed Exec is one literal argument.
+
+    Exec has two decoding layers: Desktop Entry string escapes, then quoted
+    command-line escapes. Percent is a field-code escape, not shell syntax.
+    No shell, caller arguments or environment assignments are introduced.
+    """
+    desktop_file(channel)
+    command = "omux-control"
+    if executable is not None:
+        if (not executable.startswith("/") or "=" in executable
+                or any(not 32 <= ord(char) <= 126 for char in executable)):
+            raise ValueError("desktop executable must be an ASCII absolute path without '=' or control characters")
+        quoted = "".join("\\" + char if char in '\\"`$' else char for char in executable)
+        command = '"' + quoted.replace("\\", "\\\\").replace("%", "%%") + '"'
+    name = "Omux (Development)" if channel == "development" else "Omux"
+    return ("[Desktop Entry]\nType=Application\nName=" + name
+            + "\nComment=Manage accounts and routes in the Omux user service\nExec=" + command
+            + "\nIcon=network-server\nTerminal=false\nCategories=Utility;Network;\n").encode()
+
+
 def verify_linux(files: dict[str, bytes], manifest: dict) -> None:
     """Retain full-archive metadata requirements and validate its actual runtime."""
     documents = {"share/omux/reference.json", "share/omux/services/omux.service.in",
                  "share/omux/services/dev.xoxd.omux.plist.in", "release-manifest.json", "SHA256SUMS"}
     if not documents <= set(files):
         raise ValueError("archive has missing or undeclared portable runtime files")
+    desktops = {name for name in files if name.startswith("share/applications/")}
+    if desktops:
+        channel = manifest.get("channel")
+        if (channel not in {"development", "release"} or "bin/omux-control" not in files
+                or desktops != {desktop_file(channel)} or files[desktop_file(channel)] != desktop_entry(channel)):
+            raise ValueError("archive has an invalid channel desktop entry")
+        documents |= desktops
     verify_linux_runtime({name: value for name, value in files.items() if name not in documents}, manifest)

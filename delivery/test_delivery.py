@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gzip
+import configparser
 import io
 import json
 import os
@@ -206,12 +207,22 @@ class DeliveryFixture(unittest.TestCase):
         return pack.make_bundle(self.binary, self.daemon, self.reference, self.systemd,
                                 self.launchd, target="x86_64-linux", **kwargs)
 
-    def portable_bundle(self, channel: str, **kwargs: object) -> bytes:
+    def portable_bundle(self, channel: str, *, qt: bool = False, **kwargs: object) -> bytes:
         """Real archive assembly/verification with bounded synthetic ELF inputs.
 
         Only the external patcher is replaced by the existing ELF fixture rewrite;
         channel-bound launchers, manifest accounting and installer checks are real.
         """
+        if qt:
+            fixture = AssemblyTest(methodName="runTest")
+            fixture.setUp()
+            self.addCleanup(fixture.doCleanups)
+            control, plugins = fixture.configure_qt()
+            with mock.patch.object(portable, "_patch", side_effect=AssemblyTest.patch_fixture):
+                return pack.make_bundle(fixture.cli, fixture.daemon, self.reference, self.systemd, self.launchd,
+                    target="x86_64-linux", channel=channel, runtime_files=fixture.runtime,
+                    patchelf=fixture.patchelf, ca_bundle=fixture.ca_bundle, control=control,
+                    qt_plugins=plugins, qt_runtime_files=fixture.runtime, **kwargs)
         loader = self.write("ld-linux-x86-64.so.2", elf())
         libc = self.write("libc.so.6", elf(interpreter=str(loader)))
         cli = self.write("portable-cli", elf(("libc.so.6",), interpreter=str(loader)))
@@ -223,6 +234,63 @@ class DeliveryFixture(unittest.TestCase):
                                     target="x86_64-linux", channel=channel,
                                     runtime_files=[loader, libc], patchelf=patcher, ca_bundle=ca_bundle,
                                     **kwargs)
+
+    def reaccount(self, payload: bytes, *, changes=None, omit=None) -> bytes:
+        """Recompute hostile archive integrity so semantic checks must reject it."""
+        files, modes = pack.archive_contents(payload)
+        for name in omit or ():
+            files.pop(name)
+        files.update(changes or {})
+        manifest = json.loads(files["release-manifest.json"])
+        manifest["artifacts"] = [{"path": name, "sha256": pack.digest(data), "size": len(data),
+            "mode": f"{modes.get(name, 0o644):04o}"} for name, data in sorted(files.items())
+            if name not in {"release-manifest.json", "SHA256SUMS"}]
+        files["release-manifest.json"] = pack.json_bytes(manifest)
+        files["SHA256SUMS"] = "".join(f"{pack.digest(data)}  {name}\n" for name, data in sorted(files.items())
+            if name != "SHA256SUMS").encode()
+        return self.rewrite_archive(payload, files, omit=omit)
+
+    def desktop_fields(self, data: bytes):
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read_string(data.decode())
+        self.assertEqual(parser.sections(), ["Desktop Entry"])
+        return dict(parser["Desktop Entry"])
+
+    def literal_desktop_exec(self, raw: str) -> str:
+        # Independent inverse of the Desktop Entry string and quoted Exec
+        # grammars; no shell, PATH lookup or application is executed.
+        decoded = []
+        cursor = 0
+        escapes = {"s": " ", "n": "\n", "r": "\r", "t": "\t", "\\": "\\"}
+        while cursor < len(raw):
+            if raw[cursor] == "\\":
+                cursor += 1
+                self.assertIn(raw[cursor], escapes)
+                decoded.append(escapes[raw[cursor]])
+            else:
+                decoded.append(raw[cursor])
+            cursor += 1
+        command = "".join(decoded)
+        self.assertTrue(command.startswith('"') and command.endswith('"'))
+        argument = command[1:-1]
+        literal = []
+        cursor = 0
+        while cursor < len(argument):
+            char = argument[cursor]
+            if char == "\\":
+                cursor += 1
+                self.assertIn(argument[cursor], '\\"`$')
+                literal.append(argument[cursor])
+            elif char == "%":
+                cursor += 1
+                self.assertEqual(argument[cursor], "%")
+                literal.append("%")
+            else:
+                self.assertNotIn(char, '"`$')
+                literal.append(char)
+            cursor += 1
+        return "".join(literal)
 
     def rewrite_archive(self, payload: bytes, changes: dict[str, bytes] | None = None,
                         extra: list[tuple[tarfile.TarInfo, bytes | None]] | None = None,
@@ -250,6 +318,51 @@ class DeliveryFixture(unittest.TestCase):
 
 
 class BundleTest(DeliveryFixture):
+    def test_real_qt_archive_contains_only_its_channel_desktop(self) -> None:
+        for channel, identity, title in (("release", "ai.xoxd.omux", "Omux"),
+                ("development", "ai.xoxd.omux.dev", "Omux (Development)")):
+            with self.subTest(channel=channel):
+                manifest, files = pack.verify_bundle(self.portable_bundle(channel, qt=True))
+                name = "share/applications/" + identity + ".desktop"
+                self.assertEqual([path for path in files if path.startswith("share/applications/")], [name])
+                fields = self.desktop_fields(files[name])
+                self.assertEqual(fields, {"Type": "Application", "Name": title,
+                    "Comment": "Manage accounts and routes in the Omux user service", "Exec": "omux-control",
+                    "Icon": "network-server", "Terminal": "false", "Categories": "Utility;Network;"})
+                self.assertEqual(next(item["mode"] for item in manifest["artifacts"] if item["path"] == name), "0644")
+                _, retained = pack.verify_bundle(self.reaccount(self.portable_bundle(channel, qt=True), omit={name}))
+                self.assertNotIn(name, retained)
+        _, core = pack.verify_bundle(self.portable_bundle("release"))
+        self.assertFalse(any(name.startswith("share/applications/") for name in core))
+
+    def test_desktop_semantics_cannot_be_authorized_by_recomputed_archive_hashes(self) -> None:
+        payload = self.portable_bundle("release", qt=True)
+        _, files = pack.verify_bundle(payload)
+        name = "share/applications/ai.xoxd.omux.desktop"
+        for field, replacement in ((b"Name=Omux", b"Name=Omux (Development)"),
+                (b"Exec=omux-control", b"Exec=other --execute"), (b"Icon=network-server", b"Icon=/other/icon")):
+            changed = self.reaccount(payload, changes={name: files[name].replace(field, replacement)})
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "channel desktop"):
+                pack.verify_bundle(changed)
+        manifest = json.loads(files["release-manifest.json"])
+        manifest.pop("channel")
+        for changes, omit in (({"release-manifest.json": pack.json_bytes(manifest)}, set()),
+                ({}, {"bin/omux-control"})):
+            with self.assertRaisesRegex(ValueError, "channel desktop"):
+                pack.verify_bundle(self.reaccount(payload, changes=changes, omit=omit))
+        renamed = files[name]
+        entry = tarfile.TarInfo("share/applications/ai.xoxd.omux.dev.desktop")
+        entry.mode = 0o644
+        hostile = self.rewrite_archive(payload, extra=[(entry, renamed)], omit={name})
+        with self.assertRaisesRegex(ValueError, "channel desktop"):
+            pack.verify_bundle(self.reaccount(hostile))
+        core = self.portable_bundle("release")
+        # Use valid data mode so the actual missing-control predicate is reached.
+        entry = tarfile.TarInfo(name)
+        entry.mode = 0o644
+        injected = self.rewrite_archive(core, extra=[(entry, files[name])])
+        with self.assertRaisesRegex(ValueError, "channel desktop"):
+            pack.verify_bundle(self.reaccount(injected))
     def test_channel_is_explicit_and_does_not_follow_product_status(self) -> None:
         legacy, _ = pack.verify_bundle(self.bundle())
         self.assertNotIn("channel", legacy)
@@ -405,6 +518,100 @@ class BundleTest(DeliveryFixture):
 
 
 class InstallationTest(DeliveryFixture):
+    def test_owned_desktops_coexist_with_exact_xdg_placement_and_literal_exec(self) -> None:
+        applications = self.root / "xdg data/applications"
+        applications.mkdir(parents=True)
+        foreign = applications / "other.desktop"
+        foreign.write_bytes(b"unowned application")
+        installed = {}
+        for channel, identity in (("release", "ai.xoxd.omux"), ("development", "ai.xoxd.omux.dev")):
+            prefix = self.root / channel / 'prefix space %f $HOME `data` "quote" \\ slash'
+            records = self.root / channel / "records"
+            payload = self.portable_bundle(channel, qt=True)
+            receipt = install.install_bundle(payload, prefix, records, desktop_dir=applications)
+            path = applications / (identity + ".desktop")
+            fields = self.desktop_fields(path.read_bytes())
+            self.assertEqual(self.literal_desktop_exec(fields["Exec"]), str(prefix / "bin/omux-control"))
+            self.assertEqual(receipt["desktopDirectory"], str(applications))
+            self.assertEqual(next(entry["mode"] for entry in receipt["files"] if entry["path"] == str(path)), 0o644)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(receipt["serviceActivated"])
+            self.assertEqual(install._record(prefix, records), receipt)
+            installed[channel] = (prefix, records, path)
+        prefix, records, path = installed["release"]
+        self.assertIn(str(path), install.uninstall(prefix, records)["removed"])
+        prefix, records, path = installed["development"]
+        path.write_bytes(b"independent desktop edit")
+        self.assertEqual(install.uninstall(prefix, records)["preserved"], [str(path)])
+        self.assertEqual(path.read_bytes(), b"independent desktop edit")
+        self.assertEqual(foreign.read_bytes(), b"unowned application")
+
+    def test_desktop_addition_update_rollback_and_owned_removal(self) -> None:
+        payload = self.portable_bundle("release", qt=True)
+        name = "share/applications/ai.xoxd.omux.desktop"
+        old = self.reaccount(payload, omit={name})
+        previous = install.install_bundle(old, self.prefix, self.state)
+        desktop = self.prefix / name
+        self.assertNotIn("desktopDirectory", previous)
+        before = (self.state / install.RECORD).read_bytes()
+        original = install._write
+        def fail_record(path, data, mode):
+            if path == self.state / install.RECORD:
+                raise OSError("injected record publication failure")
+            original(path, data, mode)
+        with mock.patch.object(install, "_write", side_effect=fail_record), self.assertRaises(OSError):
+            install.install_bundle(payload, self.prefix, self.state)
+        self.assertFalse(desktop.exists())
+        self.assertEqual((self.state / install.RECORD).read_bytes(), before)
+        receipt = install.install_bundle(payload, self.prefix, self.state)
+        self.assertEqual(receipt["desktopDirectory"], str(self.prefix / "share/applications"))
+        current = desktop.read_bytes()
+        desktop.write_bytes(b"independent desktop edit")
+        with self.assertRaisesRegex(ValueError, "modified"):
+            install.install_bundle(old, self.prefix, self.state)
+        self.assertEqual(desktop.read_bytes(), b"independent desktop edit")
+        desktop.write_bytes(current)
+        restored = install.install_bundle(old, self.prefix, self.state)
+        self.assertFalse(desktop.exists())
+        self.assertNotIn("desktopDirectory", restored)
+
+    def test_desktop_foreign_symlinks_cross_channel_records_and_move_refuse(self) -> None:
+        payload = self.portable_bundle("release", qt=True)
+        desktop = self.prefix / "share/applications/ai.xoxd.omux.desktop"
+        desktop.parent.mkdir(parents=True)
+        foreign = self.root / "home-manager-owned.desktop"
+        foreign.write_bytes(b"declarative desktop")
+        desktop.symlink_to(foreign)
+        with self.assertRaisesRegex(ValueError, "unowned"):
+            install.install_bundle(payload, self.prefix, self.state)
+        self.assertFalse((self.prefix / "bin/omux").exists())
+        self.assertEqual(foreign.read_bytes(), b"declarative desktop")
+        desktop.unlink()
+        receipt = install.install_bundle(payload, self.prefix, self.state)
+        raw_record = (self.state / install.RECORD).read_bytes()
+        for wrong in (desktop.with_name("ai.xoxd.omux.dev.desktop"), desktop.parent / "other.desktop"):
+            tampered = json.loads(raw_record)
+            next(entry for entry in tampered["files"] if entry["path"] == str(desktop))["path"] = str(wrong)
+            (self.state / install.RECORD).write_bytes(pack.json_bytes(tampered))
+            with self.assertRaisesRegex(ValueError, "unmanaged"):
+                install.uninstall(self.prefix, self.state)
+            self.assertEqual(desktop.read_bytes(), portable.desktop_entry("release", str(self.prefix / "bin/omux-control")))
+        (self.state / install.RECORD).write_bytes(raw_record)
+        with self.assertRaisesRegex(ValueError, "desktop placement"):
+            install.install_bundle(payload, self.prefix, self.state, desktop_dir=self.root / "different/applications")
+        self.assertEqual(install._record(self.prefix, self.state), receipt)
+
+    def test_desktop_invalid_executable_characters_and_unqualified_placement_refuse_before_writes(self) -> None:
+        payload = self.portable_bundle("release", qt=True)
+        for char in ("=", "\n", "\r", "\t", "\x7f", "\u00e9"):
+            prefix = self.root / ("unsafe" + char + "prefix")
+            with self.subTest(char=char), self.assertRaisesRegex(ValueError, "control characters"):
+                install.install_bundle(payload, prefix, self.state)
+            self.assertFalse(prefix.exists())
+        with self.assertRaisesRegex(ValueError, "channel-qualified Qt"):
+            install.install_bundle(self.portable_bundle("release"), self.prefix, self.state,
+                                   desktop_dir=self.root / "applications")
+        self.assertFalse(self.prefix.exists())
     def test_owned_linux_service_binds_persistent_daemon_state_without_activation(self) -> None:
         service = self.service.with_name("ai.xoxd.omux.dev.service")
         persistent = self.root / 'runtime state with % and $ and "quotes"'

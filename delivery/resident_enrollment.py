@@ -297,6 +297,14 @@ def owned_record_inventory(record, artifact, archive_files, bundle_sha256, prefi
                 for name, content in archive_files.items()
                 if name.startswith("lib/omux/") or name.startswith("bin/")
                 and name[4:] in (*pack.BINARIES, "omux-control")}
+    desktop_directory = install._desktop_directory(artifact, archive_files, prefix, None)
+    if desktop_directory is not None:
+        require(record.get("desktopDirectory") == str(desktop_directory))
+        name = install.desktop_file(artifact["channel"])
+        content = install.desktop_entry(artifact["channel"], str(prefix / "bin/omux-control"))
+        expected[str(desktop_directory / Path(name).name)] = {"sha256": hashlib.sha256(content).hexdigest(), "mode": 0o644}
+    else:
+        require("desktopDirectory" not in record)
     entries = record["files"]
     actual = {entry["path"]: entry for entry in entries}
     require(len(actual) == len(entries) and set(actual) == set(expected) | {str(service_path)})
