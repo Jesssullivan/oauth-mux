@@ -319,7 +319,7 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
         for phase, expected in (("artifact", "ready" if selected else "observation_unknown"),
                                 ("service", "observation_unknown"), ("vault", "ready"),
                                 ("source", "missing"), ("identity", "pending"), ("grant", "missing"),
-                                ("native", "observation_unknown")):
+                                ("native", "missing")):
             SUBPHASE = "readiness-" + phase
             READINESS_REASON = "unclassified"
             if rows[phase]["reason"] in READINESS_REASONS:
@@ -332,6 +332,8 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                     PROBE_FAILURE = observed_failure
             require(rows[phase]["reason"] == expected,
                     "installed readiness collapsed custody into acquisition or native capability")
+        require(rows["native"]["action"] == "install_native_adapter",
+                "unconfigured installed fixture lost actionable native adapter gap")
         SUBPHASE = "setup-plan-command"
         plan = setup_command(["setup"], expected_pid)
         SUBPHASE = "setup-plan-fields"
@@ -506,7 +508,7 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                     {"outcome": "action_required", "reason": "missing"},
                     {"outcome": "action_required", "reason": "pending"},
                     {"outcome": "action_required", "reason": "missing"},
-                    {"outcome": "unknown", "reason": "observation_unknown"}],
+                    {"outcome": "action_required", "reason": "missing"}],
                 "selected verification overclaimed service, enrollment or native readiness")
         selected_evidence = setup_command(["setup", "evidence"], daemon_process.pid)
         require(selected_evidence["provider_access"] is False and selected_evidence["refresh_pending"] is False
