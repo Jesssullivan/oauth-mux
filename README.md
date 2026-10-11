@@ -33,8 +33,9 @@ Accounts, identities, sources, grants, resources, observations, application
 bindings and leases are separate. Quota is one possible resource: calls, bytes,
 uploads, duration and throughput use the same scoped observation model. Totals
 include only compatible units/windows and do not multiply shared quota buckets.
-Source disappearance detaches an account; explicit forget removes stored secrets
-and prevents automatic re-enrollment.
+Observed native source disappearance can detach that source; automatic browser
+presence/disappearance observation remains unimplemented. Explicit forget removes
+stored secrets and prevents automatic re-enrollment.
 
 SQLite holds metadata and encrypted grant payloads. The wrapping key belongs in
 macOS Keychain or Linux Secret Service. Native/browser imports do not automatically

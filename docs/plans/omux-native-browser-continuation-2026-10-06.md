@@ -143,8 +143,10 @@ Historical evidence and closed unmerged PRs remain preserved.
 
 The ten-hour follow-on prioritizes fresh candidate packaging and
 identity/usable-authority/one-writer renewal readiness. Live evaluation needs
-explicit isolated labels and finite model/tool/resource limits. PZM/GF remains
-held. Darwin, signing, store delivery and publication retain independent gates.
+explicit isolated labels and finite tool/resource limits. The original finite
+model-usage authorization is historical; later uncapped model IO authorization
+is recorded in the [integrated delivery plan](omux-integrated-delivery-sprint-2026-10-05.md).
+PZM/GF remains held. Darwin, signing, store delivery and publication retain independent gates.
 Linear records exact results; partial demonstrations do not close broad tickets.
 ## Current bounded diagnostic lead — October7
 

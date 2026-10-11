@@ -250,8 +250,9 @@ provider/context and refuses ambiguous context selection. It records pending
 disconnect for retry after a lost host response and releases optional access
 only when no authorized contexts still need it. Disconnect ends that source's
 acquisition authority and removes source-retained secrets; independently valid
-grants and native history retain their own authority. Browser disappearance uses
-detachment semantics. The C8 Chromium tuple above covers synthetic pending
+grants and native history retain their own authority. Browser disappearance is
+intended to use detachment semantics; a production presence observer and actual
+disappearance transition remain unimplemented/unproved. The C8 Chromium tuple above covers synthetic pending
 recovery and context disconnect; human consent, production authority transitions
 and committed daemon mutation with lost-reply recovery remain unproved.
 Removing host registration is a separate action.

@@ -37,7 +37,7 @@ pub const Options = struct {
     receipt_path: []const u8,
     prefix: []const u8,
     /// Caller-selected definition location; receipt cannot nominate arbitrary
-    /// paths outside the prefix without this exact independent selection.
+    /// service paths outside the prefix without this exact independent selection.
     service_path: ?[]const u8 = null,
     /// Optional immutable Home Manager service record selector. It conveys no
     /// ownership until the bounded record and actual final links are verified.
@@ -118,6 +118,8 @@ pub const Receipt = struct {
     prefix: []const u8,
     userService: ?[]const u8 = null,
     serviceActivated: bool = false,
+    /// Installer-recorded desktop placement, not an arbitrary external inventory.
+    desktopDirectory: ?[]const u8 = null,
     owner: ?[]const u8 = null,
     artifact: ?ArtifactMetadata = null,
     files: []const Entry,
@@ -172,18 +174,57 @@ pub fn mergeProbe(previous: evidence.Probe, next: evidence.Probe) evidence.Probe
     return .matches;
 }
 
+/// This is the production parser used after bounded descriptor custody checks.
+/// Unknown historical producer fields remain tolerated; desktopDirectory is typed.
+pub fn parseReceipt(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(Receipt) {
+    if (bytes.len > max_receipt_bytes) return error.InvalidReceipt;
+    return std.json.parseFromSlice(Receipt, allocator, bytes, .{ .ignore_unknown_fields = true, .max_value_len = max_receipt_bytes }) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return error.InvalidReceipt;
+    };
+}
+
+fn desktopFilename(receipt: Receipt, ownership: onboarding.Ownership) !?[]const u8 {
+    const directory = receipt.desktopDirectory orelse return null;
+    // Home Manager owns its separate declarative entry; its immutable artifact
+    // witness does not acquire a mutable/external desktop placement exception.
+    if (ownership != .installation_receipt or directory.len > max_path_bytes) return error.InvalidReceipt;
+    paths.validateAbsolute(directory) catch return error.InvalidReceipt;
+    for (directory) |byte| if (byte < 32 or byte == 127) return error.InvalidReceipt;
+    const artifact = receipt.artifact orelse return error.InvalidReceipt;
+    const channel = artifact.channel orelse return error.InvalidReceipt;
+    // Match the installer's canonical channels, not the legacy "dev" alias.
+    const filename: []const u8 = if (std.mem.eql(u8, channel, "development"))
+        "ai.xoxd.omux.dev.desktop"
+    else if (std.mem.eql(u8, channel, "release"))
+        "ai.xoxd.omux.desktop"
+    else
+        return error.InvalidReceipt;
+    if (directory.len + 1 + filename.len > max_path_bytes) return error.InvalidReceipt;
+    return filename;
+}
+
+fn exactDesktopPath(path: []const u8, directory: []const u8, filename: []const u8) bool {
+    return path.len == directory.len + 1 + filename.len and
+        std.mem.startsWith(u8, path, directory) and path[directory.len] == '/' and
+        std.mem.eql(u8, path[directory.len + 1 ..], filename);
+}
+
 /// Pure validation, also used before any receipt-nominated payload is opened.
 pub fn validateReceipt(receipt: Receipt, prefix: []const u8, service_path: ?[]const u8) !void {
     if (prefix.len > max_path_bytes) return error.InvalidReceipt;
     paths.validateAbsolute(prefix) catch return error.InvalidReceipt;
     const ownership = try receiptOwnership(receipt);
     _ = try receiptChannel(receipt);
+    const desktop_filename = try desktopFilename(receipt, ownership);
     if (ownership == .home_manager and !std.mem.startsWith(u8, prefix, "/nix/store/")) return error.InvalidReceipt;
     if (receipt.schemaVersion != 1 or !std.mem.eql(u8, receipt.prefix, prefix) or receipt.files.len == 0 or receipt.files.len > max_files) return error.InvalidReceipt;
     if (receipt.userService) |service| {
         if (service_path == null or !std.mem.eql(u8, service, service_path.?)) return error.InvalidReceipt;
     }
     var required = [_]bool{ false, false, false };
+    var desktop_seen = false;
+    var control_seen = false;
     for (receipt.files, 0..) |entry, index| {
         if (entry.path.len > max_path_bytes) return error.InvalidReceipt;
         paths.validateAbsolute(entry.path) catch return error.InvalidReceipt;
@@ -191,16 +232,23 @@ pub fn validateReceipt(receipt: Receipt, prefix: []const u8, service_path: ?[]co
         try validateDigest(entry.sha256);
         const inside = entry.path.len > prefix.len + 1 and std.mem.startsWith(u8, entry.path, prefix) and entry.path[prefix.len] == '/';
         const selected_service = if (service_path) |selected| std.mem.eql(u8, entry.path, selected) else false;
-        if (!inside and !selected_service) return error.InvalidReceipt;
+        const selected_desktop = if (desktop_filename) |filename| exactDesktopPath(entry.path, receipt.desktopDirectory.?, filename) else false;
+        if (selected_desktop) {
+            if (entry.mode != 0o644) return error.InvalidReceipt;
+            desktop_seen = true;
+        }
+        if (!inside and !selected_service and !selected_desktop) return error.InvalidReceipt;
         for (receipt.files[0..index]) |earlier| if (std.mem.eql(u8, entry.path, earlier.path)) return error.InvalidReceipt;
         if (inside) {
             const relative = entry.path[prefix.len + 1 ..];
+            if (std.mem.eql(u8, relative, "bin/omux-control") and entry.mode == 0o755) control_seen = true;
             for ([_][]const u8{ "bin/omux", "bin/omuxd", "bin/omux-native-host" }, 0..) |name, required_index| {
                 if (std.mem.eql(u8, relative, name) and entry.mode == 0o755) required[required_index] = true;
             }
         }
     }
     for (required) |present| if (!present) return error.InvalidReceipt;
+    if (desktop_filename != null and (!desktop_seen or !control_seen)) return error.InvalidReceipt;
 }
 
 pub fn collect(io: std.Io, allocator: std.mem.Allocator, options: Options) !Collected {
@@ -240,10 +288,7 @@ fn collectInner(io: std.Io, allocator: std.mem.Allocator, options: Options) !Col
     defer allocator.free(bytes);
     try readExact(io, options.deadline, receipt_fd, bytes);
     if (!std.meta.eql(before, try metadata.statFd(receipt_fd))) return error.ChangedFile;
-    const parsed = std.json.parseFromSlice(Receipt, allocator, bytes, .{ .ignore_unknown_fields = true, .max_value_len = max_receipt_bytes }) catch |err| {
-        if (err == error.OutOfMemory) return err;
-        return error.InvalidReceipt;
-    };
+    const parsed = try parseReceipt(allocator, bytes);
     defer parsed.deinit();
     const receipt = parsed.value;
     try validateReceipt(receipt, options.prefix, options.service_path);

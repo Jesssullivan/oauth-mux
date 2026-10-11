@@ -128,10 +128,15 @@ export class BrowserService {
     const entries = await this.metadata();
     for (const id of Object.keys(requests)) if (!entries.some(entry => entry.sourceId === id)) delete requests[id];
     const pending = requests[source.sourceId];
-    if (["browser.connect", "browser.reconcile"].includes(pending?.method) && method === "browser.disconnect") {
-      // Disconnect intent is already durable. Resolve only the original metadata
-      // operation with its retained ID before admitting a new disconnect. This
-      // does not acquire provider data, renew consent or run grant capture.
+    if (pending?.method === "browser.connect" && method === "browser.disconnect") {
+      // The daemon cannot report/cancel this original outcome. Replaying Connect
+      // can renew acquisition authority; a Disconnect ACK cannot settle a
+      // delayed original Connect. Retain uncertainty and durable removal intent.
+      throw new AcquisitionError("uncertain_operation");
+    }
+    if (pending?.method === "browser.reconcile" && method === "browser.disconnect") {
+      // Reconcile observes current authority without reconnecting or extending
+      // it. Resolve only that retained read-only operation before removal.
       await this.send(source, adapter, pending.method);
       return this.send(source, adapter, method, extra);
     }

@@ -378,7 +378,15 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     auto *serviceButtons = new QHBoxLayout;
     button(serviceButtons, "Start service", this, [this] { serviceAction("start"); });
     button(serviceButtons, "Login setup guidance", this, [this] {
-        service_->setText("Managed needs change: set programs.omux.enable in Home Manager and activate the reviewed generation. Omux controls do not overwrite managed service definitions or browser registrations.");
+        service_->setText(
+            "Managed needs change: enable Omux and its reviewed channel in Home Manager, then activate that generation. "
+            "Development example: programs.omux.enable = true; programs.omux.instances.development = { enable = true; "
+            "package = verifiedDevelopmentPackage; extensionId = exactChromiumExtensionId; }; "
+            "verifiedDevelopmentPackage must come from consume-bazel-artifact.nix with verified artifact, NAR hash, source revision and development channel. "
+            "exactChromiumExtensionId must be the installed extension's exact 32-character ID. "
+            "Select chromiumConfigDirectories for your actual browser (default: chromium; Chrome: google-chrome). "
+            "For release, enable instances.release with its matching verified release package and exact extension ID. "
+            "Omux controls do not overwrite managed service definitions or browser registrations.");
     });
     serviceButtons->addStretch();
     serviceLayout->addLayout(serviceButtons);

@@ -52,7 +52,7 @@ pub fn commandHelp(allocator: std.mem.Allocator) ![]u8 {
         "Candidate ordinary launch/resume and live handoff still require separate proof.\n" ++
         "Discovery is read-only; hook_compatible is experimental and native_support remains false.\n" ++
         "Credentials belong on stdin; never place them in argv.\n" ++
-        "Daemon startup requires available OS-vault custody.\n" ++
+        "Typed startup vault failures retain bounded diagnostics; custody work requires restored OS-vault custody.\n" ++
         "Integration status reports missing native hooks and live proof.\n");
     return output.toOwnedSlice(allocator);
 }
