@@ -117,15 +117,9 @@ final class DaemonStore: ObservableObject {
             connectionMessage = custodyAvailable ? "Connected" : "Connected; credential custody unavailable"
             do {
                 let result = try await connection.request("setup.readiness")
-                let findings = result["findings"].array
-                let expected: Set<String> = ["artifact", "service", "vault", "source", "identity", "grant", "native"]
-                guard result["schema_version"].number == 1, findings.count == 7,
-                      Set(findings.compactMap { $0["phase"].string }) == expected,
-                      findings.allSatisfy({ $0["reason"].string != nil && $0["action"].string != nil }) else {
-                    throw ControlError.invalidFrame
-                }
-                readiness = findings.map { StateRow(id: $0["phase"].display, value: $0) }
-                readinessMessage = result["ready"].boolean == true
+                let report = try SetupReadinessReport.parse(result)
+                readiness = report.findings.map { StateRow(id: $0["phase"].display, value: $0) }
+                readinessMessage = report.ready
                     ? "Operational readiness reported; seamless handoff still requires separate evidence."
                     : "Setup has pending or unverified phases."
             } catch {

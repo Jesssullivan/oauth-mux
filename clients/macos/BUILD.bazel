@@ -7,7 +7,28 @@ exports_files(["Info.plist", "ai.xoxd.omux.daemon.plist"])
 
 omux_swift_program(
     name = "control",
-    srcs = ["ControlWindow.swift", "DaemonConnection.swift", "DaemonStore.swift", "JSONValue.swift", "OmuxApp.swift", "RuntimePaths.swift"],
+    srcs = ["ControlWindow.swift", "DaemonConnection.swift", "DaemonStore.swift", "JSONValue.swift", "OmuxApp.swift", "RuntimePaths.swift", "SetupReadinessReport.swift"],
+    target_compatible_with = ["@platforms//os:macos"],
+    exec_compatible_with = ["@platforms//os:macos"],
+)
+
+# Uses the production Foundation-only parser. Darwin execution and declared
+# compiler/SDK inputs remain mandatory; this does not qualify installed support.
+omux_swift_program(
+    name = "setup_readiness_fixture",
+    srcs = ["JSONValue.swift", "SetupReadinessReport.swift", "SetupReadinessReportFixture.swift"],
+    executable_name = "OmuxSetupReadinessFixture",
+    module_name = "OmuxSetupReadinessFixture",
+    frameworks = ["Foundation"],
+    target_compatible_with = ["@platforms//os:macos"],
+    exec_compatible_with = ["@platforms//os:macos"],
+)
+
+python_test(
+    name = "setup_readiness_test",
+    main = "setup_readiness_test.py",
+    data = [":setup_readiness_fixture"],
+    args = ["$(location :setup_readiness_fixture)"],
     target_compatible_with = ["@platforms//os:macos"],
     exec_compatible_with = ["@platforms//os:macos"],
 )
