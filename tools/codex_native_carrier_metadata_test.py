@@ -5,7 +5,7 @@ Receipt/evidence byte readers, XML success checks, aliases, query planning and
 restoration/refusal logic below are the actual consumer implementation.
 """
 import copy
-from contextlib import contextmanager, ExitStack, redirect_stdout
+from contextlib import contextmanager, ExitStack, redirect_stdout, redirect_stderr
 import io
 import json
 import os
@@ -381,6 +381,64 @@ class CarrierMetadataModels(unittest.TestCase):
             with self.assertRaises(ValueError):
                 consumer.query_plan(self.root / "work", self.root / "source", invalid, fresh)
 
+    def initial_declaration_fixture(self):
+        # The caller seam supplies an already authenticated, canonical binding.
+        # This tiny document models joins, never a genuine SDK or NAR proof.
+        root = self.root / "sdk-carrier"
+        candidate = {"origin": {"receipt_sha256": "1" * 64, "receipt_bytes": 97},
+            "manifest_sha256": "2" * 64, "manifest_bytes": 83,
+            "payload_sha256": "3" * 64, "payload_bytes": 79}
+        pin = consumer.carrier.sha(consumer.carrier.encoded(candidate))
+        digests = dict(zip(consumer.carrier.FILES, ("2" * 64, "1" * 64, "3" * 64, pin)))
+        sizes = dict(zip(consumer.carrier.FILES, (83, 97, 79, len(consumer.carrier.encoded(candidate)))))
+        selected = {"carrier_root": str(root), "digests": digests}
+        path = self.root / "initial-selection.json"
+        raw = consumer.source.encoded(selected)
+        path.write_bytes(raw)
+        declaration = {"selection": selected, "selection_path": str(path), "selection_sha256": consumer.source.sha(raw)}
+        qualified = {"report": {"carrier_receipt_sha256": pin, "files": [
+            {"name": name, "sha256": digests[name], "size": sizes[name]} for name in consumer.carrier.FILES]}}
+        return root, candidate, pin, declaration, qualified
+
+    def test_initial_join_reads_independent_declaration_without_reopening_carrier(self):
+        root, candidate, pin, declaration, qualified = self.initial_declaration_fixture()
+        with patch.object(consumer.carrier, "publication_report", side_effect=AssertionError("duplicate full proof")) as full:
+            consumer._recheck_initial_declaration(declaration, qualified, root, pin, candidate, 601.0)
+            full.assert_not_called()
+            # Original expiry still refuses before any dependent output.
+            with patch.object(consumer.time, "monotonic", return_value=601.0), self.assertRaises(ValueError):
+                consumer._recheck_initial_declaration(declaration, qualified, root, pin, candidate, 601.0)
+
+    def test_initial_join_refuses_each_independent_digest_size_order_and_receipt_pin(self):
+        root, candidate, pin, declaration, qualified = self.initial_declaration_fixture()
+        mutations = [
+            lambda d, q: d["selection"].update(carrier_root=str(self.root / "foreign")),
+            lambda d, q: q["report"].update(carrier_receipt_sha256="7" * 64),
+            lambda d, q: q["report"]["files"].reverse(),
+        ]
+        for index in range(len(consumer.carrier.FILES)):
+            mutations.extend((
+                lambda d, q, i=index: q["report"]["files"][i].update(sha256="8" * 64),
+                lambda d, q, i=index: q["report"]["files"][i].update(size=q["report"]["files"][i]["size"] + 1),
+                lambda d, q, i=index: d["selection"]["digests"].update({consumer.carrier.FILES[i]: "9" * 64}),
+            ))
+        for mutate in mutations:
+            d, q = copy.deepcopy(declaration), copy.deepcopy(qualified)
+            mutate(d, q)
+            raw = consumer.source.encoded(d["selection"])
+            Path(d["selection_path"]).write_bytes(raw)
+            d["selection_sha256"] = consumer.source.sha(raw)
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                consumer._recheck_initial_declaration(d, q, root, pin, candidate, 601.0)
+        Path(declaration["selection_path"]).write_bytes(consumer.source.encoded(declaration["selection"]))
+        changed = dict(candidate, payload_bytes=candidate["payload_bytes"] + 1)
+        with self.assertRaises(ValueError):
+            consumer._recheck_initial_declaration(declaration, qualified, root, pin, changed, 601.0)
+        # Equal JSON with different bytes still loses the original declared pin.
+        Path(declaration["selection_path"]).write_bytes(consumer.source.encoded(declaration["selection"]) + b"\n")
+        with self.assertRaises(ValueError):
+            consumer._recheck_initial_declaration(declaration, qualified, root, pin, candidate, 601.0)
+
     def test_scope_restores_every_original_clock_control_and_query_root_on_exception(self):
         names = ("DEADLINE", "INPUT_CONTROL", "BINDING_SHA", "QUERY_REPOSITORY")
         before = tuple(getattr(consumer.legacy, name) for name in names)
@@ -532,7 +590,8 @@ class CarrierMetadataModels(unittest.TestCase):
 
     def run_bounded_consumer(self, *, mutate_workspace=False, fail_final_custody=False,
             mutate_ready_workspace=False, fail_ready_custody=False, mutate_ready_proof=False,
-            mutate_binding=False, bad_initial_context=False):
+            mutate_binding=False, bad_initial_context=False, fail_initial_declaration=False,
+            fail_initial_source=False):
         """Actual workspace/output FD writes and root holds; explicit proof seams.
 
         A tiny source/SDK/carrier is a trusted model boundary, never qualification.
@@ -646,10 +705,13 @@ class CarrierMetadataModels(unittest.TestCase):
             stack.enter_context(patch.object(consumer.legacy, "configure_selection", side_effect=configure))
             final_binding = stack.enter_context(patch.object(consumer.carrier, "validate_binding", return_value=origin))
             stack.enter_context(patch.object(consumer, "recheck_declaration"))
+            initial_join = stack.enter_context(patch.object(consumer, "_recheck_initial_declaration",
+                side_effect=ValueError("private declaration content") if fail_initial_declaration else None))
             stack.enter_context(patch.object(consumer.binding, "config", return_value={"binding": {
                 "path": str(binding_path), "sha256": binding_pin}}))
             stack.enter_context(patch.object(consumer.binding, "bind", return_value=bound))
             source_read = stack.enter_context(patch.object(consumer.binding, "load_verified_source",
+                side_effect=ValueError("private source content") if fail_initial_source else None,
                 return_value=(report, files, baseline)))
             stack.enter_context(patch.object(consumer.carrier, "extract", side_effect=extract))
             stack.enter_context(patch.object(consumer.carrier, "revalidate_extraction", side_effect=revalidate))
@@ -667,6 +729,10 @@ class CarrierMetadataModels(unittest.TestCase):
             self.assertEqual([call.args[0] for call in recheck.call_args_list], [retained, controls, retained, controls])
             self.assertEqual(source_read.call_args_list, [unittest.mock.call(self.original)] * 2)
             self.assertEqual(final_binding.call_args_list, [unittest.mock.call(packed, "4" * 64, 601.0)])
+            initial_join.assert_called_once()
+            self.assertEqual(initial_join.call_args.args[0], {})
+            self.assertEqual(initial_join.call_args.args[1]["report"], self.program)
+            self.assertEqual(initial_join.call_args.args[2:], (packed, "4" * 64, origin, 601.0))
         self.assertLess(events.index("bound"), events.index("sdk"))
         self.assertGreater(events.index("fresh", events.index("query-tools")), events.index("query-tools"))
         self.assertTrue(all(result[name] is False for name in consumer.FALSE_FLAGS))
@@ -678,6 +744,38 @@ class CarrierMetadataModels(unittest.TestCase):
 
     def test_actual_output_workspace_and_root_holds_preserve_v2_scope(self):
         self.run_bounded_consumer()
+
+    def test_initial_callback_diagnostics_have_bounded_static_order_and_no_content(self):
+        output = io.StringIO()
+        with redirect_stderr(output):
+            self.run_bounded_consumer()
+        lines = output.getvalue().splitlines()
+        phases = ("start", "declaration-ready", "aliases-ready", "source-ready", "output-ready")
+        self.assertEqual(len(lines), len(phases))
+        for line, phase in zip(lines, phases):
+            self.assertRegex(line, "^sdk-carrier-initial-callback: " + phase + r" elapsed_ns=[0-9]+$")
+        self.assertNotIn(str(self.root), output.getvalue())
+        self.assertNotIn("private", output.getvalue())
+
+    def assert_initial_callback_refusal(self, option, phases):
+        output = io.StringIO()
+        with redirect_stderr(output), self.assertRaises(ValueError):
+            self.run_bounded_consumer(**{option: True})
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), len(phases))
+        for line, phase in zip(lines, phases):
+            self.assertRegex(line, "^sdk-carrier-initial-callback: " + phase + r" elapsed_ns=[0-9]+$")
+        self.assertNotIn(str(self.root), output.getvalue())
+        self.assertNotIn("private", output.getvalue())
+        self.assertFalse((self.root / "result").exists())
+        self.assertFalse((self.root / "work").exists())
+        self.assertIsNone(consumer._SCOPE.get())
+
+    def test_initial_callback_declaration_failure_preserves_refusal_and_no_output(self):
+        self.assert_initial_callback_refusal("fail_initial_declaration", ("start", "refused"))
+
+    def test_initial_callback_source_failure_preserves_refusal_and_no_output(self):
+        self.assert_initial_callback_refusal("fail_initial_source", ("start", "declaration-ready", "aliases-ready", "refused"))
 
     def test_authenticated_initial_origin_context_refuses_before_dependent_output(self):
         with self.assertRaises(ValueError):

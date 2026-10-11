@@ -225,7 +225,7 @@ def declared_proofs(runfiles, rows, selected_input, deadline):
     return result
 
 
-def recheck_declaration(declaration, qualified, carrier_root, pin, deadline):
+def _read_declaration(declaration, deadline):
     tick(deadline)
     path = protocol.path(declaration["selection_path"])
     fd = source.directory(path.parent)
@@ -235,6 +235,32 @@ def recheck_declaration(declaration, qualified, carrier_root, pin, deadline):
         os.close(fd)
     require(source.sha(raw) == declaration["selection_sha256"]
         and json.loads(raw, object_pairs_hook=source.unique) == declaration["selection"])
+
+
+def _recheck_initial_declaration(declaration, qualified, carrier_root, pin, candidate, deadline):
+    """Join only the extractor's current held full binding inside on_bound.
+
+    No persisted proof is accepted here. The extractor authenticates every
+    byte and both NARs before this callback, then rechecks its held root and
+    named leaves immediately after it. Later declaration checks stay full.
+    """
+    _read_declaration(declaration, deadline)
+    raw = carrier.encoded(candidate)
+    require(carrier.sha(raw) == pin and declaration["selection"]["carrier_root"] == str(carrier_root))
+    digests = {"manifest.json": candidate["manifest_sha256"],
+        "origin-receipt.json": candidate["origin"]["receipt_sha256"],
+        "payload.bin": candidate["payload_sha256"], "receipt.json": pin}
+    sizes = {"manifest.json": candidate["manifest_bytes"],
+        "origin-receipt.json": candidate["origin"]["receipt_bytes"],
+        "payload.bin": candidate["payload_bytes"], "receipt.json": len(raw)}
+    files = [{"name": name, "sha256": digests[name], "size": sizes[name]} for name in carrier.FILES]
+    require(qualified["report"]["carrier_receipt_sha256"] == pin
+        and files == qualified["report"]["files"] and digests == declaration["selection"]["digests"])
+    tick(deadline)
+
+
+def recheck_declaration(declaration, qualified, carrier_root, pin, deadline):
+    _read_declaration(declaration, deadline)
     actual = carrier.publication_report(carrier_root, pin, deadline)
     require(actual["carrier_receipt_sha256"] == pin
         and actual["files"] == qualified["report"]["files"]
@@ -421,18 +447,33 @@ def produce(selected, selector_sha, carrier_root, aliases, declaration, proof_in
         origin = report = files = parent = output_hold = source_hold = binding_hold = None
         def accept_initial(candidate):
             nonlocal origin, report, files, parent, output_hold, source_hold, binding_hold
-            origin_join(candidate)
-            require(candidate["producer_context"] == qualified["report"]["producer_context"])
-            recheck_declaration(declaration, qualified, carrier_root, pin, deadline)
-            recheck_aliases(aliases, deadline)
-            source_hold = legacy.hold_root(Path(selected["original_selection"]["source_root"]))
-            stack.callback(os.close, source_hold[0])
-            binding_hold = legacy.hold_root(legacy.INPUT_CONTROL.parent)
-            stack.callback(os.close, binding_hold[0])
-            report, files, parent = legacy.load_retained_candidate(selected["original_selection"])
-            output.mkdir(mode=0o700)
-            output_hold = stack.enter_context(carrier.Root(output, carrier.Clock(deadline), sealed=False, owned=True))
-            origin = candidate
+            started_ns = time.monotonic_ns()
+            def progress(phase):
+                # Static phase diagnostics only; this clock grants no allowance.
+                print("sdk-carrier-initial-callback: " + phase
+                    + " elapsed_ns=" + str(max(0, time.monotonic_ns() - started_ns)),
+                    file=sys.stderr, flush=True)
+            progress("start")
+            try:
+                origin_join(candidate)
+                require(candidate["producer_context"] == qualified["report"]["producer_context"])
+                _recheck_initial_declaration(declaration, qualified, carrier_root, pin, candidate, deadline)
+                progress("declaration-ready")
+                recheck_aliases(aliases, deadline)
+                progress("aliases-ready")
+                source_hold = legacy.hold_root(Path(selected["original_selection"]["source_root"]))
+                stack.callback(os.close, source_hold[0])
+                binding_hold = legacy.hold_root(legacy.INPUT_CONTROL.parent)
+                stack.callback(os.close, binding_hold[0])
+                report, files, parent = legacy.load_retained_candidate(selected["original_selection"])
+                progress("source-ready")
+                output.mkdir(mode=0o700)
+                output_hold = stack.enter_context(carrier.Root(output, carrier.Clock(deadline), sealed=False, owned=True))
+                origin = candidate
+                progress("output-ready")
+            except BaseException:
+                progress("refused")
+                raise
         extracted = output / "extracted"
         extraction = carrier.extract(carrier_root, pin, extracted, deadline, on_bound=accept_initial)
         extraction_pin = carrier.sha(carrier.encoded(extraction))
