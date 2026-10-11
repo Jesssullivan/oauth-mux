@@ -7,6 +7,7 @@ import ast
 import json
 import os
 from pathlib import Path
+import stat
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -257,6 +258,56 @@ class ProducerRetentionModels(unittest.TestCase):
         for field in ('sdk_execution_qualified', 'metadata_qualified', 'compiler_qualified', 'runtime_qualified'):
             self.assertIs(program[field], False)
         self.assertEqual(json.loads((outputs / 'sdk-private/native-sdk-carrier-producer.json').read_bytes()), program)
+
+    def test_real_qualifier_then_bazel_readonly_retention_reopens_full_transport_without_logical_mode_changes(self):
+        outputs, program = self.retained()
+        destination = outputs / 'sdk-private/sdk-carrier'
+        for name in producer.carrier.FILES:
+            self.assertEqual(stat.S_IMODE((destination / name).stat().st_mode), 0o444)
+        # A completed model producer releases its writer. Model Bazel9's
+        # output metadata normalization only on these own fixture artifacts.
+        for path, _, names in os.walk(outputs, topdown=False):
+            for name in names:
+                (Path(path) / name).chmod(0o555)
+            Path(path).chmod(0o555)
+        pin = program['carrier_receipt_sha256']
+        publication = producer.carrier.publication_report(destination, pin, self.deadline)
+        self.assertEqual(publication['files'], program['files'])
+        report = producer.carrier.validate_binding(destination, pin, self.deadline)
+        self.assertEqual(report['producer_context'], self.context)
+        output = self.root / 'retained-consumer-extracted'
+        fresh = producer.carrier.extract(destination, pin, output, self.deadline)
+        self.assertEqual(fresh['producer_context'], self.context)
+        self.assertFalse(fresh['original_inodes_reused'])
+        self.assertFalse(fresh['sdk_execution_qualified'])
+        self.assertFalse(fresh['metadata_qualified'])
+        self.assertEqual(stat.S_IMODE((output / 'sdk/receipt.json').stat().st_mode), 0o400)
+        self.assertEqual(stat.S_IMODE((output / 'sdk/repositories/public+/MODULE.bazel').stat().st_mode), 0o444)
+        self.assertEqual(stat.S_IMODE((output / 'sdk/repositories/public+/tool').stat().st_mode), 0o555)
+        self.assertEqual(producer.carrier.revalidate_extraction(destination, pin, output, self.deadline,
+            pinned_extraction_receipt_sha256=producer.carrier.sha(producer.carrier.encoded(fresh))), fresh)
+        self.assertEqual(producer.carrier.publication_report(destination, pin, self.deadline), publication)
+        for row in program['files']:
+            leaf = destination / row['name']
+            self.assertEqual((producer.carrier.sha(leaf.read_bytes()), leaf.stat().st_size),
+                             (row['sha256'], row['size']))
+            self.assertEqual(stat.S_IMODE(leaf.stat().st_mode), 0o555)
+
+    def test_current_qualifier_writer_still_refuses_mode_change_before_accepted_program(self):
+        source, _, _ = fixtures.CarrierModels.seal(self)
+        outputs = self.root / 'test.outputs'
+        outputs.mkdir(mode=0o700)
+        original = producer.carrier.Output.finish
+        def retain_before_writer_readback(output):
+            original(output)
+            for name in producer.carrier.FILES:
+                (output.path / name).chmod(0o555)
+        with (patch.object(producer, 'ORIGIN', str(self.origin)),
+              patch.object(producer, 'ORIGIN_SHA', self.pin),
+              patch.object(producer.carrier.Output, 'finish', new=retain_before_writer_readback)):
+            with self.assertRaises(ValueError):
+                producer.qualify(source / 'receipt.json', outputs, self.context, self.deadline)
+        self.assertFalse((outputs / 'sdk-private/native-sdk-carrier-producer.json').exists())
 
     def test_other_epoch_context_refuses_without_retained_publication(self):
         wrong = dict(self.context, source_commit='4' * 40)

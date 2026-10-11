@@ -29,6 +29,15 @@ MAX_DEPTH = 64
 FILES = ("manifest.json", "origin-receipt.json", "payload.bin", "receipt.json")
 
 
+def transport_leaf_mode(root, witness):
+    # These four outer transport files carry bytes, not SDK/JDK executable
+    # modes. Bazel's READONLY tree-artifact retention changes them to 0555.
+    # An independently consumed retained file may be exact 0444 or 0555;
+    # the current exclusive writer still requires its freshly sealed 0444.
+    modes = (0o444,) if root.owned else (0o444, 0o555)
+    return stat.S_IMODE(witness[4]) in modes
+
+
 def need(value, reason):
     if value is not True:
         raise ValueError("SDK carrier refused: " + reason)
@@ -772,7 +781,7 @@ def validate_content(root, manifest, expected, clock):
          and type(manifest["payload_bytes"]) is int and manifest["payload_bytes"] == offset, "complete-extents")
     fd, before = root.open("payload.bin")
     try:
-        need(before[6] == offset and stat.S_IMODE(before[4]) == 0o444, "payload-size-mode")
+        need(before[6] == offset and transport_leaf_mode(root, before), "payload-size-mode")
         total_hash = hashlib.sha256()
         for key, entry in files.items():
             part = Range(fd, entry["offset"], entry["size"], clock)
@@ -801,6 +810,15 @@ def validate_content(root, manifest, expected, clock):
 
 def binding(root, pin, clock):
     names(root.fd, set(FILES), clock)
+    # All retained transport leaves must be read-only, including metadata.
+    # Root.open/check retains the exact actual mode/inode/name witness: an
+    # allowed mode transition during this read is still an identity race.
+    for name in FILES:
+        fd, witness = root.open(name)
+        try:
+            need(transport_leaf_mode(root, witness), "transport-leaf-mode")
+        finally:
+            os.close(fd)
     raw = read(root, "receipt.json", 65536, digest(pin))
     report = decode(raw)
     need(type(report) is dict and set(report) == {"kind", "producer_context", "origin", "origin_custody", "manifest_sha256",
@@ -917,7 +935,7 @@ def publication_report(carrier_dir, pinned_carrier_receipt_sha256, absolute_dead
                     need(count <= limit, "publication-byte-bound")
                     h.update(block)
                 need(identity(os.fstat(fd)) == before and count == before[6]
-                     and stat.S_IMODE(before[4]) == 0o444, "publication-leaf-readback")
+                     and transport_leaf_mode(root, before), "publication-leaf-readback")
                 files.append({"name": name, "sha256": h.hexdigest(), "size": count})
             finally:
                 os.close(fd)

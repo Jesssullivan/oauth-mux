@@ -145,6 +145,124 @@ class CarrierModels(unittest.TestCase):
         self.assertEqual(carrier.revalidate_extraction(root, pin, output, self.deadline,
                          pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(fresh))), fresh)
 
+    def retained_transport(self, source, name="bazel-retained"):
+        # Model Bazel9 READONLY tree-artifact retention on fresh fixture copies,
+        # never chmod the original producer or any genuine retained selection.
+        retained = self.root / name
+        shutil.copytree(source, retained)
+        for leaf in carrier.FILES:
+            (retained / leaf).chmod(0o555)
+        self.seal_dirs(retained)
+        return retained
+
+    def test_real_core_bazel_retained_transport_roundtrip_preserves_logical_modes_and_clock(self):
+        source, report, pin = self.seal()
+        original = {name: (source / name).read_bytes() for name in carrier.FILES}
+        self.assertTrue(all(stat.S_IMODE((source / name).stat().st_mode) == 0o444 for name in carrier.FILES))
+        retained = self.retained_transport(source)
+        self.assertEqual(carrier.validate_binding(retained, pin, self.deadline), report)
+        publication = carrier.publication_report(retained, pin, self.deadline)
+        self.assertEqual(publication["files"], [{"name": name, "sha256": carrier.sha(original[name]),
+                                               "size": len(original[name])} for name in carrier.FILES])
+        output = self.root / "retained-extracted"
+        fresh = carrier.extract(retained, pin, output, self.deadline)
+        manifest = json.loads(original["manifest.json"])
+        self.assertEqual(fresh["nars"], manifest["nars"])
+        self.assertEqual(fresh["producer_context"], self.context)
+        self.assertEqual(report["producer_context"]["work_cutoff_monotonic_ns"] / 10**9, self.deadline)
+        self.assertEqual(stat.S_IMODE((output / "sdk/receipt.json").stat().st_mode), 0o400)
+        self.assertEqual(stat.S_IMODE((output / "sdk/graph/MODULE.bazel.lock").stat().st_mode), 0o400)
+        self.assertEqual(stat.S_IMODE((output / "sdk/repositories/public+/MODULE.bazel").stat().st_mode), 0o444)
+        self.assertEqual(stat.S_IMODE((output / "sdk/repositories/public+/tool").stat().st_mode), 0o555)
+        self.assertEqual(stat.S_IMODE((output / "jdk/ordinary").stat().st_mode), 0o444)
+        self.assertFalse(fresh["original_inodes_reused"])
+        self.assertFalse(fresh["sdk_execution_qualified"])
+        self.assertFalse(fresh["metadata_qualified"])
+        self.assertFalse(fresh["source_witnesses_replaced"])
+        self.assertEqual(carrier.revalidate_extraction(retained, pin, output, self.deadline,
+            pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(fresh))), fresh)
+        self.assertEqual(carrier.publication_report(retained, pin, self.deadline), publication)
+        for name in carrier.FILES:
+            self.assertEqual((retained / name).read_bytes(), original[name])
+            self.assertEqual(stat.S_IMODE((retained / name).stat().st_mode), 0o555)
+            self.assertEqual(stat.S_IMODE((source / name).stat().st_mode), 0o444)
+
+    def test_every_retained_transport_leaf_refuses_writable_or_special_modes_at_public_apis(self):
+        source, _, pin = self.seal()
+        retained = self.retained_transport(source)
+        output = self.root / "good-extracted"
+        fresh = carrier.extract(retained, pin, output, self.deadline)
+        fresh_pin = carrier.sha(carrier.encoded(fresh))
+        for name in carrier.FILES:
+            for mode in (0o600, 0o644, 0o666, 0o755, 0o4555):
+                with self.subTest(leaf=name, mode=oct(mode)):
+                    (retained / name).chmod(mode)
+                    with self.assertRaises(ValueError):
+                        carrier.validate_binding(retained, pin, self.deadline)
+                    with self.assertRaises(ValueError):
+                        carrier.publication_report(retained, pin, self.deadline)
+                    with self.assertRaises(ValueError):
+                        carrier.extract(retained, pin, self.root / "refused-extraction", self.deadline)
+                    with self.assertRaises(ValueError):
+                        carrier.revalidate_extraction(retained, pin, output, self.deadline,
+                                                     pinned_extraction_receipt_sha256=fresh_pin)
+                    self.assertFalse((self.root / "refused-extraction").exists())
+                    (retained / name).chmod(0o555)
+
+    def test_retained_transport_symlink_and_same_bytes_mode_or_inode_race_refuse(self):
+        for name in carrier.FILES:
+            with self.subTest(symlink=name):
+                source, _, pin = self.seal("symlink-source-" + name)
+                retained = self.retained_transport(source, "symlink-retained-" + name)
+                retained.chmod(0o700)
+                leaf = retained / name
+                foreign = self.root / ("foreign-" + name)
+                self.write(foreign, leaf.read_bytes(), 0o555)
+                leaf.unlink()
+                leaf.symlink_to(foreign)
+                retained.chmod(0o555)
+                with self.assertRaises(ValueError):
+                    carrier.validate_binding(retained, pin, self.deadline)
+                with self.assertRaises(ValueError):
+                    carrier.publication_report(retained, pin, self.deadline)
+                with self.assertRaises(ValueError):
+                    carrier.extract(retained, pin, self.root / ("symlink-out-" + name), self.deadline)
+                self.assertFalse((self.root / ("symlink-out-" + name)).exists())
+        for change in ("allowed-mode", "same-byte-inode"):
+            with self.subTest(race=change):
+                source, _, pin = self.seal("race-source-" + change)
+                retained = self.retained_transport(source, "race-retained-" + change)
+                original = carrier.Range.read
+                changed = False
+                def race(part, size=-1):
+                    nonlocal changed
+                    block = original(part, size)
+                    if block and not changed:
+                        changed = True
+                        leaf = retained / "payload.bin"
+                        if change == "allowed-mode":
+                            leaf.chmod(0o444)
+                        else:
+                            retained.chmod(0o700)
+                            raw = leaf.read_bytes()
+                            leaf.unlink()
+                            self.write(leaf, raw, 0o555)
+                            retained.chmod(0o555)
+                    return block
+                with patch.object(carrier.Range, "read", race), self.assertRaises(ValueError):
+                    carrier.extract(retained, pin, self.root / ("race-out-" + change), self.deadline)
+                self.assertTrue(changed)
+                self.assertFalse((self.root / ("race-out-" + change)).exists())
+
+    def test_current_owned_seal_does_not_admit_retained_transport_mode(self):
+        original = carrier.Output.file
+        def retained_mode_too_early(output, name, raw):
+            original(output, name, raw)
+            if name == "manifest.json":
+                (output.path / name).chmod(0o555)
+        with patch.object(carrier.Output, "file", retained_mode_too_early), self.assertRaises(ValueError):
+            self.seal("refused-current-owned")
+
     def test_deterministic_content_with_original_clock_context(self):
         first, _, _ = self.seal("first")
         second, _, _ = self.seal("second")
