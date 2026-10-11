@@ -912,6 +912,24 @@ fn canonicalAbsolute(value: []const u8) !void {
         for (part) |byte| if (byte < 32 or byte >= 127 or byte == '\\') return error.InvalidRuntimeProvenance;
     }
 }
+const PackageProducerContract = struct {
+    target: []const u8,
+    profile: []const u8,
+    output_suffix: []const u8,
+};
+/// Select the declared producer family; the complete selection schema/kind and
+/// retained PACKAGE evidence still have to agree before any adoption.
+fn packageProducerContract(carrier_family: bool) PackageProducerContract {
+    return if (carrier_family) .{
+        .target = "//tools:codex_native_carrier_runtime_package",
+        .profile = "native-sdk-carrier-package-reserved",
+        .output_suffix = "/testlogs/tools/codex_native_carrier_runtime_package/test.outputs/fresh-native-runtime",
+    } else .{
+        .target = "//tools:codex_native_acquisition_runtime_package",
+        .profile = "native-acquisition-package-reserved",
+        .output_suffix = "/testlogs/tools/codex_native_acquisition_runtime_package/test.outputs/fresh-native-runtime",
+    };
+}
 /// Bind the five exact selected outputs to the independently selected actual
 /// package action's copied stdout. The producer never creates its own guardian.
 fn packageOutputBinding(a: std.mem.Allocator, budget: Budget, inputs: Inputs) !void {
@@ -938,12 +956,13 @@ fn packageOutputBinding(a: std.mem.Allocator, budget: Budget, inputs: Inputs) !v
     }
     const outer = try loadSelectedJson(a, budget, modern.package_authority.outer, maximum_metadata_bytes);
     defer outer.deinit();
-    const target = "//tools:codex_native_acquisition_runtime_package";
+    const contract = packageProducerContract(modern.carrier_materials != null);
+    const target = contract.target;
     const package_source = try stringField(outer.value, "source_commit");
     if (package_source.len != 40 or std.mem.allEqual(u8, package_source, '0')) return error.InvalidRuntimeProvenance;
     for (package_source) |byte| if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f')) return error.InvalidRuntimeProvenance;
     _ = try digestField(outer.value, "graph_sha256");
-    try reservedProducerPolicy(a, outer.value, "native-acquisition-package-reserved", "native_acquisition_inputs_reservation");
+    try reservedProducerPolicy(a, outer.value, contract.profile, "native_acquisition_inputs_reservation");
     try expectText(outer.value, "manager", "system");
     try expectText(outer.value, "verb", "test");
     if (try integer(outer.value, "exit") != 0 or try integer(outer.value, "workload_exit") != 0 or
@@ -970,7 +989,7 @@ fn packageOutputBinding(a: std.mem.Allocator, budget: Budget, inputs: Inputs) !v
     try canonicalAbsolute(base);
     const prefix = try std.fmt.allocPrint(a, "{s}/execroot/_main/bazel-out/", .{base});
     defer a.free(prefix);
-    const suffix = "/testlogs/tools/codex_native_acquisition_runtime_package/test.outputs/fresh-native-runtime";
+    const suffix = contract.output_suffix;
     if (!std.mem.startsWith(u8, modern.package_output_root, prefix) or
         !std.mem.endsWith(u8, modern.package_output_root, suffix) or modern.package_output_root.len <= prefix.len + suffix.len)
         return error.InvalidRuntimeProvenance;
@@ -1966,7 +1985,7 @@ fn modernMaterial(a: std.mem.Allocator, budget: Budget, inputs: Inputs, manifest
     for ([_]std.json.Value{ manifest, receipt }) |value| {
         try expectText(value, "kind", "omux-native-source-acquisition-fresh-native-package-v1");
         try expectText(value, "status", "experimental-qualified-native-runtime");
-        try expectText(value, "producer_target", "//tools:codex_native_acquisition_runtime_package");
+        try expectText(value, "producer_target", packageProducerContract(carrier_family).target);
         try expectBool(value, "native_support", false);
         try expectBool(value, "provider_evaluation", false);
         if (!std.meta.eql(try digestField(value, "selection_sha256"), modern.package_selection.sha256)) return error.RuntimeSelectionDrift;
@@ -2581,6 +2600,134 @@ test "carrier proof uses held raw guardian copied index XML and actual program d
     try std.testing.expectError(error.InvalidRuntimeProvenance, carrierProducerProof(a, budget, group, group_rows, wrong_epoch, program_row, target, profile, leaf, marker, program));
     const expired: Budget = .{ .io = io, .deadline = std.Io.Clock.Timestamp.now(io, .awake) };
     try std.testing.expectError(error.Timeout, carrierProducerProof(a, expired, group, group_rows, producer_pin, program_row, target, profile, leaf, marker, program));
+}
+
+test "retained PACKAGE proof binds each family target profile namespace and original guardian clock" {
+    // This is a retained-byte consumer model, not a genuine PACKAGE action.
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const budget: Budget = .{ .io = io, .deadline = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .clock = .awake, .raw = .fromSeconds(30) }) };
+    const pin = "1111111111111111111111111111111111111111111111111111111111111111";
+    const names = [_][]const u8{ "fresh-native-runtime.tar.gz", "runtime-manifest.json", "runtime-receipt.json", "registration-receipt.json", "package-selection.json" };
+    for ([_]bool{ false, true }) |carrier_family| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const contract = packageProducerContract(carrier_family);
+        const other = packageProducerContract(!carrier_family);
+        var selected: [5]Input = undefined;
+        for (names, &selected) |name, *input| input.* = try carrierModelRawInput(tmp.dir, try a.dupeZ(u8, name), name);
+        defer for (selected) |input| _ = c.close(input.descriptor);
+        var files = (try std.json.parseFromSlice(std.json.Value, a, "{}", .{})).value;
+        for (names, selected) |name, input| try files.object.put(a, name, try carrierModelJson(a, .{ .sha256 = std.fmt.bytesToHex(input.sha256, .lower), .bytes = input.bytes }));
+        var output_doc = try carrierModelJson(a, .{ .schema_version = @as(u64, 1), .kind = "omux-native-acquisition-package-output-v1", .purpose = "evaluation-only", .acquisitionContract = "unsupported", .files = null });
+        carrierModelSet(&output_doc, "files", files);
+        const output = try carrierModelInput(a, tmp.dir, "output-inventory", output_doc);
+        defer _ = c.close(output.descriptor);
+        const log = try carrierModelRawInput(tmp.dir, "copied-package-log", try std.fmt.allocPrint(a, "omux-native-package-output-sha256={s}\n", .{std.fmt.bytesToHex(output.sha256, .lower)}));
+        defer _ = c.close(log.descriptor);
+        const xml = try carrierModelRawInput(tmp.dir, "copied-package-xml", "<testsuites><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\"><testcase name=\"package-consumer-model\"/></testsuite></testsuites>");
+        defer _ = c.close(xml.descriptor);
+        const log_name = if (carrier_family) try collectorEvidenceName(a, contract.target, "k8", "test.log") else try std.fmt.allocPrint(a, "{s}.evidence", .{std.fmt.bytesToHex(log.sha256, .lower)});
+        const xml_name = if (carrier_family) try collectorEvidenceName(a, contract.target, "k8", "test.xml") else try std.fmt.allocPrint(a, "{s}.evidence", .{std.fmt.bytesToHex(xml.sha256, .lower)});
+        const evidence_doc = try carrierModelJson(a, .{ .schema = @as(u64, 1), .bazel_exit = @as(u64, 0), .epoch_start_ns = @as(u64, 10), .targets = .{contract.target}, .results = .{.{ .target = contract.target, .configuration = "k8", .state = "observed", .files = .{
+            .{ .source = "test.log", .file = log_name, .sha256 = std.fmt.bytesToHex(log.sha256, .lower), .bytes = log.bytes, .state = "copied" },
+            .{ .source = "test.xml", .file = xml_name, .sha256 = std.fmt.bytesToHex(xml.sha256, .lower), .bytes = xml.bytes, .state = "copied" },
+        } }} });
+        const evidence = try carrierModelInput(a, tmp.dir, "package-index", evidence_doc);
+        defer _ = c.close(evidence.descriptor);
+        const reservation = .{
+            .scope = try std.fmt.allocPrint(a, "fixed-{s}-v1", .{contract.profile}),
+            .profile = contract.profile,
+            .original_entry_monotonic_ns = @as(u64, 1000000000),
+            .original_deadline_monotonic_ns = @as(u64, 1201000000000),
+            .verified_after_cleanup = true,
+            .resident = .{ .scope = "sampled-fixed-default-cgroup-kernel-reservation-v1", .kernel_bounds = .{ .@"memory.max" = "268435456", .@"memory.swap.max" = "0", .@"pids.max" = "32", .@"cpu.max" = "10000 100000" }, .observations = @as(u64, 1), .initial_direct_processes_retained = true, .initial_direct_process_count = @as(u64, 1), .outer_pid_namespace_matched = true, .hierarchical_caps = true, .descendant_process_inventory = false, .installation_qualified = false, .health_observed = false, .custody_observed = false, .resident_signalled = false, .whole_host_reservation = false },
+            .input_predicates_required = true,
+            .query_tools_qualified = false,
+            .metadata_qualified = false,
+            .sdk_qualified = false,
+            .schema_qualified = false,
+            .compiler_qualified = false,
+            .native_runtime_qualified = false,
+            .continuity_qualified = false,
+            .custody_qualified = false,
+            .health_qualified = false,
+            .credential_acquisition = false,
+            .native_source_finalized = false,
+            .native_support = false,
+            .provider_identity_proved = false,
+            .live_handoff_proven = false,
+            .context_rotation = false,
+            .daemon_context_acquisition = false,
+        };
+        var outer_doc = try carrierModelJson(a, .{
+            .profile = contract.profile,
+            .id = "11111111-1111-1111-1111-111111111111",
+            .unit = "omux-execution-11111111-1111-1111-1111-111111111111.service",
+            .source_commit = "1111111111111111111111111111111111111111",
+            .graph_sha256 = pin,
+            .manager = "system",
+            .verb = "test",
+            .exit = @as(u64, 0),
+            .workload_exit = @as(u64, 0),
+            .controller_failure = null,
+            .descendants_empty = true,
+            .cleanup = .{ .state = "empty" },
+            .source_dirty = "false",
+            .cache_reuse_requested = false,
+            .cache_policy = null,
+            .cache_key = null,
+            .targets = .{contract.target},
+            .output_base = "/output",
+            .epoch_start_ns = @as(u64, 10),
+            .test_evidence = .{ .state = "preserved", .sha256 = std.fmt.bytesToHex(evidence.sha256, .lower) },
+            .observed_properties = .{ .MemoryMax = "4026531840", .MemorySwapMax = "0", .TasksMax = "480", .PrivateNetwork = "yes", .KillMode = "control-group", .SendSIGKILL = "yes", .OOMPolicy = "kill", .RemainAfterExit = "yes", .CPUQuotaPerSecUSec = "1.9s", .RuntimeMaxUSec = "1200s" },
+            .native_acquisition_inputs_reservation = reservation,
+        });
+        const outer = try carrierModelInput(a, tmp.dir, "package-guardian", outer_doc);
+        defer _ = c.close(outer.descriptor);
+        const members = [_]ModernMember{ .{ .name = log_name, .input = log }, .{ .name = xml_name, .input = xml } };
+        const group: ModernAuthority = .{ .outer = outer, .evidence = evidence, .members = &members };
+        const modern: ModernInputs = .{ .package_selection = selected[4], .package_outputs = output, .package_output_root = try std.fmt.allocPrint(a, "/output/execroot/_main/bazel-out/k8{s}", .{contract.output_suffix}), .package_authority = group, .roles = @splat(selected[4]), .protocol_schema_files = &.{}, .native_acquisition_artifact_files = &.{}, .authority_receipts = @splat(group), .carrier_materials = if (carrier_family) .{ .receipts = @splat(selected[4]), .authority_receipts = @splat(group) } else null };
+        const inputs: Inputs = .{ .archive = selected[0], .manifest = selected[1], .runtime_receipt = selected[2], .registration_receipt = selected[3], .source_receipt = selected[4], .producer_receipt = outer, .installation_directory = -1, .modern_materials = modern };
+        try packageOutputBinding(a, budget, inputs);
+        var wrong_namespace = inputs;
+        wrong_namespace.modern_materials.?.package_output_root = try std.fmt.allocPrint(a, "/output/execroot/_main/bazel-out/k8{s}", .{other.output_suffix});
+        try std.testing.expectError(error.InvalidRuntimeProvenance, packageOutputBinding(a, budget, wrong_namespace));
+        var wrong_inventory = inputs;
+        wrong_inventory.archive.sha256[0] ^= 1;
+        try std.testing.expectError(error.RuntimeSelectionDrift, packageOutputBinding(a, budget, wrong_inventory));
+        // Rehash every changed raw guardian and select its new held descriptor:
+        // refusals below concern semantic branch/clock joins, not stale hashes.
+        const saved_targets = outer_doc.object.get("targets").?;
+        const saved_reservation = outer_doc.object.get("native_acquisition_inputs_reservation").?;
+        for (0..4) |negative| {
+            carrierModelSet(&outer_doc, "profile", .{ .string = contract.profile });
+            carrierModelSet(&outer_doc, "targets", saved_targets);
+            var changed_reservation = try carrierModelJson(a, reservation);
+            switch (negative) {
+                0 => outer_doc.object.getPtr("targets").?.array.items[0] = .{ .string = other.target },
+                1 => carrierModelSet(&outer_doc, "profile", .{ .string = other.profile }),
+                2 => carrierModelSet(&changed_reservation, "scope", .{ .string = try std.fmt.allocPrint(a, "fixed-{s}-v1", .{other.profile}) }),
+                3 => carrierModelSet(&changed_reservation, "original_deadline_monotonic_ns", .{ .integer = 1202000000000 }),
+                else => unreachable,
+            }
+            carrierModelSet(&outer_doc, "native_acquisition_inputs_reservation", changed_reservation);
+            const changed_outer = try carrierModelInput(a, tmp.dir, try a.dupeZ(u8, try std.fmt.allocPrint(a, "changed-guardian-{d}", .{negative})), outer_doc);
+            defer _ = c.close(changed_outer.descriptor);
+            var changed = inputs;
+            changed.producer_receipt = changed_outer;
+            changed.modern_materials.?.package_authority.outer = changed_outer;
+            try std.testing.expectError(error.InvalidRuntimeProvenance, packageOutputBinding(a, budget, changed));
+            // The targets array is shared by Value copies; restore its element.
+            outer_doc.object.getPtr("targets").?.array.items[0] = .{ .string = contract.target };
+        }
+        carrierModelSet(&outer_doc, "native_acquisition_inputs_reservation", saved_reservation);
+        const expired: Budget = .{ .io = io, .deadline = std.Io.Clock.Timestamp.now(io, .awake) };
+        try std.testing.expectError(error.Timeout, packageOutputBinding(a, expired, inputs));
+    }
 }
 
 test "carrier copied member selection accepts actual CS2 collector shape without treating names as content hashes" {
