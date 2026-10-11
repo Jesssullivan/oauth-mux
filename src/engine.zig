@@ -2409,7 +2409,9 @@ pub const Engine = struct {
         self.root_key = (if (self.test_vault) |backend| vault.loadOrCreateForTest(backend, self.root_id.?, existing) else if (self.test_key) |key| @as(vault.VaultError!vault.Key, key) else if (existing) vault.Vault.loadRoot(self.root_id.?) else vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false)) catch |err| {
             // Only this boundary gives errors vault provenance. Store/JSON/IO
             // errors with the same names cannot retain startup controls.
-            self.startup_vault_failure = switch (err) {
+            // Test builds expose only VaultError here; production additionally
+            // rejects test backend use with TestOnly, which remains fatal.
+            self.startup_vault_failure = if (builtin.is_test) err else switch (err) {
                 error.Missing, error.Locked, error.Denied, error.Cancelled, error.Unavailable, error.InvalidKey, error.Conflict, error.BackendFailure, error.InvalidRoot => @errorCast(err),
                 else => null,
             };
