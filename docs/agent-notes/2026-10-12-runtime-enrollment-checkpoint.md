@@ -233,3 +233,243 @@ Durable exact receipts and review joins are under /home/jess/.local/state/omux-p
 - Factual Linear readback42f48e405056422e5f0c3b2b75be00e1fa91a0426245c23d7c3ce7540a6d128d; subsequent source/model reconciliation still requires its own readback.
 
 The original15-hour integrated objective remains active, overdue and incomplete. No clock reset, release/support promotion, achieved SLO, contractual SLA, publication, signing or merge follows this checkpoint.
+
+## Selected-N10 content intake — 2026-10-12 19:18 UTC continuation
+
+The reviewed 22-path native content intake/SOURCE-HUB implementation was adopted
+at `26d5b0ac44a3f738804fd0080fb147d49b51473c`, graph
+`5a2882c6b214bc460bd170341d90ec4a14fde1b214172e9e4f270603efa803d5`
+(518 files), after two complete source reviews. Adoption did not qualify the
+genuine producer, SDK or native runtime.
+
+CM-1903, epoch `0eff8b61-ab09-446b-af7d-0203bbdc64ac`, completed with
+outer/workload exit 3/3: 11 of 13 declared targets passed. Both the 15-method
+intake suite and the 28-method content-source suite stopped at the same imported
+fixture assertion in `codex_native_n10_source_intake_test.py:291`. It attempted
+the replacement refusal before establishing the first pinned capture. The
+original failure remains evidence; these are overlapping populations.
+
+The reviewed one-file fixture correction was adopted at
+`dac438c796898d5f9c4d1a5f3a171873d71b80c6`, graph
+`7c7b9e94a1f3a79cfddb8a05227990a49113b0e44c74d066376fdab95c3d04b3`
+(518 files). It establishes that initial capture before the late same-byte
+replacement; production predicates are unchanged. CF-1914, epoch
+`f26bc7cd-cb1d-4a41-9e30-76bb7040cba3`, completed outer/workload exit 0/0:
+the intake 15 and content-source 28 methods passed. Do not sum them as unique
+tests or replace CM-1903's failed outcome. The earlier full 493-case runtime
+PASS remains bound to `a2d3677b`; no newer full-runtime result follows here.
+
+| Retained run | Raw receipt SHA256 | Test-evidence manifest SHA256 |
+| --- | --- | --- |
+| CM-1903 | `b34466d63c60c5c1eabf504fc7190cd100b2f1f1be2e261bedfd5b7e791fd56d` | `19e413c0689cc90137cb6953e047b73ea14c56ab19328d363c06ec8ecd84634b` |
+| CF-1914 | `3c5ff13448b88bcd139ac5d240e9eafc3bbc471cbe60e3aadd86f5a59e02aa2a` | `e40d29d416f04a61561061e59a63048decfdedd6efa74172d93749d0b0b298bc` |
+
+CM workload log SHA256 is
+`236254f0d6faf7ff5db42c4303b01290486dc01acfde6e3a7eaa90cdc6a726e5`;
+CF log is
+`d24203b3722486c73c56580bd1260b162e1c207621cdb753aa534432acb5f065`.
+Both standard cleanup rows report ownership-unproved, zero readbacks and
+stop-not-requested despite empty descendants and absent cgroups. Neither
+qualifies manager-owned cleanup.
+
+Separate administrative R-C618 sweeps removed 361,373 entries for CM
+(799,293,440 observed last-link allocated bytes) and 159,624 for CF
+(698,351,616 bytes). CF's automatic retirement was separately partial at
+37,122 entries. These attempt counters are not combined or treated as
+filesystem-wide recovered-space measurements. The keep-list preserves
+`receipt.json`, `supervisor.json`, `test-evidence*` and `workload.log`, with
+copied evidence.
+
+As of the retained 19:18:49 UTC observation, CNS-1918, original handle 38103,
+epoch `4323f91c-c4a2-4465-8400-06dc9a5db8cb`, was LIVE at `dac438c7` and
+the same graph. It runs the exact reserved content-source test/producer pair.
+Its genuine SOURCE/HUB and complete SDK/NAR/source qualification remain pending;
+no terminal PASS, native output or artifact is inferred.
+
+### CNS-1918 terminal — original attempt preserved
+
+The original CNS-1918 supervisor completed outer/workload exit 125/3.
+Its content-source 28 methods passed, while the genuine producer failed in
+5.9 seconds with only the generic “native SIWC catalog content source refused”
+diagnostic. Bazel reported 332.791 seconds overall. This is a normal nonzero
+workload outcome, not a deadline or successful producer output. The first
+failing locus remains Unknown; model PASS does not locate it.
+
+Raw receipt SHA256
+`50a5a45c4327e4a92dc372907091cf2ee43e81fce41ecd67d4f2f61862d4ffa9`;
+test-evidence manifest
+`0dc5db68f6f3097ab1386762437011e518952787f1925ee2e5a1af0ec07f2db7`;
+workload log
+`7e6c6ba3156dafc27253b83ade71787a697e5e20bb4f8b9753e708966285dbf6`.
+Reserved cleanup verified owned terminal custody with two readbacks and a
+successful stop; descendants were empty, the original cgroup was absent and
+no controller error was recorded. This qualified refusal/cleanup does not
+qualify SOURCE/HUB, SDK/NAR content or native continuity.
+
+The separate administrative prune, original handle 18280, completed exit0.
+It removed 668,680 entries/last-link inodes with 742,457,344 observed allocated
+bytes. Its journal is
+`ee2dbad526cbf6631eed03c0099667af1a68046da09df0d12229ef2a466b3c02`.
+The keep-list and copied evidence remain preserved; these allocation counters
+are separate from filesystem-wide net space changes and manager cleanup.
+
+The full SDK catalogue at this checkpoint is structural evidence only:
+no byte/NAR/SOURCE/HUB/native qualification follows. A deterministic carrier
+proof mode600 capture defect would refuse if that path was reached; this has
+not been established as the actual CNS-1918 first failure. A minimal typed
+role repair and bounded diagnostic review remain pending. No retry PASS or
+new selector output is predicted.
+
+The native selector remains `source:null`. Native 35 methods, ordinary
+accepted-history resume, installed first-account/normal-vault custody, current
+retained usable-account count, provider acceptance and same-process live
+handoff remain unproved. Stock Codex, Darwin activation, signing and publication
+remain separate gates. The original goal is active, overdue and incomplete;
+its clock, resource bounds and qualification requirements are unchanged.
+
+## Current site prerequisite source — 2026-10-12 19:39 UTC
+
+The reviewed eleven-path site selector/retention transaction was adopted
+serially at `6688edc86d5025994d2a742b5d3e1bb89d9ccaea`, graph
+`d7e2e0bc8fd8efdb00970716f26e6d1d92a82163eea93a040ebba0892833a335`
+(521 files). It implements explicit fresh candidate/version input selection
+and four exact singleton original-output retention contracts. It restores no
+old cache and adds no inherited genuine site or native qualification.
+
+As of the retained 19:39:02 UTC readback, SM-1940, original handle 75115,
+epoch `aa8f4f37-7025-49b7-941e-91ba14d1bc80`, was LIVE at this source.
+Its six declared model/docs targets were pending in that observation.
+
+### SM-1940 terminal — five targets passed, guard fixture error retained
+
+Original handle 75115 subsequently closed outer/workload exit 3/3. All six
+targets built; five passed: selection5, version-qualification5, closure10,
+site-guard23 and documentation. The guard suite completed 166/167 successfully,
+with one error in the positive UUID inventory fixture at test line1287.
+Production `selected_site_inventory` called `private` at line825; the
+sandbox ancestor was rejected at line730. This is a test-ancestry seam missed
+by source review, not a reason to weaken production trust. Minimal fixture
+correction and its actual retry remain pending.
+
+Raw receipt SHA256
+`ecc4cbd81c363b5d3840621c18b52fdb65e527f56ed55566e33b15c508d6719c`;
+test-evidence manifest
+`67e6f6974c75a6badfbf3d6794a4c600af28c2ef09106edbcfed8a53b91322b0`;
+workload log
+`94a8d7f04e925e15c8ea178c5194a7300dc0cf132feb7c78172a81d9fe2d683b`.
+Standard cleanup remained ownership-unproved/zero readbacks/stop-not-requested
+despite empty descendants and an absent cgroup. Automatic retirement was
+separately partial at 21,127 entries. The subsequent closed administrative
+handle92191 removed 244,067 entries with 739,975,168 observed last-link
+allocated bytes, journal
+`02474178232b55954d671ce73f2877139c11eeb34e84b02e72c6f8278afe618e`.
+These counters are distinct from manager cleanup and filesystem-wide net space.
+
+Root's early evidence capture preceded original-handle closure. Durable
+`2026-10-12-SM1940-early-capture-order-correction.json` restored the original
+executor association; `2026-10-12-SM1940-original-handle-terminal-readback.json`
+later confirmed its actual terminal exit. Copied artifacts remain unchanged,
+and no next project execution was admitted before closure. This ordering
+correction does not convert the failed guard into PASS.
+
+Genuine site prerequisite production, current artifact import,
+build/publication and all native/installed/provider gates remain separate.
+
+Lab [TIN-2063](https://linear.app/tinyland/issue/TIN-2063) comment
+`a9559d76`, under R-C642/R-C643, reports cleanup of 113 home bases,
+approximately 47.15 million inodes and 73.5 GB. These are Lab-reported totals,
+not Omux-attributed removal or measurements. The b9/d20 entries remain
+Unknown/held. Current Omux execution/output roots are already fast-local;
+home coordination, control and source-only receipts are not execution trees
+to delete. No additional cleanup action follows this checkpoint.
+
+The original goal/acceptance clock, native `source:null` selector and wider
+custody, ordinary-resume, native 35, live, stock, Darwin, signing, publication
+and reliability gates remain unchanged and unproved.
+
+## Reviewed repairs and RM-1951 — 2026-10-12 19:56 UTC
+
+The bounded site fixture correction was adopted at `9f5b8721`; the reviewed
+five-file typed carrier-proof role/diagnostic correction followed at `8c69a9a4`.
+The current source is `8c69a9a4440a95261d18f2b3e4e59f1a5a8f83dd`, graph
+`f9d029fcb5e3ddcd5debab9127514efcf96c2e18e7fff1629a9dafbc38ce631f`
+(521 files). The earlier CNS-1918 first failure locus remains Unknown.
+
+RM-1951, original handle 24017, epoch
+`067f449f-bd4b-435d-ab89-b6b5adafa36c`, closed outer/workload exit 0/0.
+All six declared targets passed: intake 19, content-source 36, file-writer 38,
+SIWC-source 6, guard 167 and documentation. Intake/content populations overlap;
+these are model predicates, not a unique native test total or genuine
+SOURCE/HUB, SDK/NAR, compiler/runtime or continuity qualification.
+
+Raw receipt SHA256
+`7d9d5e6634292c07541ddd3e0ac7d351659d0b8e25c048ac10dda04bb4f9c34d`;
+test-evidence manifest
+`50fb46956ac5ec938bad58e1af175b7f22d5a5ad87008840be039e36b5862250`;
+workload log
+`12268bd06716f30a0f24e32777e05e5f37c66144fb89b7103830443551a1989e`.
+Standard cleanup remains ownership-unproved/zero readbacks/stop-not-requested,
+despite empty descendants and an absent cgroup. Automatic retirement was
+separately partial at 25,025 entries. Closed administrative handle 74546
+removed 240,843 entries/last-link inodes with 738,996,224 observed allocated bytes,
+journal `e1d2e95ecf9e3ddd35ea7573015eddb3ec5b6c65e2abbcbfb8a00ad192dbc2ce`.
+Keep-list/copied evidence remains; allocation and automatic/admin counters
+are distinct from manager cleanup and filesystem-wide net space.
+
+As of the retained 19:55:58 UTC observation, CNS-1955, original handle 63424,
+epoch `8955d8e3-28b5-4783-b4a6-2fc65a5fcdd4`, was LIVE at the same 8c/f9
+source/graph. It is the new exact reserved content-source test/producer pair.
+The original source 600/action 840/outer 1200-second caps are unchanged.
+No terminal result, emitted SOURCE/HUB, byte/NAR or native qualification is
+inferred from this LIVE observation or RM-1951's model PASS.
+
+<!-- ROOT CNS-1955 TERMINAL INSERTION: after original executor terminal, append exact source/epoch/graph, actual exits/tests/output scope, raw receipt/evidence/log pins, cleanup qualification and original physical retention. Preserve the preceding dated LIVE observation; no inferred first failure locus or future PASS. -->
+
+Native selector `source:null`, candidate ordinary/live proof, normal-vault
+retained usable accounts, unmodified Codex and Darwin activation remain
+unproved. Signing/publication/SLO gates and the original active, overdue,
+incomplete goal/acceptance clock remain unchanged.
+
+## CNS-1955 actual terminal — 2026-10-12 20:09 UTC
+
+Original handle 63424 closed outer/workload exit 125/3 on the same
+`8c69a9a4440a95261d18f2b3e4e59f1a5a8f83dd` source,
+`f9d029fcb5e3ddcd5debab9127514efcf96c2e18e7fff1629a9dafbc38ce631f`
+graph/521 files. Content-source 36 methods passed; the genuine producer FAILED
+in 293.5 seconds, with Bazel 595.153 seconds overall.
+
+The bounded redacted diagnostic reports class ValueError, errno 0 and
+`sdk-carrier:713,646,656; sdk-inputs:195,167,103; sdk-carrier:88,47`,
+truncated 1. The terminal locus joins the fresh NAR stream's alias/current-parent
+custody checks to `Clock.tick` at carrier line 88, which requires
+`time.monotonic() < self.deadline`. `HeldOriginalSDK` lines 263–273 bind
+the SDK/SOURCE cutoff to original entry + 600×10^9 nanoseconds. Thus this
+attempt reached the original 600-second SDK/SOURCE deadline during those
+fresh checks; it was not the 840-second Bazel action timeout. The truncated
+trace supplies this bounded diagnosis, not complete downstream qualification.
+CNS-1918's earlier generic first locus remains Unknown.
+
+Raw receipt SHA256
+`59c98d855d665cbc00562eea75b1c1829a073ca99d47be6c5aac22fa667830ab`;
+test-evidence manifest
+`d109280375e1934f919ea33dc13d12c6fa5e81fb29d1194c0b1c03446532d0d1`;
+workload log
+`394b8cb2feaa957e7163b7c6ee1591b6b617e67a71d7a80c4390fdc61d0555bb`.
+Owned reserved cleanup verified two readbacks and successful stop, with empty
+descendants/absent cgroup and no controller error. Automatic retirement was
+deferred at 0 removed entries; these are separate outcomes.
+
+The subsequent administrative handle 31069 closed exit 0 and removed 668,680
+entries/last-link inodes with 742,453,248 observed allocated bytes, journal
+`4c57b075cd6a0853f9656aa92930733a0f1f8c453d0016b72e895c10a7b10527`.
+The keep-list was reverified; copied evidence remains, with no source change
+or service signal. Removal counters and filesystem-wide net changes retain
+separate scopes.
+
+Next work is two focused private implementation lanes: native NAR stream and
+custody costs, and HM declared-catalogue overhead. Reviews and actual changed
+source gates must precede another attempt; original source 600/action 840/outer 1200
+limits remain unchanged. No SDK/NAR/SOURCE/HUB/native qualification, native 35
+execution, ordinary/live/provider proof or Darwin activation follows this
+failure. Native selector `source:null`, normal-vault retained-account gates and
+the original active, overdue, incomplete goal/acceptance clock remain unchanged.
