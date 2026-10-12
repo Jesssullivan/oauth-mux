@@ -16,7 +16,7 @@ an adapter declaration nor a mock binding establishes native attachment.
 | --- | --- |
 | Identity | Independently verified provider, issuer, subject and tenant; labels and copied native hints cannot establish identity |
 | Account | Identity plus account type, preferences and admission lifecycle |
-| Source | Explicit authorization to acquire from a particular native store, input or browser context, including expiry |
+| Source | Explicit authorization for a native store, input, browser context or enrollment flow, including expiry |
 | Grant | Credential form, audience, scopes, purposes, generation, provider/custody expiry and renewal owner |
 | Observation | Typed value, resource, unit, window, bucket, provenance and freshness |
 | Binding | Native application/session authority and sticky account route |
@@ -30,8 +30,8 @@ permission. Unknown or stale observations cannot become invented readiness.
 
 ## Enrollment and provenance
 
-Only an authorized, connected, unexpired source may enroll. Acquisition reads
-only the declared private file or browser fields. Native file ownership,
+Only an authorized, connected, unexpired source may enroll. Native/browser import
+reads only the declared private file or browser fields. Native file ownership,
 permissions, no-follow traversal and stable reads precede import. A copied
 identity claim remains a candidate until a fixed provider identity reader verifies
 it independently. Verified identity determines deduplication across sources;
@@ -48,6 +48,61 @@ Manual API-key imports currently default to 30 days of custody; copied native
 and manual OAuth imports default to one hour. Explicit custody is bounded to
 one second through 30 days and cannot extend a known provider expiry. Expiry is
 checked again at admission and materialization, not only on initial import.
+
+### Planned Omux-owned ChatGPT-plan grants
+
+The [separate API-Responses profile](native-adapter-contract.md#planned-omux-owned-account-sign-in-and-api-responses-profile)
+uses Omux's own provider-issued registration. A typed enrollment-only profile,
+explicit consent, normal wrapping custody and the original bounded transaction
+permit registration/code exchange; runtime-issued registration and family facts
+are then checked before grant activation. Do not require an already-issued client
+ID before first dynamic registration, or treat enrollment permission as a ready
+grant. Persist single-use callback/issue transitions before dependent effects;
+unknown issued outcomes quarantine rather than replaying codes or spent tokens.
+
+Verify OIDC signature/JWKS, issuer, issued-client audience, expiry and the original
+nonce, then the granted request scopes and permitted account/workspace context.
+Decoded claims, labels, email or a client ID named as a tenant are not identity
+or entitlement. The existing native wham reader is not assumed authorized by
+the new API-audience grant. Keep registration/identity contexts distinct until
+verified linking evidence permits deduplication; public controls receive only
+redacted facts and opaque handles.
+
+Commit encrypted request-access and renewal grants as a bound pair under the
+same verified identity, source/consent and issuance lineage. Only request access
+is materializable; the paired refresh grant is not request authority. Encryption
+precedes SQLite insertion/journal/backup. One writer owns each renewable lineage,
+not every grant belonging to an account. Native/browser imports remain external;
+new registration, token shape or different hashes do not prove family independence.
+No native refresh token is cloned or implicitly transferred. Compatible accounts
+remain eligible by default; shared provider buckets/windows are counted once,
+and an extra grant/client supplies no extra quota.
+
+The provider's [session/refresh contract](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
+uses the saved issued client ID and Form refresh with the declared resource.
+Omux's renewal worker must join that exact pair/profile/generation, spend once,
+verify successor identity and commit replacement ciphertext atomically. Qualify
+family/coexistence and omitted-successor/revocation policy; ambiguous rotation
+cannot restore a potentially spent token. Request streams already accepted or
+unknown stay replay-fenced, including quota errors arriving after stream opening.
+
+Current authorized implementation lanes, without assigning support coverage:
+
+| Lane | Owned implementation boundary |
+| --- | --- |
+| estate_account_lifecycle | `src/oauth_enrollment.zig`, `src/engine.zig`, `src/storage.zig`: callback/intents, one-shot issuance admission and paired encrypted store; callback/issue-authority additions require separate adoption and qualification. |
+| estate_renewal_resources | `src/transport.zig`: purpose-specific token/Form-refresh and bounded JWKS transport, not arbitrary control HTTP. |
+| estate_adapter_scope | Actual cryptographic OIDC/JWKS verification and registration/identity/context recipe; decoded native JWT payload is insufficient. |
+| estate_codex_native | Produced maintained `codex-rs/core/src/auth_broker.rs` and `client.rs`, composed through `integrations/codex-upstream/` and `tools/codex_native_*`: distinct API-Responses route, request serialization and same-manager/native-state preservation. |
+
+Completion requires actual registration and verified encrypted paired custody;
+single-writer renewal/restart/uncertainty and coexistence; exact native profile
+compilation/package and ordinary accepted-history resume; then real compatible
+same-process A/B handoff with unchanged tools/approvals and no accepted replay.
+Models, source receipts, catalog entries and intent preparation close none of
+those live gates. TIN-2078/2071/2063/3032/5338/5421/2057 retain their existing
+enrollment/custody/renewal/native/continuity scopes. This addition creates no new
+goal clock, shipped capability, achieved SLO/SLA or browser-extension requirement.
 
 Exact retained file-source reconciliation runs on the existing once-per-minute
 actor maintenance pass independently of alternative-route warming. Disabling
@@ -306,6 +361,8 @@ native source; it does not schedule the original native refresh-token writer.
 The maintained broker-bound model request path bypasses ambient native auth and
 refresh, and native prewarming/global account operations are fenced while broker
 custody is active. A separately qualified original-owner refresh progress path
-remains necessary for indefinite renewal when every request is broker-bound.
+remains necessary for continued authority imported from that externally renewed
+native lineage when every request is broker-bound. Independently issued
+Omux-owned paired grants follow their separate enrollment/renewal contract above.
 External ownership is preserved; an access-only copy or successful source CAS
 does not prove that the original owner will refresh again.

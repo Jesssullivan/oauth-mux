@@ -46,6 +46,7 @@ support for this field requires qualification of the exact delivered bytes.
 | Trusted adapter channel | `credential.import`, `adapter.owner.register`, `adapter.acquire`, `adapter.materialize`, `adapter.report`, `adapter.metadata`, `adapter.releaseBinding`, `adapter.gitGet`, `adapter.gitErase`; owner registration requires fresh socket-derived process proof |
 | Public lifecycle and usage | `account.pause`, `account.resume`, `account.drain`, `account.forget`, source operations, `usage.summary`, `system.health`, `reliability.export` and `operation.status`; upstream revoke is not an implemented method |
 | Shared setup control | `setup.readiness`, `setup.plan`, `setup.evidence`, `setup.refresh` are implemented in source. Refresh starts one bounded background installation probe using immutable launch selectors; evidence reports cached observations and freshness. Plans do not rewrite managed files. Source presence does not prove installed readiness or successful filesystem collection. |
+| Fresh OAuth intent control | `oauth.enrollment.prepare.v1` and `oauth.enrollment.retire.v1` persist distinct encrypted PKCE intent or retire its unissued capsules. Registration remains unqualified; these source handlers initiate no browser/provider request and activate no grant. |
 | Current Codex owner V2 endpoint | `owner/capabilities`, `owner/threads`, `owner/identify`, `owner/register`, `owner/unregister`, `owner/announce`; private authenticated Unix packet transport with an explicit endpoint, bounded at 64 KiB |
 | Experimental Codex source-context extensions | `owner/source/context` supplies read-only owner-bound context metadata; `owner/source/origin` requires verified runtime/image authority; `owner/source/acquire` additionally requires explicit source-acquisition consent. Omux daemon and candidate source implement these boundaries; exact native compilation, packaging, installed enrollment and ordinary-launch qualification remain separate gates. |
 | Separate candidate read-only status extension | `owner/attachment/status` has two passing local Rust predicates in epoch `cd8c87d7-85f4-4c41-836c-18d8a6f7585c`; installed discovery and ordinary TUI/resume remain unproved. It must expose exact committed attachment attribution, never infer retirement from absence. The preserved164-change/installed4b pair does not supply this method's proof. |
@@ -75,6 +76,43 @@ indeterminate operations fail closed. Poisoned custody refuses outcome queries
 rather than reporting an uncommitted cache. Cancellation uses `target_operation_id`
 separately from its own mutation ID. The native adapter capability protocol and browser native messaging remain
 version 1; neither inherits control version 2.
+
+## Planned Omux-owned account sign-in and API-Responses profile
+
+Omux owns implementation of its open-source ChatGPT-plan enrollment using the provider's
+[registration/sign-in contract](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+Initial `dynamic_agent_client` registration under Omux's actual app identity and
+stable host ID returns an issued client ID bound to the validated registration;
+it is distinct from borrowing the native Codex public client.
+The selected host, app identity, exact loopback callback, state, nonce, S256,
+scopes and resource belong to the owned transaction. A source constant, caller
+digest or decoded token claim does not qualify that profile.
+
+This route requires a separate versioned provider/native profile for
+`https://api.openai.com/v1/responses`, with resource/audience
+`https://api.openai.com/v1`, following [official inference requirements](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+It cannot reuse the ChatGPT-backend endpoint, wham identity recipe or legacy
+native-client registration as authority. Preserve both profiles' exact identity,
+audience, request-schema and capability guards. Unsupported request fields/tools
+need explicit capability handling; endpoint replacement alone is insufficient.
+
+The maintained request hook must materialize fresh daemon access authority per
+broker-bound request while retaining the same native AuthManager, home, process,
+session/history, tools and approvals. No wrapper, native auth-file copyback,
+replacement auth cache or restart proves this outcome. The provider's
+[app-server refresh example](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
+uses restart/resume; Omux owns the stronger same-process integration.
+
+At `2c7ee2cd`, [oauth_enrollment.zig](../../src/oauth_enrollment.zig),
+[control.zig](../../src/control.zig) and [engine.zig](../../src/engine.zig)
+implement only intent/custody preparation and retirement. There is no qualified
+profile producer, callback listener or exchange dispatcher in that runtime.
+Private callback/transport/verification/native work is not installed proof.
+Actual issuance, cryptographic identity, paired-grant renewal, genuine native
+package, ordinary accepted-history resume and live handoff remain separate gates.
+The [lifecycle contract](native-lifecycle-and-custody.md#planned-omux-owned-chatgpt-plan-grants)
+owns producer responsibilities and activation requirements; no additional wire
+method or supported Boolean is created by this plan.
 
 ## Native credential-source context acceptance gap
 

@@ -28,6 +28,18 @@ verify identities and usable authority → maintain renewal → integrate ordina
 applications → prove same-process handoff**. Other enrollment methods remain
 available where supported; browser acquisition is not mandatory for every source.
 
+The planned Omux-owned open-source Sign in with ChatGPT route has its own sequence:
+installed daemon and normal vault → one-time account sign-in in the system browser
+with Omux's own registration and issued client ID → verified encrypted paired
+request/renewal grants → maintained renewal → ordinary maintained Codex native
+resume → request-boundary compatible handoff. The browser extension is an optional
+source/conduit, not a prerequisite for this OAuth route. Provider-required
+reauthorization remains an explicit repair condition. Its distinct public
+API-Responses profile and missing implementation/evidence gates are defined in
+the [adapter contract](../spec/native-adapter-contract.md#planned-omux-owned-account-sign-in-and-api-responses-profile)
+and [grant lifecycle](../spec/native-lifecycle-and-custody.md#planned-omux-owned-chatgpt-plan-grants).
+This is unshipped intent, not current enrollment or continuity support.
+
 Use a resident per-user Zig daemon and thin SwiftUI/macOS, Qt6/Linux, CLI and
 browser clients. Local federation is the initial boundary. Generic resources
 include calls, bytes, uploads, durations, throughput and scoped provider capacity.
