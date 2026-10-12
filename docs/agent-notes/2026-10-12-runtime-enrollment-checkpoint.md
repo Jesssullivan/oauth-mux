@@ -686,3 +686,86 @@ preserved accepted history, same-process live handoff and Darwin remain open.
 The mandatory daemon/Omux-owned adapter architecture, original goal clock,
 resource/deadline limits, unsigned/unpublished status and unproved stock
 continuity/SLO gates are unchanged.
+
+## Runtime models, site intake and failed publication gate — 2026-10-12 23:16 UTC
+
+Current runtime source is `276e4b7b7addd702b128b408ed113fff85af6770`, graph
+`9d39d92164fbbe22e7ed0b5e9cd84c7dedeea9c357cd664ec878ae91f30f9856`/523.
+AS2250, epoch `de73f3ee-ae75-4d68-8bca-d63a64ac62e7`, closed 0/0:
+carrier 75, content-source 49, driver 15 and docs passed. GD2238, epoch
+`b4a1ab10-9f1c-497d-8703-577f51ff1b51`, earlier closed 0/0 at
+`ad64d5325733ea0ed199c9922a891cf7d0c9bf64`: site guard 44, execution guard
+170 and docs passed. These are distinct finite predicates, not installed/native
+or provider proof.
+
+CNS2255, epoch `0dcdf8de-bd2b-4d4f-8caf-151738337af4`, closed 125/3 at
+current 276e. Content-source 49 passed; the genuine producer failed at the
+original SDK/SOURCE 600-second cutoff during final proof. The copy-complete
+progress marker recorded 165,524 files and 5,009,698,229 bytes, followed by
+final-proof-start and a truncated clock refusal. Copy completion is not final
+SDK/NAR/SOURCE/HUB or native-image qualification. All genuine flags remain
+false; native selector remains `source:null`. Prior failed attempts retain
+their original outcomes, without a measured improvement claim.
+
+CNS2255 reserved cleanup verified two readbacks, successful stop and empty
+descendants/absent cgroup. Automatic retirement was separately deferred at 0.
+Its subsequent qualified administrative residual disposal removed 351,376
+entries/last-link inodes and 5,545,275,392 observed allocated bytes, journal
+`16562c74b5d443c503604c95c4884ae3616863b5b9946eb97bb8d969bc35f22a`.
+Fixed receipts, supervisor, test-evidence and workload-log keeps remained;
+allocation counters are not filesystem-wide recovered-space claims.
+
+SR2226 and SE2229 closed 0/0, importing exactly three selected SPA fact files:
+reference JSON, its digest sidecar, and extension-delivery JSON. Their bytes and
+original runtime provenance remain preserved rather than restamped to 276e.
+SC2232 then passed unit, Svelte, reference and archive checks, retaining the
+reference/metadata archive
+`ad1b429031d18b96509ad23398107d673bf23ecc2bbe072f45890343dfb1bb44`
+(1,095,428 bytes). That earlier gate did not prove an actual downloadable ZIP.
+
+SD2246 subsequently failed 1/1 during `copy_to_bin` analysis of an external
+selection input, before any test result. The reviewed V13 BUILD-only correction
+was applied to the owned SPA source. SD2308, epoch
+`a8766232-2a64-4c6e-b561-68653a780522`, then closed 3/3: unit, Svelte and
+reference passed, while `archive_check` failed with `Duplicate archive file`.
+Its exact archive is preserved:
+`888fe728eb4e1aff1ab60f3c8829c0f2076747ac9fced18d7fa49bebe8514020`
+(1,117,505 bytes). The failure's cause remains under investigation; neither
+retained bytes nor the three passes establish ZIP availability or publication.
+No future correction outcome is inferred.
+
+| Receipt | Actual raw SHA256 |
+| --- | --- |
+| AS2250 | `7eda27ef94c70713597c03e7bdd41eb22b818a29312736933cbe8c5c6de97cb0` |
+| GD2238 | `82668d1f717d1af7921b744eda5fb3e54ad95c29ac6b14ebbd4b21d03c84f7da` |
+| CNS2255 | `af7ccfe081483dd4011d8e3a47bbb7039ec24a90be6aa11c9b38b00780b9046e` |
+| SR2226 | `5bfeea8c2e6218ffec3dbe543966a025c82ec142a341881d0363ca4c90fee943` |
+| SE2229 | `221c3751620a8312bbbd25f4df84905ec861dcf3d23cc9cf6efc43e4ddfdba69` |
+| SC2232 | `fff3f6af23bfbad83ef4eb6e381d1129f04c340ed9d5e5f15b79f6ce2dd5dd3d` |
+| SD2246 | `6d245b04e092d4226a1f43c2a7d45c7d40cff8094b17122697f154dc71584fc7` |
+| SD2308 | `199e7d45e143d706a5647213ec58bf76ac4e36a355112d9d0e085538858c1b1f` |
+
+The latest shallow maintenance readback records 13 named held output roots
+and zero remaining per-run user roots within its stated scan. Required current
+inputs and intentional reuse namespaces remain held, including the failed SPA
+archive namespace. Estate receipt
+`0bf6679a5b49501710a30f067e9460cb7e9a4cc80f8f2f47eb6d139fad4db59b`
+and exact additive tracker readback
+`de81281d2c87cd6a4499bb85789070532d2c12e7194e0d84f71a60d5a4ba2652`
+bind this scope to TIN-2063 comment `660e32d4-375b-4d10-9ff5-23097456b3bb`
+and TIN-5338 comment `808dac21-b183-4dbe-9a02-b101f05233dc`; issue state,
+owner, scope and dates were unchanged. Standard gate manager cleanup remains
+unproved/readbacks 0/stop not requested; the separate reserved CNS cleanup
+and administrative disposal do not promote those receipts.
+
+At approximately 23:16 UTC, sanitized remote reads recorded
+[PR541](https://github.com/Jesssullivan/oauth-mux/pull/541) and
+[SPA PR94](https://github.com/xoxd-ai/omux.xoxd.ai/pull/94) open, draft and
+unmerged, at heads `276e4b7b7addd702b128b408ed113fff85af6770` and
+`306af72a2b8e49c7f403f342917554f40a961f65`, respectively. This is a dated
+observation, not a promise of future PR state or deployed site content.
+Normal-vault usable accounts, attended Yoga acquisition, interactive/installed
+UI, ordinary accepted-history resume, same-process live handoff, provider,
+stock Codex and Darwin remain unproved. Signing/publication and measured SLO
+gates remain open; the original active, overdue, incomplete goal/clock and
+resource/deadline limits are unchanged.
