@@ -251,8 +251,8 @@ native_flake_seed_plan(
 protocol_history_query_tools = use_repo_rule("//tools:protocol_history_query_tools_repository.bzl", "protocol_history_query_tools_repository")
 protocol_history_query_tools(
     name = "omux_protocol_history_query_tools",
-    selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/63e7246e-a500-40d4-a5e1-d95c48d6e8dc/protocol-history-query-tools-selection.json",
-    selection_sha256 = "ed817319b75fcc973b21ddddff176169ba2d43aff1cd485f11d8196c3e79f290",
+    selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/45a98e3c-41c6-45b0-8a69-2da7f736fefd/protocol-history-query-tools-selection.json",
+    selection_sha256 = "30d1edcdc06030558163f14bd0ece731bc7df0db5903ee9d189b1457d16625e9",
 )
 
 # Exact actual seventh-source input; eighth output remains independently unqualified.
