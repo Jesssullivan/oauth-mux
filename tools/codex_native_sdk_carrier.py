@@ -26,6 +26,7 @@ import nar_descriptor as nar
 KIND = "omux-native-sdk-carrier-v1"
 MANIFEST = "omux-native-sdk-carrier-manifest-v1"
 EXTRACTED = "omux-native-sdk-carrier-extracted-v1"
+SCRATCH_EXTRACTED = "omux-native-sdk-carrier-action-scratch-v1"
 MAX_METADATA = 256 * 1024 * 1024
 MAX_BYTES = sdk.MAX_BYTES
 MAX_ENTRIES = sdk.MAX_FILES
@@ -1283,12 +1284,31 @@ def _carrier_binding(held, root, pin, clock):
 
 def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
                          absolute_deadline, *, pinned_extraction_receipt_sha256=None, _held_carrier=None):
+    return _revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
+        absolute_deadline, pinned_extraction_receipt_sha256=pinned_extraction_receipt_sha256,
+        _held_carrier=_held_carrier)
+
+
+def revalidate_action_scratch(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
+                              absolute_deadline, *, pinned_extraction_receipt_sha256, _held_carrier, consumer_context):
+    scope = _ActionScratchScope(_held_carrier, carrier_dir, pinned_carrier_receipt_sha256,
+                               extracted_dir, absolute_deadline, consumer_context)
+    return _revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
+        absolute_deadline, pinned_extraction_receipt_sha256=pinned_extraction_receipt_sha256,
+        _held_carrier=_held_carrier, _scratch_scope=scope)
+
+
+def _revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
+                         absolute_deadline, *, pinned_extraction_receipt_sha256=None, _held_carrier=None, _scratch_scope=None):
     """Full fresh custody/content proof; scoped carrier facts stay held locally.
 
     Default calls reauthenticate the carrier fully at both fences. Scoped calls
     require that owner's mandatory full final proof before successful exit.
     """
     clock = _carrier_clock(_held_carrier, carrier_dir, pinned_carrier_receipt_sha256, absolute_deadline)
+    if _scratch_scope is not None:
+        need(type(_scratch_scope) is _ActionScratchScope, "scratch-revalidation-scope")
+        _scratch_scope.join(_held_carrier, extracted_dir, clock)
     if _held_carrier is not None:
         need(_held_carrier._extracted is not None
              and absolute(extracted_dir) == _held_carrier._extracted[0]
@@ -1306,13 +1326,16 @@ def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_
         raw = read(output, "extraction-receipt.json", 65536, pinned_extraction_receipt_sha256)
         receipt_pin = sha(raw) if pinned_extraction_receipt_sha256 is None else pinned_extraction_receipt_sha256
         receipt = decode(raw)
-        need(type(receipt) is dict and set(receipt) == {"kind", "producer_context", "carrier_receipt_sha256",
+        extra = {"durability_scope", "consumer_context", "crash_durable_delivery", "downstream_custody_authority"} if _scratch_scope is not None else set()
+        need(type(receipt) is dict and set(receipt) == ({"kind", "producer_context", "carrier_receipt_sha256",
              "origin_receipt_sha256", "manifest_sha256", "payload_sha256", "nars", "fresh_custody",
              "extracted_inventory_rechecked", "original_inodes_reused", "absolute_links_materialized_as_mounts",
-             "sdk_execution_qualified", "metadata_qualified", "source_witnesses_replaced"}
-             and receipt["kind"] == EXTRACTED and receipt["extracted_inventory_rechecked"] is True
+             "sdk_execution_qualified", "metadata_qualified", "source_witnesses_replaced"} | extra)
+             and receipt["kind"] == (SCRATCH_EXTRACTED if _scratch_scope is not None else EXTRACTED) and receipt["extracted_inventory_rechecked"] is True
              and all(receipt[key] is False for key in ("original_inodes_reused", "absolute_links_materialized_as_mounts",
                   "sdk_execution_qualified", "metadata_qualified", "source_witnesses_replaced")), "extraction-receipt-fields")
+        if _scratch_scope is not None:
+            need({key: receipt[key] for key in extra} == _scratch_scope.record(), "scratch-receipt-current-role")
         need(receipt["producer_context"] == report["producer_context"]
              and receipt["carrier_receipt_sha256"] == pinned_carrier_receipt_sha256
              and receipt["origin_receipt_sha256"] == report["origin"]["receipt_sha256"]
@@ -1343,6 +1366,7 @@ def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_
         output.check()
         if _held_carrier is not None:
             _held_carrier._complete_fresh(extracted_dir, receipt)
+        if _scratch_scope is not None: _scratch_scope.join(_held_carrier, extracted_dir, clock)
         return receipt
 
 
@@ -1387,6 +1411,68 @@ def publication_report(carrier_dir, pinned_carrier_receipt_sha256, absolute_dead
                 "files": files}
 
 
+class _ActionScratchScope:
+    """Only the exact current-action transported SDK path, never a skip flag.
+
+    The caller still owns the selected complete carrier and its genuine proof
+    aliases. This scope grants no SDK/source/child readiness or durable output.
+    """
+    fields = ("MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256")
+
+    def __init__(self, held, carrier_dir, pin, path, deadline, context):
+        need(type(held) is HeldCarrier, "scratch-live-carrier-type")
+        held.join(carrier_dir, pin, deadline)
+        values = tuple(os.environ.get("OMUX_NATIVE_FILE_WRITER_MODELS_"+key) for key in self.fields)
+        need(all(type(value) is str for value in values) and values[0] == "native-file-writer-models-reserved",
+             "scratch-actual-envelope")
+        need(all(re.fullmatch(r"[1-9][0-9]{0,19}", value) is not None for value in values[1:3]),
+             "scratch-integer-envelope")
+        need(type(context) is dict and set(context) == set(self.fields)
+             and context == dict(zip(self.fields, values)), "scratch-caller-current-context")
+        entry, outer = int(values[1]), int(values[2])
+        need(outer-entry == 1200*10**9 and entry <= time.monotonic_ns()
+             and held._until_ns == held._clock.until_ns == entry+600*10**9
+             and deadline == held._clock.deadline == (entry+600*10**9)/10**9,
+             "scratch-original-cutoff")
+        need(re.fullmatch(r"(?:/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005|"
+             r"/home/jess/\.local/state/omux-execution-20261005)/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+             values[3]) is not None and re.fullmatch(r"[0-9a-f]{40}",values[4]) is not None,
+             "scratch-actual-epoch-source")
+        digest(values[5])
+        temporary_alias = absolute(os.environ.get("TEST_TMPDIR", ""))
+        temporary = temporary_alias.resolve(strict=True)
+        need(absolute(path) == temporary/"siwc-transported-sdk"/"extracted", "scratch-derived-action-path")
+        self.held, self.path, self.clock, self.values, self.temporary = held, absolute(path), held._clock, values, temporary
+        self.temporary_alias = temporary_alias
+        self.pid, self.thread, self.self = os.getpid(), threading.get_ident(), self
+        self.check()
+
+    def worker_tick(self):
+        self.clock.tick()
+        need(tuple(os.environ.get("OMUX_NATIVE_FILE_WRITER_MODELS_"+key) for key in self.fields) == self.values
+             and os.environ.get("TEST_TMPDIR", "") == str(self.temporary_alias)
+             and self.clock.until_ns == int(self.values[1])+600*10**9
+             and self.clock.deadline == self.clock.until_ns/10**9, "scratch-current-context-clock")
+
+    def check(self):
+        need(self.self is self and os.getpid() == self.pid and threading.get_ident() == self.thread,
+             "scratch-owner-transfer")
+        self.worker_tick()
+        need(self.temporary_alias.resolve(strict=True) == self.temporary, "scratch-current-derived-parent")
+        self.held.check()
+
+    def join(self, held, path, clock):
+        self.check()
+        need(held is self.held and clock is self.clock and absolute(path) == self.path, "scratch-same-extraction")
+        self.check()
+
+    def record(self):
+        self.check()
+        return {"durability_scope": "ephemeral-current-action",
+            "consumer_context": dict(zip(self.fields,self.values)), "crash_durable_delivery": False,
+            "downstream_custody_authority": False}
+
+
 class _CopyState:
     """Bounded invocation-local refusal control, never a proof or new clock."""
     def __init__(self, clock):
@@ -1403,6 +1489,9 @@ class _CopyState:
                 self.error = error
             self.cancel.set()
 
+    def sync(self, target):
+        os.fsync(target)
+
     def tick(self):
         self.clock.tick()
         need(not self.cancel.is_set(), "copy-cancelled")
@@ -1414,6 +1503,20 @@ class _CopyState:
         if error is not None:
             raise error
         self.clock.tick()
+
+
+class _ActionScratchCopyState(_CopyState):
+    def __init__(self, clock, scope):
+        need(type(scope) is _ActionScratchScope and scope.clock is clock, "scratch-copy-state")
+        scope.check()
+        super().__init__(clock)
+        self.scope = scope
+
+    def sync(self, target):
+        # Current kernel bytes are read back completely before acceptance.
+        # Only this exact ephemeral path omits per-leaf power-loss persistence;
+        # mode/name/FD/SHA/NAR/current/final/cleanup predicates stay unchanged.
+        self.scope.worker_tick()
 
 
 def _copy_regular_job(state, parent, leaf, parent_witness, payload, entry):
@@ -1440,7 +1543,7 @@ def _copy_regular_job(state, parent, leaf, parent_witness, payload, entry):
             write_all(target, block, state)
         need(part.position == entry["size"] and h.hexdigest() == entry["sha256"], "extracted-file-digest")
         state.tick()
-        os.fsync(target)
+        state.sync(target)
         state.tick()
         os.fchmod(target, entry["mode"])
         state.tick()
@@ -1488,9 +1591,12 @@ def _copy_worker(state, jobs, results, gate, ready, stop):
         state.fail(error)
 
 
-def _copy_regulars(output, payload, payload_witness, files, clock, on_copied):
+def _copy_regulars(output, payload, payload_witness, files, clock, on_copied, *, _scratch_scope=None):
     """Two jobs/leases maximum; physical authority stays on the original owner."""
-    state = _CopyState(clock)
+    if _scratch_scope is not None:
+        need(type(_scratch_scope) is _ActionScratchScope and output.root.owned, "scratch-owned-copy")
+        _scratch_scope.join(_scratch_scope.held, output.path, clock)
+    state = _CopyState(clock) if _scratch_scope is None else _ActionScratchCopyState(clock, _scratch_scope)
     jobs, results = Queue(maxsize=2), Queue(maxsize=2)
     gate, stop = threading.Event(), threading.Event()
     ready = (threading.Event(), threading.Event())
@@ -1605,9 +1711,21 @@ def _copy_regulars(output, payload, payload_witness, files, clock, on_copied):
                 except BaseException as error:
                     state.fail(error)
         state.owner_tick()
+        if _scratch_scope is not None: _scratch_scope.join(_scratch_scope.held, output.path, clock)
 
 
 def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, *, on_bound=None, _held_carrier=None):
+    return _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline,
+                    on_bound=on_bound, _held_carrier=_held_carrier)
+
+
+def extract_action_scratch(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, *, _held_carrier, consumer_context):
+    scope = _ActionScratchScope(_held_carrier, carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, consumer_context)
+    return _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline,
+                    _held_carrier=_held_carrier, _scratch_scope=scope)
+
+
+def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_deadline, *, on_bound=None, _held_carrier=None, _scratch_scope=None):
     """Authenticate then extract on one held owner; callback grants no proof token.
 
     A scoped result remains provisional until its owner completes full_final
@@ -1615,6 +1733,9 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
     """
     need(on_bound is None or callable(on_bound), "bound-callback")
     clock = _carrier_clock(_held_carrier, carrier_dir, pinned_carrier_receipt_sha256, absolute_deadline)
+    if _scratch_scope is not None:
+        need(type(_scratch_scope) is _ActionScratchScope and on_bound is None, "scratch-closed-extraction")
+        _scratch_scope.join(_held_carrier, output_dir, clock)
     if _held_carrier is not None:
         need(_held_carrier._extracted is None and not _held_carrier._final, "held-carrier-one-extraction")
     # Diagnostic time and counters never participate in a proof allowance.
@@ -1670,7 +1791,10 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
                     output.materialized[name] = selected
                     copied_files += 1
                     copied_bytes += count
-                _copy_regulars(output, payload, witness, files, clock, copied)
+                if _scratch_scope is None:
+                    _copy_regulars(output, payload, witness, files, clock, copied)
+                else:
+                    _copy_regulars(output, payload, witness, files, clock, copied, _scratch_scope=_scratch_scope)
                 copy_complete = True
             finally:
                 progress("copy-complete" if copy_complete else "copy-refused")
@@ -1718,7 +1842,7 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
         need(_carrier_binding(_held_carrier, carrier, pinned_carrier_receipt_sha256, clock)[0] == report, "carrier-final-proof")
         after, after_witnesses = scan(fresh, rows, clock)
         need(after == observed and after_witnesses == witnesses, "extracted-final-custody")
-        receipt = {"kind": EXTRACTED, "carrier_receipt_sha256": digest(pinned_carrier_receipt_sha256),
+        receipt = {"kind": EXTRACTED if _scratch_scope is None else SCRATCH_EXTRACTED, "carrier_receipt_sha256": digest(pinned_carrier_receipt_sha256),
                    "producer_context": report["producer_context"],
                    "origin_receipt_sha256": report["origin"]["receipt_sha256"],
                    "manifest_sha256": report["manifest_sha256"], "payload_sha256": report["payload_sha256"],
@@ -1729,6 +1853,7 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
                    "original_inodes_reused": False, "absolute_links_materialized_as_mounts": False,
                    "sdk_execution_qualified": False, "metadata_qualified": False,
                    "source_witnesses_replaced": False}
+        if _scratch_scope is not None: receipt.update(_scratch_scope.record())
         output.file("extraction-receipt.json", encoded(receipt))
         for root in fresh.values():
             root.check()
@@ -1746,6 +1871,7 @@ def extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_dea
         carrier.check()
         if _held_carrier is not None:
             _held_carrier._complete_extract(output_dir, receipt)
+        if _scratch_scope is not None: _scratch_scope.join(_held_carrier, output_dir, clock)
         progress("final-proof-complete")
         return receipt
 

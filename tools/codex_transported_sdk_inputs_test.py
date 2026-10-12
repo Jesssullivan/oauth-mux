@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import time
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -51,6 +52,7 @@ class TransportedSDKTests(unittest.TestCase):
                 for alias,physical in self.aliases: retained.add_alias(alias,physical)
                 session = transported.HeldTransportedSDK(self.carrier,self.pin,self.entry,self.until,self.context,
                     self.temporary/'siwc-transported-sdk',self.aliases,self.declaration,retained)
+                self.last_session = session
                 with session: yield session
         finally: family.source.DEADLINE = old
 
@@ -186,6 +188,97 @@ class TransportedSDKTests(unittest.TestCase):
                 self.assertEqual(session.transport._held,())
                 self.assertEqual(session.output.chain,[])
                 self.assertEqual(session.scratch.chain,[])
+
+    def test_action_scratch_omits_only_worker_fsync_and_default_extract_keeps_it(self):
+        fsync = os.fsync
+        worker_sync = []
+        def durable(fd):
+            if threading.current_thread().name.startswith('sdk-copy-'):
+                worker_sync.append(core.identity(os.fstat(fd)))
+            return fsync(fd)
+        held = core.HeldCarrier(self.carrier,self.pin,self.cutoff)
+        held._clock.until_ns = held._until_ns = self.entry+600*10**9
+        with patch.object(core.os,'fsync',side_effect=durable),held:
+            permanent = self.fixture.root/'default-extraction'
+            receipt = core.extract(self.carrier,self.pin,permanent,self.cutoff,_held_carrier=held)
+            unused_report,unused_proof,rows,unused_files = held._binding()
+            self.assertEqual(len(worker_sync),sum(row['kind']=='file' for row in rows.values()))
+            self.assertEqual(receipt['kind'],core.EXTRACTED)
+            self.assertNotIn('durability_scope',receipt)
+            held.full_final()
+            self.assertEqual(core.revalidate_extraction(self.carrier,self.pin,permanent,self.cutoff,
+                pinned_extraction_receipt_sha256=core.sha(core.encoded(receipt)),_held_carrier=held),receipt)
+        def scratch(fd):
+            if threading.current_thread().name.startswith('sdk-copy-'):
+                self.fail('ephemeral scratch issued per-file power-loss sync')
+            return fsync(fd)
+        with patch.object(core.os,'fsync',side_effect=scratch),self.owner() as session:
+            receipt = core.decode(session.extraction)
+            self.assertEqual(receipt['kind'],core.SCRATCH_EXTRACTED)
+            self.assertEqual(receipt['consumer_context'],self.context)
+            self.assertFalse(receipt['crash_durable_delivery'])
+            self.assertFalse(receipt['downstream_custody_authority'])
+            self.assertEqual(session.read_regular('sdk','repositories/public+/tool',4096),b'tool model\x00bytes')
+            # Old permanent receipt/schema consumers cannot admit this new role.
+            with self.assertRaises(ValueError):
+                core.revalidate_extraction(self.carrier,self.pin,session.extracted,self.cutoff,
+                    pinned_extraction_receipt_sha256=session.extraction_pin,_held_carrier=session.transport)
+            session.finish()
+
+    def test_action_scratch_wrong_path_or_captured_context_refuses_before_creation(self):
+        held = core.HeldCarrier(self.carrier,self.pin,self.cutoff)
+        held._clock.until_ns = held._until_ns = self.entry+600*10**9
+        with patch.dict(os.environ,self.environment,clear=True),held:
+            good = self.temporary/'siwc-transported-sdk'/'extracted'
+            wrong = self.temporary/'arbitrary-output'
+            for path,context in ((wrong,self.context),(good,{**self.context,'GRAPH_SHA256':'f'*64})):
+                with self.assertRaises(ValueError):
+                    core.extract_action_scratch(self.carrier,self.pin,path,self.cutoff,
+                        _held_carrier=held,consumer_context=context)
+                self.assertFalse(path.exists())
+            self.assertIsNone(held._extracted)
+            held.report();held.full_final()
+
+    def test_action_scratch_write_and_digest_faults_keep_full_refusal_and_owner_cleanup(self):
+        for fault in ('digest','write'):
+            with self.subTest(fault=fault):
+                self.temporary = self.fixture.root/('fault-work-'+fault);self.temporary.mkdir(mode=0o700)
+                self.environment['TEST_TMPDIR'] = str(self.temporary)
+                actual = core._copy_regular_job
+                fired = []
+                def refuse(state,parent,leaf,witness,payload,entry):
+                    fired.append(True)
+                    if fault == 'write': raise OSError('public scratch IO fixture')
+                    changed = dict(entry);changed['sha256']='f'*64
+                    return actual(state,parent,leaf,witness,payload,changed)
+                with patch.object(core,'_copy_regular_job',side_effect=refuse):
+                    with self.assertRaises((ValueError,OSError)):
+                        with self.owner(): self.fail('invalid scratch copy admitted')
+                self.assertTrue(fired)
+                session = self.last_session
+                self.assertFalse(session.active);self.assertFalse(session.finished)
+                self.assertIsNone(session.transport._extracted)
+                self.assertEqual(session.transport._held,())
+                self.assertEqual(session.scratch.chain,[])
+                self.assertFalse((session.extracted/'extraction-receipt.json').exists())
+
+    def test_action_scratch_copy_integer_expiry_keeps_original_cutoff_and_joins_workers(self):
+        fired = threading.Event()
+        actual_sync = core._ActionScratchCopyState.sync
+        actual_ns = core.time.monotonic_ns
+        def sync(state,fd):
+            actual_sync(state,fd);fired.set()
+        def expired(): return self.entry+600*10**9 if fired.is_set() else actual_ns()
+        with patch.object(core._ActionScratchCopyState,'sync',side_effect=sync,autospec=True), \
+                patch.object(core.time,'monotonic_ns',side_effect=expired):
+            with self.assertRaises(ValueError):
+                with self.owner(): self.fail('original expired copy admitted')
+        self.assertTrue(fired.is_set())
+        session = self.last_session
+        self.assertEqual(session.until_ns,self.entry+600*10**9)
+        self.assertFalse(session.active);self.assertFalse(session.finished)
+        self.assertIsNone(session.transport._extracted);self.assertEqual(session.transport._held,())
+        self.assertFalse(any(thread.name in ('sdk-copy-0','sdk-copy-1') for thread in threading.enumerate()))
 
     def test_missing_final_or_foreign_declaration_and_alias_roles_refuse(self):
         with self.assertRaises(ValueError):

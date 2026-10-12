@@ -113,8 +113,8 @@ class HeldTransportedSDK:
             declared = core.decode(self.declaration)['selection']['digests']
             core.need({row['name']: row['sha256'] for row in published['files']} == declared,
                       'transported-declared-digests')
-            self.extraction = core.encoded(core.extract(self.carrier_root, self.carrier_pin, self.extracted,
-                self.clock.deadline, _held_carrier=self.transport))
+            self.extraction = core.encoded(core.extract_action_scratch(self.carrier_root, self.carrier_pin, self.extracted,
+                self.clock.deadline, _held_carrier=self.transport, consumer_context=core.decode(self.context)))
             self.extraction_pin = core.sha(self.extraction)
             self.output = self.stack.enter_context(core.Root(self.extracted,self.clock))
             self.output_anchor = core.identity(os.fstat(self.output.fd))
@@ -205,7 +205,8 @@ class HeldTransportedSDK:
             'extraction':core.decode(self.extraction), 'extraction_receipt_sha256':self.extraction_pin,
             'carrier_receipt_sha256':self.carrier_pin, 'complete_members':len(self.expected),
             'consumer_context':core.decode(self.context), 'physical_paths_scope':'current-held-action-only',
-            'downstream_requires_fresh_extraction':True, 'original_inodes_reused':False,
+            'downstream_requires_fresh_extraction':True, 'durability_scope':'ephemeral-current-action',
+            'crash_durable_delivery':False, 'downstream_custody_authority':False, 'original_inodes_reused':False,
             'ambient_original_roots_read':False, 'sdk_execution_qualified':False,
             'external_executable_references_qualified':False, 'portable_execution_qualified':False}
 
@@ -230,8 +231,9 @@ class HeldTransportedSDK:
             'transported-final-semantic-mapping')
         self.transport.full_final()
         # Long complete transport proof precedes LAST fresh complete bytes/NAR.
-        core.need(core.encoded(core.revalidate_extraction(self.carrier_root,self.carrier_pin,self.extracted,
-            self.clock.deadline,pinned_extraction_receipt_sha256=self.extraction_pin,_held_carrier=self.transport))
+        core.need(core.encoded(core.revalidate_action_scratch(self.carrier_root,self.carrier_pin,self.extracted,
+            self.clock.deadline,pinned_extraction_receipt_sha256=self.extraction_pin,_held_carrier=self.transport,
+            consumer_context=core.decode(self.context)))
             == self.extraction, 'transported-final-extraction-join')
         observed, witnesses, nars = core._scan_nar(self.roots,self.expected,self.clock)
         core.need(observed == self.expected and core.encoded(nars) == self.nars and
