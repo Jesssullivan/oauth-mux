@@ -199,6 +199,7 @@ const ObservationHash = struct {
 /// The actor's typed whole-envelope/obligation gate. It must perform no effects;
 /// returning an error prevents storage from adopting any recovered mutation.
 pub const SnapshotValidator = *const fn (std.mem.Allocator, []const u8, u64) anyerror!void;
+pub const SnapshotRecoveryValidator = *const fn (*Store, std.mem.Allocator, []const u8, u64) anyerror!void;
 const key_check_context: envelope.Context = .{
     .account_id = "omux-installation",
     .grant_id = "wrapping-key-check",
@@ -228,20 +229,27 @@ pub const Store = struct {
     }
 
     pub fn openRoot(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key) !Store {
-        return openRootValidated(io, allocator, path, key_id, key, null, null);
+        return openRootValidated(io, allocator, path, key_id, key, null, null, null);
     }
 
     /// Validate an existing actor snapshot before rotation recovery can reserve
     /// independent authority or update SQLite. Fresh databases still begin with
     /// '{}'; the actor commits its new typed schema during initial bootstrap.
     pub fn openRootWithSnapshotValidator(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: SnapshotValidator) !Store {
-        return openRootValidated(io, allocator, path, key_id, key, validator, null);
+        return openRootValidated(io, allocator, path, key_id, key, validator, null, null);
     }
 
     /// Bind actor startup to its previously checked namespace before SQLite IO.
     /// Fresh means this opening must own O_EXCL creation, never an appeared file.
     pub fn openRootExpected(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator, expected: OpeningExpectation) !Store {
-        return openRootValidated(io, allocator, path, key_id, key, validator, expected);
+        return openRootValidated(io, allocator, path, key_id, key, validator, expected, null);
+    }
+
+    /// Actor-owned exact metadata/SQL obligation validator. This callback
+    /// authorizes quarantine only, never issuer contact or replay. Generic actor
+    /// opens retain their blanket refusal for uncorrelated SQL-only rotations.
+    pub fn openRootExpectedWithRecoveryValidator(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: SnapshotValidator, recovery_validator: SnapshotRecoveryValidator, expected: OpeningExpectation) !Store {
+        return openRootValidated(io, allocator, path, key_id, key, validator, expected, recovery_validator);
     }
 
     /// Fixed public inode facts only; no key, grant, path or restored authority.
@@ -250,7 +258,7 @@ pub const Store = struct {
         return self.opening_witness orelse error.OpeningWitnessUnavailable;
     }
 
-    fn openRootValidated(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator, expected: ?OpeningExpectation) !Store {
+    fn openRootValidated(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator, expected: ?OpeningExpectation, recovery_validator: ?SnapshotRecoveryValidator) !Store {
         if (key_id.len == 0 or key_id.len > 128) return error.InvalidKeyIdentity;
         const private_file = try DatabaseFile.open(allocator, path, if (expected) |wanted| wanted.database == null else true, if (expected) |wanted| wanted.directory else null);
         defer if (private_file) |file| file.close();
@@ -306,7 +314,7 @@ pub const Store = struct {
             const revision = try integerColumn(stmt, 0);
             try self.verifySnapshot(revision, json);
             if (validator) |validate| {
-                try self.validateActorRecovery(allocator, json, revision);
+                try self.validateActorRecovery(allocator, json, revision, recovery_validator);
                 try validate(allocator, json, revision);
             }
         }
@@ -361,7 +369,7 @@ pub const Store = struct {
             try authority_checkpoint.verify(self.checkpoint);
             try self.verifySnapshot(revision, json);
             if (validator) |validate| {
-                try self.validateActorRecovery(allocator, json, revision);
+                try self.validateActorRecovery(allocator, json, revision, recovery_validator);
                 try validate(allocator, json, revision);
             }
         }
@@ -382,7 +390,7 @@ pub const Store = struct {
         return self;
     }
 
-    fn validateActorRecovery(self: *Store, allocator: std.mem.Allocator, json: []const u8, revision: u64) !void {
+    fn validateActorRecovery(self: *Store, allocator: std.mem.Allocator, json: []const u8, revision: u64, recovery_validator: ?SnapshotRecoveryValidator) !void {
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
         defer parsed.deinit();
         // Only a genuine interrupted first initialization may use the empty
@@ -392,13 +400,13 @@ pub const Store = struct {
             if (revision != 0 or try self.scalar("SELECT (SELECT count(*) FROM grants)+(SELECT count(*) FROM operations)+(SELECT count(*) FROM tombstones)+(SELECT count(*) FROM grant_generations);") != 0 or (try self.readCheckpoint()).sequence != 0) return error.SnapshotAdmissionMigrationRequired;
         } else if (!parsed.value.object.contains("state")) return error.SnapshotAdmissionMigrationRequired;
 
-        // Current actors import externally owned grants and issue no SQL
-        // renewal rotations. A metadata-only callback cannot correlate or
-        // simulate SQL-only unresolved custody, even when JSON names schema2.
-        // A future renewal adapter needs a typed SQL obligation/simulation gate
-        // before automatic reconciliation can be enabled for actor startup.
-        // Generic Store.open/openRoot retain their independent quarantine API.
-        if (try self.scalar("SELECT (SELECT count(*) FROM operations WHERE state='started')+(SELECT count(*) FROM grants WHERE state='refreshing');") != 0) return error.SnapshotAdmissionMigrationRequired;
+        // A metadata-only callback still cannot correlate SQL-only custody.
+        // Only the explicit actor validator may authenticate every pending
+        // paired obligation before the existing quarantine-only reconciliation.
+        if (try self.scalar("SELECT (SELECT count(*) FROM operations WHERE state='started')+(SELECT count(*) FROM grants WHERE state='refreshing');") != 0) {
+            const verify = recovery_validator orelse return error.SnapshotAdmissionMigrationRequired;
+            try verify(self, allocator, json, revision);
+        }
     }
 
     /// Read public wrapping-key identity before requesting the corresponding
@@ -1218,6 +1226,24 @@ pub const Store = struct {
             try self.bumpRevision();
             try self.finishMutation();
         } else try self.exec("COMMIT;");
+    }
+
+    /// Exact coverage of the actual SQL recovery obligations, not a count or
+    /// Boolean supplied by actor metadata. Every tuple joins both current owned
+    /// rows and its single started operation before any recovery writer.
+    pub fn requireOnlyPairedRecovery(self: *Store, obligations: []const OwnedPairRotation) !void {
+        try self.assertOwner();
+        if (obligations.len == 0 or obligations.len > 256) return error.SnapshotAdmissionMigrationRequired;
+        const started = try self.scalar("SELECT count(*) FROM operations WHERE state='started';");
+        const refreshing = try self.scalar("SELECT count(*) FROM grants WHERE state='refreshing';");
+        if (started != @as(u64, @intCast(obligations.len)) or refreshing != @as(u64, @intCast(obligations.len))) return error.SnapshotAdmissionMigrationRequired;
+        for (obligations, 0..) |obligation, index| {
+            for (obligations[0..index]) |prior| {
+                if (std.mem.eql(u8, prior.operation_id, obligation.operation_id) or
+                    (std.mem.eql(u8, prior.refresh.account_id, obligation.refresh.account_id) and std.mem.eql(u8, prior.refresh.grant_id, obligation.refresh.grant_id))) return error.SnapshotAdmissionMigrationRequired;
+            }
+            try self.verifyOwnedPairRotation(obligation);
+        }
     }
 
     /// Called automatically on open. A crash between issuance and commit
@@ -2633,4 +2659,42 @@ test "paired rotation cycles keep finite last operations and reopen never recons
     try std.testing.expectEqual(GrantState.quarantined, (try reopened.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)).?.state);
     try std.testing.expectError(error.PairIssueAlreadyAdmitted, reopened.beginOwnedPairRotation(saved.revision + 1, "{}", pair, &fence));
     try std.testing.expectError(error.GrantQuarantined, reopened.loadGrant(pair.refresh));
+}
+
+test "actor paired recovery coverage refuses missing duplicate wrong and unrelated actual SQL obligations without effects" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(a, tmp);
+    defer a.free(path);
+    var store = try Store.open(io, a, path, @splat(94));
+    defer store.close();
+    const M = OwnedPairStorageModel;
+    const operation: [64]u8 = @splat('7');
+    const foreign: [64]u8 = @splat('8');
+    const pair = M.tuple(store.key_id, 1, &operation);
+    var cookie: u8 = 0;
+    const fence: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+    var revision = try M.seed(&store, pair);
+    revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+    // This is only the actual SQL obligation primitive, not a provider-qualified
+    // actor profile. Production also requires full sealed snapshot/AEAD joins.
+    try store.requireOnlyPairedRecovery(&.{pair});
+    const first_checkpoint = store.checkpoint;
+    try std.testing.expectError(error.SnapshotAdmissionMigrationRequired, store.requireOnlyPairedRecovery(&.{}));
+    try std.testing.expectError(error.SnapshotAdmissionMigrationRequired, store.requireOnlyPairedRecovery(&.{ pair, pair }));
+    try std.testing.expectError(error.RecordMissing, store.requireOnlyPairedRecovery(&.{M.tuple(store.key_id, 1, &foreign)}));
+    try std.testing.expect(std.meta.eql(first_checkpoint, store.checkpoint));
+    try std.testing.expectEqual(RotationStatus.started, (try store.readOperation(&operation)).?.status);
+    const extra: envelope.Context = .{ .key_id = store.key_id, .account_id = "synthetic-extra-owner", .grant_id = "synthetic-extra-refresh", .generation = 1, .purpose = "renewal", .scope = "https://api.openai.com/v1" };
+    _ = try store.commit(revision, "{\"paired\":\"issued\"}", &.{.{ .put = .{ .context = extra, .plaintext = "synthetic-unpaired-rotation", .renewal_owner = .omux } }});
+    try std.testing.expect((try store.beginRotation(extra, "synthetic-unpaired-operation")).may_issue);
+    const before = try store.custodyObservation(store.checkpoint.snapshot_revision, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(3) }));
+    try std.testing.expectError(error.SnapshotAdmissionMigrationRequired, store.requireOnlyPairedRecovery(&.{pair}));
+    const after = try store.custodyObservation(store.checkpoint.snapshot_revision, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(3) }));
+    try std.testing.expect(std.meta.eql(before, after));
+    try std.testing.expectEqual(RotationStatus.started, (try store.readOperation(&operation)).?.status);
+    try std.testing.expectEqual(RotationStatus.started, (try store.readOperation("synthetic-unpaired-operation")).?.status);
+    try std.testing.expectEqual(GrantState.refreshing, (try store.readGrantStatus(extra.account_id, extra.grant_id)).?.state);
 }

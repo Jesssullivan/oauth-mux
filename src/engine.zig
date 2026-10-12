@@ -2970,7 +2970,7 @@ pub const Engine = struct {
         };
         try self.custodyDeadline();
         if (!std.meta.eql(current_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
-        self.db = try storage.Store.openRootExpected(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission, current_namespace);
+        self.db = try storage.Store.openRootExpectedWithRecoveryValidator(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission, validateOwnedPairRecovery, current_namespace);
         const opening = try self.db.?.openingWitness();
         const owned_namespace: StartupCustodyNamespace = .{ .directory = opening.directory, .database = opening.database };
         if (opening.created == existing or !std.meta.eql(current_namespace.directory, opening.directory) or (existing and !std.meta.eql(current_namespace, owned_namespace)) or !std.meta.eql(owned_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
@@ -9855,6 +9855,13 @@ fn freeIntent(allocator: std.mem.Allocator, intent: OutcomeIntent) void {
     allocator.free(intent.label);
 }
 
+// This actual SQL-aware gate runs after authenticated snapshot/key opening
+// and before Store can reserve recovery authority. It restores no ticket or IO.
+fn validateOwnedPairRecovery(store: *storage.Store, allocator: std.mem.Allocator, json: []const u8, revision: u64) !void {
+    try validatePersistedAdmission(allocator, json, revision);
+    try siwc_pair.validatePendingRecovery(store, json);
+}
+
 // Storage invokes this after key verification and before recovery authority or
 // custody effects. Legacy snapshots cannot gain invented completion promises.
 fn validatePersistedAdmission(allocator: std.mem.Allocator, json: []const u8, current_revision: u64) !void {
@@ -14947,10 +14954,22 @@ test "owned paired renewal preserves usable current access and accepted native w
     const second_writer = try M.start(current, &pair.account_id, body.bytes, keys, .{});
     defer second_writer.deinit();
     try SiwcActorTest.refusal(&second_writer, "RenewalNotOwned");
-    diagnostic_stage = "overlapping-request-refusal";
-    var overlap = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent");
+    diagnostic_stage = "same-generation-independent-request";
+    // A sticky unchanged route legitimately admits independent work; it is
+    // neither an accepted-work replay nor an in-flight generation switch.
+    var overlap = try SiwcActorTest.acquire(producer, current, reference, "renew-overlap-independent");
     defer SiwcActorTest.dispose(&overlap);
-    try SiwcActorTest.refusal(&overlap, "InFlight");
+    const overlap_value = try SiwcActorTest.result(&overlap);
+    try std.testing.expectEqualStrings(&pair.account_id, try control.string(overlap_value, "account_id"));
+    try std.testing.expectEqual(@as(i64, 1), control.get(overlap_value, "route_generation").?.integer);
+    const overlap_lease = try SiwcActorTest.handle(&overlap);
+    var overlap_auth = try SiwcActorTest.materialize(producer, current, reference, overlap_lease);
+    defer SiwcActorTest.dispose(&overlap_auth);
+    const overlap_credential = try SiwcActorTest.result(&overlap_auth);
+    try std.testing.expectEqualStrings(try control.string(try SiwcActorTest.result(&materialized), "access_token"), try control.string(overlap_credential, "access_token"));
+    var overlap_terminal = try SiwcActorTest.report(producer, current, reference, overlap_lease, "abandoned");
+    defer SiwcActorTest.dispose(&overlap_terminal);
+    _ = try SiwcActorTest.result(&overlap_terminal);
     diagnostic_stage = "accepted-work-replay-refusal";
     var accepted_retry = try SiwcActorTest.reject(producer, current, reference, lease, 429, "subscription_sharing_usage_limit_exceeded");
     defer SiwcActorTest.dispose(&accepted_retry);
@@ -14970,6 +14989,12 @@ test "owned paired renewal preserves usable current access and accepted native w
     try std.testing.expectEqual(@as(i64, 1), control.get(renewed_value, "key_count").?.integer);
     diagnostic_stage = "successor-wire-valid";
     try std.testing.expect(try control.boolean(renewed_value, "wire_valid", false));
+    diagnostic_stage = "new-generation-switch-refusal";
+    // The accepted original still holds generation1. Generation2 is now ready,
+    // so this NEW work would rebind the live route and must remain refused.
+    var generation_switch = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent");
+    defer SiwcActorTest.dispose(&generation_switch);
+    try SiwcActorTest.refusal(&generation_switch, "InFlight");
     diagnostic_stage = "original-accepted-terminal-report";
     var completed = try SiwcActorTest.report(producer, current, reference, lease, "completed");
     defer SiwcActorTest.dispose(&completed);
@@ -15285,6 +15310,135 @@ test "actual issued paired renewal restart quarantines retained tuple without re
     try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "access_sql").?, "state"));
     try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
     try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expect(try control.boolean(value, "external_retained", false));
+    diagnostic_stage = "spent-refresh-replay-refusal";
+    const replay = try M.start(current.?, account, body.bytes, keys, .{});
+    defer replay.deinit();
+    try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
+}
+
+test "unrelated account forget before issued paired renewal restart does not prevent quarantine or rewrite the original epoch" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    var diagnostic_stage: []const u8 = "setup";
+    errdefer std.debug.print("paired-renewal case=issued-restart stage={s} failed\n", .{diagnostic_stage});
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |engine| engine.deinit();
+    diagnostic_stage = "admit-signed-pair";
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "renew-unrelated-restart" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-unrelated-restart", .{});
+    defer body.deinit();
+    diagnostic_stage = "issue-held-refresh";
+    const started = try M.start(current.?, account, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    diagnostic_stage = "forget-unrelated-known-account";
+    const forgotten = try M.call(current.?, "account.forget", .{ .account_id = "synthetic-owned-other-account", .operation_id = "restart-unrelated-forget", .expected_revision = try F.revision(current.?) }, .control);
+    defer forgotten.deinit();
+    _ = try M.result(&forgotten);
+    const live = try M.observe(current.?, account);
+    defer live.deinit();
+    try M.assertPair(try M.result(&live), "refreshing", 1, true);
+    diagnostic_stage = "close-issued-actor";
+    current.?.deinit();
+    current = null;
+    diagnostic_stage = "reopen-before-any-provider-work";
+    current = try Engine.openWithKey(io, a, path, F.key);
+    diagnostic_stage = "observe-restart-quarantine";
+    const observed = try M.wait(current.?, account, "quarantined", 1);
+    defer observed.deinit();
+    const value = try M.result(&observed);
+    diagnostic_stage = "restart-pair-status";
+    try M.assertPair(value, "quarantined", 1, false);
+    try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+    diagnostic_stage = "restart-sql-quarantine";
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "access_sql").?, "state"));
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expect(!(try control.boolean(value, "external_retained", false)));
+    diagnostic_stage = "spent-refresh-replay-refusal";
+    const replay = try M.start(current.?, account, body.bytes, keys, .{});
+    defer replay.deinit();
+    try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
+    current.?.deinit();
+    current = null;
+    const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(filename);
+    var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), F.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    const persisted = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer persisted.deinit();
+    try std.testing.expectEqual(@as(u64, 1), persisted.value.import_forget_epoch);
+    const retained = persisted.value.owned_siwc_pairs.?.records[0];
+    try std.testing.expectEqual(@as(u64, 0), retained.renewal.?.forget_epoch);
+    try std.testing.expect(retained.status == .quarantined and retained.renewal.?.state == .unknown);
+}
+
+test "expired issued paired renewal restart only quarantines and never revives its original cutoff" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    var diagnostic_stage: []const u8 = "setup";
+    errdefer std.debug.print("paired-renewal case=issued-restart stage={s} failed\n", .{diagnostic_stage});
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |engine| engine.deinit();
+    diagnostic_stage = "admit-signed-pair";
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "renew-expired-restart" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-expired-restart", .{});
+    defer body.deinit();
+    diagnostic_stage = "issue-held-refresh";
+    const started = try M.start(current.?, account, body.bytes, keys, .{ .milliseconds = 1000, .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    diagnostic_stage = "close-issued-actor";
+    current.?.deinit();
+    current = null;
+    // The persisted issued tuple outlives its immutable awake deadline.
+    // Recovery may only reduce authority, never reconstruct a live ticket.
+    try io.sleep(.fromMilliseconds(1250), .awake);
+    diagnostic_stage = "reopen-after-original-cutoff";
+    current = try Engine.openWithKey(io, a, path, F.key);
+    diagnostic_stage = "observe-restart-quarantine";
+    const observed = try M.wait(current.?, account, "quarantined", 1);
+    defer observed.deinit();
+    const value = try M.result(&observed);
+    diagnostic_stage = "restart-pair-status";
+    try M.assertPair(value, "quarantined", 1, false);
+    try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+    diagnostic_stage = "restart-sql-quarantine";
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "access_sql").?, "state"));
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
     try std.testing.expect(try control.boolean(value, "external_retained", false));
     diagnostic_stage = "spent-refresh-replay-refusal";
     const replay = try M.start(current.?, account, body.bytes, keys, .{});

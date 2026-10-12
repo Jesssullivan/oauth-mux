@@ -308,7 +308,38 @@ pub fn retainExpiredAccessForRenewal(store: *storage.Store, account_id: []const 
         owner.allocator.destroy(owner);
     }
 }
-fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_id: []const u8, access_generation: u64, now: i64, access_purpose: enum { request_access, renewal_issue, retained_access }) !*Data {
+/// No request/renewal capability is returned. Exact authenticated pending
+/// pair identities and encrypted SQL obligations may only proceed to quarantine,
+/// even if the original provider/custody/awake windows expired while stopped.
+pub fn validatePendingRecovery(store: *storage.Store, json: []const u8) !void {
+    var actual = try store.readSnapshot();
+    defer actual.deinit();
+    if (!std.mem.eql(u8, actual.json, json)) return error.SnapshotAdmissionMigrationRequired;
+    const parsed = try std.json.parseFromSlice(Retained, store.allocator, actual.json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    if (parsed.value.schema_version != 2) return error.SnapshotAdmissionMigrationRequired;
+    const registry = parsed.value.owned_siwc_pairs orelse return error.SnapshotAdmissionMigrationRequired;
+    try validate(registry);
+    var obligations: std.ArrayList(storage.OwnedPairRotation) = .empty;
+    defer obligations.deinit(store.allocator);
+    for (registry.records) |*row| {
+        if (row.status != .refreshing) continue;
+        const renewal = row.renewal orelse return error.SnapshotAdmissionMigrationRequired;
+        if (renewal.state != .issued) return error.SnapshotAdmissionMigrationRequired;
+        const owner = try authenticatePair(store, row.account_id, row.access_grant_id, row.access_generation, std.Io.Clock.real.now(store.io).toSeconds(), .recovery_quarantine);
+        defer {
+            freeRecord(owner.allocator, owner.row);
+            owner.allocator.destroy(owner);
+        }
+        try obligations.append(store.allocator, .{
+            .operation_id = &row.renewal.?.operation_id,
+            .access = .{ .key_id = store.key_id, .account_id = row.account_id, .grant_id = row.access_grant_id, .generation = row.access_generation, .purpose = "request", .scope = resource_uri },
+            .refresh = .{ .key_id = store.key_id, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = row.refresh_generation, .purpose = "renewal", .scope = resource_uri },
+        });
+    }
+    try store.requireOnlyPairedRecovery(obligations.items);
+}
+fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_id: []const u8, access_generation: u64, now: i64, access_purpose: enum { request_access, renewal_issue, retained_access, recovery_quarantine }) !*Data {
     const a = store.allocator;
     const observed = std.Io.Clock.real.now(store.io).toSeconds();
     if (now <= 0 or now > observed or observed - now > 1) return error.SiwcPairAuthorityChanged;
@@ -323,12 +354,22 @@ fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_
     for (registry.records) |row| {
         if (!std.mem.eql(u8, row.account_id, account_id) or !std.mem.eql(u8, row.access_grant_id, access_grant_id)) continue;
         const renewing = row.status == .refreshing;
+        const recovery_only = access_purpose == .recovery_quarantine;
+        if (recovery_only) {
+            // Known-family recovery preserves the original authenticated epoch.
+            // Unrelated account forget advances only the global fresh-enrollment
+            // fence; it cannot block quarantine of this exact issued family.
+            if (!renewing or row.forget_tombstone or row.retirement_reason != .none) return error.SiwcPairQuarantined;
+            const renewal = row.renewal orelse return error.SiwcPairQuarantined;
+            if (renewal.state != .issued or renewal.family_generation != row.family_generation or renewal.writer_generation != row.writer_generation or
+                renewal.source_generation != row.source_generation or renewal.consent_generation != row.consent_generation) return error.SiwcPairAuthorityChanged;
+        }
         if (access_purpose == .renewal_issue and row.status != .ready) return error.SiwcPairQuarantined;
         if ((row.status != .ready and !renewing) or row.consent_status != .recorded) return error.SiwcPairQuarantined;
         const window = try grantWindow(parsed.value.state.grants, row);
-        try window.check(now);
+        if (!recovery_only) try window.check(now);
         if (renewing and !std.meta.eql(window, row.renewal.?.grant_window)) return error.SiwcPairAuthorityChanged;
-        if (renewing) try checkRenewingAccess(store.io, row, now);
+        if (renewing and !recovery_only) try checkRenewingAccess(store.io, row, now);
         if (row.access_generation != access_generation) return error.SiwcPairAuthorityChanged;
         if (access_purpose == .request_access and row.access_expires_at <= now) return error.SiwcPairExpired;
         // The activation transaction moves complete consent authority into the
@@ -339,7 +380,7 @@ fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_
         };
         var source = false;
         for (parsed.value.state.sources) |item| if (std.mem.eql(u8, item.id, row.source_id)) {
-            if (item.kind != .oauth or item.status == .disconnected or !std.mem.eql(u8, item.provider, "openai_siwc") or item.authorized_at > now or (item.authorized_until != null and item.authorized_until.? <= now)) return error.SiwcPairAuthorityChanged;
+            if (item.kind != .oauth or item.status == .disconnected or !std.mem.eql(u8, item.provider, "openai_siwc") or (!recovery_only and (item.authorized_at > now or (item.authorized_until != null and item.authorized_until.? <= now)))) return error.SiwcPairAuthorityChanged;
             source = true;
         };
         var source_generation = false;
@@ -417,16 +458,16 @@ fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_
         }
         const fresh_now = std.Io.Clock.real.now(store.io).toSeconds();
         if (fresh_now < observed or (access_purpose == .request_access and row.access_expires_at <= fresh_now)) return error.SiwcPairExpired;
-        try window.check(fresh_now);
-        if (renewing) try checkRenewingAccess(store.io, row, fresh_now);
+        if (!recovery_only) try window.check(fresh_now);
+        if (renewing and !recovery_only) try checkRenewingAccess(store.io, row, fresh_now);
         const owned = try copyRecord(a, row);
         errdefer freeRecord(a, owned);
         const result = try a.create(Data);
         errdefer a.destroy(result);
         const returned_now = std.Io.Clock.real.now(store.io).toSeconds();
-        try window.check(returned_now);
+        if (!recovery_only) try window.check(returned_now);
         if (access_purpose == .request_access and row.access_expires_at <= returned_now) return error.SiwcPairExpired;
-        if (renewing) try checkRenewingAccess(store.io, row, returned_now);
+        if (renewing and !recovery_only) try checkRenewingAccess(store.io, row, returned_now);
         result.* = .{ .allocator = a, .row = owned };
         return result;
     }
