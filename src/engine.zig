@@ -13471,9 +13471,17 @@ test "actual queued consent withdrawal and denial close callbacks while issued f
         var authorization = try engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
         defer authorization.deinit();
         var browser_peer: c_int = -1;
-        defer if (browser_peer >= 0) _ = fresh_api.close(browser_peer);
+        defer {
+            if (browser_peer >= 0) {
+                _ = fresh_api.close(browser_peer);
+            }
+        }
         var token_peer: c_int = -1;
-        defer if (token_peer >= 0) _ = fresh_api.close(token_peer);
+        defer {
+            if (token_peer >= 0) {
+                _ = fresh_api.close(token_peer);
+            }
+        }
         if (mode != .before_callback) {
             browser_peer = try M.sendCallback(callback_port, try M.stateFromUrl(authorization.bytes), mode == .denied);
             var ack: [256]u8 = undefined;
@@ -13515,7 +13523,11 @@ test "actual queued consent withdrawal and denial close callbacks while issued f
         }
         if (mode == .denied or mode == .before_callback) {
             const unexpected = fresh_api.accept(token_listener.fd, null, null);
-            defer if (unexpected >= 0) _ = fresh_api.close(unexpected);
+            defer {
+                if (unexpected >= 0) {
+                    _ = fresh_api.close(unexpected);
+                }
+            }
             try std.testing.expect(unexpected < 0 and std.posix.errno(unexpected) == .AGAIN);
         }
         engine.?.deinit();
