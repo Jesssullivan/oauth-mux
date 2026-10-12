@@ -813,7 +813,8 @@ class Publication:
 
 
 
-def main():
+def main(_native_child=None):
+    source.require(_native_child is None or callable(_native_child))
     source.require(sys.argv in ([sys.argv[0]], [sys.argv[0], '--source-only']))
     source_only = len(sys.argv) == 2
     entry, until, cutoff = admission()
@@ -852,11 +853,15 @@ def main():
                                 selected['carrier']['receipt_sha256'], entry, until, declaration_context(initial_context))
                             sdk_session.__enter__()
                             query.declared_query_tools(runfiles, rows)
-                            produce(output / OUTPUT, inputs, output / 'model-hub-work', published,
+                            report = produce(output / OUTPUT, inputs, output / 'model-hub-work', published,
                                 sdk_session=sdk_session, query_repository=query.QUERY_REPOSITORY, context=initial_context,
                                 sdk_qualification={'selector_sha256': source.sha(selected_raw), 'selection': selected,
                                     'qualified_producer': qualified, 'declaration': declaration, 'proof_inputs': proofs.record()})
-                            published.capture()
+                            if _native_child is not None:
+                                # One fixed native target executes inside the same
+                                # live source/HUB, proof and original SDK owners.
+                                _native_child(published, sdk_session, report, retained, inputs, entry, until, cutoff)
+                            if not published.members_captured: published.capture()
                             # All owners span the last full source/output/carrier/original reads.
                             published.full()
                             sdk_session.finish()
@@ -874,6 +879,7 @@ def main():
                             sdk_session = None
                             retained.fence(); inputs.check(); published.roots()
                     else:
+                        source.require(_native_child is None)
                         produce(output / OUTPUT, inputs, output / 'unused-work', published, context=initial_context)
                         published.capture()
                         published.full()

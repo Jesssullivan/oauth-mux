@@ -41,8 +41,20 @@ def native_file_writer_model_source_targets(source_sources, sdk_sources, parent_
     python_test(
         name = "codex_native_file_writer_model_source_test",
         main = "codex_native_file_writer_model_source_test.py",
-        srcs = sources + ["codex_native_source_file_writer_test.py"],
+        srcs = sources + ["codex_native_source_file_writer_test.py", "codex_native_file_writer_models.py", "codex_native_file_writer_models_test.py"],
         data = controls + ["//integrations/codex-upstream/file-writer-models:BUILD.bazel", "//integrations/codex-upstream/file-writer-models:model_preimages", "BUILD.bazel", "codex_native_file_writer_model_source_targets.bzl", "codex_native_file_writer_model_source_inputs.bzl"],
         target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     )
 
+
+
+    python_test(
+        name = "codex_native_file_writer_models_producer",
+        main = "codex_native_file_writer_models.py",
+        srcs = depset(sources + original_sdk_sources + ["codex_native_file_writer_models.py"]).to_list(),
+        data = data,
+        env_inherit = ["OMUX_NATIVE_FILE_WRITER_MODELS_MODE", "OMUX_NATIVE_FILE_WRITER_MODELS_ENTRY_NS", "OMUX_NATIVE_FILE_WRITER_MODELS_DEADLINE_NS", "OMUX_NATIVE_FILE_WRITER_MODELS_EPOCH", "OMUX_NATIVE_FILE_WRITER_MODELS_SOURCE_COMMIT", "OMUX_NATIVE_FILE_WRITER_MODELS_GRAPH_SHA256"],
+        tags = ["manual", "no-remote", "no-cache"],
+        timeout = "long",
+        target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    )

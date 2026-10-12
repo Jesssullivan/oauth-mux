@@ -14,6 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from codex_native_file_writer_models_test import FileWriterDriverTests
 import codex_native_file_writer_model_source as model
 from codex_native_source_file_writer_test import cleanup
 
@@ -553,6 +554,9 @@ class FileWriterModelSourceTests(unittest.TestCase):
     def test_declared_graph_keeps_new_source_and_sdk_authorities_explicit(self):
         macro = (ROOT / 'tools/codex_native_file_writer_model_source_targets.bzl').read_text()
         self.assertIn('@omux_native_file_writer_model_source_inputs//:inputs', macro)
+        self.assertIn('name = "codex_native_file_writer_models_producer"', macro)
+        self.assertIn('main = "codex_native_file_writer_models.py"', macro)
+        self.assertIn('"codex_native_file_writer_models_test.py"', macro)
         self.assertIn('@omux_original_native_sdk_inputs//:inputs', macro)
         self.assertIn('@omux_protocol_history_query_tools//:inputs', macro)
         self.assertNotIn('_OWNER_STATUS_PERSISTENCE_METADATA_DATA', macro)
