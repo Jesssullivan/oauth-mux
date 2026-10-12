@@ -505,8 +505,12 @@ const CatalogResponseData = struct {
 /// Internal actual HTTPS/current-pair observation provenance, never a request
 /// lease, credential export or inference entitlement. Raw bodies cannot mint it.
 pub const CatalogResponse = opaque {
-    pub fn responseSha256(self: *const CatalogResponse) [32]u8 { return catalogResponseData(self).digest; }
-    pub fn receivedUnix(self: *const CatalogResponse) i64 { return catalogResponseData(self).received_unix; }
+    pub fn responseSha256(self: *const CatalogResponse) [32]u8 {
+        return catalogResponseData(self).digest;
+    }
+    pub fn receivedUnix(self: *const CatalogResponse) i64 {
+        return catalogResponseData(self).received_unix;
+    }
     pub fn recheck(self: *const CatalogResponse, ticket: *const catalog_authority.Ticket) !void {
         const d = catalogResponseData(self);
         if (!std.meta.eql(d.context, ticket.context()) or !std.meta.eql(d.lease, ticket.leaseContext()) or d.revision != ticket.committedRevision() or !ticket.matchesFence(d.fence) or !std.meta.eql(d.original.io, ticket.clockIo()) or !std.meta.eql(d.original.until, ticket.originalUntil())) return error.SiwcCatalogAuthorityChanged;
@@ -535,17 +539,25 @@ pub const CatalogResponse = opaque {
     }
     pub fn deinit(self: *CatalogResponse) void {
         const d: *CatalogResponseData = @ptrCast(@alignCast(self));
-        std.crypto.secureZero(u8, d.body); d.allocator.free(d.body); d.fence.deinit(); d.allocator.destroy(d);
+        std.crypto.secureZero(u8, d.body);
+        d.allocator.free(d.body);
+        d.fence.deinit();
+        d.allocator.destroy(d);
     }
 };
-fn catalogResponseData(self: *const CatalogResponse) *const CatalogResponseData { return @ptrCast(@alignCast(self)); }
+fn catalogResponseData(self: *const CatalogResponse) *const CatalogResponseData {
+    return @ptrCast(@alignCast(self));
+}
 pub const CatalogCompletion = struct {
     id: u64,
     owner: ?*Client = null,
     result: union(enum) { response: *CatalogResponse, failure: Failure },
     pub fn deinit(self: *CatalogCompletion, a: std.mem.Allocator) void {
         _ = a;
-        switch (self.result) { .response => |response| response.deinit(), .failure => {} }
+        switch (self.result) {
+            .response => |response| response.deinit(),
+            .failure => {},
+        }
         if (self.owner) |owner| owner.releaseCompletion(self.id);
         self.* = undefined;
     }
@@ -779,15 +791,22 @@ const OwnedRequest = struct {
         _ = try original.remaining();
         return .{ .catalog = material, .request = .{
             .endpoint = if (material.fixture_port != 0) .fixture_siwc_catalog else .openai_model_catalog,
-            .account_id = account_id, .grant_id = grant_id, .access_token = material.access.bytes,
-            .absolute_deadline = original, .timeout_ms = @min(remaining, 10_000),
-            .max_response_bytes = siwc_catalog.maximum_body_bytes, .fixture_port = material.fixture_port,
+            .account_id = account_id,
+            .grant_id = grant_id,
+            .access_token = material.access.bytes,
+            .absolute_deadline = original,
+            .timeout_ms = @min(remaining, 10_000),
+            .max_response_bytes = siwc_catalog.maximum_body_bytes,
+            .fixture_port = material.fixture_port,
         } };
     }
 
     fn deinit(self: *OwnedRequest, allocator: std.mem.Allocator) void {
         if (self.catalog) |*material| {
-            allocator.free(self.request.account_id); allocator.free(self.request.grant_id); material.deinit(); return;
+            allocator.free(self.request.account_id);
+            allocator.free(self.request.grant_id);
+            material.deinit();
+            return;
         }
         if (self.jwks) {
             if (self.jwks_capture) |capture| allocator.free(capture.issued_client_id);
@@ -942,7 +961,8 @@ pub const Client = struct {
             completion.deinit(self.allocator);
         }
         while (self.pollCatalog()) |item| {
-            var completion = item; completion.deinit(self.allocator);
+            var completion = item;
+            completion.deinit(self.allocator);
         }
         while (self.pollJwks()) |item| {
             var completion = item;
@@ -1142,27 +1162,51 @@ pub const Client = struct {
     pub fn startCatalog(self: *Client, ticket: *catalog_authority.Ticket) !u64 {
         var material: ?catalog_authority.DispatchMaterial = try ticket.claim(self.allocator);
         defer if (material) |*held| held.deinit();
-        errdefer if (material) |*held| { _ = held.fence.invalidate(); };
+        errdefer if (material) |*held| {
+            _ = held.fence.invalidate();
+        };
         self.lock();
-        if (self.stopping) { self.unlock(); return error.Stopping; }
-        if (self.outstanding == Limits.outstanding) { self.unlock(); return error.Backpressure; }
-        if (self.next_id == std.math.maxInt(u64)) { self.unlock(); return error.IdExhausted; }
-        const id = self.next_id; self.next_id += 1; self.outstanding += 1; self.unlock();
+        if (self.stopping) {
+            self.unlock();
+            return error.Stopping;
+        }
+        if (self.outstanding == Limits.outstanding) {
+            self.unlock();
+            return error.Backpressure;
+        }
+        if (self.next_id == std.math.maxInt(u64)) {
+            self.unlock();
+            return error.IdExhausted;
+        }
+        const id = self.next_id;
+        self.next_id += 1;
+        self.outstanding += 1;
+        self.unlock();
         errdefer self.releaseReservation();
         const admitted_at = monotonicMilliseconds();
         var owned = try OwnedRequest.initCatalog(self.allocator, material.?);
         material = null;
-        errdefer { _ = owned.catalog.?.fence.invalidate(); owned.deinit(self.allocator); }
+        errdefer {
+            _ = owned.catalog.?.fence.invalidate();
+            owned.deinit(self.allocator);
+        }
         const transfer = try self.allocator.create(Transfer);
         errdefer self.allocator.destroy(transfer);
-        self.lock(); defer self.unlock();
+        self.lock();
+        defer self.unlock();
         if (self.stopping) return error.Stopping;
         try owned.catalog.?.fence.checkBeforeDispatch();
         _ = try owned.request.absolute_deadline.?.remaining();
         transfer.* = .{ .owner = self, .id = id, .request = owned, .deadline = admitted_at + owned.request.timeout_ms };
-        std.debug.assert(self.starts.push(transfer)); self.wakeup(); return id;
+        std.debug.assert(self.starts.push(transfer));
+        self.wakeup();
+        return id;
     }
-    pub fn pollCatalog(self: *Client) ?CatalogCompletion { self.lock(); defer self.unlock(); return self.catalog_results.pop(); }
+    pub fn pollCatalog(self: *Client) ?CatalogCompletion {
+        self.lock();
+        defer self.unlock();
+        return self.catalog_results.pop();
+    }
 
     pub fn cancel(self: *Client, id: u64) !void {
         self.lock();
@@ -1284,7 +1328,10 @@ pub const Client = struct {
                     continue;
                 }
                 if (item.request.catalog) |*material| {
-                    material.fence.beginDispatch() catch { self.complete(item, .canceled); continue; };
+                    material.fence.beginDispatch() catch {
+                        self.complete(item, .canceled);
+                        continue;
+                    };
                     item.catalog_dispatch_started = true;
                 } else if (item.request.oauth) |*material| {
                     material.fence.beginDispatch() catch {
@@ -1560,7 +1607,8 @@ pub const Client = struct {
                     if (self.retainCatalogResponse(transfer, response)) |held| {
                         catalog_result.?.result = .{ .response = held };
                     } else |err| {
-                        std.crypto.secureZero(u8, response.body); self.allocator.free(response.body);
+                        std.crypto.secureZero(u8, response.body);
+                        self.allocator.free(response.body);
                         catalog_result.?.result = .{ .failure = if (err == error.OutOfMemory) .allocation else if (err == error.InvalidDeadline) .deadline else .transport };
                     }
                 },
@@ -1568,8 +1616,9 @@ pub const Client = struct {
         }
         transfer.deinit();
         self.lock();
-        if (catalog_result) |models| { std.debug.assert(self.catalog_results.push(models)); }
-        else if (key_result) |keys| {
+        if (catalog_result) |models| {
+            std.debug.assert(self.catalog_results.push(models));
+        } else if (key_result) |keys| {
             std.debug.assert(self.jwks_results.push(keys));
         } else if (token_result) |tokens| {
             std.debug.assert(self.oauth_results.push(tokens));
@@ -1583,14 +1632,23 @@ pub const Client = struct {
         const material = transfer.request.catalog orelse return error.SiwcCatalogAuthorityChanged;
         const request = transfer.request.request;
         if (!transfer.catalog_dispatch_started or response.status != 200 or response.body.len == 0 or response.body.len > siwc_catalog.maximum_body_bytes or request.method != .get or request.streaming or request.browser_authorization != null or request.provider_account_id != null or request.access_token == null or !std.mem.eql(u8, request.access_token.?, material.access.bytes)) return error.SiwcCatalogAuthorityChanged;
-        const fixture = switch (request.endpoint) { .openai_model_catalog => false, .fixture_siwc_catalog => if (builtin.is_test) true else return error.UndeclaredEndpoint, else => return error.UndeclaredEndpoint };
+        const fixture = switch (request.endpoint) {
+            .openai_model_catalog => false,
+            .fixture_siwc_catalog => if (builtin.is_test) true else return error.UndeclaredEndpoint,
+            else => return error.UndeclaredEndpoint,
+        };
         const original = request.absolute_deadline orelse return error.InvalidDeadline;
-        _ = try original.remaining(); try material.fence.checkAfterIo();
-        var digest: [32]u8 = undefined; std.crypto.hash.sha2.Sha256.hash(response.body, &digest, .{});
-        const d = try self.allocator.create(CatalogResponseData); errdefer self.allocator.destroy(d);
+        _ = try original.remaining();
+        try material.fence.checkAfterIo();
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(response.body, &digest, .{});
+        const d = try self.allocator.create(CatalogResponseData);
+        errdefer self.allocator.destroy(d);
         d.* = .{ .allocator = self.allocator, .body = response.body, .digest = digest, .received_unix = transfer.response_received_unix orelse return error.SiwcCatalogAuthorityChanged, .original = original, .context = material.context, .lease = material.lease, .revision = material.committed_revision, .fence = material.fence, .fixture = fixture };
         const retained: *CatalogResponse = @ptrCast(d);
-        try retained.checkHeld(); material.fence.retain(); return retained;
+        try retained.checkHeld();
+        material.fence.retain();
+        return retained;
     }
 
     /// Body ownership moves only on success; no exposed raw response factory.
@@ -2113,21 +2171,33 @@ pub const testing = struct {
             errdefer _ = c.close(listener.descriptor);
             return .{ .allocator = a, .listener = listener.descriptor, .local_port = listener.port, .reply = .{ .allocator = a, .bytes = try a.dupe(u8, body) }, .status = status, .delay_ms = delay_ms };
         }
-        pub fn port(self: *const CatalogServer) u16 { return self.local_port; }
+        pub fn port(self: *const CatalogServer) u16 {
+            return self.local_port;
+        }
         pub fn start(self: *CatalogServer, ticket: *catalog_authority.Ticket) !void {
             if (!builtin.is_test or self.thread != null or self.ticket != null) return error.InvalidModelRoute;
             try ticket.checkActive();
-            ticket.retain(); self.ticket = ticket;
-            errdefer { ticket.deinit(); self.ticket = null; }
+            ticket.retain();
+            self.ticket = ticket;
+            errdefer {
+                ticket.deinit();
+                self.ticket = null;
+            }
             self.thread = try std.Thread.spawn(.{}, serve, .{self});
         }
-        pub fn requestCount(self: *const CatalogServer) u32 { return self.requests.load(.acquire); }
-        pub fn validWire(self: *const CatalogServer) bool { return self.wire_valid.load(.acquire); }
+        pub fn requestCount(self: *const CatalogServer) u32 {
+            return self.requests.load(.acquire);
+        }
+        pub fn validWire(self: *const CatalogServer) bool {
+            return self.wire_valid.load(.acquire);
+        }
         pub fn holdReply(self: *CatalogServer) !void {
             if (!builtin.is_test or self.thread != null) return error.InvalidModelRoute;
             self.hold_reply.store(true, .release);
         }
-        pub fn releaseReply(self: *CatalogServer) void { self.release_reply.store(true, .release); }
+        pub fn releaseReply(self: *CatalogServer) void {
+            self.release_reply.store(true, .release);
+        }
         pub fn deinit(self: *CatalogServer) void {
             self.releaseReply();
             if (self.thread) |thread| thread.join();
@@ -2165,7 +2235,10 @@ pub const testing = struct {
             var lines = std.mem.splitSequence(u8, headers, "\r\n");
             _ = lines.next();
             while (lines.next()) |line| {
-                const colon = std.mem.indexOfScalar(u8, line, ':') orelse { valid = false; continue; };
+                const colon = std.mem.indexOfScalar(u8, line, ':') orelse {
+                    valid = false;
+                    continue;
+                };
                 const name = line[0..colon];
                 const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
                 if (std.ascii.eqlIgnoreCase(name, "authorization")) {
@@ -2188,7 +2261,6 @@ pub const testing = struct {
             Fixture.sendAll(descriptor, self.reply.bytes);
         }
     };
-
 
     /// Runtime synthetic signed replies still traverse real loopback curl.
     /// This server has no receipt/profile constructor or provider capability.

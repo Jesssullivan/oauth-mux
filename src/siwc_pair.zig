@@ -304,8 +304,12 @@ pub const PairAuthority = opaque {
     pub fn activationCommitment(self: *const PairAuthority) [32]u8 {
         return view(self).row.activation_commitment;
     }
-    pub fn catalogContext(self: *const PairAuthority) !CatalogContext { return catalogContextFor(view(self).row); }
-    pub fn committedRevision(self: *const PairAuthority) u64 { return view(self).revision; }
+    pub fn catalogContext(self: *const PairAuthority) !CatalogContext {
+        return catalogContextFor(view(self).row);
+    }
+    pub fn committedRevision(self: *const PairAuthority) u64 {
+        return view(self).revision;
+    }
     /// A cache/pending operation may be cancelled from staged actor metadata;
     /// constructing a Record here cannot construct a PairAuthority or ticket.
     pub fn matchesCatalogRecord(self: *const PairAuthority, row: Record) bool {

@@ -18,7 +18,9 @@ pub const Catalog = struct {
     allocator: std.mem.Allocator,
     rows: std.ArrayList(Model) = .empty,
     response_sha256: [32]u8,
-    pub fn models(self: *const Catalog) []const Model { return self.rows.items; }
+    pub fn models(self: *const Catalog) []const Model {
+        return self.rows.items;
+    }
     pub fn contains(self: *const Catalog, slug: []const u8) bool {
         for (self.rows.items) |row| if (std.mem.eql(u8, row.slug, slug)) return true;
         return false;
@@ -79,7 +81,10 @@ pub fn parse(a: std.mem.Allocator, status: u16, body: []const u8) !Catalog {
         const visibility = try field(entry.object, "visibility", 32);
         if (!std.mem.eql(u8, visibility, "list")) continue;
         const slug = try a.dupe(u8, try field(entry.object, "slug", maximum_slug_bytes));
-        errdefer { std.crypto.secureZero(u8, slug); a.free(slug); }
+        errdefer {
+            std.crypto.secureZero(u8, slug);
+            a.free(slug);
+        }
         const display = try a.dupe(u8, try field(entry.object, "display_name", maximum_display_bytes));
         result.rows.appendAssumeCapacity(.{ .slug = slug, .display_name = display });
     }
@@ -93,7 +98,9 @@ fn field(object: std.json.ObjectMap, key: []const u8, limit: usize) ![]const u8 
 fn printableAscii(value: []const u8) !void {
     for (value) |byte| if (byte < 0x21 or byte > 0x7e) return error.InvalidSiwcCatalog;
 }
-fn validateSlug(value: []const u8) !void { try printableAscii(value); }
+fn validateSlug(value: []const u8) !void {
+    try printableAscii(value);
+}
 fn validateDisplay(value: []const u8) !void {
     if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidSiwcCatalog;
     var it = (try std.unicode.Utf8View.init(value)).iterator();
@@ -107,12 +114,21 @@ fn boundedDepth(body: []const u8) !void {
     var escaped = false;
     for (body) |byte| {
         if (quoted) {
-            if (escaped) { escaped = false; continue; }
-            if (byte == '\\') { escaped = true; continue; }
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (byte == '\\') {
+                escaped = true;
+                continue;
+            }
             if (byte == '"') quoted = false;
             continue;
         }
-        if (byte == '"') { quoted = true; continue; }
+        if (byte == '"') {
+            quoted = true;
+            continue;
+        }
         if (byte == '{' or byte == '[') {
             depth += 1;
             if (depth > maximum_depth) return error.InvalidSiwcCatalog;

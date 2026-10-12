@@ -1162,7 +1162,10 @@ const CatalogPending = struct {
     request: control.Request,
     ticket: *siwc_catalog_authority.Ticket,
     transport_id: u64,
-    fn deinit(self: *CatalogPending) void { self.request.deinit(); self.ticket.deinit(); }
+    fn deinit(self: *CatalogPending) void {
+        self.request.deinit();
+        self.ticket.deinit();
+    }
 };
 const CatalogCache = struct {
     handle: [64]u8,
@@ -1814,8 +1817,10 @@ pub const Engine = struct {
                 break :blk true;
             } else false;
             if (catalog_deferred) {
-                self.active_peer = null; self.active_until = null;
-                self.active_oauth_profile = null; self.active_oss_callback_port = null;
+                self.active_peer = null;
+                self.active_until = null;
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
                 continue;
             }
             const deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startNativeInvocation(item) catch |err| blk: {
@@ -1974,7 +1979,9 @@ pub const Engine = struct {
     // Relevant staged mutations invalidate before the writer call. This check
     // never opens SQLite, resets a cutoff or cancels reads for label/counter edits.
     fn invalidateCatalogContexts(self: *Engine) void {
-        for (self.catalog_pending.items) |pending| if (!self.catalogCurrent(pending.ticket)) { _ = pending.ticket.invalidate(); };
+        for (self.catalog_pending.items) |pending| if (!self.catalogCurrent(pending.ticket)) {
+            _ = pending.ticket.invalidate();
+        };
     }
 
     fn cancelCatalog(self: *Engine) void {
@@ -2117,7 +2124,10 @@ pub const Engine = struct {
         self.invalidateCatalogContexts();
         var position: usize = 0;
         while (position < self.catalog_pending.items.len) {
-            if (self.catalogCurrent(self.catalog_pending.items[position].ticket)) { position += 1; continue; }
+            if (self.catalogCurrent(self.catalog_pending.items[position].ticket)) {
+                position += 1;
+                continue;
+            }
             var pending = self.catalog_pending.orderedRemove(position);
             _ = pending.ticket.invalidate();
             self.finishInvocation(pending.invocation, error.SiwcCatalogAuthorityChanged);
@@ -2127,7 +2137,10 @@ pub const Engine = struct {
             var completion = value;
             defer completion.deinit(self.allocator);
             var found: ?usize = null;
-            for (self.catalog_pending.items, 0..) |pending, index| if (pending.transport_id == completion.id) { found = index; break; };
+            for (self.catalog_pending.items, 0..) |pending, index| if (pending.transport_id == completion.id) {
+                found = index;
+                break;
+            };
             const index = found orelse continue; // Retired work only gets wiped.
             var pending = self.catalog_pending.orderedRemove(index);
             defer pending.deinit();
@@ -2135,7 +2148,10 @@ pub const Engine = struct {
             const previous_until = self.active_until;
             self.active_peer = if (pending.invocation.peer_context) |*verified| verified else null;
             self.active_until = pending.invocation.until;
-            defer { self.active_peer = previous_peer; self.active_until = previous_until; }
+            defer {
+                self.active_peer = previous_peer;
+                self.active_until = previous_until;
+            }
             const reply = self.catalogReply(&pending, &completion) catch |err| {
                 self.finishInvocation(pending.invocation, control.failure(pending.invocation.allocator, pending.request.id, -32000, @errorName(err)));
                 continue;
@@ -16147,12 +16163,18 @@ const SiwcCatalogTest = struct {
             break :blk length;
         };
         const reply = try current.dispatchCatalogForTest(a, buffer[0..received], until, &producer.packet_context, server);
-        defer { std.crypto.secureZero(u8, reply); a.free(reply); }
+        defer {
+            std.crypto.secureZero(u8, reply);
+            a.free(reply);
+        }
         return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
     }
     fn observe(producer: *Producer, current: *Engine, server: *transport.testing.CatalogServer, params: anytype) !Json {
         const bytes = try wire(current, params);
-        defer { std.crypto.secureZero(u8, bytes); std.testing.allocator.free(bytes); }
+        defer {
+            std.crypto.secureZero(u8, bytes);
+            std.testing.allocator.free(bytes);
+        }
         return raw(producer, current, server, bytes, .fromNow(current.io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
     }
     fn check(reply: *const Json, account: [64]u8, known: bool) !std.json.Value {
@@ -16187,7 +16209,12 @@ const SiwcCatalogTest = struct {
         until: std.Io.Clock.Timestamp,
         reply: ?Json = null,
         failure: ?anyerror = null,
-        fn run(self: *Task) void { self.reply = raw(self.producer, self.current, self.server, self.payload, self.until) catch |err| { self.failure = err; return; }; }
+        fn run(self: *Task) void {
+            self.reply = raw(self.producer, self.current, self.server, self.payload, self.until) catch |err| {
+                self.failure = err;
+                return;
+            };
+        }
         fn waitForRequest(self: *Task) !void {
             const until = std.Io.Clock.Timestamp.fromNow(self.current.io, .{ .clock = .awake, .raw = .fromSeconds(2) });
             while (self.server.requestCount() == 0) {
@@ -16195,7 +16222,9 @@ const SiwcCatalogTest = struct {
                 try self.current.io.sleep(.fromMilliseconds(5), .awake);
             }
         }
-        fn deinit(self: *Task) void { if (self.reply) |*value| SiwcActorTest.dispose(value); }
+        fn deinit(self: *Task) void {
+            if (self.reply) |*value| SiwcActorTest.dispose(value);
+        }
     };
 };
 
@@ -16336,7 +16365,10 @@ test "SIWC catalog in-flight pause cancels publication while unrelated revision 
         var server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 600);
         defer server.deinit();
         const payload = try SiwcCatalogTest.wire(current, .{});
-        defer { std.crypto.secureZero(u8, payload); a.free(payload); }
+        defer {
+            std.crypto.secureZero(u8, payload);
+            a.free(payload);
+        }
         var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &server, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }) };
         defer task.deinit();
         const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
@@ -16349,7 +16381,8 @@ test "SIWC catalog in-flight pause cancels publication while unrelated revision 
             try SiwcActorTest.call(producer, current, "policy.set", .{ .operation_id = "catalog-unrelated-revision", .expected_revision = before, .sticky_routes = false, .warm_alternatives = false }, .control);
         defer SiwcActorTest.dispose(&changed);
         _ = try SiwcActorTest.result(&changed);
-        thread.join(); joined = true;
+        thread.join();
+        joined = true;
         try std.testing.expect(current.revision > before);
         if (retire) {
             if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
@@ -16388,7 +16421,10 @@ test "SIWC catalog caller flags thin channel missing owner and expired original 
     defer SiwcActorTest.dispose(&caller);
     try SiwcActorTest.refusal(&caller, "InvalidSiwcParams");
     const raw = try SiwcCatalogTest.wire(current, .{});
-    defer { std.crypto.secureZero(u8, raw); a.free(raw); }
+    defer {
+        std.crypto.secureZero(u8, raw);
+        a.free(raw);
+    }
     const thin = try producer.dispatch(current, a, raw, .control);
     defer a.free(thin);
     const thin_value = try std.json.parseFromSlice(std.json.Value, a, thin, .{});
@@ -16431,7 +16467,10 @@ test "catalog read cancels before renewal issue while fresh safe refreshing acce
     defer delayed.deinit();
     try delayed.holdReply();
     const payload = try SiwcCatalogTest.wire(current, .{});
-    defer { std.crypto.secureZero(u8, payload); a.free(payload); }
+    defer {
+        std.crypto.secureZero(u8, payload);
+        a.free(payload);
+    }
     var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &delayed, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }) };
     defer task.deinit();
     const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
@@ -16442,7 +16481,8 @@ test "catalog read cancels before renewal issue while fresh safe refreshing acce
     defer started.deinit();
     _ = try M.result(&started);
     delayed.releaseReply();
-    thread.join(); joined = true;
+    thread.join();
+    joined = true;
     if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
     try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
     const before = try M.observe(current, &owned.account_id);
@@ -16498,7 +16538,10 @@ test "catalog refreshing HTTP cannot publish after atomic successor and complete
     defer delayed.deinit();
     try delayed.holdReply();
     const payload = try SiwcCatalogTest.wire(current, .{});
-    defer { std.crypto.secureZero(u8, payload); a.free(payload); }
+    defer {
+        std.crypto.secureZero(u8, payload);
+        a.free(payload);
+    }
     var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &delayed, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }) };
     defer task.deinit();
     const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
@@ -16513,7 +16556,8 @@ test "catalog refreshing HTTP cannot publish after atomic successor and complete
     const settled = try M.wait(current, &owned.account_id, "ready", 2);
     defer settled.deinit();
     delayed.releaseReply();
-    thread.join(); joined = true;
+    thread.join();
+    joined = true;
     if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
     try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
     // Force old-operation cutoff to pass in genuine time, with no rewritten

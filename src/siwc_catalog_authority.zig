@@ -42,7 +42,9 @@ const FenceData = struct {
 };
 pub const Cancellation = enum { prevented_before_dispatch, dispatched_or_racing };
 pub const DispatchFence = opaque {
-    pub fn retain(self: *DispatchFence) void { _ = fenceData(self).references.fetchAdd(1, .monotonic); }
+    pub fn retain(self: *DispatchFence) void {
+        _ = fenceData(self).references.fetchAdd(1, .monotonic);
+    }
     pub fn deinit(self: *DispatchFence) void {
         const d = fenceData(self);
         if (d.references.fetchSub(1, .acq_rel) == 1) d.allocator.destroy(d);
@@ -69,8 +71,12 @@ pub const DispatchFence = opaque {
         return if (fenceData(self).phase.swap(.cancelled, .acq_rel) == .pending) .prevented_before_dispatch else .dispatched_or_racing;
     }
 };
-fn fenceData(self: *DispatchFence) *FenceData { return @ptrCast(@alignCast(self)); }
-fn fenceDataConst(self: *const DispatchFence) *const FenceData { return @ptrCast(@alignCast(self)); }
+fn fenceData(self: *DispatchFence) *FenceData {
+    return @ptrCast(@alignCast(self));
+}
+fn fenceDataConst(self: *const DispatchFence) *const FenceData {
+    return @ptrCast(@alignCast(self));
+}
 
 pub const DispatchMaterial = struct {
     access: envelope.Secret,
@@ -111,20 +117,41 @@ pub const Ticket = opaque {
         d.fence.retain();
         return .{ .access = access, .context = d.context, .lease = d.window.lease, .committed_revision = d.revision, .io = fenceData(d.fence).io, .until = fenceData(d.fence).until, .fence = d.fence, .fixture_port = if (builtin.is_test) d.fixture_port else 0 };
     }
-    pub fn retain(self: *Ticket) void { _ = ticketData(self).references.fetchAdd(1, .monotonic); }
+    pub fn retain(self: *Ticket) void {
+        _ = ticketData(self).references.fetchAdd(1, .monotonic);
+    }
     pub fn deinit(self: *Ticket) void {
         const d = ticketData(self);
         if (d.references.fetchSub(1, .acq_rel) != 1) return;
-        d.access.deinit(); d.authority.deinit(); d.fence.deinit(); d.allocator.destroy(d);
+        d.access.deinit();
+        d.authority.deinit();
+        d.fence.deinit();
+        d.allocator.destroy(d);
     }
-    pub fn invalidate(self: *Ticket) Cancellation { return ticketData(self).fence.invalidate(); }
-    pub fn context(self: *const Ticket) pair.CatalogContext { return ticketDataConst(self).context; }
-    pub fn leaseContext(self: *const Ticket) ?LeaseContext { return ticketDataConst(self).window.lease; }
-    pub fn committedRevision(self: *const Ticket) u64 { return ticketDataConst(self).revision; }
-    pub fn clockIo(self: *const Ticket) std.Io { return fenceDataConst(ticketDataConst(self).fence).io; }
-    pub fn originalUntil(self: *const Ticket) std.Io.Clock.Timestamp { return fenceDataConst(ticketDataConst(self).fence).until; }
-    pub fn expiresAt(self: *const Ticket) i64 { return fenceDataConst(ticketDataConst(self).fence).expires_at; }
-    pub fn matchesFence(self: *const Ticket, fence: *const DispatchFence) bool { return ticketDataConst(self).fence == fence; }
+    pub fn invalidate(self: *Ticket) Cancellation {
+        return ticketData(self).fence.invalidate();
+    }
+    pub fn context(self: *const Ticket) pair.CatalogContext {
+        return ticketDataConst(self).context;
+    }
+    pub fn leaseContext(self: *const Ticket) ?LeaseContext {
+        return ticketDataConst(self).window.lease;
+    }
+    pub fn committedRevision(self: *const Ticket) u64 {
+        return ticketDataConst(self).revision;
+    }
+    pub fn clockIo(self: *const Ticket) std.Io {
+        return fenceDataConst(ticketDataConst(self).fence).io;
+    }
+    pub fn originalUntil(self: *const Ticket) std.Io.Clock.Timestamp {
+        return fenceDataConst(ticketDataConst(self).fence).until;
+    }
+    pub fn expiresAt(self: *const Ticket) i64 {
+        return fenceDataConst(ticketDataConst(self).fence).expires_at;
+    }
+    pub fn matchesFence(self: *const Ticket, fence: *const DispatchFence) bool {
+        return ticketDataConst(self).fence == fence;
+    }
     pub fn checkActive(self: *const Ticket) !void {
         const d = ticketDataConst(self);
         try d.fence.checkActive();
@@ -153,8 +180,12 @@ pub const Ticket = opaque {
         return std.meta.eql(observed, d.window);
     }
 };
-fn ticketData(self: *Ticket) *TicketData { return @ptrCast(@alignCast(self)); }
-fn ticketDataConst(self: *const Ticket) *const TicketData { return @ptrCast(@alignCast(self)); }
+fn ticketData(self: *Ticket) *TicketData {
+    return @ptrCast(@alignCast(self));
+}
+fn ticketDataConst(self: *const Ticket) *const TicketData {
+    return @ptrCast(@alignCast(self));
+}
 
 const Retained = struct { schema_version: u32, state: domain.Snapshot };
 const ReadWindow = struct { revision: u64, window: Window };
@@ -168,41 +199,58 @@ fn readWindow(store: *storage.Store, context: pair.CatalogContext, scope: Scope)
 }
 fn windowFor(sources: []const domain.Source, accounts: []const domain.Account, grants: []const domain.Grant, bindings: []const domain.Binding, leases: []const domain.Lease, context: pair.CatalogContext, scope: Scope, now: i64) !Window {
     var window: Window = .{ .account_lifecycle = .active, .source_authorized_at = 0, .source_authorized_until = null, .access_custody_until = null, .refresh_provider_until = null, .refresh_custody_until = null, .lease = null };
-    var found_source = false; var found_account = false; var found_access = false; var found_refresh = false;
+    var found_source = false;
+    var found_account = false;
+    var found_access = false;
+    var found_refresh = false;
     for (sources) |source| if (std.mem.eql(u8, source.id, &context.source_id)) {
         if (found_source or source.kind != .oauth or source.status == .disconnected or !std.mem.eql(u8, source.provider, "openai_siwc") or source.authorized_at > now or expired(source.authorized_until, now)) return error.SiwcCatalogAuthorityChanged;
-        found_source = true; window.source_authorized_at = source.authorized_at; window.source_authorized_until = source.authorized_until;
+        found_source = true;
+        window.source_authorized_at = source.authorized_at;
+        window.source_authorized_until = source.authorized_until;
     };
     for (accounts) |account| if (std.mem.eql(u8, account.id, &context.account_id)) {
         if (found_account or account.lifecycle == .paused or (scope == .bootstrap and account.lifecycle != .active)) return error.SiwcCatalogAuthorityChanged;
         const identity = std.fmt.bytesToHex(context.identity_commitment, .lower);
         if (!account.identity.verified or !std.mem.eql(u8, account.identity.provider, "openai_siwc") or !std.mem.eql(u8, account.identity.issuer, pair.issuer_uri) or account.identity.tenant.len != 0 or !std.mem.eql(u8, account.identity.subject, &identity)) return error.SiwcCatalogAuthorityChanged;
         var associated = false;
-        for (account.source_ids) |source_id| if (std.mem.eql(u8, source_id, &context.source_id)) { associated = true; };
+        for (account.source_ids) |source_id| if (std.mem.eql(u8, source_id, &context.source_id)) {
+            associated = true;
+        };
         if (!associated) return error.SiwcCatalogAuthorityChanged;
-        found_account = true; window.account_lifecycle = account.lifecycle;
+        found_account = true;
+        window.account_lifecycle = account.lifecycle;
     };
     for (grants) |grant| {
         if (std.mem.eql(u8, grant.id, &context.access_grant_id)) {
             if (found_access or !std.mem.eql(u8, grant.account_id, &context.account_id) or !std.mem.eql(u8, grant.source_id, &context.source_id) or grant.generation != context.access_generation or grant.status != .ready or grant.ownership != .omux or grant.provider_expires_at != context.access_expires_at or expired(grant.custody_expires_at, now)) return error.SiwcCatalogAuthorityChanged;
             if (grant.credential_kind != .oauth_access or !std.mem.eql(u8, grant.audience, pair.resource_uri)) return error.SiwcCatalogAuthorityChanged;
-            var request = false; var invoke = false; var direct = false;
-            for (grant.purposes) |purpose| if (purpose == .request) { request = true; };
+            var request = false;
+            var invoke = false;
+            var direct = false;
+            for (grant.purposes) |purpose| if (purpose == .request) {
+                request = true;
+            };
             for (grant.scopes) |scope_name| {
                 if (std.mem.eql(u8, scope_name, "resource.invoke")) invoke = true;
                 if (std.mem.eql(u8, scope_name, "chatgpt.tokens.use.direct")) direct = true;
             }
             if (!request or !invoke or !direct) return error.SiwcCatalogAuthorityChanged;
-            found_access = true; window.access_custody_until = grant.custody_expires_at;
+            found_access = true;
+            window.access_custody_until = grant.custody_expires_at;
         }
         if (std.mem.eql(u8, grant.id, &context.refresh_grant_id)) {
             const required_status: domain.GrantStatus = if (context.status == .refreshing) .refreshing else .ready;
             if (found_refresh or !std.mem.eql(u8, grant.account_id, &context.account_id) or !std.mem.eql(u8, grant.source_id, &context.source_id) or grant.generation != context.refresh_generation or grant.status != required_status or grant.ownership != .omux or expired(grant.provider_expires_at, now) or expired(grant.custody_expires_at, now)) return error.SiwcCatalogAuthorityChanged;
             if (grant.credential_kind != .oauth_refresh or !std.mem.eql(u8, grant.audience, pair.resource_uri)) return error.SiwcCatalogAuthorityChanged;
             var renewal = false;
-            for (grant.purposes) |purpose| if (purpose == .renewal) { renewal = true; };
+            for (grant.purposes) |purpose| if (purpose == .renewal) {
+                renewal = true;
+            };
             if (!renewal) return error.SiwcCatalogAuthorityChanged;
-            found_refresh = true; window.refresh_provider_until = grant.provider_expires_at; window.refresh_custody_until = grant.custody_expires_at;
+            found_refresh = true;
+            window.refresh_provider_until = grant.provider_expires_at;
+            window.refresh_custody_until = grant.custody_expires_at;
         }
     }
     if (!found_source or !found_account or !found_access or !found_refresh) return error.SiwcCatalogAuthorityChanged;
@@ -240,7 +288,9 @@ fn checkRenewal(context: pair.CatalogContext, io: std.Io) !void {
     try renewal.grant_window.check(now);
     try originalDeadline(io, renewal.originalUntil());
 }
-fn expired(value: ?i64, now: i64) bool { return if (value) |until| until <= now else false; }
+fn expired(value: ?i64, now: i64) bool {
+    return if (value) |until| until <= now else false;
+}
 fn originalDeadline(io: std.Io, until: std.Io.Clock.Timestamp) !void {
     if (until.clock != .awake) return error.SiwcCatalogDeadline;
     const left = until.durationFromNow(io).raw.toNanoseconds();
@@ -278,7 +328,9 @@ pub fn prepare(store: *storage.Store, account_id: []const u8, access_id: []const
     var access: envelope.Secret = .{ .allocator = a, .bytes = try a.dupe(u8, token) };
     errdefer access.deinit();
     var expiry = @min(context.access_expires_at, now + maximum_seconds);
-    inline for (.{ "source_authorized_until", "access_custody_until", "refresh_provider_until", "refresh_custody_until" }) |name| if (@field(observed.window, name)) |limit| { expiry = @min(expiry, limit); };
+    inline for (.{ "source_authorized_until", "access_custody_until", "refresh_provider_until", "refresh_custody_until" }) |name| if (@field(observed.window, name)) |limit| {
+        expiry = @min(expiry, limit);
+    };
     if (observed.window.lease) |lease| expiry = @min(expiry, lease.expires_at);
     if (context.status == .refreshing) {
         const renewal = context.renewal.?;
