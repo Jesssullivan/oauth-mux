@@ -2690,10 +2690,39 @@ test "actor paired recovery coverage refuses missing duplicate wrong and unrelat
     const extra: envelope.Context = .{ .key_id = store.key_id, .account_id = "synthetic-extra-owner", .grant_id = "synthetic-extra-refresh", .generation = 1, .purpose = "renewal", .scope = "https://api.openai.com/v1" };
     _ = try store.commit(revision, "{\"paired\":\"issued\"}", &.{.{ .put = .{ .context = extra, .plaintext = "synthetic-unpaired-rotation", .renewal_owner = .omux } }});
     try std.testing.expect((try store.beginRotation(extra, "synthetic-unpaired-operation")).may_issue);
-    const before = try store.custodyObservation(store.checkpoint.snapshot_revision, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(3) }));
+    // Primitive setup deliberately has no actor State envelope. Compare the
+    // actual snapshot/checkpoints and bounded ciphertext SQL tuples directly;
+    // actor-only custodyObservation must still refuse this synthetic metadata.
+    const Observe = struct {
+        fn rows(selected: *Store, until: std.Io.Clock.Timestamp) ![32]u8 {
+            var hash: ObservationHash = .{ .mac = .init(&selected.key), .io = selected.io, .until = until };
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
+            try selected.observeRows(&hash, "SELECT id,key_id,key_check FROM custody ORDER BY id;", &.{ .integer, .text, .blob });
+            try selected.observeRows(&hash, "SELECT account_id,grant_id,generation,purpose,scope,renewal_owner,state,ciphertext FROM grants ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer, .text, .text, .text, .text, .blob });
+            try selected.observeRows(&hash, "SELECT account_id,grant_id,generation FROM grant_generations ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer });
+            try selected.observeRows(&hash, "SELECT account_id FROM tombstones ORDER BY account_id COLLATE BINARY;", &.{.text});
+            try selected.observeRows(&hash, "SELECT operation_id,account_id,grant_id,generation,state,committed_revision FROM operations ORDER BY operation_id COLLATE BINARY;", &.{ .text, .text, .text, .integer, .text, .optional_integer });
+            var commitment: [32]u8 = undefined;
+            hash.mac.final(&commitment);
+            return commitment;
+        }
+    };
+    const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(3) });
+    var before = try store.readSnapshot();
+    defer before.deinit();
+    const before_checkpoint = store.checkpoint;
+    const before_authority = try store.authority.?.read();
+    const before_rows = try Observe.rows(&store, until);
     try std.testing.expectError(error.SnapshotAdmissionMigrationRequired, store.requireOnlyPairedRecovery(&.{pair}));
-    const after = try store.custodyObservation(store.checkpoint.snapshot_revision, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(3) }));
-    try std.testing.expect(std.meta.eql(before, after));
+    var after = try store.readSnapshot();
+    defer after.deinit();
+    const after_rows = try Observe.rows(&store, until);
+    try std.testing.expectEqual(before.revision, after.revision);
+    try std.testing.expectEqualSlices(u8, before.json, after.json);
+    try std.testing.expect(before_checkpoint.eql(store.checkpoint));
+    try std.testing.expect(before_checkpoint.eql(try store.readCheckpoint()));
+    try std.testing.expect(before_authority.eql(try store.authority.?.read()));
+    try std.testing.expectEqualSlices(u8, &before_rows, &after_rows);
     try std.testing.expectEqual(RotationStatus.started, (try store.readOperation(&operation)).?.status);
     try std.testing.expectEqual(RotationStatus.started, (try store.readOperation("synthetic-unpaired-operation")).?.status);
     try std.testing.expectEqual(GrantState.refreshing, (try store.readGrantStatus(extra.account_id, extra.grant_id)).?.state);
