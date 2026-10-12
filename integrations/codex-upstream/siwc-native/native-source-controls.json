@@ -1,0 +1,108 @@
+{
+  "capabilities": {
+    "SDK_qualified": false,
+    "installed_qualified": false,
+    "issuer_qualified": false,
+    "models_passed": false,
+    "native_compiled": false,
+    "ordinary_handoff_qualified": false,
+    "provider_qualified": false,
+    "source_qualified": false
+  },
+  "delta": {
+    "manifest": {
+      "bytes": 1818,
+      "path": "integrations/codex-upstream/siwc-native/native-delta-manifest.json",
+      "sha256": "722f97898839a008af28cbe60446ef1c534d26158922e72a37781e2098835d5b"
+    },
+    "patch": {
+      "bytes": 55075,
+      "path": "integrations/codex-upstream/siwc-native/native-siwc-v4.patch",
+      "sha256": "77442e9a0eb931dfd0fe8ae9f6ea844cbfa5aaf39fed3270e628e0231b27e730"
+    },
+    "paths": {
+      "codex-rs/core/src/auth_broker.rs": {
+        "after": {
+          "bytes": 140610,
+          "sha256": "7ff880b2e45d7b3e407e6281728beda83190f005431c3f698d0d66d2aada2316"
+        },
+        "before": {
+          "bytes": 111330,
+          "sha256": "e24edb39659373ded3d54f70aef59e4038a54299edfc1db55f21e0b3a2716637"
+        }
+      },
+      "codex-rs/core/src/broker_request_profile.rs": {
+        "after": {
+          "bytes": 6089,
+          "sha256": "c640256c8c6a326364899dd55f8babaf8a13dc32ec5203792f7d1d7644799f48"
+        },
+        "before": null
+      },
+      "codex-rs/core/src/broker_request_profile_tests.rs": {
+        "after": {
+          "bytes": 6865,
+          "sha256": "34e85ecf7d87a5119cb1194dc4ec28743a2f125a99f75ba01a85eec48692a487"
+        },
+        "before": null
+      },
+      "codex-rs/core/src/client.rs": {
+        "after": {
+          "bytes": 132868,
+          "sha256": "3a46b2fdc7ccc318b4a801def6fdac2e9183da2cc028193e9039c979b83d9d65"
+        },
+        "before": {
+          "bytes": 130472,
+          "sha256": "7a7b72c10a8330f5025bd27ef1501e480309117dbe9c87a1436f6a09e909a217"
+        }
+      },
+      "codex-rs/core/src/lib.rs": {
+        "after": {
+          "bytes": 8849,
+          "sha256": "b682d28c086784077b3128a9cc4416e20b30f89d260b44b9816b707577d3b502"
+        },
+        "before": {
+          "bytes": 8821,
+          "sha256": "457f430a3ec21ea5c54e2a84e382e8f258df4e7d0778a0f25163a672609e3e99"
+        }
+      }
+    }
+  },
+  "kind": "native-siwc-source-controls-v1",
+  "native_build_graph": {
+    "MODULE.bazel": {
+      "bytes": 26827,
+      "sha256": "1a6c8685d241a5390ff94432581e842c2950cbe5262b47b27d8db467cebec4c2"
+    },
+    "codex-rs/Cargo.lock": {
+      "bytes": 404835,
+      "sha256": "fe2cc6139542e372704ad4e1d768494c8ffa47124296adb18e390678eced3e54"
+    },
+    "codex-rs/Cargo.toml": {
+      "bytes": 20310,
+      "sha256": "c732c370ca012d0da7944d463601b3c834eb862a85866d3274db9d2acecea978"
+    },
+    "codex-rs/core/BUILD.bazel": {
+      "bytes": 3223,
+      "sha256": "338753d4f457505edbd9e42f7c22b28f2c1c13dd694b28d94d4d7c5226c031ce"
+    },
+    "codex-rs/core/Cargo.toml": {
+      "bytes": 6207,
+      "sha256": "d745357079c9163f69cd60295f46962c342c80a9cbf11d42afd5b4941df1a6d3"
+    },
+    "defs.bzl": {
+      "bytes": 32137,
+      "sha256": "e38193b7df27d444c9d4a0606207bd76f9226ba4f91ebd80935def0e5525e478"
+    }
+  },
+  "native_parent_inventory_sha256": "5f38b4089e6e60b153f56201a7bf97fceb9cea0160c26adc586e4989af56cd2a",
+  "native_parent_receipt_sha256": "ccb780581bf81feb7621f859534407b75c9d1f42f26c1fb81563091621b24d25",
+  "native_v4_manifest_sha256": "28f27d9de687c89de28d5b8e6a15e339a2e2e9c6f0b95c235aef9d51ca710fb6",
+  "parent_configuration_sha256": "fcca4a790b6baaaa8c87b0e584180cf45f946d9fb56aa6804bd5602a8a4fdbcf",
+  "schema_version": 1,
+  "status": "DECLARED-DELTA-UNQUALIFIED",
+  "tests": {
+    "bytes": 2370,
+    "path": "integrations/codex-upstream/siwc-native/expected-tests.json",
+    "sha256": "81080f6619afb31c3962a3842ea64c450d148e90b54da2c69d46a091c4bb1455"
+  }
+}

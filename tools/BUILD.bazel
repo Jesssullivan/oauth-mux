@@ -7,6 +7,7 @@ load(":rules.bzl", "host_python_binary", "python_binary", "python_test")
 load(":codex_native_source_context_refresh_targets.bzl", "native_context_refresh_targets")
 load(":codex_native_source_file_writer_targets.bzl", "native_file_writer_source_targets")
 load(":codex_native_file_writer_model_source_targets.bzl", "native_file_writer_model_source_targets")
+load(":codex_native_siwc_source_targets.bzl", "codex_native_siwc_source_targets")
 load(":yoga_delivery_rules.bzl", "yoga_delivery_binaries")
 load(":yoga_selection_inputs.bzl", "yoga_selection_declaration_test")
 load(":home_manager_bundle_selection_test.bzl", "home_manager_bundle_selection_test")
@@ -3011,4 +3012,13 @@ python_test(
     main = "guard_native_file_writer_models_reserved_test.py",
     srcs = _NATIVE_ACQUISITION_MODEL_SOURCES,
     target_compatible_with = ["@platforms//os:linux"],
+)
+
+codex_native_siwc_source_targets(
+    source_sources = _NATIVE_SOURCE_ACQUISITION_SOURCES,
+    sdk_sources = _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + ["codex_native_carrier_metadata.py", "codex_native_sdk_carrier.py"],
+    parent_data = _NATIVE_SOURCE_ACQUISITION_DATA + _NATIVE_SOURCE_CONTEXT_PARENT_DATA + [
+        "@omux_codex_native_source_context_refresh_inputs//:inputs",
+    ],
+    original_sdk_sources = ["codex_original_sdk_inputs.py"],
 )

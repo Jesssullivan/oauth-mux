@@ -1,0 +1,888 @@
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -8,6 +8,7 @@
+ mod apply_patch;
+ mod apps;
+ pub mod auth_broker;
++mod broker_request_profile;
+ mod broker_text_context;
+ mod client;
+ mod client_common;
+--- a/codex-rs/core/src/auth_broker.rs
++++ b/codex-rs/core/src/auth_broker.rs
+@@ -4,6 +4,7 @@
+ //! A binding can be installed after a thread is loaded; each request snapshots its binding.
+ 
+ use crate::native_peer::PeerWitness;
++use crate::broker_request_profile::{RequestProfile, SIWC_PROFILE, SIWC_ISSUER, SIWC_AUDIENCE, SIWC_AUTH_MODE};
+ use codex_api::ApiError;
+ use codex_api::AuthProvider;
+ use codex_api::TransportError;
+@@ -225,6 +226,7 @@
+     capability_path: PathBuf,
+     binding_id: String,
+     route: Mutex<Option<(String, u64)>>,
++    request_profile: OnceLock<RequestProfile>,
+     last_lease: Mutex<Option<String>>,
+     metadata: Mutex<Option<CachedMetadata>>,
+     context_report: Mutex<Option<crate::broker_text_context::ContextReport>>,
+@@ -886,6 +888,7 @@
+         socket: socket.to_path_buf(),
+         capability_path: capability_path.to_path_buf(),
+         binding_id: binding_id.to_owned(),
++        request_profile: OnceLock::new(),
+         route: Mutex::new(None),
+         last_lease: Mutex::new(None),
+         metadata: Mutex::new(None),
+@@ -935,6 +938,7 @@
+         socket,
+         capability_path,
+         binding_id,
++        request_profile: OnceLock::new(),
+         route: Mutex::new(None),
+         last_lease: Mutex::new(None),
+         metadata: Mutex::new(None),
+@@ -1295,6 +1299,7 @@
+         socket: config.broker_socket.clone(),
+         capability_path: config.capability_path.clone(),
+         binding_id: "configuration-probe".to_string(),
++        request_profile: OnceLock::new(),
+         route: Mutex::new(None),
+         last_lease: Mutex::new(None),
+         metadata: Mutex::new(None),
+@@ -1463,6 +1468,107 @@
+     provider_account_id: Option<String>,
+     expires_at: u64,
+     route_generation: u64,
++}
++
++/// Closed API-Responses credential exported only by qualified daemon activation.
++/// Deserialization consumes authority; it does not verify identity or issue a grant.
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct SiwcMaterializedGrant {
++    request_profile: String, issuer: String, audience: String, auth_mode: String,
++    access_token: String, expires_at: u64, route_generation: u64,
++}
++fn materialized_siwc(value: Value, lease: &Lease) -> std::io::Result<Arc<RequestAuth>> {
++    if !value.is_object() { return Err(invalid("SIWC broker grant must be a named object")); }
++    let grant: SiwcMaterializedGrant = serde_json::from_value(value)
++        .map_err(|_| invalid("SIWC broker grant is invalid"))?;
++    if grant.request_profile != SIWC_PROFILE || grant.issuer != SIWC_ISSUER || grant.audience != SIWC_AUDIENCE
++        || grant.auth_mode != SIWC_AUTH_MODE || grant.route_generation != lease.route_generation
++        || grant.expires_at <= now()? || grant.access_token.is_empty() || grant.access_token.len() > 65536
++    { return Err(invalid("SIWC broker grant is invalid or expired")); }
++    let mut authorization = HeaderValue::from_str(&format!("Bearer {}", grant.access_token))
++        .map_err(|_| invalid("SIWC broker authorization is invalid"))?;
++    authorization.set_sensitive(true);
++    Ok(Arc::new(RequestAuth { authorization, account: None, expires_at: grant.expires_at.min(lease.expires_at) }))
++}
++
++/// A classified error exists only for the exact HTTP Responses route before
++/// ResponsesClient returns a stream. Detail-only, policy and SSE errors are not permits.
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct SiwcErrorBody { error: SiwcErrorObject }
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct SiwcErrorObject {
++    code: String, param: Option<String>,
++    #[serde(rename = "message")]
++    _message: Option<String>,
++    #[serde(rename = "type")]
++    _kind: Option<String>,
++}
++pub(crate) struct SiwcFailure {
++    status: u16, code: String, param: Option<String>, provider_request_id: Option<String>,
++}
++impl SiwcFailure {
++    pub(crate) fn from_error(error: &ApiError) -> Option<Self> {
++        let ApiError::Transport(TransportError::Http { status, url: Some(url), headers, body: Some(body) }) = error else { return None; };
++        if url != "https://api.openai.com/v1/responses" || body.len() > 8192 { return None; }
++        let body: StrictValue = serde_json::from_str(body).ok()?;
++        if !body.0.is_object() || !body.0.get("error").is_some_and(Value::is_object) { return None; }
++        let body: SiwcErrorBody = serde_json::from_value(body.0).ok()?;
++        if !matches!((status.as_u16(), body.error.code.as_str()),
++            (401, "subscription_sharing_invalid_user") | (429, "subscription_sharing_usage_limit_exceeded")) { return None; }
++        if body.error.param.as_ref().is_some_and(|value| value.len() > 128 || !value.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.[]-".contains(&b))) { return None; }
++        let provider_request_id = headers.as_ref().and_then(|headers| {
++            let all = headers.get_all("x-request-id");
++            let mut values = all.iter();
++            let value = values.next()?.to_str().ok()?;
++            if values.next().is_some() || !value.starts_with("req_") || value.len() > 256
++                || !value.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) { return None; }
++            Some(value.to_owned())
++        });
++        Some(Self { status: status.as_u16(), code: body.error.code, param: body.error.param, provider_request_id })
++    }
++}
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct SiwcReplacementWire { ticket: String, request_id: String, expires_at: u64 }
++pub(crate) struct SiwcReplacement { ticket: String, request_id: String, expires_at: u64, rejected_account_id: String }
++#[derive(Deserialize)]
++#[serde(rename_all = "snake_case")]
++enum SiwcDisposition { Stop, RetryCompatible }
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct SiwcRejectReceipt {
++    recorded: bool, request_profile: String, rejected_lease_handle: String,
++    rejected_route_generation: u64, disposition: SiwcDisposition,
++    // Explicit null is part of the closed actor reply grammar.
++    #[serde(deserialize_with = "required_siwc_replacement")]
++    replacement: Option<SiwcReplacementWire>,
++}
++fn required_siwc_replacement<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SiwcReplacementWire>, D::Error> {
++    Option::<SiwcReplacementWire>::deserialize(d)
++}
++
++fn validated_siwc_rejection(value: Value, lease: &Lease, request_id: &str, failure: &SiwcFailure, allow_replacement: bool) -> std::io::Result<Option<SiwcReplacement>> {
++    if !value.is_object() || !value.get("replacement").is_some_and(|v| v.is_null() || v.is_object()) {
++        return Err(invalid("SIWC rejection receipt must have named objects"));
++    }
++    let receipt: SiwcRejectReceipt = serde_json::from_value(value).map_err(|_| invalid("SIWC rejection receipt is invalid"))?;
++    if !receipt.recorded || receipt.request_profile != SIWC_PROFILE || receipt.rejected_lease_handle != lease.lease_handle
++        || receipt.rejected_route_generation != lease.route_generation { return Err(invalid("SIWC rejection receipt is mismatched")); }
++    match (receipt.disposition, receipt.replacement) {
++        (SiwcDisposition::Stop, None) => Ok(None),
++        (SiwcDisposition::RetryCompatible, Some(replacement)) => {
++            if !allow_replacement || failure.status != 429 || failure.code != "subscription_sharing_usage_limit_exceeded"
++                || replacement.request_id != request_id || replacement.expires_at > lease.expires_at || replacement.expires_at <= now()?
++            { return Err(invalid("SIWC replacement admission is invalid")); }
++            opaque(&replacement.ticket)?;
++            Ok(Some(SiwcReplacement { ticket: replacement.ticket, request_id: replacement.request_id, expires_at: replacement.expires_at,
++                rejected_account_id: lease.account_id.clone() }))
++        },
++        _ => Err(invalid("SIWC rejection disposition is invalid")),
++    }
+ }
+ 
+ /// An allowlist separates broker status from materialized identity headers and credentials.
+@@ -1658,19 +1764,40 @@
+         request_id: &str,
+         model: &str,
+     ) -> std::io::Result<Lease> {
++        self.acquire_for_profile(thread_id, request_id, model, RequestProfile::NativeChatgpt).await
++    }
++
++    pub(crate) async fn acquire_for_profile(
++        self: &Arc<Self>, thread_id: ThreadId, request_id: &str, model: &str, profile: RequestProfile,
++    ) -> std::io::Result<Lease> {
++        self.acquire_with_replacement(thread_id, request_id, model, profile, None).await
++    }
++
++    pub(crate) async fn acquire_siwc_replacement(
++        self: &Arc<Self>, thread_id: ThreadId, request_id: &str, model: &str, replacement: &SiwcReplacement,
++    ) -> std::io::Result<Lease> {
++        if replacement.request_id != request_id || now()? >= replacement.expires_at { return Err(invalid("SIWC replacement admission expired or mismatched")); }
++        self.acquire_with_replacement(thread_id, request_id, model, RequestProfile::SiwcResponses, Some(replacement)).await
++    }
++
++    async fn acquire_with_replacement(
++        self: &Arc<Self>, thread_id: ThreadId, request_id: &str, model: &str, profile: RequestProfile, replacement: Option<&SiwcReplacement>,
++    ) -> std::io::Result<Lease> {
+         self.require_thread(thread_id)?;
+-        let value = self
+-            .rpc(
+-                "adapter.acquire",
+-                json!({
+-                    "binding_id":self.binding_id, "session_id":thread_id.to_string(),
+-                    "request_id":request_id,
+-                    "demand":{"provider":"codex", "audience":ISSUER, "purpose":"request",
+-                        "resource":{"kind":"model", "target":model, "unit":"tokens", "scope":""},
+-                        "required":1},
+-                }),
+-            )
+-            .await?;
++        if *self.request_profile.get_or_init(|| profile) != profile {
++            return Err(invalid("broker binding request profile changed"));
++        }
++        let mut params = json!({
++            "binding_id":self.binding_id, "session_id":thread_id.to_string(), "request_id":request_id,
++            "demand":{"provider":profile.provider(), "audience":profile.audience(), "purpose":"request",
++                "resource":{"kind":"model", "target":model, "unit":"tokens", "scope":""}, "required":1},
++        });
++        if profile == RequestProfile::SiwcResponses { params["request_profile"] = json!(SIWC_PROFILE); }
++        let method = if let Some(replacement) = replacement {
++            params["replacement_ticket"] = json!(replacement.ticket);
++            "adapter.siwcAcquireReplacement"
++        } else { "adapter.acquire" };
++        let value = self.rpc(method, params).await?;
+         let lease: Lease =
+             serde_json::from_value(value).map_err(|_| invalid("broker lease is invalid"))?;
+         if lease.lease_handle.len() != 64
+@@ -1693,6 +1820,9 @@
+             Some(cleanup.lease.lease_handle.clone());
+         if cleanup.lease.expires_at <= now()? {
+             return Err(invalid("broker lease is expired"));
++        }
++        if replacement.is_some_and(|replacement| cleanup.lease.expires_at > replacement.expires_at || cleanup.lease.account_id == replacement.rejected_account_id) {
++            return Err(invalid("SIWC replacement lease exceeds admission or repeats rejected account"));
+         }
+         cleanup.disarm();
+         Ok(cleanup.lease.clone())
+@@ -1789,12 +1919,26 @@
+     }
+ 
+     pub(crate) async fn materialize(&self, lease: &Lease) -> std::io::Result<Arc<RequestAuth>> {
+-        let value = self
+-            .rpc(
+-                "adapter.materialize",
+-                json!({"lease_handle":lease.lease_handle}),
+-            )
+-            .await?;
++        self.materialize_for_profile(lease, RequestProfile::NativeChatgpt).await
++    }
++
++    pub(crate) async fn materialize_for_profile(&self, lease: &Lease, profile: RequestProfile) -> std::io::Result<Arc<RequestAuth>> {
++        if self.request_profile.get().is_some_and(|selected| *selected != profile)
++            || (profile == RequestProfile::SiwcResponses && self.request_profile.get() != Some(&profile))
++        {
++            return Err(invalid("broker materialization request profile changed"));
++        }
++        let mut params = json!({"lease_handle":lease.lease_handle});
++        if profile == RequestProfile::SiwcResponses { params["request_profile"] = json!(SIWC_PROFILE); }
++        let value = self.rpc("adapter.materialize", params).await?;
++        if profile == RequestProfile::SiwcResponses {
++            return materialized_siwc(value, lease);
++        }
++        // Opaque access-token bytes do not disclose their audience. Refuse the
++        // separately typed API authority rather than interpreting it as native ChatGPT.
++        if ["request_profile", "issuer", "audience", "auth_mode"].iter().any(|name| value.get(*name).is_some()) {
++            return Err(invalid("API authority cannot enter the native ChatGPT slot"));
++        }
+         let grant: MaterializedGrant =
+             serde_json::from_value(value).map_err(|_| invalid("broker grant is invalid"))?;
+         if grant.expires_at <= now()?
+@@ -1823,6 +1967,22 @@
+         }))
+     }
+ 
++    /// Actor owns original intent/current pair/independent bucket admission and
++    /// atomically spent tickets. Native code cannot derive those facts from a code.
++    pub(crate) async fn reject_siwc(
++        &self, lease: &Lease, request_id: &str, failure: &SiwcFailure, allow_replacement: bool,
++    ) -> std::io::Result<Option<SiwcReplacement>> {
++        if self.request_profile.get() != Some(&RequestProfile::SiwcResponses) {
++            return Err(invalid("SIWC rejection profile is not current"));
++        }
++        let value = self.rpc("adapter.siwcReject", json!({
++            "lease_handle":lease.lease_handle,"request_profile":SIWC_PROFILE,
++            "status":failure.status,"error_code":failure.code,"error_param":failure.param,
++            "provider_request_id":failure.provider_request_id,"pre_acceptance":true,"response_started":false,
++        })).await?;
++        validated_siwc_rejection(value, lease, request_id, failure, allow_replacement)
++    }
++
+     /// The account identity and generation are compared together; a generation alone is not unique.
+     pub(crate) fn adopt_route(&self, lease: &Lease, input: &Value) -> std::io::Result<bool> {
+         let next = (lease.account_id.clone(), lease.route_generation);
+@@ -1975,6 +2135,7 @@
+             socket: PathBuf::new(),
+             capability_path: PathBuf::new(),
+             binding_id: "thread".into(),
++            request_profile: OnceLock::new(),
+             route: Mutex::new(None),
+             last_lease: Mutex::new(None),
+             metadata: Mutex::new(None),
+@@ -2004,6 +2165,7 @@
+             socket: PathBuf::new(),
+             capability_path: PathBuf::new(),
+             binding_id: "thread".into(),
++            request_profile: OnceLock::new(),
+             route: Mutex::new(None),
+             last_lease: Mutex::new(None),
+             metadata: Mutex::new(None),
+@@ -2195,6 +2357,241 @@
+                 .await
+                 .map_err(|_| invalid("test broker did not receive the expected requests"))?
+                 .map_err(|_| invalid("test broker task did not finish"))?
++        }
++
++        fn siwc_http_error(status: u16, code: &str, param: Option<&str>) -> ApiError {
++            let mut headers = HeaderMap::new();
++            headers.insert("x-request-id", HeaderValue::from_static("req_synthetic_fixture"));
++            ApiError::Transport(TransportError::Http { status:StatusCode::from_u16(status).unwrap(),
++                url:Some("https://api.openai.com/v1/responses".into()),headers:Some(headers),
++                body:Some(json!({"error":{"code":code,"param":param,"type":"fixture_error","message":"synthetic failure"}}).to_string()) })
++        }
++        fn siwc_stop(lease: &Lease) -> Value {
++            json!({"recorded":true,"request_profile":SIWC_PROFILE,"rejected_lease_handle":lease.lease_handle,
++                "rejected_route_generation":lease.route_generation,"disposition":"stop","replacement":null})
++        }
++
++        #[test]
++        fn structured_siwc_classifier_refuses_status_only_policy_duplicate_unknown_and_open_stream_errors() {
++            assert!(SiwcFailure::from_error(&siwc_http_error(429,"subscription_sharing_usage_limit_exceeded",Some("model"))).is_some());
++            assert!(SiwcFailure::from_error(&siwc_http_error(401,"subscription_sharing_invalid_user",None)).is_some());
++            for error in [siwc_http_error(403,"subscription_sharing_user_not_eligible",Some("model")),
++                siwc_http_error(401,"unknown",None),siwc_http_error(429,"unknown",Some("model")),ApiError::QuotaExceeded,
++                ApiError::Stream("synthetic post-open failure".into()),ApiError::Transport(TransportError::Timeout)] {
++                assert!(SiwcFailure::from_error(&error).is_none());
++            }
++            for body in [r#"{"detail":"synthetic admission failure"}"#,
++                r#"[{"code":"subscription_sharing_usage_limit_exceeded","param":"model"}]"#,
++                r#"{"error":["subscription_sharing_usage_limit_exceeded","model",null,null]}"#,
++                r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded","code":"subscription_sharing_usage_limit_exceeded","param":"model"}}"#]
++            {
++                let error=ApiError::Transport(TransportError::Http { status:StatusCode::TOO_MANY_REQUESTS,url:Some("https://api.openai.com/v1/responses".into()),headers:None,body:Some(body.into()) });
++                assert!(SiwcFailure::from_error(&error).is_none());
++            }
++            let mut wrong_route=siwc_http_error(429,"subscription_sharing_usage_limit_exceeded",Some("model"));
++            if let ApiError::Transport(TransportError::Http { url,.. })=&mut wrong_route { *url=Some("https://chatgpt.com/backend-api/codex/responses".into()); }
++            assert!(SiwcFailure::from_error(&wrong_route).is_none());
++        }
++
++        #[tokio::test]
++        async fn actual_private_structured_siwc_reject_records_literal_cause_and_stop_without_refresh_or_alternate() -> std::io::Result<()> {
++            let broker=MockBroker::new().await?;let thread_id=broker.thread_id()?;
++            let lease=test_lease(u64::MAX);
++            let server=serve(broker.listener,vec![result("adapter.acquire",lease_result(u64::MAX)),result("adapter.siwcReject",siwc_stop(&lease))]);
++            let acquired=broker.binding.acquire_for_profile(thread_id,"siwc-original-request","fixture-model",RequestProfile::SiwcResponses).await?;
++            let failure=SiwcFailure::from_error(&siwc_http_error(401,"subscription_sharing_invalid_user",None)).ok_or_else(||invalid("fixture classification failed"))?;
++            assert!(broker.binding.reject_siwc(&acquired,"siwc-original-request",&failure,true).await?.is_none());
++            let requests=served(server).await?;assert_eq!(requests.len(),2);
++            assert_eq!(requests[1]["params"]["error_code"],"subscription_sharing_invalid_user");
++            assert!(requests[1]["params"]["error_param"].is_null());
++            assert_eq!(requests[1]["params"]["provider_request_id"],"req_synthetic_fixture");
++            assert_eq!(requests[1]["params"]["pre_acceptance"],true);
++            assert_eq!(requests[1]["params"]["response_started"],false);
++            Ok(())
++        }
++
++        #[tokio::test]
++        async fn actual_private_siwc_ticket_binds_request_expiry_and_distinct_replacement_method() -> std::io::Result<()> {
++            let broker=MockBroker::new().await?;let thread_id=broker.thread_id()?;let lease=test_lease(u64::MAX);
++            let mut receipt=siwc_stop(&lease);receipt["disposition"]=json!("retry_compatible");
++            receipt["replacement"]=json!({"ticket":"c".repeat(64),"request_id":"siwc-original-request","expires_at":u64::MAX});
++            let mut next=lease_result(u64::MAX);next["account_id"]=json!("synthetic-independent-account");next["lease_handle"]=json!("d".repeat(64));
++            let server=serve(broker.listener,vec![result("adapter.acquire",lease_result(u64::MAX)),result("adapter.siwcReject",receipt),result("adapter.siwcAcquireReplacement",next),result("adapter.report",json!({"recorded":true}))]);
++            let acquired=broker.binding.acquire_for_profile(thread_id,"siwc-original-request","fixture-model",RequestProfile::SiwcResponses).await?;
++            let failure=SiwcFailure::from_error(&siwc_http_error(429,"subscription_sharing_usage_limit_exceeded",Some("model"))).ok_or_else(||invalid("fixture classification failed"))?;
++            let ticket=broker.binding.reject_siwc(&acquired,"siwc-original-request",&failure,true).await?.ok_or_else(||invalid("fixture ticket missing"))?;
++            assert!(broker.binding.acquire_siwc_replacement(thread_id,"different-request","fixture-model",&ticket).await.is_err());
++            let next=broker.binding.acquire_siwc_replacement(thread_id,"siwc-original-request","fixture-model",&ticket).await?;
++            assert_ne!(next.account_id,acquired.account_id);
++            broker.binding.report(&next,"abandoned",None).await?;
++            let requests=served(server).await?;assert_eq!(requests.len(),4);
++            assert_eq!(requests[2]["params"]["request_id"],"siwc-original-request");
++            assert_eq!(requests[2]["params"]["replacement_ticket"],"c".repeat(64));
++            assert_eq!(requests[2]["params"]["request_profile"],SIWC_PROFILE);
++            Ok(())
++        }
++
++        #[test]
++        fn actual_siwc_receipt_validator_refuses_stale_or_expired_or_second_attempt_tickets() -> std::io::Result<()> {
++            let mut lease=test_lease(u64::MAX);lease.expires_at=now()?+600;
++            let failure=SiwcFailure::from_error(&siwc_http_error(429,"subscription_sharing_usage_limit_exceeded",Some("model"))).ok_or_else(||invalid("fixture classification failed"))?;
++            let mut receipt=siwc_stop(&lease);receipt["disposition"]=json!("retry_compatible");
++            receipt["replacement"]=json!({"ticket":"c".repeat(64),"request_id":"original-request","expires_at":lease.expires_at});
++            assert!(validated_siwc_rejection(receipt.clone(),&lease,"original-request",&failure,true)?.is_some());
++            assert!(validated_siwc_rejection(receipt.clone(),&lease,"different-request",&failure,true).is_err());
++            assert!(validated_siwc_rejection(receipt.clone(),&lease,"original-request",&failure,false).is_err());
++            let auth_failure=SiwcFailure::from_error(&siwc_http_error(401,"subscription_sharing_invalid_user",Some("model"))).ok_or_else(||invalid("fixture classification failed"))?;
++            assert!(validated_siwc_rejection(receipt.clone(),&lease,"original-request",&auth_failure,true).is_err());
++            for (field,value) in [("recorded",json!(false)),("request_profile",json!("native_chatgpt")),
++                ("rejected_lease_handle",json!("d".repeat(64))),("rejected_route_generation",json!(8)),("replacement",Value::Null)]
++            {
++                let mut changed=receipt.clone();changed[field]=value;
++                assert!(validated_siwc_rejection(changed,&lease,"original-request",&failure,true).is_err());
++            }
++            for (field,value) in [("ticket",json!("0".repeat(64))),("expires_at",json!(0)),("expires_at",json!(lease.expires_at+1))] {
++                let mut changed=receipt.clone();changed["replacement"][field]=value;
++                assert!(validated_siwc_rejection(changed,&lease,"original-request",&failure,true).is_err());
++            }
++            assert!(validated_siwc_rejection(json!([true,SIWC_PROFILE,lease.lease_handle,lease.route_generation,"stop",null]),&lease,"original-request",&failure,true).is_err());
++            let mut sequence=receipt.clone();sequence["replacement"]=json!(["c".repeat(64),"original-request",lease.expires_at]);
++            assert!(validated_siwc_rejection(sequence,&lease,"original-request",&failure,true).is_err());
++            let mut missing=siwc_stop(&lease);missing.as_object_mut().unwrap().remove("replacement");
++            assert!(validated_siwc_rejection(missing,&lease,"original-request",&failure,true).is_err());
++            Ok(())
++        }
++
++        #[derive(Clone)]
++        struct SiwcLocalTransport {
++            calls: Arc<Mutex<Vec<codex_client::Request>>>,
++            after_open: bool,
++        }
++        impl codex_client::HttpTransport for SiwcLocalTransport {
++            async fn execute(&self,_request:codex_client::Request)->Result<codex_client::Response,TransportError> {
++                Err(TransportError::Build("fixture execute forbidden".into()))
++            }
++            async fn stream(&self,request:codex_client::Request)->Result<codex_client::StreamResponse,TransportError> {
++                let url=request.url.clone();
++                self.calls.lock().map_err(|_|TransportError::Build("fixture capture unavailable".into()))?.push(request);
++                if self.after_open {
++                    let bytes: codex_client::ByteStream = Box::pin(futures::stream::iter(vec![Ok(
++                        b"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\",\"message\":\"synthetic usage error\"}}}\n\n".to_vec().into()
++                    )]));
++                    Ok(codex_client::StreamResponse { status:StatusCode::OK,headers:HeaderMap::new(),bytes })
++                } else {
++                    Err(TransportError::Http {status:StatusCode::TOO_MANY_REQUESTS,url:Some(url),headers:None,
++                        body:Some(json!({"error":{"code":"subscription_sharing_usage_limit_exceeded","param":"model","message":"synthetic usage error"}}).to_string())})
++                }
++            }
++        }
++
++        fn actual_siwc_request_fixture() -> codex_api::ResponsesApiRequest {
++            codex_api::ResponsesApiRequest {model:"synthetic-siwc-model".into(),instructions:"synthetic developer instructions".into(),
++                input:vec![serde_json::from_value(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic request"}]})).unwrap()],
++                tools:None,tool_choice:"auto".into(),parallel_tool_calls:true,reasoning:None,store:false,stream:true,
++                stream_options:None,include:vec![],service_tier:None,prompt_cache_key:None,text:None,client_metadata:None,access_programs:None}
++        }
++
++        #[tokio::test]
++        async fn actual_responses_client_encodes_fixed_route_and_bearer_then_classifies_only_before_stream_open() -> std::io::Result<()> {
++            let calls=Arc::new(Mutex::new(Vec::new()));
++            let transport=SiwcLocalTransport {calls:Arc::clone(&calls),after_open:false};
++            let info:codex_model_provider_info::ModelProviderInfo=serde_json::from_value(json!({"name":"Omux SIWC Responses","base_url":SIWC_AUDIENCE,"requires_openai_auth":false,"supports_websockets":false})).map_err(|_|invalid("fixture provider invalid"))?;
++            assert!(RequestProfile::for_provider(&info)?==RequestProfile::SiwcResponses);
++            let mut provider=info.to_api_provider(None).map_err(|_|invalid("fixture provider invalid"))?;
++            provider.headers.clear();provider.retry.max_attempts=0;provider.retry.retry_429=false;provider.retry.retry_5xx=false;provider.retry.retry_transport=false;
++            let auth=materialized_siwc(siwc_grant_result(u64::MAX),&test_lease(u64::MAX))?;
++            let client=codex_api::ResponsesClient::new(transport,provider,auth);
++            let mut request=actual_siwc_request_fixture();crate::broker_request_profile::prepare_siwc_request(&mut request)?;
++            let error=client.stream_request(request,codex_api::ResponsesOptions::default()).await.err().ok_or_else(||invalid("fixture expected HTTP refusal"))?;
++            assert!(SiwcFailure::from_error(&error).is_some());
++            let captured=calls.lock().map_err(|_|invalid("fixture capture unavailable"))?;
++            assert_eq!(captured.len(),1);let actual=&captured[0];assert_eq!(actual.method,http::Method::POST);assert_eq!(actual.url,"https://api.openai.com/v1/responses");
++            assert!(actual.headers[http::header::AUTHORIZATION].is_sensitive());
++            assert_eq!(actual.headers[http::header::AUTHORIZATION],"Bearer synthetic-siwc-access");
++            assert!(actual.headers.get("chatgpt-account-id").is_none() && actual.headers.get(http::header::COOKIE).is_none());
++            let body=match actual.body.as_ref() {Some(codex_client::RequestBody::EncodedJson(body))=>body.as_bytes(),_=>return Err(invalid("fixture expected actual encoded JSON"))};
++            let body:Value=serde_json::from_slice(body).map_err(|_|invalid("fixture actual body invalid"))?;
++            assert_eq!(body["store"],false);assert_eq!(body["stream"],true);assert_eq!(body["input"].as_array().map(Vec::len),Some(1));
++            assert!(body.get("previous_response_id").is_none());
++            Ok(())
++        }
++
++        #[tokio::test]
++        async fn actual_responses_open_stream_usage_failure_never_becomes_replacement_authority() -> std::io::Result<()> {
++            use futures::StreamExt;
++            let calls=Arc::new(Mutex::new(Vec::new()));let transport=SiwcLocalTransport {calls:Arc::clone(&calls),after_open:true};
++            let info:codex_model_provider_info::ModelProviderInfo=serde_json::from_value(json!({"name":"Omux SIWC Responses","base_url":SIWC_AUDIENCE,"requires_openai_auth":false,"supports_websockets":false})).map_err(|_|invalid("fixture provider invalid"))?;
++            let mut provider=info.to_api_provider(None).map_err(|_|invalid("fixture provider invalid"))?;provider.headers.clear();provider.retry.max_attempts=0;
++            provider.retry.retry_429=false;provider.retry.retry_5xx=false;provider.retry.retry_transport=false;
++            let client=codex_api::ResponsesClient::new(transport,provider,materialized_siwc(siwc_grant_result(u64::MAX),&test_lease(u64::MAX))?);
++            let mut stream=client.stream_request(actual_siwc_request_fixture(),codex_api::ResponsesOptions::default()).await.map_err(|_|invalid("fixture stream did not open"))?;
++            let event=stream.next().await.ok_or_else(||invalid("fixture failed stream event absent"))?;
++            assert!(event.is_err());
++            assert!(SiwcFailure::from_error(&ApiError::QuotaExceeded).is_none());
++            assert_eq!(calls.lock().map_err(|_|invalid("fixture capture unavailable"))?.len(),1);
++            Ok(())
++        }
++
++        fn siwc_grant_result(expiry: u64) -> Value {
++            json!({"request_profile":SIWC_PROFILE,"issuer":SIWC_ISSUER,"audience":SIWC_AUDIENCE,
++                "auth_mode":SIWC_AUTH_MODE,"access_token":"synthetic-siwc-access","expires_at":expiry,"route_generation":7})
++        }
++
++        #[tokio::test]
++        async fn siwc_private_request_joins_distinct_profile_and_bearer_without_native_account_header() -> std::io::Result<()> {
++            let broker = MockBroker::new().await?;
++            let thread_id = broker.thread_id()?;
++            let server = serve(broker.listener, vec![
++                result("adapter.acquire", lease_result(u64::MAX)),
++                result("adapter.materialize", siwc_grant_result(u64::MAX)),
++                result("adapter.report", json!({"recorded":true})),
++            ]);
++            let lease = broker.binding.acquire_for_profile(thread_id, "siwc-request", "siwc-model", RequestProfile::SiwcResponses).await?;
++            let auth = broker.binding.materialize_for_profile(&lease, RequestProfile::SiwcResponses).await?;
++            let headers = auth.resolve_auth_headers().await.map_err(|_| invalid("SIWC fixture authorization failed"))?;
++            assert_eq!(headers.len(), 1);
++            assert_eq!(headers[http::header::AUTHORIZATION], "Bearer synthetic-siwc-access");
++            assert!(headers[http::header::AUTHORIZATION].is_sensitive());
++            assert!(broker.binding.materialize(&lease).await.is_err());
++            assert!(broker.binding.acquire(thread_id, "wrong-profile", "siwc-model").await.is_err());
++            broker.binding.report(&lease, "abandoned", None).await?;
++            let requests = served(server).await?;
++            assert_eq!(requests.len(), 3);
++            assert_eq!(requests[0]["params"]["request_profile"], SIWC_PROFILE);
++            assert_eq!(requests[0]["params"]["demand"]["provider"], "openai_siwc");
++            assert_eq!(requests[0]["params"]["demand"]["audience"], SIWC_AUDIENCE);
++            assert_eq!(requests[1]["params"]["request_profile"], SIWC_PROFILE);
++            assert_eq!(requests[1]["params"]["lease_handle"], lease.lease_handle);
++            Ok(())
++        }
++
++        #[tokio::test]
++        async fn legacy_private_materialization_refuses_typed_siwc_authority() -> std::io::Result<()> {
++            let broker = MockBroker::new().await?;
++            let server = serve(broker.listener, vec![result("adapter.materialize", siwc_grant_result(u64::MAX))]);
++            assert!(broker.binding.materialize(&test_lease(u64::MAX)).await.is_err());
++            assert_eq!(served(server).await?.len(), 1);
++            Ok(())
++        }
++
++        #[test]
++        fn siwc_materialization_refuses_old_grant_wrong_authority_and_extra_account_header() -> std::io::Result<()> {
++            let lease = test_lease(u64::MAX);
++            assert!(materialized_siwc(grant_result(u64::MAX, 7), &lease).is_err());
++            assert!(materialized_siwc(json!([SIWC_PROFILE,SIWC_ISSUER,SIWC_AUDIENCE,SIWC_AUTH_MODE,"synthetic-siwc-access",u64::MAX,7]), &lease).is_err());
++            for (key, value) in [
++                ("request_profile", json!("native_chatgpt")), ("issuer", json!(ISSUER)),
++                ("audience", json!(ISSUER)), ("auth_mode", json!("chatgpt_access_token")),
++                ("route_generation", json!(8)), ("expires_at", json!(0)),
++                ("provider_account_id", json!("synthetic-workspace")), ("ready", json!(true)),
++            ] {
++                let mut grant = siwc_grant_result(u64::MAX); grant[key] = value;
++                assert!(materialized_siwc(grant, &lease).is_err());
++            }
++            let auth = materialized_siwc(siwc_grant_result(u64::MAX), &test_lease(0))?;
++            assert_eq!(auth.expires_at, 0);
++            assert!(auth.account.is_none());
++            Ok(())
+         }
+ 
+         #[tokio::test]
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1670,29 +1670,34 @@
+                 }
+             }
+         }
++        let profile = crate::broker_request_profile::RequestProfile::for_provider(self.client.state.provider.info())?;
++        if profile == crate::broker_request_profile::RequestProfile::SiwcResponses && model_info.use_responses_lite {
++            return Err(std::io::Error::other("SIWC broker profile does not support Responses Lite").into());
++        }
+         let request_id = Uuid::new_v4().to_string();
+         let mut frozen_request: Option<crate::broker_text_context::RequestFreeze> = None;
++        let mut siwc_replacement: Option<crate::auth_broker::SiwcReplacement> = None;
+         for attempt in 0..=1 {
+-            let lease = binding
+-                .acquire(self.client.state.thread_id, &request_id, &model_info.slug)
+-                .await?;
++            let lease = if let Some(replacement) = &siwc_replacement {
++                binding.acquire_siwc_replacement(self.client.state.thread_id, &request_id, &model_info.slug, replacement).await?
++            } else {
++                binding.acquire_for_profile(self.client.state.thread_id, &request_id, &model_info.slug, profile).await?
++            };
+             let mut cleanup = crate::auth_broker::LeaseGuard::new(Arc::clone(&binding), lease);
+             let lease = &cleanup.lease;
+-            let api_auth: SharedAuthProvider = binding.materialize(lease).await?;
++            let api_auth: SharedAuthProvider = binding.materialize_for_profile(lease, profile).await?;
+             let mut provider = self
+                 .client
+                 .state
+                 .provider
+                 .info()
+-                .to_api_provider(Some(AuthMode::ChatgptAuthTokens))?;
+-            if !self.client.state.provider.info().is_openai()
+-                || provider.base_url.trim_end_matches('/') != crate::auth_broker::ENDPOINT
+-                || provider.query_params.is_some()
+-            {
+-                return Err(std::io::Error::other(
+-                    "broker binding requires the declared Codex endpoint",
+-                )
+-                .into());
++                .to_api_provider(profile.auth_mode())?;
++            let expected_endpoint = match profile {
++                crate::broker_request_profile::RequestProfile::NativeChatgpt => crate::auth_broker::ENDPOINT,
++                crate::broker_request_profile::RequestProfile::SiwcResponses => crate::broker_request_profile::SIWC_AUDIENCE,
++            };
++            if provider.base_url.trim_end_matches('/') != expected_endpoint || provider.query_params.is_some() {
++                return Err(std::io::Error::other("broker binding requires its exact declared request endpoint").into());
+             }
+             provider.headers.remove(http::header::AUTHORIZATION);
+             provider.headers.remove(http::header::COOKIE);
+@@ -1728,6 +1733,9 @@
+                 is_internal_metadata_destination(&provider),
+             )?;
+             self.client.prepare_response_items_for_request(&mut request.input);
++            if profile == crate::broker_request_profile::RequestProfile::SiwcResponses {
++                crate::broker_request_profile::prepare_siwc_request(&mut request)?;
++            }
+             let input = serde_json::to_value(&request.input)
+                 .map_err(|_| std::io::Error::other("native request could not be inspected"))?;
+             if self.client.broker_context_mode
+@@ -1763,13 +1771,15 @@
+                 self.turn_state = Arc::new(OnceLock::new());
+                 self.broker_route = Some(next_route);
+             }
+-            let mut options = self
+-                .build_responses_options(
+-                    responses_metadata,
+-                    self.responses_request_compression(None),
+-                    model_info.use_responses_lite,
+-                )
+-                .await;
++            let mut options = if profile == crate::broker_request_profile::RequestProfile::SiwcResponses {
++                // No ambient attestation, account affinity, cookie, or native
++                // authentication work is consulted for this API-Responses route.
++                let mut options = ApiResponsesOptions::default();
++                add_originator_header(&mut options.extra_headers, "omux");
++                options
++            } else {
++                self.build_responses_options(responses_metadata, self.responses_request_compression(None), model_info.use_responses_lite).await
++            };
+             options.turn_state = None;
+             options.extra_headers.remove("x-codex-turn-state");
+             options.extra_headers.remove(X_CODEX_ROUTING_HINT_HEADER);
+@@ -1845,14 +1855,26 @@
+                     });
+                 }
+                 Err(error) => {
+-                    let rejection = crate::auth_broker::pre_acceptance_rejection(&error);
+                     let debug = extract_response_debug_context_from_api_error(&error);
+                     trace_attempt.record_failed(&error, debug.request_id.as_deref(), &[]);
++                    if profile == crate::broker_request_profile::RequestProfile::SiwcResponses {
++                        // No Responses stream has opened. Only a qualified actor ticket,
++                        // never a status, error code or local refresh, can admit one alternate.
++                        if let Some(failure) = crate::auth_broker::SiwcFailure::from_error(&error) {
++                            let replacement = binding.reject_siwc(lease, &request_id, &failure, attempt == 0).await?;
++                            cleanup.disarm();
++                            if let Some(replacement) = replacement { siwc_replacement = Some(replacement); continue; }
++                        }
++                        return Err(self.client.state.provider.map_api_error(error));
++                    }
++                    let rejection = crate::auth_broker::pre_acceptance_rejection(&error);
+                     if let Some(status) = rejection {
+                         binding.report(lease, "rejected", Some(status)).await?;
+                         cleanup.disarm();
+-                        if attempt == 0 {
+-                            // No response stream exists. Exactly one alternate uses the same native input.
++                        if attempt == 0 && profile == crate::broker_request_profile::RequestProfile::NativeChatgpt {
++                            // The existing native route has its existing rejection contract.
++                            // SIWC policy/region/scope/usage causes need their own qualified
++                            // classification; an HTTP status alone cannot authorize substitution.
+                             continue;
+                         }
+                     }
+--- /dev/null
++++ b/codex-rs/core/src/broker_request_profile.rs
+@@ -0,0 +1,113 @@
++//! Closed request routes. This consumes daemon authority; it creates no OAuth issuer.
++use codex_api::ResponsesApiRequest;
++use codex_model_provider_info::{ModelProviderInfo, WireApi};
++use codex_protocol::models::ResponseItem;
++use serde_json::Value;
++use std::io;
++
++pub(crate) const SIWC_PROFILE: &str = "openai_siwc_responses_v1";
++pub(crate) const SIWC_PROVIDER: &str = "openai_siwc";
++pub(crate) const SIWC_ISSUER: &str = "https://auth.openai.com";
++pub(crate) const SIWC_AUDIENCE: &str = "https://api.openai.com/v1";
++pub(crate) const SIWC_AUTH_MODE: &str = "openai_siwc_access_token";
++const SIWC_NAME: &str = "Omux SIWC Responses";
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(crate) enum RequestProfile { NativeChatgpt, SiwcResponses }
++fn refused() -> io::Error { io::Error::other("broker request profile is unsupported or mismatched") }
++impl RequestProfile {
++    pub(crate) fn for_provider(info: &ModelProviderInfo) -> io::Result<Self> {
++        if info.name == SIWC_NAME {
++            if info.base_url.as_deref() != Some(SIWC_AUDIENCE)
++                || !matches!(info.wire_api, WireApi::Responses)
++                || info.requires_openai_auth || info.supports_websockets || info.supports_standalone_web_search
++                || info.env_key.is_some() || info.experimental_bearer_token.is_some()
++                || info.auth.is_some() || info.gateway_oauth.is_some() || info.aws.is_some()
++                || info.query_params.is_some() || info.http_headers.is_some() || info.env_http_headers.is_some()
++                || info.model_catalog_url.is_some()
++            { return Err(refused()); }
++            return Ok(Self::SiwcResponses);
++        }
++        if !info.is_openai() { return Err(refused()); }
++        let provider = info.to_api_provider(Some(codex_protocol::auth::AuthMode::ChatgptAuthTokens))
++            .map_err(|_| refused())?;
++        if provider.base_url.trim_end_matches('/') != crate::auth_broker::ENDPOINT || provider.query_params.is_some() {
++            return Err(refused());
++        }
++        Ok(Self::NativeChatgpt)
++    }
++    pub(crate) fn audience(self) -> &'static str {
++        match self { Self::NativeChatgpt => crate::auth_broker::ISSUER, Self::SiwcResponses => SIWC_AUDIENCE }
++    }
++    pub(crate) fn provider(self) -> &'static str {
++        match self { Self::NativeChatgpt => "codex", Self::SiwcResponses => SIWC_PROVIDER }
++    }
++    pub(crate) fn auth_mode(self) -> Option<codex_protocol::auth::AuthMode> {
++        match self { Self::NativeChatgpt => Some(codex_protocol::auth::AuthMode::ChatgptAuthTokens), Self::SiwcResponses => None }
++    }
++}
++
++// Reject unsupported tools rather than silently changing native tool semantics.
++fn tools_supported(tools: &[Value], depth: usize) -> io::Result<()> {
++    if depth > 8 { return Err(refused()); }
++    for tool in tools {
++        match tool.get("type").and_then(Value::as_str) {
++            Some("function" | "custom") => {},
++            Some("namespace") => tools_supported(tool.get("tools").and_then(Value::as_array).ok_or_else(refused)?, depth + 1)?,
++            _ => return Err(refused()),
++        }
++    }
++    Ok(())
++}
++
++/// Use the documented additional_tools representation. No native transcript is mutated.
++/// HTTP sends full input; unsupported history remains in place and is explicitly refused.
++pub(crate) fn prepare_siwc_request(request: &mut ResponsesApiRequest) -> io::Result<()> {
++    if request.store || !request.stream || request.access_programs.is_some() { return Err(refused()); }
++    let raw = serde_json::to_value(&request.input).map_err(|_| refused())?;
++    for item in raw.as_array().ok_or_else(refused)? {
++        match item.get("type").and_then(Value::as_str) {
++            Some("message") => {
++                if !matches!(item.get("role").and_then(Value::as_str), Some("user" | "assistant" | "developer")) { return Err(refused()); }
++                for content in item.get("content").and_then(Value::as_array).ok_or_else(refused)? {
++                    if !matches!(content.get("type").and_then(Value::as_str), Some("input_text" | "output_text" | "input_image" | "input_file")) { return Err(refused()); }
++                }
++            },
++            Some("additional_tools") => tools_supported(item.get("tools").and_then(Value::as_array).ok_or_else(refused)?, 0)?,
++            Some("function_call_output" | "custom_tool_call_output") => {
++                let output = item.get("output").ok_or_else(refused)?;
++                if let Some(content) = output.as_array() {
++                    for part in content {
++                        if !matches!(part.get("type").and_then(Value::as_str), Some("input_text" | "input_image")) {
++                            return Err(refused());
++                        }
++                    }
++                } else if !output.is_string() { return Err(refused()); }
++            },
++            Some("reasoning" | "function_call" | "custom_tool_call") => {},
++            _ => return Err(refused()),
++        }
++    }
++    if let Some(tools) = &request.tools {
++        let value = serde_json::to_value(tools).map_err(|_| refused())?;
++        let tools = value.as_array().ok_or_else(refused)?.clone();
++        tools_supported(&tools, 0)?;
++        if !tools.is_empty() {
++            request.input.insert(0, ResponseItem::AdditionalTools { id: None, role: "developer".to_owned(), tools });
++        }
++        request.tools = None;
++    }
++    request.client_metadata = None;
++    request.stream_options = None;
++    // These unsupported fields are not representable in the pinned request type.
++    // Fail closed if a later maintained request type starts serializing one.
++    let body = serde_json::to_value(&*request).map_err(|_| refused())?;
++    for name in ["background", "conversation", "max_output_tokens", "max_tool_calls", "metadata", "moderation", "multi_agent", "prompt", "prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs", "top_p", "truncation", "user", "previous_response_id"] {
++        if body.get(name).is_some() { return Err(refused()); }
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++#[path = "broker_request_profile_tests.rs"]
++mod tests;
+--- /dev/null
++++ b/codex-rs/core/src/broker_request_profile_tests.rs
+@@ -0,0 +1,119 @@
++use super::*;
++use serde_json::json;
++
++fn provider_value() -> Value {
++    json!({"name":"Omux SIWC Responses","base_url":SIWC_AUDIENCE,"wire_api":"responses",
++        "requires_openai_auth":false,"supports_websockets":false})
++}
++fn provider(value: Value) -> ModelProviderInfo { serde_json::from_value(value).unwrap() }
++fn request() -> ResponsesApiRequest {
++    ResponsesApiRequest { model:"synthetic-siwc-model".into(), instructions:"synthetic developer instructions".into(),
++        input:vec![serde_json::from_value(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic user turn"}]})).unwrap()],
++        tools:None, tool_choice:"auto".into(), parallel_tool_calls:true, reasoning:None, store:false, stream:true,
++        stream_options:None, include:vec![],service_tier:None,prompt_cache_key:None,text:None,client_metadata:None,access_programs:None }
++}
++
++#[test]
++fn exact_siwc_provider_refuses_ambient_credentials_native_auth_websockets_and_endpoint_drift() {
++    assert!(RequestProfile::for_provider(&provider(provider_value())).unwrap() == RequestProfile::SiwcResponses);
++    for (key, value) in [
++        ("base_url",json!("https://chatgpt.com/backend-api/codex")),
++        ("base_url",json!("https://api.openai.com/v1/")), ("name",json!("OpenAI")),
++        ("requires_openai_auth",json!(true)), ("supports_websockets",json!(true)),
++        ("supports_standalone_web_search",json!(true)), ("env_key",json!("SYNTHETIC_ENV_KEY")),
++        ("experimental_bearer_token",json!("synthetic-token")), ("query_params",json!({})),
++        ("http_headers",json!({})), ("env_http_headers",json!({})),
++        ("model_catalog_url",json!("https://api.openai.com/v1/models")),
++    ] {
++        let mut value_base = provider_value(); value_base[key] = value;
++        assert!(RequestProfile::for_provider(&provider(value_base)).is_err());
++    }
++}
++
++#[test]
++fn current_native_provider_and_siwc_audiences_remain_distinct() {
++    let native = provider(json!({"name":"OpenAI","base_url":crate::auth_broker::ENDPOINT,"requires_openai_auth":true}));
++    assert!(RequestProfile::for_provider(&native).unwrap() == RequestProfile::NativeChatgpt);
++    assert_eq!(RequestProfile::NativeChatgpt.audience(),crate::auth_broker::ISSUER);
++    assert_eq!(RequestProfile::SiwcResponses.audience(),SIWC_AUDIENCE);
++    assert_eq!(RequestProfile::SiwcResponses.provider(),"openai_siwc");
++    assert!(RequestProfile::SiwcResponses.auth_mode().is_none());
++}
++
++#[test]
++fn actual_request_keeps_full_history_and_moves_only_supported_tools_to_additional_tools() {
++    let mut request = request();
++    let original = request.input.clone();
++    let raw: std::sync::Arc<serde_json::value::RawValue> = serde_json::value::RawValue::from_string(
++        r#"[{"type":"function","name":"fixture_tool","parameters":{"type":"object","properties":{}}},{"type":"custom","name":"fixture_custom","format":{"type":"text"}}]"#.to_owned()).unwrap().into();
++    request.tools=Some(raw.into());
++    request.client_metadata=Some(std::collections::HashMap::from([("synthetic".to_owned(),"metadata".to_owned())]));
++    prepare_siwc_request(&mut request).unwrap();
++    assert_eq!(&request.input[1..], original.as_slice());
++    assert!(matches!(&request.input[0],ResponseItem::AdditionalTools { id:None,role,tools } if role=="developer" && tools.len()==2));
++    let body=serde_json::to_value(&request).unwrap();
++    assert_eq!(body["store"],false); assert_eq!(body["stream"],true);
++    assert!(body.get("tools").is_none() && body.get("client_metadata").is_none() && body.get("previous_response_id").is_none());
++    assert_eq!(body["instructions"],"synthetic developer instructions");
++    prepare_siwc_request(&mut request).unwrap();
++    assert_eq!(request.input.len(),2);
++}
++
++#[test]
++fn unsupported_native_history_and_hosted_tools_are_refused_without_history_rewrite() {
++    for item in [
++        json!({"type":"message","role":"system","content":[{"type":"input_text","text":"synthetic"}]}),
++        json!({"type":"additional_tools","role":"developer","tools":[{"type":"tool_search"}]}),
++        json!({"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"synthetic","tools":[{"type":"image_generation"}]}]}),
++    ] {
++        let mut request=request(); request.input=vec![serde_json::from_value(item).unwrap()];
++        let original=request.input.clone();
++        assert!(prepare_siwc_request(&mut request).is_err()); assert_eq!(request.input,original);
++    }
++    for (store,stream) in [(true,true),(false,false)] {
++        let mut request=request();request.store=store;request.stream=stream;
++        assert!(prepare_siwc_request(&mut request).is_err());
++    }
++}
++
++fn tool_output(custom: bool, payload: codex_protocol::models::FunctionCallOutputPayload) -> ResponseItem {
++    if custom {
++        ResponseItem::CustomToolCallOutput { id:None,call_id:"synthetic-call".into(),name:None,
++            output:payload,internal_chat_message_metadata_passthrough:None }
++    } else {
++        ResponseItem::FunctionCallOutput { id:None,call_id:Some("synthetic-call".into()),name:None,namespace:None,
++            output:payload,internal_chat_message_metadata_passthrough:None }
++    }
++}
++
++#[test]
++fn actual_typed_function_and_custom_audio_or_encrypted_outputs_refuse_before_any_mutation() {
++    use codex_protocol::models::{FunctionCallOutputContentItem,FunctionCallOutputPayload};
++    for custom in [false,true] {
++        for content in [FunctionCallOutputContentItem::InputAudio { audio_url:"data:audio/wav;base64,synthetic".into() },
++            FunctionCallOutputContentItem::EncryptedContent { encrypted_content:"synthetic-opaque-output".into() }]
++        {
++            let mut request=request();
++            request.input.push(tool_output(custom,FunctionCallOutputPayload::from_content_items(vec![content])));
++            let original=request.clone();
++            assert!(prepare_siwc_request(&mut request).is_err());
++            assert_eq!(request,original);
++        }
++    }
++}
++
++#[test]
++fn actual_typed_function_and_custom_text_and_image_outputs_preserve_their_original_bodies() {
++    use codex_protocol::models::{FunctionCallOutputContentItem,FunctionCallOutputPayload};
++    for custom in [false,true] {
++        let image: FunctionCallOutputContentItem=serde_json::from_value(json!({"type":"input_image","image_url":"https://example.invalid/synthetic-image"})).unwrap();
++        for payload in [FunctionCallOutputPayload::from_text("synthetic plain output".into()),
++            FunctionCallOutputPayload::from_content_items(vec![FunctionCallOutputContentItem::InputText { text:"synthetic structured output".into() },image])]
++        {
++            let mut request=request();request.input.push(tool_output(custom,payload));
++            let original=request.clone();
++            prepare_siwc_request(&mut request).unwrap();
++            assert_eq!(request,original);
++        }
++    }
++}
