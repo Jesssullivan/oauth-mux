@@ -23,6 +23,8 @@ load(":codex_owner_status_persistence_metadata_inputs.bzl", "codex_owner_status_
 # are parsed even when only the source/model targets below are requested.
 load(":codex_native_sdk_carrier_inputs.bzl", "codex_native_sdk_carrier_inputs", "codex_native_sdk_carrier_selected_inputs")
 load(":codex_native_sdk_carrier_proof_inputs.bzl", "codex_native_sdk_carrier_proof_inputs")
+# Parse the complete original-SDK declaration; this does not instantiate it.
+load(":codex_original_sdk_inputs.bzl", "codex_original_sdk_inputs")
 load(":codex_native_carrier_material_inputs.bzl", "codex_native_carrier_material_inputs")
 
 _PROTOCOL_HISTORY_QUERY_TOOL_SOURCES = [
@@ -2973,4 +2975,22 @@ python_test(
     main = "guard_native_file_writer_source_reserved_test.py",
     srcs = _NATIVE_ACQUISITION_MODEL_SOURCES,
     target_compatible_with = ["@platforms//os:linux"],
+)
+
+# Original SDK models use tiny actual filesystem fixtures, not selected SDK DATA.
+exports_files([
+    "codex_original_sdk_declaration.py", "codex_original_sdk_inputs.bzl",
+    "codex_original_sdk_inputs.py", "codex_original_sdk_inputs_test.py",
+])
+python_test(
+    name = "codex_original_sdk_inputs_test",
+    main = "codex_original_sdk_inputs_test.py",
+    srcs = _NATIVE_SDK_CARRIER_SOURCES + [
+        "codex_native_sdk_carrier_test.py",
+        "codex_original_sdk_declaration.py",
+        "codex_original_sdk_inputs.py",
+    ],
+    data = ["codex_original_sdk_inputs.bzl"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
