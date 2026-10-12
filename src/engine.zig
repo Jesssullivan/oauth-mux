@@ -16386,7 +16386,7 @@ test "SIWC catalog in-flight pause cancels publication while unrelated revision 
         var changed = if (retire)
             try SiwcActorTest.call(producer, current, "account.pause", .{ .account_id = owned.account_id[0..], .operation_id = "catalog-pause-inflight", .expected_revision = before }, .control)
         else
-            try SiwcActorTest.call(producer, current, "policy.set", .{ .operation_id = "catalog-unrelated-revision", .expected_revision = before, .sticky_routes = false, .warm_alternatives = false }, .control);
+            try SiwcActorTest.call(producer, current, "policy.set", .{ .operation_id = "catalog-unrelated-revision", .expected_revision = before, .sticky_routes = true, .warm_alternatives = false }, .control);
         defer SiwcActorTest.dispose(&changed);
         _ = try SiwcActorTest.result(&changed);
         thread.join();

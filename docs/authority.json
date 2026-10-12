@@ -124,7 +124,8 @@
     "docs/agent-notes/2026-10-11-product-reality-and-work-order.md",
     "docs/agent-notes/2026-10-11-product-reality-reattachment-index.json",
     "docs/agent-notes/2026-10-11-1757UTC-current-product-checkpoint.md",
-    "docs/agent-notes/2026-10-12-omux-cache-maintenance.md"
+    "docs/agent-notes/2026-10-12-omux-cache-maintenance.md",
+    "docs/agent-notes/2026-10-12-runtime-enrollment-checkpoint.md"
   ],
   "historical_inventory": "docs/history/retired-design-inventory.md",
   "historical_extra": [

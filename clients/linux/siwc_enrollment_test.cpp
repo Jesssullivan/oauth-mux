@@ -19,6 +19,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <memory>
+#include <cstdio>
 #include <sys/resource.h>
 
 namespace {
@@ -69,6 +70,7 @@ int main(int argc, char **argv) {
     QString transaction(64, '2'), source(64, '3'); const QString account(64, '4');
     qint64 revision = 9007199254740993LL, seconds = 600;
     int prepares = 0, authorizations = 0, statuses = 0, withdrawals = 0, browserLaunches = 0, commits = 0;
+    int consentDialogYesClicks = 0;
     bool wireValid = true, ready = false, custody = true, heldAuthorization = false;
     QString state = "pending", phase = "prepared";
     QLocalSocket *held = nullptr; QByteArray heldReply;
@@ -188,12 +190,17 @@ int main(int argc, char **argv) {
             : state == "retired" ? "Retirement alone does not establish consent withdrawal" : "Unknown or quarantined";
         if (!until([&] { return notice->text().contains(expected); }) || notice->text().contains("Request authority is retained") || prepares != 1 || authorizations != 1) return 22;
     }
-    QTimer::singleShot(0, &app, [&] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) box->done(QMessageBox::Yes); });
-    cancel->click(); if (!until([&] { return withdrawals == 1 && notice->text().contains("paired grants for it were retired"); }) || consent->isChecked() || start->isEnabled()) return 18;
+    QTimer::singleShot(0, &app, [&] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) if (auto *yes = box->button(QMessageBox::Yes)) { ++consentDialogYesClicks; yes->click(); } });
+    cancel->click(); if (!until([&] { return withdrawals == 1 && notice->text().contains("paired grants for it were retired"); }) || consent->isChecked() || start->isEnabled()) {
+        std::fprintf(stderr, "siwc_fixture stage=first_cancel yes_clicks=%d withdrawals=%d ack_notice=%d consent_checked=%d start_enabled=%d cancel_enabled=%d client_ready=%d uncertain=%d\n",
+            consentDialogYesClicks, withdrawals, int(notice->text().contains("paired grants for it were retired")), int(consent->isChecked()),
+            int(start->isEnabled()), int(cancel->isEnabled()), int(client.ready()), int(client.hasUncertainOperations()));
+        return 18;
+    }
     // Explicit cancellation also fences an already-issued held URL response.
     state = "pending"; phase = "prepared"; heldAuthorization = true;
     consent->setChecked(true); start->click(); if (!until([&] { return held != nullptr; })) return 19;
-    QTimer::singleShot(0, &app, [&] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) box->done(QMessageBox::Yes); });
+    QTimer::singleShot(0, &app, [&] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) if (auto *yes = box->button(QMessageBox::Yes)) { ++consentDialogYesClicks; yes->click(); } });
     cancel->click(); if (!until([&] { return withdrawals == 2 && notice->text().contains("paired grants for it were retired"); })) return 23;
     held->write(heldReply); held->flush();
     snapshot = false; client.request("state.snapshot", {}, [&](const QJsonObject &, const QString &) { snapshot = true; });
@@ -247,7 +254,7 @@ int main(int argc, char **argv) {
     // A source-specific withdrawal remains bound to the original handle even
     // if its operation.status ACK is read after closure and selecting another.
     holdWithdrawal = holdOperation = true;
-    QTimer::singleShot(0, &app, [&] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) box->done(QMessageBox::Yes); });
+    QTimer::singleShot(0, &app, [&] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) if (auto *yes = box->button(QMessageBox::Yes)) { ++consentDialogYesClicks; yes->click(); } });
     recoveredPanel->findChild<QPushButton *>("siwcCancel")->click();
     if (!until([&] { return oldWithdrawalSocket != nullptr; })) return 34;
     recoveredPanel->close();
