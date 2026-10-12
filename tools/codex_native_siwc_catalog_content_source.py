@@ -1,5 +1,6 @@
 """Selected N10 content -> exact V4/catalog delta; no old ancestor reexecution."""
 import copy
+import codex_transported_sdk_inputs as transported
 import sys
 import codex_native_siwc_catalog_source as catalog
 import codex_native_n10_source_intake as intake
@@ -61,13 +62,14 @@ def retain_controls(owner):
 
 def produce(*args, **kwargs):
     return previous.produce(*args, **kwargs, _transform=catalog.compose,
-        _report=make_report, _source_intake=intake.source_intake)
+        _report=make_report, _source_intake=intake.source_intake,
+        _regenerator=transported.regenerate, _sdk_record=transported.record)
 
 
 def main(*, _child=None, _extra=None, _retainer=None, _admitted=None):
     previous.main(_child=_child, _extra=_extra, _admitted=_admitted, _producer=produce,
         _retainer=retain_controls if _retainer is None else _retainer,
-        _input_factory=intake.Inputs, _output=OUTPUT,
+        _input_factory=intake.Inputs, _sdk_factory=transported.open_sdk, _output=OUTPUT,
         _marker='native-siwc-catalog-content-source: selected N10 bytes plus exact V4/catalog composition; old ancestors not reexecuted')
 
 
@@ -88,6 +90,7 @@ def refusal_diagnostic(error):
         ('binding-custody', binding), ('source-io', source),
         ('carrier-metadata', sys.modules.get('codex_native_carrier_metadata')),
         ('sdk-inputs', sys.modules.get('codex_original_sdk_inputs')),
+        ('sdk-transported', transported),
         ('query', parent.query), ('query-tools', parent.query_tools),
         ('material', parent.material), ('sdk-carrier', parent.carrier),
         ('protocol', parent.protocol), ('parent-guard', parent.parent_guard))

@@ -8,7 +8,7 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
         src for src in native_acquisition_source_closure(source_sources, sdk_sources)
         if str(src) not in ("//delivery:portable.py", "codex_native_acquisition_bridge_material.py")
     ] + ["codex_native_source_file_writer.py", "guard_native_file_writer_source_reserved.py",
-        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "guard_native_siwc_catalog_source_reserved.py", "guard_native_siwc_catalog_content_source_reserved.py", "codex_native_n10_source_intake.py", "codex_native_siwc_catalog_content_source.py"]).to_list()
+        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "guard_native_siwc_catalog_source_reserved.py", "guard_native_siwc_catalog_content_source_reserved.py", "codex_native_n10_source_intake.py", "codex_native_siwc_catalog_content_source.py", "codex_transported_sdk_inputs.py"]).to_list()
     controls = [
         "//integrations/codex-upstream/siwc-native:inputs",
         "//integrations/codex-upstream/siwc-native-catalog:inputs",
@@ -38,7 +38,7 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
     python_test(
         name = "codex_native_siwc_catalog_models_test",
         main = "codex_native_siwc_catalog_models_test.py",
-        srcs = sources,
+        srcs = depset(sources + original_sdk_sources + ["codex_transported_sdk_inputs_test.py", "codex_native_sdk_carrier_test.py"]).to_list(),
         data = depset(controls + catalog_content_controls()).to_list() + ["//integrations/codex-upstream/siwc-native:native_preimages",
             "//integrations/codex-upstream/siwc-native-catalog:native_preimages",
             "//integrations/codex-upstream/siwc-native-catalog:BUILD.bazel",

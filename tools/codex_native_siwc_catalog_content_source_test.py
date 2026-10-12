@@ -13,6 +13,7 @@ from unittest.mock import patch
 import codex_native_siwc_catalog_content_source as content
 import codex_native_siwc_catalog_source_test as regression
 from codex_native_n10_source_intake_test import N10ContentIntakeTests
+from codex_transported_sdk_inputs_test import TransportedSDKTests
 
 
 class ContentSourceTests(regression.CatalogSourceTests):
@@ -72,6 +73,7 @@ class ContentSourceTests(regression.CatalogSourceTests):
             content.main()
         self.assertIs(run.call_args.kwargs['_producer'], content.produce)
         self.assertIs(run.call_args.kwargs['_input_factory'], content.intake.Inputs)
+        self.assertIs(run.call_args.kwargs['_sdk_factory'], content.transported.open_sdk)
         self.assertIs(run.call_args.kwargs['_retainer'], content.retain_controls)
         self.assertEqual(run.call_args.kwargs['_output'], content.OUTPUT)
         with patch.object(content.previous, 'produce') as run:
@@ -79,6 +81,8 @@ class ContentSourceTests(regression.CatalogSourceTests):
         self.assertIs(run.call_args.kwargs['_source_intake'], content.intake.source_intake)
         self.assertIs(run.call_args.kwargs['_transform'], content.catalog.compose)
         self.assertIs(run.call_args.kwargs['_report'], content.make_report)
+        self.assertIs(run.call_args.kwargs['_regenerator'], content.transported.regenerate)
+        self.assertIs(run.call_args.kwargs['_sdk_record'], content.transported.record)
 
     def test_retainer_captures_selector_and_static_sdk_lineage_controls(self):
         captures = []
@@ -253,7 +257,12 @@ class ContentSourceTests(regression.CatalogSourceTests):
                         patches.enter_context(patch.object(family, 'guardian', side_effect=lambda row, owner:
                             ({'public': 'guardian seam'}, {str(bundle / 'source-receipt.json')} | set(owner.provenance_paths))))
                         patches.enter_context(patch.object(content, 'produce', side_effect=producer))
-                        patches.enter_context(patch.dict(sys.modules, {'codex_original_sdk_inputs': sdk_module}))
+                        # This is the existing source/clock/guardian seam, not
+                        # transported SDK qualification. Real packed IO/NAR tests
+                        # live in TransportedSDKTests imported above.
+                        patches.enter_context(patch.object(content.transported,'open_sdk',side_effect=
+                            lambda carrier,pin,actual_entry,actual_until,context,*unused:
+                                SDK(root/'manifest',root/'manifest',carrier,pin,actual_entry,actual_until,context)))
                         patches.enter_context(patch.object(metadata, 'proof_scope', proof_scope))
                         patches.enter_context(patch.object(metadata, 'selection', return_value={'carrier': {'receipt_sha256': 'd'*64}}))
                         patches.enter_context(patch.object(metadata, 'declared_carrier', return_value=(root / 'carrier', (), declaration)))

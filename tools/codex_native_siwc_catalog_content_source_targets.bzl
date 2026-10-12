@@ -24,7 +24,8 @@ def catalog_content_controls():
 def catalog_content_source_data():
     return catalog_content_controls() + [
         "@omux_native_n10_content_inputs//:inputs",
-        "@omux_original_native_sdk_inputs//:inputs",
+        # Complete SDK/JDK packed bytes and original producer proof; the new
+        # runtime owns fresh content custody, never original host inode proof.
         "@omux_native_sdk_carrier_inputs//:inputs",
         "@omux_native_sdk_carrier_proof_inputs//:inputs",
         "@omux_protocol_history_query_tools//:inputs",
@@ -38,7 +39,8 @@ def catalog_content_sources(source_sources, sdk_sources):
         "codex_native_source_file_writer.py", "guard_native_file_writer_source_reserved.py",
         "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py",
         "codex_native_siwc_catalog_source.py", "codex_native_n10_source_intake.py",
-        "codex_native_siwc_catalog_content_source.py",
+        "codex_native_siwc_catalog_content_source.py", "codex_transported_sdk_inputs.py",
+        "codex_original_sdk_inputs.py",  # Semantic code only, no physical SDK DATA.
         "guard_native_siwc_catalog_content_source_reserved.py",
     ]).to_list()
 
@@ -57,7 +59,8 @@ def codex_native_siwc_catalog_content_source_targets(source_sources, sdk_sources
     python_test(
         name = "codex_native_siwc_catalog_content_source_test",
         main = "codex_native_siwc_catalog_content_source_test.py",
-        srcs = depset(sources + original_sdk_sources + ["codex_native_n10_source_intake_test.py", "codex_native_siwc_catalog_source_test.py"]).to_list(),
+        srcs = depset(sources + original_sdk_sources + ["codex_native_n10_source_intake_test.py", "codex_native_siwc_catalog_source_test.py",
+            "codex_transported_sdk_inputs_test.py", "codex_native_sdk_carrier_test.py"]).to_list(),
         data = catalog_content_controls() + [
             "//integrations/codex-upstream/siwc-native:native_preimages",
             "//integrations/codex-upstream/siwc-native-catalog:native_preimages",

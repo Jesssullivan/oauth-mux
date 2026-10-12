@@ -3105,6 +3105,8 @@ python_test(
     main = "codex_native_siwc_content_graph_test.py",
     srcs = _NATIVE_ACQUISITION_MODEL_SOURCES + ["execution_guard_test.py"],
     data = ["codex_native_n10_content_inputs.bzl", "codex_native_siwc_catalog_model_inputs.bzl",
+        "codex_native_sdk_carrier_inputs.bzl", "codex_native_sdk_carrier_proof_inputs.bzl",
+        "codex_native_file_writer_model_source_targets.bzl", "codex_native_siwc_source_targets.bzl",
         "codex_native_siwc_catalog_content_source_targets.bzl", "codex_native_siwc_catalog_models_targets.bzl",
         "//integrations/codex-upstream:native-n10-content-input.json"],
     tags = ["manual", "no-remote", "no-cache"],

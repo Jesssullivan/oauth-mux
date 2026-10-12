@@ -230,11 +230,16 @@ def native_plan(published,sdk,report,work,cutoff):
     source.require(tools['status'] == 'declared-fixed-query-tools-byte-qualified' and tools['inputs_rechecked'] is True)
     work.mkdir(mode=0o700)
     candidate = SimpleNamespace(source=published.path/'source',root=work,lease=SimpleNamespace(output_base=work/'output-base'))
-    args = SimpleNamespace(native_export_root=family.query.EXPORT_ROOT,native_mode='siwc-catalog-models')
+    export_root = family.query.EXPORT_ROOT
+    if report['kind'] == content_catalog.KIND:
+        source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK
+            and 'original_sdk' not in report and report['transported_sdk'] == sdk.record())
+        export_root = sdk.sdk_root
+    args = SimpleNamespace(native_export_root=export_root,native_mode='siwc-catalog-models')
     plan = native.command_from_verified_inputs(args,work,family.query.LOCKED_PATH,tools['query_tools']['tools']['bash'],
         candidate,(report,mapping),{'siwc-catalog-models':('test',TARGETS,'')},gates=None)
     original = list(plan['argv'])
-    plan = shared.project_hub(plan,mapping,published.path/'hub/source',family.query.EXPORT_ROOT)
+    plan = shared.project_hub(plan,mapping,published.path/'hub/source',export_root)
     remaining = math.floor(cutoff-time.monotonic()-90)
     source.require(remaining > 0 and tuple(plan['argv'][-len(TARGETS):]) == TARGETS
         and plan['argv'].count('--test_timeout=1200') == 1 and '--test_sharding_strategy=disabled' in plan['argv']
@@ -319,7 +324,9 @@ def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
             'selected_catalog_source':extra.row,'selected_source_outer_sha256':extra.row['producer']['sha256'],
             'source':{'receipt_path':str(published.path/'source-receipt.json'),'receipt_sha256':source.sha(published.raw),
                 'inventory_sha256':report['inventory_sha256'],'patch_sha256':report['patch_sha256'],'graph_files':report['graph_files']},
-            'generated_hub':report['generated_hub'],'original_sdk':report['original_sdk'],
+            'generated_hub':report['generated_hub'],
+            **({'transported_sdk':report['transported_sdk']} if report['kind'] == content_catalog.KIND
+                else {'original_sdk':report['original_sdk']}),
             'sdk_input_qualification':report['sdk_input_qualification'],'plan':plan,
             'new_catalog_methods_passed':20,'original_v4_methods_passed':15,
             'normal_unit_target_regressions_passed':True,'default_cli_binary_qualified':False,

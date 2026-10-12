@@ -150,12 +150,14 @@ def retain_model_controls(owner):
     return (raw_config, config), (raw_control, control)
 
 
-def produce(output, inputs, work, publication, *, sdk_session=None, query_repository=None, context=None, sdk_qualification=None, _transform=None, _report=None, _source_intake=None):
+def produce(output, inputs, work, publication, *, sdk_session=None, query_repository=None, context=None, sdk_qualification=None, _transform=None, _report=None, _source_intake=None, _regenerator=None, _sdk_record=None):
     """Called with one admitted cutoff; caller retains SDK/publication owners to final acceptance."""
     intake_source = parent_source if _source_intake is None else _source_intake
     transform_source = transform if _transform is None else _transform
     report_source = make_report if _report is None else _report
-    source.require(callable(intake_source) and callable(transform_source) and callable(report_source))
+    regenerate_source = regenerate if _regenerator is None else _regenerator
+    source.require(callable(intake_source) and callable(transform_source) and callable(report_source) and callable(regenerate_source)
+        and (_sdk_record is None or callable(_sdk_record)))
     raw_config, config = configuration()
     raw_control, control = controls()
     patch = model_patch(control)
@@ -167,7 +169,7 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
             output_fd = source.write_source(output, files)
             hub = plan = tools = None
             if sdk_session is not None:
-                hub, plan, tools = regenerate(files, sdk_session, work, output, query_repository)
+                hub, plan, tools = regenerate_source(files, sdk_session, work, output, query_repository)
                 fd = source.write_source(output / 'hub', {name: ('100644', raw) for name, raw in hub.items()})
                 try: os.fchmod(fd, 0o555)
                 finally: os.close(fd)
@@ -178,11 +180,14 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
                     'selector_sha256', 'selection', 'qualified_producer', 'declaration', 'proof_inputs'})
                 report['sdk_input_qualification'] = copy.deepcopy(sdk_qualification)
                 report['hub_query_plan'] = plan
-                report['original_sdk'] = {'root': str(query.EXPORT_ROOT), 'receipt_sha256': query.EXPORT_SHA,
-                    'mapping': sdk_session.mapping(), 'custody': 'fresh-declared-original-sdk-content-v1',
-                    'declaration_sha256': source.sha(sdk_session.catalogue.raw),
-                    'declaration_context': declaration_context(context),
-                    'carrier_receipt_sha256': sdk_session.carrier_pin, 'complete_members': len(sdk_session.expected)}
+                if _sdk_record is None:
+                    report['original_sdk'] = {'root': str(query.EXPORT_ROOT), 'receipt_sha256': query.EXPORT_SHA,
+                        'mapping': sdk_session.mapping(), 'custody': 'fresh-declared-original-sdk-content-v1',
+                        'declaration_sha256': source.sha(sdk_session.catalogue.raw),
+                        'declaration_context': declaration_context(context),
+                        'carrier_receipt_sha256': sdk_session.carrier_pin, 'complete_members': len(sdk_session.expected)}
+                else:
+                    report['transported_sdk'] = _sdk_record(sdk_session)
                 report['query_tool_closure'] = tools
             raw_report = source.encoded(report)
             receipt_fd, receipt_anchor = publish_receipt(output_fd, raw_report)
@@ -227,7 +232,7 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
         if error is not None: raise error
 
 
-def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_factory=None, _admitted=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
+def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_factory=None, _admitted=None, _sdk_factory=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
     # Only pinned source-family modules supply these callables; no runtime flag
     # or request claims source qualification. Defaults retain the original route.
     input_factory = Inputs if _input_factory is None else _input_factory
@@ -236,7 +241,7 @@ def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_fac
     source.require(callable(input_factory) and callable(produce_source) and callable(retain_source)
         and (_child is None or callable(_child)) and ((_child is None) == (_extra is None))
         and _output in (OUTPUT, "native-siwc-catalog-source", "native-siwc-catalog-content-source")
-        and type(_marker) is str)
+        and type(_marker) is str and (_sdk_factory is None or callable(_sdk_factory)))
     source.require(sys.argv in ([sys.argv[0]], [sys.argv[0], '--source-only']))
     source_only = len(sys.argv) == 2
     source.require(not source_only or _child is None)
@@ -269,9 +274,13 @@ def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_fac
                             material.declared_xml_success(captured_proofs['test_xml'])
                             retained.add(Path(declaration['selection_path']), declaration['selection_sha256'], 8192)
                             qualified = metadata.qualify_producer(selected, cutoff, proofs)
-                            manifest_alias, manifest = original_sdk.declared_manifest(runfiles, rows)
-                            sdk_session = original_sdk.HeldOriginalSDK(manifest_alias, manifest, root,
-                                selected['carrier']['receipt_sha256'], entry, until, declaration_context(initial_context))
+                            if _sdk_factory is None:
+                                manifest_alias, manifest = original_sdk.declared_manifest(runfiles, rows)
+                                sdk_session = original_sdk.HeldOriginalSDK(manifest_alias, manifest, root,
+                                    selected['carrier']['receipt_sha256'], entry, until, declaration_context(initial_context))
+                            else:
+                                sdk_session = _sdk_factory(root, selected['carrier']['receipt_sha256'], entry, until,
+                                    declaration_context(initial_context), aliases, declaration, retained)
                             sdk_session.__enter__()
                             query.declared_query_tools(runfiles, rows)
                             report = produce_source(output / _output, inputs, output / 'model-hub-work', published,

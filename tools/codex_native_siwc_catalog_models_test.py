@@ -84,6 +84,20 @@ class CatalogDriverTests(unittest.TestCase):
             self.assertEqual(plan['environment']['CARGO_NET_OFFLINE'],'true')
             self.assertIn('--override_repository='+model.family.binding.metadata.HUB+'='+str(published.path/'hub/source'),plan['argv'])
 
+    def test_content_native_plan_refuses_legacy_sdk_owner_before_building_any_child(self):
+        report = {'kind':model.content_catalog.KIND,'patch_sha256':['a'*64]*12,
+            **{name:False for name in model.catalog.previous.FALSE_FLAGS}}
+        published = Mock(active=True)
+        sdk = Mock()
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(model.content_catalog,'validate_report_method'), \
+                patch.object(model.family.query_tools,'verify_repository',return_value={
+                    'status':'declared-fixed-query-tools-byte-qualified','inputs_rechecked':True}), \
+                patch.object(model.native,'command_from_verified_inputs') as command:
+            with self.assertRaises(ValueError):
+                model.native_plan(published,sdk,report,Path(temporary)/'work',time.monotonic()+300)
+            command.assert_not_called()
+
     def test_actual_role_alias_same_byte_replacement_refuses_without_re_resolving_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory=Path(temporary)/'core-unit-tests';directory.mkdir()
@@ -215,9 +229,11 @@ class CatalogDriverTests(unittest.TestCase):
         self.assertIn('@omux_native_siwc_catalog_model_inputs//:inputs',macro)
         shared_macro=(root/'tools/codex_native_siwc_catalog_content_source_targets.bzl').read_text()
         self.assertIn('catalog_content_source_data()',macro)
-        for repo in ('omux_original_native_sdk_inputs','omux_native_n10_content_inputs',
+        for repo in ('omux_native_n10_content_inputs',
                 'omux_native_sdk_carrier_inputs','omux_native_sdk_carrier_proof_inputs','omux_protocol_history_query_tools'):
             self.assertIn('@'+repo+'//:inputs',shared_macro)
+        self.assertNotIn('@omux_original_native_sdk_inputs//:inputs',shared_macro)
+        self.assertIn('codex_transported_sdk_inputs.py',macro)
         for old in ('omux_codex_owner_status_source_inputs','omux_codex_owner_status_persistence_source_inputs',
                 'omux_native_carrier_source_inputs','omux_native_file_writer_model_source_inputs'):
             self.assertNotIn('@'+old+'//:inputs',shared_macro)

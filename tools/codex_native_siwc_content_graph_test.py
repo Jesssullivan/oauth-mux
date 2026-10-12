@@ -173,10 +173,10 @@ class ContentGraphModels(unittest.TestCase):
             exec(raw, namespace)
         return namespace, calls
 
-    def test_actual_macros_exclude_all_historical_physical_edges_and_keep_full_sdk_tools(self):
+    def test_actual_macros_exclude_original_leaf_graph_and_keep_complete_packed_sdk_tools(self):
         ns, calls = self.macros(); ns['codex_native_siwc_catalog_content_source_targets'](['source.py'], ['sdk.py'], ['original.py'])
         producer = next(row for row in calls if row['name'].endswith('_producer'))
-        expected = {'@omux_native_n10_content_inputs//:inputs','@omux_original_native_sdk_inputs//:inputs',
+        expected = {'@omux_native_n10_content_inputs//:inputs',
             '@omux_native_sdk_carrier_inputs//:inputs','@omux_native_sdk_carrier_proof_inputs//:inputs','@omux_protocol_history_query_tools//:inputs'}
         self.assertEqual({row for row in producer['data'] if row.startswith('@')}, expected)
         self.assertEqual(len(producer['data']), len(set(producer['data'])))
@@ -185,6 +185,24 @@ class ContentGraphModels(unittest.TestCase):
         driver = next(row for row in calls if row['name'].endswith('_producer'))
         self.assertEqual({row for row in driver['data'] if row.startswith('@')}, expected | {'@omux_native_siwc_catalog_model_inputs//:inputs'})
         self.assertNotIn('@forbidden_historical_parent//:inputs', driver['data'])
+        for row in (producer, driver):
+            self.assertNotIn('@omux_original_native_sdk_inputs//:inputs', row['data'])
+            self.assertIn('codex_transported_sdk_inputs.py', row['srcs'])
+            self.assertIn('original.py', row['srcs'])
+        model = next(row for row in calls if row['name'] == 'codex_native_siwc_catalog_models_test')
+        self.assertIn('original.py', model['srcs'])
+        self.assertIn('codex_transported_sdk_inputs_test.py', model['srcs'])
+        self.assertIn('codex_native_sdk_carrier_test.py', model['srcs'])
+        # Existing historical producers keep their original complete physical
+        # SDK declaration; only the explicit content/driver graph changes.
+        for name, entry in (('codex_native_file_writer_model_source_targets.bzl', 'native_file_writer_model_source_targets'),
+                ('codex_native_siwc_source_targets.bzl', 'codex_native_siwc_source_targets')):
+            raw = '\n'.join(line for line in (ROOT / name).read_text().splitlines() if not line.startswith('load('))
+            exec(raw, ns); calls.clear()
+            ns[entry](['source.py'], ['sdk.py'], ['@original_historical_parent//:inputs'], ['original.py'])
+            historical = next(row for row in calls if row['name'].endswith('_producer'))
+            self.assertIn('@omux_original_native_sdk_inputs//:inputs', historical['data'])
+            self.assertIn('@original_historical_parent//:inputs', historical['data'])
 
     def test_static_test_data_does_not_instantiate_old_repository(self):
         ns, calls = self.macros(); ns['codex_native_siwc_catalog_content_source_targets']([], [], [])
@@ -192,7 +210,107 @@ class ContentGraphModels(unittest.TestCase):
         self.assertFalse(any(row.startswith('@') for row in model['data']))
         self.assertIn('codex_native_siwc_catalog_source_test.py', model['srcs'])
         self.assertIn('codex_native_n10_source_intake_test.py', model['srcs'])
+        self.assertIn('codex_transported_sdk_inputs.py', model['srcs'])
+        self.assertIn('codex_transported_sdk_inputs_test.py', model['srcs'])
+        self.assertIn('codex_native_sdk_carrier_test.py', model['srcs'])
         self.assertIn('codex_native_siwc_catalog_source_targets.bzl', model['data'])
+
+    def test_actual_compact_rules_keep_all_four_transport_and_five_proof_members(self):
+        # Actual repository bodies; filesystem shape is an explicit declaration
+        # seam. This model does not authenticate a producer, SDK byte or NAR.
+        kinds = {str: 'string', dict: 'dict', list: 'list', int: 'int', bool: 'bool'}
+        def fail(message): raise ValueError(message)
+        def rule(name, selected=False):
+            raw = (ROOT / name).read_text()
+            if selected:
+                head = raw.split('\ncodex_native_sdk_carrier_inputs = repository_rule', 1)[0]
+                tail = raw.split('\ndef _selected(ctx):', 1)[1].split('\ncodex_native_sdk_carrier_selected_inputs = repository_rule', 1)[0]
+                raw = head + '\ndef _selected(ctx):' + tail
+            else:
+                raw = raw[:raw.rindex('\n' + name.removesuffix('.bzl') + ' = repository_rule')]
+            namespace = {'fail': fail, 'type': lambda value: kinds.get(type(value), 'unknown'),
+                'json': SimpleNamespace(decode=json.loads, encode=json.dumps)}
+            exec(raw.replace('.elems()', ''), namespace)
+            return namespace['_selected' if selected else '_implementation']
+        class Leaf:
+            def __init__(self, name, present): self.name, self.present = str(name), present
+            def __str__(self): return self.name
+            @property
+            def exists(self): return self.name in self.present
+            @property
+            def is_dir(self): return False
+            @property
+            def realpath(self): return self
+        class ShapeContext:
+            def __init__(self, attr, raw, present):
+                self.attr, self.raw, self.present = attr, raw, present
+                self.links, self.watches, self.outputs = [], [], {}
+            def path(self, name): return Leaf(name, self.present)
+            def read(self, path, **kwargs): return self.raw[str(path)]
+            def watch(self, path): self.watches.append(str(path))
+            def symlink(self, path, alias): self.links.append((str(path), alias))
+            def file(self, name, raw, **kwargs): self.outputs[name] = raw
+        def group(ctx):
+            calls = []
+            exec(ctx.outputs['BUILD.bazel'], {'__builtins__': {},
+                'package': lambda **kwargs: calls.append(('package', kwargs)),
+                'exports_files': lambda files: calls.append(('exports', files)),
+                'filegroup': lambda **kwargs: calls.append(('group', kwargs))})
+            self.assertEqual(calls[0], ('package', {'default_visibility': ['//visibility:public']}))
+            self.assertEqual(calls[1][1], calls[2][1]['srcs'])
+            self.assertEqual(calls[2][1]['name'], 'inputs')
+            self.assertEqual(len(calls), 3)
+            return calls[1][1]
+        epoch = '/home/jess/.local/state/omux-execution-20261005/12345678-1234-1234-1234-123456789abc'
+        stem = epoch + '/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_sdk_carrier_seal_producer/test.outputs/sdk-private'
+        names = ['payload.bin', 'manifest.json', 'origin-receipt.json', 'receipt.json']
+        digests = {name: str(index + 1) * 64 for index, name in enumerate(names)}
+        carrier_root = stem + '/sdk-carrier'
+        present = {carrier_root + '/' + name for name in names}
+        selected = rule('codex_native_sdk_carrier_inputs.bzl', selected=True)
+        ctx = ShapeContext(SimpleNamespace(carrier_root=carrier_root, digests=digests), {}, present)
+        selected(ctx)
+        self.assertEqual(ctx.links, [(carrier_root + '/' + name, 'carrier/' + name) for name in names])
+        self.assertEqual(ctx.watches, [carrier_root + '/' + name for name in names])
+        self.assertEqual(group(ctx), ['carrier/' + name for name in names] + ['selection.json'])
+        self.assertEqual(json.loads(ctx.outputs['selection.json']), {'carrier_root': carrier_root, 'digests': digests})
+        ctx = ShapeContext(SimpleNamespace(carrier_root=carrier_root, digests=digests), {}, present - {carrier_root + '/payload.bin'})
+        with self.assertRaises(ValueError): selected(ctx)
+        self.assertNotIn('BUILD.bazel', ctx.outputs)
+        target = '//tools:codex_native_sdk_carrier_seal_producer'
+        selector_path = '/private/public-model/selected.json'
+        producer = {'receipt': epoch + '/receipt.json', 'sha256': 'a' * 64,
+            'source_commit': 'b' * 40, 'graph_sha256': 'c' * 64}
+        report = {'path': stem + '/native-sdk-carrier-producer.json', 'sha256': 'd' * 64}
+        selector = {'schema_version': 2, 'kind': 'omux-native-sdk-carrier-metadata-input-v2',
+            'status': 'selected-qualified-carrier-for-metadata', 'selection':
+            {'original_selection': {}, 'carrier': {}, 'qualification': {'producer': producer, 'report': report}}}
+        outer = {'id': epoch.split('/')[-1], 'profile': 'native-sdk-carrier-seal-reserved', 'verb': 'test',
+            'targets': [target], 'exit': 0, 'workload_exit': 0, 'controller_failure': None,
+            'descendants_empty': True, 'cleanup': {'state': 'empty'}, 'source_dirty': 'false',
+            'source_commit': producer['source_commit'], 'graph_sha256': producer['graph_sha256'],
+            'output_base': epoch + '/output-base', 'epoch_start_ns': 17,
+            'test_evidence': {'state': 'preserved', 'sha256': 'e' * 64}}
+        entries = [{'source': name, 'state': 'copied', 'file': str(index + 6) * 64 + '.evidence',
+            'sha256': str(index + 8) * 64, 'bytes': 1} for index, name in enumerate(('test.log', 'test.xml'))]
+        evidence = {'schema': 1, 'bazel_exit': 0, 'epoch_start_ns': 17, 'targets': [target],
+            'results': [{'target': target, 'state': 'observed', 'files': entries}]}
+        raw = {selector_path: json.dumps(selector), producer['receipt']: json.dumps(outer),
+            epoch + '/test-evidence.json': json.dumps(evidence)}
+        present = set(raw) | {report['path']} | {epoch + '/test-evidence/' + row['file'] for row in entries}
+        proof_rule = rule('codex_native_sdk_carrier_proof_inputs.bzl')
+        ctx = ShapeContext(SimpleNamespace(selection=selector_path), raw, present)
+        proof_rule(ctx)
+        expected = ['proof/outer-receipt.json', 'proof/test-evidence.json', 'proof/test-log.evidence',
+            'proof/test-xml.evidence', 'proof/program-report.json']
+        self.assertEqual(group(ctx), expected + ['proof-inputs.json'])
+        self.assertEqual([alias for path, alias in ctx.links], expected)
+        self.assertEqual(set(json.loads(ctx.outputs['proof-inputs.json'])['proofs']),
+            {'outer_receipt', 'test_evidence', 'test_log', 'test_xml', 'program_report'})
+        ctx = ShapeContext(SimpleNamespace(selection=selector_path), raw,
+            present - {epoch + '/test-evidence/' + entries[1]['file']})
+        with self.assertRaises(ValueError): proof_rule(ctx)
+        self.assertNotIn('BUILD.bazel', ctx.outputs)
 
     def retention(self):
         fixture = retirement.RunRetirementFilesystemModels('test_exact_reserved_file_writer_vector_holds_its_source_root')
