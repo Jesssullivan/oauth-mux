@@ -221,9 +221,18 @@ class Root:
                and info.st_uid == 0 and not info.st_mode & 0o222 and info.st_nlink > 1)
 
     def close(self):
-        for _, fd, _ in reversed(self.chain):
-            os.close(fd)
-        self.chain = []
+        # Detach ownership before any attempt. A close error does not establish
+        # that the numeric FD stayed open; never retry it after possible reuse.
+        owned, self.chain = tuple(self.chain), []
+        error = None
+        for _, fd, _ in reversed(owned):
+            try:
+                os.close(fd)
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+        if error is not None:
+            raise error
 
     def __enter__(self):
         return self

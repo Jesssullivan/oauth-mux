@@ -25,6 +25,84 @@ import codex_retained_sdk_export as sdk
 
 
 class CarrierModels(unittest.TestCase):
+    def test_root_close_detaches_attempts_every_owned_fd_and_never_retries_reused_numbers(self):
+        for index in (0, 2):
+            with self.subTest(index=index):
+                owner = carrier.Root(self.origin, carrier.Clock(self.deadline))
+                selected = [fd for _, fd, _ in reversed(owner.chain)]
+                self.assertGreater(len(selected), index)
+                real_close, attempts = os.close, []
+                def refuse(fd):
+                    self.assertEqual(owner.chain, [])
+                    attempts.append(fd)
+                    real_close(fd)
+                    if fd == selected[index]:
+                        raise OSError('synthetic successful-close error')
+                with patch.object(os, 'close', side_effect=refuse), self.assertRaises(OSError):
+                    owner.close()
+                self.assertEqual(attempts, selected)
+                for fd in selected:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+                fresh = os.open(self.origin / 'receipt.json', os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    owner.close()
+                    self.assertTrue(stat.S_ISREG(os.fstat(fresh).st_mode))
+                finally:
+                    real_close(fresh)
+
+    def test_failed_root_constructor_still_attempts_every_registered_ancestor_close(self):
+        unsafe = self.root / 'unsealed-root'
+        unsafe.mkdir(mode=0o700)
+        real_open, real_close, opened, attempts = os.open, os.close, [], []
+        def tracked(*args, **kwargs):
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+        def refuse(fd):
+            attempts.append(fd)
+            real_close(fd)
+            if len(attempts) == 1:
+                raise OSError('synthetic constructor-cleanup close error')
+        with patch.object(os, 'open', side_effect=tracked), patch.object(os, 'close', side_effect=refuse), \
+                self.assertRaises(OSError):
+            carrier.Root(unsafe, carrier.Clock(self.deadline))
+        self.assertEqual(attempts, list(reversed(opened)))
+        for fd in opened:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    def test_held_transport_closes_all_four_leaves_and_root_chain_after_root_close_error(self):
+        root, _, pin = self.seal('transport-close-error')
+        owner = carrier.HeldCarrier(root, pin, self.deadline)
+        root_fds, leaf_fds = [], []
+        real_close, attempts = os.close, []
+        def refuse(fd):
+            attempts.append(fd)
+            if fd in root_fds:
+                self.assertEqual(owner._root.chain, [])
+            real_close(fd)
+            if root_fds and fd == root_fds[0]:
+                raise OSError('synthetic transport root close error')
+        # Register the actual ExitStack callbacks while the close seam is live;
+        # a later monkeypatch would not observe already captured callbacks.
+        with patch.object(os, 'close', side_effect=refuse):
+            owner.__enter__()
+            owner.report()
+            owner.full_final()
+            root_fds[:] = [fd for _, fd, _ in reversed(owner._root.chain)]
+            leaf_fds[:] = [fd for _, fd, _ in reversed(owner._held)]
+            attempts.clear()
+            with self.assertRaises(OSError):
+                owner.close()
+        self.assertEqual(attempts, leaf_fds + root_fds)
+        self.assertFalse(owner._active)
+        self.assertEqual(owner._held, ())
+        self.assertEqual(owner._root.chain, [])
+        for fd in attempts:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
     @contextmanager
     def copy_fixture(self, name, count=6):
         clock = carrier.Clock(self.deadline)
