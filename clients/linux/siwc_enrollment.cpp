@@ -135,7 +135,7 @@ void SiwcEnrollment::open() {
         if (selected.isEmpty()) { if (!transaction_.isEmpty()) return; message("New finite sign-in needs explicit consent."); controls(); return; }
         ++generation_; statusPending_ = descriptorPending_ = false; ++selection_; transaction_ = selected.value("transaction_id").toString(); source_ = selected.value("source_id").toString();
         authorizationAttempted_ = selected.value("authorization_delivered").toBool(true); terminal_ = false;
-        flowSeconds_ = qBound<qint64>(1, selected.value("flow_expires_at").toInteger() - QDateTime::currentSecsSinceEpoch(), 3600);
+        flowSeconds_ = qBound<qint64>(qint64{1}, selected.value("flow_expires_at").toInteger() - QDateTime::currentSecsSinceEpoch(), qint64{3600});
         elapsed_.start(); latest_ = {}; consent_->setChecked(false); poll_.start(); status(); descriptor(); controls();
     });
     connected_ = client_.ready();
