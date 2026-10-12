@@ -2217,6 +2217,17 @@ def main(argv=None):
         return _main(argv, admission_resources, retirement_resources)
 
 
+def site_development_artifact_request(args, arguments):
+    """Reject unrelated profile/phase selectors before tools or source inputs are read."""
+    if args.site_development_artifact_selection is None and args.site_development_artifact_selection_sha256 is None:
+        return False
+    if args.worker is not None:
+        raise ValueError('development artifact selection is not a worker command')
+    import guard_site_profile as site
+    return site.admitted_development_artifact(args.profile, args.site_phase, arguments,
+        args.site_development_artifact_selection, args.site_development_artifact_selection_sha256)
+
+
 def _main(argv, admission_resources, retirement_resources):
     # Delivery's one deadline begins before parsing/tool validation/bootstrap.
     # Other profiles keep their existing deadlines and execution behavior.
@@ -2237,6 +2248,8 @@ def _main(argv, admission_resources, retirement_resources):
     parser.add_argument('--repository-cache', type=Path)
     parser.add_argument('--nixpkgs-source', type=Path)
     parser.add_argument('--site-source', type=Path)
+    parser.add_argument('--site-development-artifact-selection')
+    parser.add_argument('--site-development-artifact-selection-sha256')
     parser.add_argument('--site-coordinator-inputs', type=Path)
     parser.add_argument('--site-coordinator-inputs-sha256')
     parser.add_argument('--site-nixpkgs-source', type=Path)
@@ -2338,6 +2351,7 @@ def _main(argv, admission_resources, retirement_resources):
             args.yoga_wrapper_request is not None or args.yoga_wrapper_request_sha256 is not None):
         raise ValueError('wrapper request is exclusive to exact companion profile')
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
+    site_development_artifact_request(args, arguments)
     import site_coordinator_selection as coordinator_inputs
     if coordinator_inputs.admitted(args.profile, arguments,
             args.site_coordinator_inputs, args.site_coordinator_inputs_sha256):
@@ -2501,6 +2515,7 @@ def _main(argv, admission_resources, retirement_resources):
     site = None
     site_qualification = None
     site_bindings = {}
+    site_development_artifact = None
     site_snapshot = None
     site_source_verified_after = None
     site_source_changes = []
@@ -2789,6 +2804,11 @@ def _main(argv, admission_resources, retirement_resources):
         site.source_binding(args.site_source, site_qualification['site_bazelversion_sha256'])
         site_bindings = site.proof_bindings(args.site_inventory, args.site_inventory_sha256,
             selected_site_inventory, args.state_dir, coordination, Path.cwd())
+        site_development_artifact = site.development_artifact(
+            args.site_development_artifact_selection, args.site_development_artifact_selection_sha256,
+            args.state_dir, coordination, args.site_source, delivery_entry_deadline_ns)
+        site_bindings.update(site.development_artifact_bindings(
+            args.site_development_artifact_selection, args.site_development_artifact_selection_sha256))
         site_bindings['OMUX_BAZEL_BOOTSTRAP_CLOSURE'] = str(bootstrap)
         if args.site_phase == 'import':
             args.site_delivery_manifest = selected_site_receipt(args.site_delivery_manifest,
@@ -3148,6 +3168,7 @@ def _main(argv, admission_resources, retirement_resources):
                 if site:
                     cache_profile['site'] = {'qualification_sha256': args.site_qualification_sha256,
                         'inventory_sha256': args.site_inventory_sha256, 'proof_bindings': site_bindings,
+                        'development_artifact': site_development_artifact,
                         'native_dispatch': bazel, 'registry_revision': '5b85ae10730928abece3bb57994adcfb59c9a6ee',
                         'lockfile_mode': 'update' if args.site_phase == 'lock' else 'error'}
                     if args.site_phase == 'lock':
@@ -3373,6 +3394,9 @@ def _main(argv, admission_resources, retirement_resources):
                 site.read_qualification(args.site_qualification, args.site_qualification_sha256, args.site_source)
                 site.proof_bindings(args.site_inventory, args.site_inventory_sha256,
                                     selected_site_inventory, args.state_dir, coordination, Path.cwd())
+                site.development_artifact(args.site_development_artifact_selection,
+                    args.site_development_artifact_selection_sha256, args.state_dir, coordination,
+                    args.site_source, delivery_entry_deadline_ns, original=site_development_artifact)
                 if args.site_phase == 'import':
                     site.importer_arguments(args.site_delivery_manifest, args.site_delivery_manifest_sha256,
                                             site_qualification['delivery_manifest'])
@@ -3669,6 +3693,9 @@ def _main(argv, admission_resources, retirement_resources):
                     site.read_qualification(args.site_qualification, args.site_qualification_sha256, args.site_source)
                     site.proof_bindings(args.site_inventory, args.site_inventory_sha256,
                                         selected_site_inventory, args.state_dir, coordination, Path.cwd())
+                    site.development_artifact(args.site_development_artifact_selection,
+                        args.site_development_artifact_selection_sha256, args.state_dir, coordination,
+                        args.site_source, delivery_entry_deadline_ns, original=site_development_artifact)
                     if args.site_phase == 'import':
                         site.importer_arguments(args.site_delivery_manifest, args.site_delivery_manifest_sha256,
                                                 site_qualification['delivery_manifest'])
@@ -3892,6 +3919,7 @@ def _main(argv, admission_resources, retirement_resources):
                                 'action_strategy_exceptions': {} if args.site_phase in ('lock', 'fetch') else {'CopyFile': 'local'},
                                 'qualification_sha256': args.site_qualification_sha256,
                                 'native_bazel': bazel, 'java_home': str(java), 'bindings': site_bindings,
+                                'development_artifact': site_development_artifact,
                                 'source_verified_after_cleanup': site_source_verified_after,
                                 'source_changes': site_source_changes,
                                 'lockfile_evidence': site_lock_evidence,

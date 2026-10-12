@@ -2978,5 +2978,57 @@ class OrdinaryCheckLeaseFilesystemModels(unittest.TestCase):
 
 
 
+class SiteDevelopmentArtifactAdmissionModels(unittest.TestCase):
+    def test_actual_cli_refuses_unrelated_partial_worker_and_non_output_vectors_before_tool_reads(self):
+        import execution_guard as guard
+        flags = ['--site-development-artifact-selection', '/owned/selection.json',
+                 '--site-development-artifact-selection-sha256', 'a' * 64]
+        vectors = [flags + ['--', 'test', '//:docs_check'],
+                   ['--profile', 'site', '--site-phase', 'checks'] + flags + ['--', 'test', '//:unit_tests'],
+                   ['--profile', 'site', '--site-phase', 'fetch'] + flags + ['--', 'fetch', '//:build'],
+                   ['--profile', 'site', '--site-phase', 'lock'] + flags + ['--', 'mod', 'deps', '--lockfile_mode=update'],
+                   ['--profile', 'site', '--site-phase', 'build', '--worker', '/owned/worker'] + flags + ['--', 'build', '//:build'],
+                   ['--profile', 'site', '--site-phase', 'build'] + flags[:2] + ['--', 'build', '//:build'],
+                   ['--profile', 'site', '--site-phase', 'build'] + flags[2:] + ['--', 'build', '//:build']]
+        for vector in vectors:
+            with patch.object(guard, 'immutable') as tools, patch.object(guard, 'worker') as worker, \
+                    patch.object(guard, 'prepare_state') as state:
+                with self.assertRaises(ValueError):
+                    guard.main(vector)
+                tools.assert_not_called()
+                worker.assert_not_called()
+                state.assert_not_called()
+
+    def test_typed_none_and_original_selection_lineage_partition_existing_stable_fingerprint(self):
+        import execution_guard as guard
+        import guard_site_profile as site
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = {'bazel': '/nix/store/example/bin/bazel', 'java': '/nix/store/jdk'}
+            baseline = {'site': {'proof_bindings': site.development_artifact_bindings(), 'development_artifact': None}}
+            selected = {'schema_version': 1, 'selection': '/owned/input/selection.json', 'selection_sha256': 'a' * 64,
+                        'output_base': '/owned/cache-v2-key/output-base',
+                        'archive': {'path': '/owned/archive.zip', 'sha256': 'b' * 64, 'bytes': 12},
+                        'manifest': {'path': '/owned/metadata.json', 'sha256': 'c' * 64}}
+            def fingerprint(value):
+                return guard.stable_fingerprint(directory, inputs, os.getuid(), os.getgid(), 'system', value)
+            first = fingerprint(baseline)
+            profile = {'site': {'proof_bindings': site.development_artifact_bindings(selected['selection'], 'a' * 64),
+                                'development_artifact': selected}}
+            self.assertNotEqual(first, fingerprint(profile))
+            for key, value in (('selection', '/different/input/selection.json'), ('selection_sha256', 'd' * 64),
+                               ('output_base', '/different/output-base'),
+                               ('archive', {**selected['archive'], 'sha256': 'd' * 64}),
+                               ('manifest', {**selected['manifest'], 'sha256': 'd' * 64})):
+                changed = {'site': {**profile['site'], 'development_artifact': {**selected, key: value}}}
+                self.assertNotEqual(fingerprint(profile), fingerprint(changed))
+
+    def test_new_nondefault_selection_cannot_join_ordinary_check_reuse(self):
+        import execution_guard as guard
+        ordinary = SimpleNamespace(profile='standard')
+        self.assertTrue(guard.ordinary_check_reuse_selected(ordinary, ['test', '//:docs_check']))
+        ordinary.site_development_artifact_selection = '/owned/selection.json'
+        self.assertFalse(guard.ordinary_check_reuse_selected(ordinary, ['test', '//:docs_check']))
+
+
 if __name__ == '__main__':
     unittest.main()

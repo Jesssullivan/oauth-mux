@@ -209,6 +209,370 @@ def validate_delivery_metadata(content):
     return value
 
 
+DEVELOPMENT_SELECTION_ENV = 'OMUX_SITE_DEVELOPMENT_ARTIFACT_SELECTION'
+DEVELOPMENT_SELECTION_SHA_ENV = DEVELOPMENT_SELECTION_ENV + '_SHA256'
+DEVELOPMENT_ARCHIVE_SUFFIX = ('output-base', 'execroot', '_main', 'bazel-out', 'k8-fastbuild',
+                              'bin', 'extensions', 'chromium_dev_package.zip')
+DEVELOPMENT_MANIFEST_SUFFIX = ('output-base', 'execroot', '_main', 'bazel-out', 'k8-fastbuild',
+                               'bin', 'delivery', 'chromium_dev_metadata.json')
+DEVELOPMENT_ARCHIVE_MAX = 16 * 1024 * 1024
+
+
+def admitted_development_artifact(profile, phase, arguments, selection, digest):
+    """Optional public byte selection, never an import or enrollment operation."""
+    if selection is None and digest is None:
+        return False
+    if (selection is None or digest is None or profile != 'site' or
+            not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest)):
+        raise ValueError('development artifact requires a complete site selection')
+    if phase not in ('checks', 'build', 'archive'):
+        raise ValueError('development artifact selection is exclusive to site output phases')
+    finite_phase(phase, arguments)
+    if phase == 'checks' and '//:archive_check' not in arguments[1:]:
+        raise ValueError('selected development bytes require the archive check')
+    return True
+
+
+def development_artifact_bindings(selection=None, digest=None):
+    # Explicit empty values override inherited repository-environment controls.
+    if (selection is None) != (digest is None):
+        raise ValueError('incomplete development artifact repository controls')
+    return {DEVELOPMENT_SELECTION_ENV: str(selection) if selection is not None else '',
+            DEVELOPMENT_SELECTION_SHA_ENV: digest if digest is not None else ''}
+
+
+def _development_canonical(value):
+    if (not isinstance(value, str) or not value or str(Path(value)) != value or
+            not Path(value).is_absolute() or '..' in Path(value).parts or
+            any(char.isspace() or char in '\\\x00' for char in value)):
+        raise ValueError('canonical development artifact path required')
+    return Path(value)
+
+
+def _development_namespace(value, cache=False):
+    import uuid
+    if cache and re.fullmatch('cache-v2-[0-9a-f]{64}', value):
+        return True
+    try:
+        return str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError):
+        return False
+
+
+def _development_location(value, roots, suffix, cache=False):
+    path = _development_canonical(value)
+    for root in roots:
+        root = _development_canonical(str(root))
+        if path.is_relative_to(root):
+            parts = path.relative_to(root).parts
+            if (len(parts) == 1 + len(suffix) and parts[1:] == tuple(suffix) and
+                    _development_namespace(parts[0], cache)):
+                return root, parts
+    raise ValueError('development artifact is outside its exact owned role')
+
+
+def _development_directory_identity(info):
+    # Stable across phases: authorized epoch creation can change root timestamps.
+    return [info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode]
+
+
+def _development_file_identity(info):
+    # Full local custody witness, used for held AND named files/directories.
+    return [info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def _development_close(held):
+    """Detach ownership before trying every FD once; propagate the first failure."""
+    pending = tuple(reversed(held))
+    held.clear()
+    first = None
+    for fd in pending:
+        try:
+            os.close(fd)
+        except BaseException as error:
+            if first is None:
+                first = error
+    if first is not None:
+        raise first
+
+
+def _development_hold(held, fd):
+    try:
+        held.append(fd)
+    except BaseException as error:
+        try:
+            os.close(fd)
+        except BaseException as close_error:
+            raise error from close_error
+        raise
+    return fd
+
+
+def _development_root(root, cutoff):
+    """Hold the selected root's named ancestor lineage through the whole stage."""
+    held = []
+    links = []
+    try:
+        _development_hold(held, os.open('/', os.O_RDONLY | os.O_DIRECTORY))
+        for part in root.parts[1:]:
+            if time.monotonic_ns() >= cutoff:
+                raise ValueError('development artifact original deadline exhausted')
+            parent = held[-1]
+            child = _development_hold(held,
+                os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent))
+            info = os.fstat(child)
+            if info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+                raise ValueError('development root ancestor custody rejected')
+            links.append((parent, part, child, _development_file_identity(info)))
+        return held, links
+    except BaseException as error:
+        try:
+            _development_close(held)
+        except BaseException as close_error:
+            raise error from close_error
+        raise
+
+
+class _DevelopmentOwners:
+    """One finite read stage owns all four roles until its joint final fence."""
+    def __init__(self, cutoff):
+        self.cutoff = cutoff
+        self.groups = []
+
+    def tick(self):
+        if time.monotonic_ns() >= self.cutoff:
+            raise ValueError('development artifact original deadline exhausted')
+
+    def adopt(self, held, links):
+        try:
+            group = {'held': held, 'links': links, 'leaf': None,
+                     'root_fd': held[-1], 'root_full': _development_file_identity(os.fstat(held[-1]))}
+            self.groups.append(group)
+            return group
+        except BaseException as error:
+            try:
+                _development_close(held)
+            except BaseException as close_error:
+                raise error from close_error
+            raise
+
+    def metadata_fence(self):
+        for group in self.groups:
+            self.tick()
+            if _development_file_identity(os.fstat(group['root_fd'])) != group['root_full']:
+                raise ValueError('original development artifact root changed during stage')
+            leaf = group['leaf']
+            if leaf is not None:
+                if (_development_file_identity(os.fstat(leaf['fd'])) != leaf['identity'] or
+                        _development_file_identity(os.stat(leaf['name'], dir_fd=leaf['parent'],
+                            follow_symlinks=False)) != leaf['identity']):
+                    raise ValueError('original held or named development file changed')
+            for parent, name, child, original in group['links']:
+                self.tick()
+                if (_development_file_identity(os.fstat(child)) != original or
+                        _development_file_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) != original):
+                    raise ValueError('original held or named development lineage changed')
+
+    def fence(self):
+        # Rehash retained original roles after the ZIP read, then jointly fence
+        # every held/named full-nine witness after the LAST rehash as well.
+        self.metadata_fence()
+        for group in self.groups:
+            self.tick()
+            leaf = group['leaf']
+            if leaf is None:
+                raise ValueError('development role did not complete its original read')
+            os.lseek(leaf['fd'], 0, os.SEEK_SET)
+            digest, count = hashlib.sha256(), 0
+            while True:
+                self.tick()
+                chunk = os.read(leaf['fd'], min(65536, leaf['maximum'] + 1 - count))
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > leaf['maximum']:
+                    raise ValueError('development artifact exceeds final bound')
+                digest.update(chunk)
+            if count != leaf['bytes'] or digest.hexdigest() != leaf['sha256']:
+                raise ValueError('original development artifact bytes changed during stage')
+        self.metadata_fence()
+        self.tick()
+
+    def close(self):
+        groups, self.groups = self.groups, []
+        first = None
+        for group in reversed(groups):
+            try:
+                _development_close(group['held'])
+            except BaseException as error:
+                if first is None:
+                    first = error
+        if first is not None:
+            raise first
+
+
+def _development_read(root, parts, expected, maximum, cutoff, *, owners,
+                      retain=True, private_root=True):
+    """Hash one original regular file and retain all its owners for final fencing."""
+    owners.tick()
+    held, links = _development_root(root, cutoff)
+    group = owners.adopt(held, links)
+    root_fd = held[-1]
+    root_info = os.fstat(root_fd)
+    if (root_info.st_uid != os.getuid() or root_info.st_mode & 0o022 or
+            (private_root and stat.S_IMODE(root_info.st_mode) != 0o700)):
+        raise ValueError('development artifact requires a private owned root')
+    root_dev = root_info.st_dev
+    for part in parts[:-1]:
+        owners.tick()
+        parent = held[-1]
+        child = _development_hold(held,
+            os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent))
+        info = os.fstat(child)
+        if (info.st_uid != os.getuid() or info.st_mode & 0o022 or info.st_dev != root_dev):
+            raise ValueError('development artifact directory custody rejected')
+        links.append((parent, part, child, _development_file_identity(info)))
+    parent = held[-1]
+    leaf = _development_hold(held,
+        os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent))
+    info = os.fstat(leaf)
+    identity = _development_file_identity(info)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022 or
+            info.st_nlink != 1 or info.st_dev != root_dev or not 0 < info.st_size <= maximum):
+        raise ValueError('bounded owned development artifact required')
+    digest, count = hashlib.sha256(), 0
+    content = bytearray() if retain else None
+    while True:
+        owners.tick()
+        chunk = os.read(leaf, min(65536, maximum + 1 - count))
+        if not chunk:
+            break
+        count += len(chunk)
+        if count > maximum:
+            raise ValueError('development artifact exceeds bound')
+        digest.update(chunk)
+        if retain:
+            content.extend(chunk)
+    actual = digest.hexdigest()
+    owners.tick()
+    if count != info.st_size or (expected is not None and actual != expected):
+        raise ValueError('original development artifact bytes differ')
+    group['leaf'] = {'fd': leaf, 'parent': parent, 'name': parts[-1], 'identity': identity,
+                     'sha256': actual, 'bytes': count, 'maximum': maximum}
+    owners.metadata_fence()
+    return (bytes(content) if retain else None,
+            {'sha256': actual, 'bytes': count, 'file_identity': identity,
+             'root_identity': _development_directory_identity(root_info),
+             'directory_identities': [_development_directory_identity(os.fstat(item[2])) for item in links]})
+
+
+def _development_decode(content):
+    import site_coordinator_closure_qualification as full
+    try:
+        return full.decode(content)
+    except RecursionError as error:
+        raise ValueError('public development JSON nesting exceeds decoder bound') from error
+
+
+def _development_equal(left, right):
+    # JSON booleans must never compare equal to numeric schema/fact fields.
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        return set(left) == set(right) and all(_development_equal(left[key], right[key]) for key in left)
+    if type(left) is list:
+        return len(left) == len(right) and all(_development_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def development_artifact(selection, digest, state_root, coordination_root, source,
+                         original_deadline_ns, *, original=None):
+    if selection is None and digest is None:
+        if original is not None:
+            raise ValueError('selected development artifact disappeared')
+        return None
+    if (selection is None or not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest) or
+            type(original_deadline_ns) is not int):
+        raise ValueError('exact development selection and original deadline required')
+    # Each read stage has a finite allowance inside the same original entry deadline.
+    cutoff = min(original_deadline_ns, time.monotonic_ns() + 15 * 10**9)
+    owners = _DevelopmentOwners(cutoff)
+    first = None
+    try:
+        result = _development_artifact_read(selection, digest, state_root, coordination_root,
+            source, cutoff, owners, original)
+        owners.fence()
+    except BaseException as error:
+        first = error
+    try:
+        owners.close()
+    except BaseException as close_error:
+        if first is not None:
+            raise first from close_error
+        raise
+    if first is not None:
+        raise first
+    # No successful return after validation or all-attempt closure consumes the
+    # original stage cutoff. This is the SAME cutoff, never a fresh allowance.
+    owners.tick()
+    return result
+
+
+def _development_artifact_read(selection, digest, state_root, coordination_root, source,
+                               cutoff, owners, original):
+    roots = (Path(state_root), Path(coordination_root))
+    descriptor_root, descriptor_parts = _development_location(str(selection), roots,
+        ('site-development-artifact-selection.json',))
+    raw, descriptor_facts = _development_read(descriptor_root, descriptor_parts, digest, 8192, cutoff, owners=owners)
+    value = _development_decode(raw)
+    def shape(item, fields):
+        if type(item) is not dict or set(item) != set(fields):
+            raise ValueError('unexpected development selection fields')
+    shape(value, ('schema_version', 'archive', 'manifest'))
+    shape(value['archive'], ('path', 'sha256', 'bytes'))
+    shape(value['manifest'], ('path', 'sha256'))
+    archive, manifest = value['archive'], value['manifest']
+    if (type(value['schema_version']) is not int or value['schema_version'] != 1 or
+            type(archive['bytes']) is not int or not 0 < archive['bytes'] <= DEVELOPMENT_ARCHIVE_MAX or
+            any(not isinstance(item, str) or not re.fullmatch('[0-9a-f]{64}', item)
+                for item in (archive['sha256'], manifest['sha256']))):
+        raise ValueError('development selection schema/digests/bounds differ')
+    archive_root, archive_parts = _development_location(archive['path'], roots, DEVELOPMENT_ARCHIVE_SUFFIX, True)
+    manifest_root, manifest_parts = _development_location(manifest['path'], roots, DEVELOPMENT_MANIFEST_SUFFIX, True)
+    if archive_root != manifest_root or archive_parts[0] != manifest_parts[0]:
+        raise ValueError('development ZIP and metadata require the same original output base')
+    raw_manifest, manifest_facts = _development_read(manifest_root, manifest_parts, manifest['sha256'], 16384, cutoff, owners=owners)
+    try:
+        metadata = validate_delivery_metadata(raw_manifest)
+    except RecursionError as error:
+        raise ValueError('public development metadata nesting exceeds decoder bound') from error
+    if (metadata['extension']['id'] != 'bggghdafplhajiailkafeihemlalagmm' or
+            metadata['artifact'] != {'filename': DEVELOPMENT_ARCHIVE_SUFFIX[-1],
+                'sha256': archive['sha256'], 'bytes': archive['bytes'], 'format': 'zip'}):
+        raise ValueError('selected development package and metadata differ')
+    source = _development_canonical(str(source))
+    wrapper, wrapper_facts = _development_read(source, ('src', 'lib', 'content', 'extension-delivery.json'),
+        None, 32768, cutoff, owners=owners, private_root=False)
+    imported = _development_decode(wrapper)
+    shape(imported, ('manifest', 'manifest_sha256'))
+    if not _development_equal(imported, {'manifest': metadata, 'manifest_sha256': manifest['sha256']}):
+        raise ValueError('selected development metadata is not the exact imported snapshot')
+    _, archive_facts = _development_read(archive_root, archive_parts, archive['sha256'],
+        DEVELOPMENT_ARCHIVE_MAX, cutoff, owners=owners, retain=False)
+    if archive_facts['bytes'] != archive['bytes']:
+        raise ValueError('selected development ZIP size differs')
+    result = {'schema_version': 1, 'selection': str(selection), 'selection_sha256': digest,
+              'output_base': str(archive_root / archive_parts[0] / 'output-base'),
+              'archive': archive, 'manifest': manifest, 'descriptor_facts': descriptor_facts,
+              'manifest_facts': manifest_facts, 'archive_facts': archive_facts,
+              'imported_snapshot_facts': wrapper_facts,
+              'publication': 'unpublished', 'native_continuity': 'unproved'}
+    if original is not None and result != original:
+        raise ValueError('original development selection changed between stages')
+    return result
+
+
 def required_masks(observed):
     if not set(MASKS).issubset(observed):
         raise ValueError('both host configuration masks must be verified before site execution')
@@ -260,7 +624,11 @@ def command(bazel, java_home, qualification, output_base, phase, arguments, bind
         raise ValueError('private external owned output base required')
     tests = ['--nocache_test_results', '--nozip_undeclared_test_outputs', '--test_output=errors',
              '--strategy=TestRunner=processwrapper-sandbox', '--test_env=TZ=UTC'] if selected[0] == 'test' else []
-    inputs = ['--repo_env=' + key + '=' + value for key, value in sorted((bindings or {}).items())]
+    controls = development_artifact_bindings()
+    controls.update(bindings or {})
+    admitted_development_artifact('site', phase, arguments,
+        controls[DEVELOPMENT_SELECTION_ENV] or None, controls[DEVELOPMENT_SELECTION_SHA_ENV] or None)
+    inputs = ['--repo_env=' + key + '=' + value for key, value in sorted(controls.items())]
     symlinks = ['--symlink_prefix=' + str(Path(run) / 'bazel-')] if run else []
     startup = [str(bazel), '--batch', '--nosystem_rc', '--nohome_rc', '--noworkspace_rc',
             '--server_javabase=' + str(java_home),
