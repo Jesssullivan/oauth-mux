@@ -473,3 +473,116 @@ limits remain unchanged. No SDK/NAR/SOURCE/HUB/native qualification, native 35
 execution, ordinary/live/provider proof or Darwin activation follows this
 failure. Native selector `source:null`, normal-vault retained-account gates and
 the original active, overdue, incomplete goal/acceptance clock remain unchanged.
+
+## Site prerequisites and changed-source models — 2026-10-12 20:43 UTC
+
+Four genuine declared site prerequisites closed outer/workload 0/0. SI-2010
+and SS-2013 used source `8c69a9a4440a95261d18f2b3e4e59f1a5a8f83dd`;
+SV-2026 and SC-2032 used `64036f7093faedea7544879d02cb96d45316634e`.
+All used graph
+`f9d029fcb5e3ddcd5debab9127514efcf96c2e18e7fff1629a9dafbc38ce631f`/521.
+Their original products are retained in the successful producer output bases.
+The root's `2026-10-12-{SI2010,SS2013,SV2026,SC2032}-original-product-custody.json`
+records bind exact original paths, physical witnesses, copied products and pins.
+
+| Gate / original epoch | Actual product SHA256 / bytes |
+| --- | --- |
+| SI-2010 / `33e5d62d-67dd-4cee-8f3d-de84973e4c3f` | Inventory `1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931` / 192175 |
+| SS-2013 / `e2230c92-3237-49e4-b572-c3ac34625a97` | Coordinator candidate `48253bf1b32bc341baadbe77e9fc983ad898c338166009e92e9e2f0047e7e55c` / 1055 |
+| SV-2026 / `7bcd2622-a22d-42b0-9298-7d80f1225453` | Version qualification `8b10ce3e25a24d3df06af43df3c4d91d4c80fd4f3d50340fbb58985408bebfd1` / 2645 |
+| SC-2032 / `36ccfb33-faa7-41c2-93b3-4c3a3993a1bc` | Closure report `02b9c44351be63442b1fac6169b27af955609fb71bed29a517256e785d9e175f` / 4395; companion inventory `7d61b0b41bc04dd5cc92a05fd0457d351a0b39824a20ab294ae2d7b4316b3584` / 19299 |
+
+Raw receipt SHA256 values, respectively:
+`27198736495934fc656f69ab1cdd10b23e34a8dfdd914d770a1efedc4929b61e`,
+`dcb60c4a91cbb89322899732ca2e18d48cf077d397d9d0d1bb3ee42c325a887b`,
+`d576a04a5ed77ddb00799220e29c89e7bac9cd462eaf140d74334a0b74a9390d`,
+`a62b04d416073fe3672028d10df3ff5591114678c04724180ee8f9968812457d`.
+
+SC-2032 verified the complete registered toolchain NAR closure: 50 paths,
+892,291,216 bytes. Its `source_binding` is
+`exact-retained-offline-candidate-receipt; not freshly rehashed here`;
+`execution_authority` and `flakeMappingVerified` remain false. This is a site
+prerequisite result, not native SDK/support, artifact import or publication proof.
+All four standard cleanup receipts remain ownership unproved/readbacks 0/stop
+not requested despite empty descendants/absent cgroup. Their automatic retirement
+records separately report complete user-root retirement and retained original
+producer bases; retention does not confer manager cleanup qualification.
+
+Three reviewed native changes were adopted at
+`8390b73e56009e0eacd27dec882362b2d4bef959`, graph
+`2d114dfaeec4edcff9387c6932658ac377cf8d46ef6d20c2a7085088b15ca7d9`/521.
+OM-2038, original handle 38662, epoch
+`7ae79b52-6068-4ce0-99fd-5795f5401158`, closed 0/0: SDK-input 47 models,
+carrier 75 models and docs passed. Raw receipt
+`fbe3c2ed76a4aff1161c59853b8b34b603df95e7e307e1c7cac7c4e238ec972c`;
+evidence manifest
+`b95c8603f4cae488bb3285c206665bf21af4c31668ed345a0218e60e78b8f117`.
+These finite models do not qualify the genuine producer or native continuity.
+
+OM-2038 standard cleanup likewise remains unproved/readbacks 0/stop not requested.
+Automatic retirement was partial at 42,612 entries. Separate administrative
+handle 62451 closed 0 and removed 27,585 entries/last-link inodes with 131,997,696
+observed allocated bytes, journal
+`b034002dfcb8dca28e6c1be3c6a21e2f965477d9979d12558f34fc7e7bc9d0e7`.
+Keep-list and copied evidence remain; removal counters and filesystem-wide net
+space changes are separate scopes.
+
+At the retained 20:43:45 UTC observation, CNS-2043, original handle 89742,
+epoch `8c1addab-93ce-4fc3-a39d-86cba674a606`, was verified LIVE at 8390/2d.
+Original SOURCE 600/action 840/outer 1200-second limits are unchanged. Neither
+model PASS nor LIVE status establishes deadline fit, a terminal outcome or
+SDK/NAR/SOURCE/HUB/native qualification.
+
+<!-- ROOT CNS-2043 TERMINAL INSERTION: after original handle closure, append actual source/epoch/graph, exits, output and failure scope, raw receipt/evidence/log pins, cleanup and physical retention. Preserve this dated LIVE observation and all earlier failures. -->
+
+CNS-1955's actual original 600-second failure and CNS-1918's Unknown first locus
+remain historical facts. Native selector `source:null`, ordinary application
+launch/resume, native 35 execution, normal-vault usable accounts, provider and
+same-process live handoff, unmodified Codex, Darwin and installed activation
+remain unproved. Signing/publication and measured SLO gates stay open. The
+original active, overdue, incomplete goal and acceptance clock are unchanged.
+
+## CNS-2043 actual terminal and cache disposal — 2026-10-12 20:56 UTC
+
+Original handle 89742, epoch `8c1addab-93ce-4fc3-a39d-86cba674a606`,
+closed outer/workload 125/3 at the same 8390/2d/521 checkpoint.
+Content-source 36 methods passed; the genuine producer FAILED in 236.9 seconds,
+with Bazel 594.132 seconds overall. The retained bounded diagnostic reports
+ValueError, errno 0 and
+`unknown:0,unknown:0; sdk-carrier:713,636; sdk-inputs:203,170; sdk-carrier:88,47`,
+truncated 1. The NAR stream reached the original SDK/SOURCE 600-second cutoff
+through the declared-root alias checks and `Clock.tick`. It was not the
+840-second Bazel action timeout. This supplies a bounded failure locus, not
+complete RCA, measured improvement, deadline fit or native qualification.
+CNS-1955's earlier original 600-second failure and CNS-1918's Unknown first
+locus retain their original outcomes.
+
+Raw receipt SHA256
+`4e7bbe9e41aceb0cb9a97c0ba31a7e6d5d335bd11452e86b89247b5addeae249`;
+test-evidence manifest
+`1909d58038819ffba4891da9fbda1eeb74c11cf5ca8236a84faad695fa852849`;
+workload log
+`b74dd24c3cdc018d980fddd64bf5bf958fcc1b75a577243f68fad51a96a972e6`.
+Reserved cleanup verified two readbacks and successful stop, with empty
+descendants/absent cgroup and no controller error. Automatic retirement was
+separately deferred at 0 removed entries.
+
+Under the user's R-C618/R-C620 requirement to remove finished owned execution
+caches and prevent per-run inode proliferation, subsequent administrative
+handle 88180 closed exit 0. Its residual result records 668,680 removed
+entries/last-link inodes and 738,922,496 observed allocated bytes, journal
+`fa090da60cd2a43492c074fecf46470c40d093f7f7dd96d3487cbd18c9cedeb4`.
+The disposal scope preserves `receipt.json`, `supervisor.json`,
+`test-evidence*` and `workload.log`; no source change or service signal occurred.
+This is distinct from the earlier 11:22 UTC administrative rollup of
+86,605,957 removed entries (86,605,951 observed last-link inodes). Neither
+removal counter nor observed allocation is a filesystem-wide free-space claim;
+concurrent net filesystem deltas and automatic retirement remain separate.
+
+The dated CNS-2043 LIVE observation above is retained as history, now followed
+by its actual failed terminal. No SDK/NAR/SOURCE/HUB qualification, native 35
+execution, ordinary launch/resume, installed activation, usable normal-vault
+accounts, provider or same-process live proof follows. Stock/Darwin, signing,
+publication and measured SLO gates remain open. Original SOURCE 600/action
+840/outer 1200 limits, native selector `source:null`, and the active, overdue,
+incomplete goal/acceptance clock are unchanged.
