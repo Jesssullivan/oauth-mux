@@ -123,7 +123,8 @@
     "docs/agent-notes/2026-10-11-native-input-and-lifecycle-progress.md",
     "docs/agent-notes/2026-10-11-product-reality-and-work-order.md",
     "docs/agent-notes/2026-10-11-product-reality-reattachment-index.json",
-    "docs/agent-notes/2026-10-11-1757UTC-current-product-checkpoint.md"
+    "docs/agent-notes/2026-10-11-1757UTC-current-product-checkpoint.md",
+    "docs/agent-notes/2026-10-12-omux-cache-maintenance.md"
   ],
   "historical_inventory": "docs/history/retired-design-inventory.md",
   "historical_extra": [
