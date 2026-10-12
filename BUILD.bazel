@@ -726,6 +726,8 @@ zig_test(
 
 zig_test(
     name = "unit_tests",
+    # The complete 460-case executable exceeded the default 300 s test budget.
+    timeout = "long",
     main = "src/tests.zig",
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
