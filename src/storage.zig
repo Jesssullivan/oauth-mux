@@ -94,6 +94,12 @@ pub const GrantChange = union(enum) {
     /// Only explicit user re-enrollment may lift a forgotten-account tombstone.
     reenroll_account: []const u8,
 };
+pub const CommitStage = enum { before_begin, before_reservation, before_commit };
+pub const CommitFence = struct {
+    context: *anyopaque,
+    check: *const fn (*anyopaque, CommitStage) anyerror!void,
+};
+
 pub const Snapshot = struct {
     allocator: std.mem.Allocator,
     revision: u64,
@@ -493,11 +499,23 @@ pub const Store = struct {
     /// an unsuccessful/ambiguous SQLite COMMIT prevents further use. The older
     /// DB cannot be admitted on restart, or used to repeat issuer contact.
     fn finishMutation(self: *Store) !void {
+        return self.finishMutationFenced(null);
+    }
+    fn finishMutationFenced(self: *Store, fence: ?CommitFence) !void {
         const snapshot = try self.snapshotCommitment();
         const next = try self.checkpoint.successor(self.io, snapshot.revision, snapshot.digest);
         if (next.sequence > std.math.maxInt(i64)) return error.RecoverySequenceExhausted;
         try self.writeCheckpoint(next);
+        // Still rollback-capable: deny before reserving irreversible recovery
+        // authority if preparation consumed the original issuance lifetime.
+        if (fence) |held| try held.check(held.context, .before_reservation);
         self.authority.?.reserve(self.checkpoint, next) catch |err| {
+            self.poisoned = true;
+            return err;
+        };
+        // A late failure after the durable reservation is uncertain custody,
+        // not an unissued retry or permission to restore the older DB/key.
+        if (fence) |held| held.check(held.context, .before_commit) catch |err| {
             self.poisoned = true;
             return err;
         };
@@ -667,6 +685,10 @@ pub const Store = struct {
     /// defense in depth; provider adapters import payloads via GrantChange.put.
     /// Caller-owned input secrets are never copied into the metadata snapshot.
     pub fn commit(self: *Store, expected_revision: u64, snapshot_json: []const u8, changes: []const GrantChange) !u64 {
+        return self.commitFenced(expected_revision, snapshot_json, changes, null);
+    }
+    /// Trusted actor callback only; no wire boolean/caller label is authority.
+    pub fn commitFenced(self: *Store, expected_revision: u64, snapshot_json: []const u8, changes: []const GrantChange, fence: ?CommitFence) !u64 {
         try self.assertOwner();
         try validateMetadata(self.allocator, snapshot_json);
         const sealed = try self.allocator.alloc(?[]u8, changes.len);
@@ -684,6 +706,7 @@ pub const Store = struct {
             },
             .delete, .tombstone_account, .reenroll_account => {},
         };
+        if (fence) |held| try held.check(held.context, .before_begin);
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.rollback();
         const next_revision = try self.checkRevision(expected_revision);
@@ -700,7 +723,7 @@ pub const Store = struct {
             },
         };
         try self.updateSnapshot(next_revision, snapshot_json);
-        try self.finishMutation();
+        try self.finishMutationFenced(fence);
         return next_revision;
     }
 
@@ -2218,4 +2241,56 @@ test "database records the exact vault root and rejects identity fallback" {
     var secret = try store.loadGrant(custom_context);
     defer secret.deinit();
     try std.testing.expectEqualStrings("custom-root", secret.bytes);
+}
+
+
+test "sealed commit checks original deadline before SQL and before irreversible recovery publication" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Held = struct {
+        io: std.Io,
+        until: std.Io.Clock.Timestamp,
+        refuse_at: CommitStage,
+        calls: usize = 0,
+        reached: bool = false,
+        fn check(context: *anyopaque, stage: CommitStage) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (stage == self.refuse_at) {
+                self.reached = true;
+                const remaining = self.until.durationFromNow(self.io).raw.toNanoseconds();
+                if (remaining > 0) try self.io.sleep(.fromNanoseconds(remaining + 20_000_000), .awake);
+            }
+            if (self.until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.FixtureOriginalDeadline;
+        }
+    };
+    for ([_]CommitStage{ .before_begin, .before_reservation, .before_commit }) |stage| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        const path = try testPath(a, directory);
+        defer a.free(path);
+        var store = try Store.open(io, a, path, @splat(0x68));
+        defer store.close();
+        var original = try store.readSnapshot();
+        const original_revision = original.revision;
+        original.deinit();
+        // Tiny real payloads still pass actual entropy/encryption and each
+        // staged SQL/checkpoint path; delay belongs to the retained fence and
+        // never replaces its original clock with a new deadline.
+        var held: Held = .{ .io = io, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(2) }), .refuse_at = stage };
+        try std.testing.expectError(error.FixtureOriginalDeadline, store.commitFenced(original_revision, "{}", &.{.{ .put = .{ .context = test_context, .plaintext = "synthetic-fenced-payload", .renewal_owner = .omux } }}, .{ .context = &held, .check = Held.check }));
+        try std.testing.expect(held.calls > 0 and held.reached);
+        if (stage == .before_commit) {
+            // Durable recovery reservation has begun: refuse, poison, and
+            // never turn this return into an unissued retry or ready custody.
+            try std.testing.expect(store.poisoned);
+        } else {
+            try std.testing.expect(!store.poisoned);
+            var saved = try store.readSnapshot();
+            defer saved.deinit();
+            try std.testing.expectEqual(original_revision, saved.revision);
+            try std.testing.expect((try store.readGrantStatus(test_context.account_id, test_context.grant_id)) == null);
+            try std.testing.expectEqual(@as(u64, 0), try store.scalar("SELECT count(*) FROM grant_generations;"));
+        }
+    }
 }

@@ -7,6 +7,8 @@ const domain = @import("domain.zig");
 const storage = @import("storage.zig");
 const envelope = @import("envelope.zig");
 const oauth_enrollment = @import("oauth_enrollment.zig");
+const oauth_issue = @import("oauth_issue_authority.zig");
+const oauth_callback = @import("oauth_callback.zig");
 const instance = @import("instance.zig");
 const onboarding = @import("onboarding.zig");
 const setup_evidence = @import("setup_evidence.zig");
@@ -45,10 +47,13 @@ const native_source_context = @import("integrations/native_source_context.zig");
 const native_source_consent = @import("native_source_consent.zig");
 const native_source_acquisition = @import("native_source_acquisition.zig");
 const request_authority = @import("request_authority.zig");
+const siwc_route = @import("siwc_route.zig");
 const mutation_authority = @import("mutation_authority.zig");
 const snapshot_admission = @import("snapshot_admission.zig");
 const native_owner = @import("native_owner.zig");
 const native_work = @import("native_owner_work.zig");
+const oauth_oidc = @import("oauth_oidc.zig");
+const siwc_pair = @import("siwc_pair.zig");
 const peer = @import("platform/peer.zig");
 const reliability = @import("reliability.zig");
 const sql_api = @import("c");
@@ -255,6 +260,8 @@ const Persisted = struct {
     lifecycle_measurements: ?*const reliability.LifecycleRecorder = null,
     browser_attempt_authority: ?browser_attempt.Snapshot = null,
     fresh_oauth_authority: ?oauth_enrollment.Snapshot = null,
+    fresh_oauth_host_id: ?[32]u8 = null,
+    owned_siwc_pairs: ?siwc_pair.Snapshot = null,
     state: domain.Snapshot = .{},
     policy: Policy = .{},
     installed_integrations: []const []const u8 = &.{},
@@ -286,6 +293,52 @@ const Invocation = struct {
     // Private in-process installation call; ordinary control parsing has no
     // constructor or wire representation for this opaque producer authority.
     qualified_candidate: ?*const runtime_selection_producer.ValidatedSelection = null,
+    qualified_oauth_profile: ?*oauth_issue.EnrollmentProfile = null,
+    owned_oss_callback_port: ?u16 = null,
+    oauth_authorization: ?struct { transaction_id: [32]u8, expected_revision: u64 } = null,
+};
+const FreshOAuthPending = struct {
+    attempt: oauth_enrollment.Attempt,
+    profile: *oauth_issue.EnrollmentProfile,
+    receiver: ?*oauth_callback.Receiver = null,
+    ticket: ?*oauth_issue.IssuedTicket = null,
+    fence: ?*oauth_issue.DispatchFence = null,
+    transport_id: ?u64 = null,
+    jwks_id: ?u64 = null,
+    response: ?*transport.OAuthResponse = null,
+    authorization_delivered: bool = false,
+    fn workUntil(self: *const FreshOAuthPending) std.Io.Clock.Timestamp { return if (self.ticket) |ticket| ticket.originalUntil() else self.attempt.until; }
+    fn deinit(self: *FreshOAuthPending) void {
+        if (self.receiver) |receiver| receiver.deinit();
+        if (self.fence) |fence| { _ = fence.invalidate(); fence.deinit(); }
+        if (self.ticket) |ticket| ticket.deinit();
+        if (self.response) |response| response.deinit();
+        self.profile.deinit();
+        self.attempt.deinit();
+        self.* = undefined;
+    }
+};
+const FreshOAuthVerifyTask = struct {
+    allocator: std.mem.Allocator,
+    ticket: *oauth_issue.IssuedTicket,
+    response: *transport.OAuthResponse,
+    jwks: *transport.JwksLease,
+    proof: ?*oauth_oidc.VerifiedProfile = null,
+    failure: ?anyerror = null,
+    job: native_work.Job,
+    fn run(context: *anyopaque, cancelled: bool) void {
+        const self: *FreshOAuthVerifyTask = @ptrCast(@alignCast(context));
+        if (cancelled) { self.failure = error.ServiceStopping; return; }
+        self.proof = oauth_oidc.verifyOwnedResponse(self.allocator, self.ticket, self.response, self.jwks) catch |err| failed: {
+            self.failure = err;
+            break :failed null;
+        };
+    }
+    fn deinit(self: *FreshOAuthVerifyTask) void {
+        if (self.proof) |proof| proof.deinit();
+        self.jwks.deinit(); self.response.deinit(); self.ticket.deinit();
+        self.allocator.destroy(self);
+    }
 };
 const NativeRuntimeCommitTask = struct {
     engine: *Engine,
@@ -988,6 +1041,8 @@ const NativeLease = struct {
     expires_at: i64,
     account_id: []u8,
     attempt: u8 = 1,
+    request_profile: siwc_route.Profile = .native,
+    siwc_activation: ?siwc_route.Stamp = null,
     fn create(allocator: std.mem.Allocator, handle: [64]u8, application: []const u8, request_id: []const u8, binding_id: []const u8, account_id: []const u8, demand_json: []const u8, attempt: u8, expires_at: i64, native_ref: ?native_owner.NativeRef) !NativeLease {
         const owned_application = try allocator.dupe(u8, application);
         errdefer allocator.free(owned_application);
@@ -1055,6 +1110,14 @@ pub const Engine = struct {
     admission: snapshot_admission.Ledger,
     native_owners: native_owner.Ledger,
     fresh_oauth: ?oauth_enrollment.Ledger = null,
+    fresh_oauth_host_id: ?[32]u8 = null,
+    owned_siwc_pairs: siwc_pair.Registry = .{},
+    fresh_oauth_verifications: std.ArrayList(*FreshOAuthVerifyTask) = .empty,
+    fresh_oauth_pending: std.ArrayList(FreshOAuthPending) = .empty,
+    active_oauth_profile: ?*oauth_issue.EnrollmentProfile = null,
+    active_oss_callback_port: ?u16 = null,
+    fresh_oauth_cancel_failure: ?anyerror = null,
+    fresh_oauth_failure: ?anyerror = null,
     active_peer: ?*const peer.Context = null,
     native_registry: ?setup.RegistryWitness = null,
     measured_codex_runtime: ?measured_runtime.Committed = null,
@@ -1253,6 +1316,11 @@ pub const Engine = struct {
         }
         if (self.lifecycle_measurements) |measurements| self.allocator.destroy(measurements);
         if (self.browser_attempts) |*attempts| attempts.deinit();
+        for (self.fresh_oauth_pending.items) |*pending| pending.deinit();
+        self.fresh_oauth_pending.deinit(self.allocator);
+        std.debug.assert(self.fresh_oauth_verifications.items.len == 0);
+        self.fresh_oauth_verifications.deinit(self.allocator);
+        self.owned_siwc_pairs.deinit(self.allocator);
         if (self.fresh_oauth) |*enrollments| enrollments.deinit(self.allocator);
         self.observers.deinit();
         for (self.installed.items) |item| self.allocator.free(item);
@@ -1318,6 +1386,66 @@ pub const Engine = struct {
         while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
         if (invocation.failure) |err| return err;
         self.allocator.free(invocation.response.?);
+    }
+
+    /// Trusted same-daemon producer call. No wire field/control client can
+    /// construct this opaque profile. Caller retains it through queue completion.
+    pub fn prepareFreshOAuthWithProfile(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, profile: ?*oauth_issue.EnrollmentProfile, until: std.Io.Clock.Timestamp) ![]u8 {
+        const qualified = profile orelse return error.RegistrationProfileUnavailable;
+        try qualified.requireAvailable();
+        var request = try control.parse(allocator, payload);
+        defer request.deinit();
+        if (!eql(request.method, "oauth.enrollment.prepare.v1")) return error.WrongPurpose;
+        if (until.clock != .awake or until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.EnrollmentExpired;
+        var invocation: Invocation = .{ .allocator = allocator, .payload = payload, .channel = .control, .until = until, .qualified_oauth_profile = qualified };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return invocation.response.?;
+    }
+    /// Actual daemon producer for the documented public OSS initial route.
+    /// No client/endpoint/audience/host label or token is accepted from wire.
+    /// The local UI calls this only for the exact explicit consent operation;
+    /// port selection remains bounded to the documented loopback URI grammar.
+    pub fn prepareFreshOssEnrollment(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, port: u16, until: std.Io.Clock.Timestamp) ![]u8 {
+        if (port == 0) return error.InvalidOAuthRedirect;
+        var request = try control.parse(allocator, payload);
+        defer request.deinit();
+        if (!eql(request.method, "oauth.enrollment.prepare.v1") or !eql(try control.string(request.params, "purpose"), oauth_enrollment.oss_purpose) or !eql(try control.string(request.params, "provider"), "openai_siwc")) return error.WrongPurpose;
+        if (until.clock != .awake or until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.EnrollmentExpired;
+        var invocation: Invocation = .{ .allocator = allocator, .payload = payload, .channel = .control, .until = until, .owned_oss_callback_port = port };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return invocation.response.?;
+    }
+    /// Private UI delivery after consent commit. The URL contains random state
+    /// and nonce, never the verifier/code/token, and never enters mutation cache
+    /// or persisted snapshots. No method opens a browser or provider endpoint.
+    pub fn preparedFreshOAuthAuthorization(self: *Engine, allocator: std.mem.Allocator, transaction_id: [32]u8, revision: u64, until: std.Io.Clock.Timestamp) !envelope.Secret {
+        var invocation: Invocation = .{ .allocator = allocator, .payload = "", .channel = .control, .until = until, .oauth_authorization = .{ .transaction_id = transaction_id, .expected_revision = revision } };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return .{ .allocator = allocator, .bytes = invocation.response.? };
     }
 
     fn dispatchOwnedPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: ?*const peer.Context) ![]u8 {
@@ -1426,7 +1554,7 @@ pub const Engine = struct {
                 };
             }
             self.mutex.lockUncancelable(self.io);
-            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.native_source_maintenance != null or self.native_source_rotation != null or self.runtime_measurement != null or self.runtime_installation != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
+            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.native_source_maintenance != null or self.native_source_rotation != null or self.runtime_measurement != null or self.runtime_installation != null or self.fresh_oauth_verifications.items.len != 0) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
                 self.condition.waitTimeout(self.io, &self.mutex, .{ .deadline = maintenance_due }) catch |err| switch (err) {
                     error.Timeout => {},
                     // Finish every queued stack reference before exiting. A
@@ -1442,13 +1570,15 @@ pub const Engine = struct {
                 self.completeNativeWork();
                 continue;
             }
-            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.native_source_maintenance == null and self.native_source_rotation == null and self.runtime_measurement == null and self.runtime_installation == null) {
+            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.native_source_maintenance == null and self.native_source_rotation == null and self.runtime_measurement == null and self.runtime_installation == null and self.fresh_oauth_verifications.items.len == 0) {
                 self.mutex.unlock(self.io);
+                self.cancelFreshOAuth(null);
                 return;
             }
             if (self.queue_count == 0 and self.stopping) {
                 maintenance_due = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(100) });
                 self.mutex.unlock(self.io);
+                self.cancelFreshOAuth(null);
                 continue;
             }
             if (!self.stopping and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() <= 0) {
@@ -1456,6 +1586,9 @@ pub const Engine = struct {
                 // This awake-clock schedule is independent of dispatch and
                 // queue emptiness. Continued inspection cannot starve already
                 // issued identity reads or credential expiry maintenance.
+                if (!self.poisoned) self.pollFreshOAuth() catch {
+                    self.fence();
+                };
                 if (!self.poisoned) self.pollNetwork() catch {
                     self.fence();
                 };
@@ -1483,10 +1616,24 @@ pub const Engine = struct {
             // periodic work belongs to the actor's independent clock schedule.
             self.active_until = item.until;
             self.active_peer = if (item.peer_context) |*verified| verified else null;
+            self.active_oauth_profile = item.qualified_oauth_profile;
+            self.active_oss_callback_port = item.owned_oss_callback_port;
+            if (item.oauth_authorization) |selection| {
+                const response = self.freshOAuthAuthorization(item.allocator, selection.transaction_id, selection.expected_revision, item.until);
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
+                self.active_until = null;
+                self.active_peer = null;
+                self.finishInvocation(item, response);
+                continue;
+            }
+            if (self.stopping) self.cancelFreshOAuth(null);
             if (item.qualified_candidate != null) {
                 self.startNativeRuntimeCommit(item) catch |err| self.finishInvocation(item, err);
                 self.active_until = null;
                 self.active_peer = null;
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
                 continue;
             }
             const deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startNativeInvocation(item) catch |err| blk: {
@@ -1504,11 +1651,15 @@ pub const Engine = struct {
             if (deferred) {
                 self.active_peer = null;
                 self.active_until = null;
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
                 continue;
             }
             const response = if (self.stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.execute(item.allocator, item.payload, item.channel);
             self.active_peer = null;
             self.active_until = null;
+            self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
             if (response) |success| {
                 const queued = self.startConfiguredRuntimeInstall(item, success) catch |err| {
                     item.allocator.free(success);
@@ -1573,12 +1724,15 @@ pub const Engine = struct {
         var request = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32600, "InvalidRequest");
         defer request.deinit();
         if (channel != .control) return control.failure(allocator, request.id, -32000, refusal);
+        if (eql(request.method, "oauth.enrollment.pending.v1")) return self.freshOAuthPendingMetadata(allocator, request) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "oauth.enrollment.descriptor.v1")) return self.freshOAuthDescriptor(allocator, request) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "oauth.enrollment.status.v1")) return self.freshOAuthStatus(allocator, request) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         if (eql(request.method, "system.handshake")) return control.success(allocator, request.id, .{
             .protocol_version = control.protocol_version,
             .service = "omuxd",
             .channel = "control",
             .custody_available = false,
-            .capabilities = .{ .credential_free_control = true, .custody_reopen = true, .native_launch = false, .live_handoff_proven = false },
+            .capabilities = .{ .owned_siwc_enrollment_v1 = builtin.os.tag == .linux or builtin.os.tag == .macos, .credential_free_control = true, .custody_reopen = true, .native_launch = false, .live_handoff_proven = false },
         });
         if (eql(request.method, "custody.reopen")) {
             if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return control.failure(allocator, request.id, -32602, "InvalidParams");
@@ -1904,6 +2058,15 @@ pub const Engine = struct {
 
     fn completeNativeWork(self: *Engine) void {
         const job = self.native_workers.?.takeCompleted() orelse return;
+        for (self.fresh_oauth_verifications.items, 0..) |task, index| if (job == &task.job) {
+            _ = self.fresh_oauth_verifications.orderedRemove(index);
+            defer task.deinit();
+            self.completeFreshOAuthVerification(task) catch |err| {
+                self.fresh_oauth_failure = err;
+                self.fence();
+            };
+            return;
+        };
         if (self.native_source_maintenance) |task| if (job == &task.job) {
             self.native_source_maintenance = null;
             defer task.deinit();
@@ -2618,7 +2781,7 @@ pub const Engine = struct {
         errdefer workers.deinit();
         try self.custodyDeadline();
         if (builtin.is_test and self.fixture_custody_stage_failure == .supervisor_ready) return error.CustodyStageFailure;
-        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "qualified_native_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts", "fresh_oauth" }) |name| {
+        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "qualified_native_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts", "fresh_oauth", "fresh_oauth_host_id", "owned_siwc_pairs" }) |name| {
             std.mem.swap(@TypeOf(@field(self.*, name)), &@field(self.*, name), &@field(staged, name));
         }
         self.native_workers = workers;
@@ -2700,6 +2863,8 @@ pub const Engine = struct {
             self.fresh_oauth = try oauth_enrollment.Ledger.fromSnapshot(self.allocator, saved_enrollments);
             self.fresh_oauth.?.recoverAfterRestart(self.allocator);
         }
+        self.fresh_oauth_host_id = parsed.value.fresh_oauth_host_id;
+        if (parsed.value.owned_siwc_pairs) |pairs| self.owned_siwc_pairs = try siwc_pair.Registry.fromSnapshot(self.allocator, pairs);
         const restored_state = restored: {
             if (builtin.is_test and self.fixture_custody_stage_failure == .state_allocation) {
                 var failing = std.testing.FailingAllocator.init(self.allocator, .{ .fail_index = 0 });
@@ -3034,6 +3199,7 @@ pub const Engine = struct {
     }
 
     fn fence(self: *Engine) void {
+        self.cancelFreshOAuth(null);
         self.poisoned = true;
         // Maintenance can fail after preparing an in-memory update. Public
         // inspection retains committed metadata whenever storage can read it.
@@ -3110,6 +3276,8 @@ pub const Engine = struct {
             .lifecycle_measurements = self.lifecycle_measurements,
             .browser_attempt_authority = if (self.browser_attempts) |*attempts| attempts.snapshot() else null,
             .fresh_oauth_authority = if (self.fresh_oauth) |*enrollments| enrollments.snapshot() else null,
+            .fresh_oauth_host_id = self.fresh_oauth_host_id,
+            .owned_siwc_pairs = self.owned_siwc_pairs.snapshot(),
             .state = self.state.snapshot(),
             .policy = self.policy,
             .installed_integrations = self.installed.items,
@@ -3207,6 +3375,8 @@ pub const Engine = struct {
         errdefer if (!ownership_transferred) {
             if (restored_browser_attempts) |*attempts| attempts.deinit();
         };
+        var restored_pairs = try siwc_pair.Registry.fromSnapshot(self.allocator, parsed.value.owned_siwc_pairs orelse .{});
+        errdefer if (!ownership_transferred) restored_pairs.deinit(self.allocator);
         var restored_enrollments: ?oauth_enrollment.Ledger = if (parsed.value.fresh_oauth_authority) |saved_enrollments| try oauth_enrollment.Ledger.fromSnapshot(self.allocator, saved_enrollments) else null;
         errdefer if (!ownership_transferred) {
             if (restored_enrollments) |*enrollments| enrollments.deinit(self.allocator);
@@ -3263,6 +3433,9 @@ pub const Engine = struct {
         }
         if (self.fresh_oauth) |*enrollments| enrollments.deinit(self.allocator);
         self.fresh_oauth = restored_enrollments;
+        self.owned_siwc_pairs.deinit(self.allocator);
+        self.owned_siwc_pairs = restored_pairs;
+        self.fresh_oauth_host_id = parsed.value.fresh_oauth_host_id;
         self.state.deinit();
         self.state = replacement;
         self.requests.deinit();
@@ -3300,6 +3473,7 @@ pub const Engine = struct {
         self.outcome_intents = outcome_intents;
         // Later derived checks may fail; self owns every replacement now.
         ownership_transferred = true;
+        self.reconcileFreshOAuthFences();
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
         _ = try self.snapshotUsage();
         self.committed_nonledger_bytes = try self.nonledgerBytes();
@@ -3418,7 +3592,7 @@ pub const Engine = struct {
             }
             var failed = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32000, "CustodyUnavailable");
             defer failed.deinit();
-            if (channel == .control and (eql(failed.method, "system.handshake") or eql(failed.method, "state.snapshot") or eql(failed.method, "system.health") or eql(failed.method, "reliability.export") or eql(failed.method, "reliability.lifecycle") or eql(failed.method, "setup.readiness") or eql(failed.method, "setup.plan") or eql(failed.method, "setup.evidence") or eql(failed.method, "setup.refresh") or eql(failed.method, application_readiness.method))) return self.handleRequest(allocator, failed, channel);
+            if (channel == .control and (eql(failed.method, "oauth.enrollment.pending.v1") or eql(failed.method, "oauth.enrollment.descriptor.v1") or eql(failed.method, "oauth.enrollment.status.v1") or eql(failed.method, "system.handshake") or eql(failed.method, "state.snapshot") or eql(failed.method, "system.health") or eql(failed.method, "reliability.export") or eql(failed.method, "reliability.lifecycle") or eql(failed.method, "setup.readiness") or eql(failed.method, "setup.plan") or eql(failed.method, "setup.evidence") or eql(failed.method, "setup.refresh") or eql(failed.method, application_readiness.method))) return self.handleRequest(allocator, failed, channel);
             return control.failure(allocator, failed.id, -32000, "CustodyUnavailable");
         }
         if (channel == .browser) return self.executeBrowser(allocator, payload) catch |err| {
@@ -3431,7 +3605,7 @@ pub const Engine = struct {
         defer request.deinit();
         // Audit refusals do not restore or rewrite the actor's committed state.
         // Production control ingress already verifies the socket's peer user.
-        if (eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "integrations.nativeFileCoordinationReadiness") or eql(request.method, "custody.reopen") or eql(request.method, "custody.observation")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "oauth.enrollment.pending.v1") or eql(request.method, "oauth.enrollment.status.v1") or eql(request.method, "oauth.enrollment.descriptor.v1") or eql(request.method, "oauth.enrollment.authorization.v1") or eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "integrations.nativeFileCoordinationReadiness") or eql(request.method, "custody.reopen") or eql(request.method, "custody.observation")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -3449,7 +3623,23 @@ pub const Engine = struct {
         const lifecycle_local_start: ?std.Io.Timestamp = if (eql(request.method, "source.disconnect")) std.Io.Clock.awake.now(self.io) else null;
         const operation_id = try control.operationId(request.params);
         const expected_revision = try control.expectedRevision(request.params);
-        const fingerprint = try mutationFingerprint(allocator, request.method, request.params, self.root_key);
+        var fingerprint = try mutationFingerprint(allocator, request.method, request.params, self.root_key);
+        if (eql(request.method, "oauth.enrollment.prepare.v1")) if (self.active_oauth_profile) |profile| {
+            var mac = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.root_key);
+            mac.update("omux-fresh-oauth-private-profile-intent-v1");
+            mac.update(&fingerprint);
+            mac.update(&profile.view().sha256);
+            mac.final(&fingerprint);
+        };
+        if (eql(request.method, "oauth.enrollment.prepare.v1")) if (self.active_oss_callback_port) |port| {
+            var bytes: [2]u8 = undefined;
+            std.mem.writeInt(u16, &bytes, port, .big);
+            var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.root_key);
+            hmac.update("omux-owned-oss-enrollment-operation-v1");
+            hmac.update(&fingerprint);
+            hmac.update(&bytes);
+            hmac.final(&fingerprint);
+        };
         const admission = try self.mutations.begin(operation_id, request.method, fingerprint, expected_revision, self.revision, kind);
         const slot = switch (admission) {
             .replay => |bytes| {
@@ -3906,6 +4096,10 @@ pub const Engine = struct {
             // every borrowed demand string in the parsed arena through reply.
             parsed = try std.json.parseFromSlice(DemandInput, allocator, encoded, .{ .allocate = .alloc_always });
             const d = parsed.?.value;
+            // The old native ChatGPT readiness profile is not SIWC API
+            // Responses authority. Keep its projection closed until a
+            // separately reviewed profile-aware report exists.
+            if (application == .codex and eql(d.provider, siwc_route.provider)) return error.SiwcReadinessProfileRequired;
             if (d.purpose != .request or !std.math.isFinite(d.required) or d.required < 0 or d.required > 1e15 or d.scopes.len > 64) return error.InvalidParams;
             for ([_][]const u8{ d.provider, d.audience, d.resource.kind, d.resource.target, d.resource.unit_name, d.resource.scope }) |text| if (text.len > 256) return error.InvalidParams;
             if (d.issuer) |issuer| if (issuer.len > 256) return error.InvalidParams;
@@ -4065,40 +4259,841 @@ pub const Engine = struct {
         });
     }
 
+    fn cancelFreshOAuth(self: *Engine, id: ?[32]u8) void {
+        for (self.fresh_oauth_pending.items) |*pending| {
+            if (id) |selected| if (!std.meta.eql(selected, pending.attempt.binding.transaction_id)) continue;
+            if (pending.fence) |fence| _ = fence.invalidate();
+            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
+            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
+            if (pending.receiver) |receiver| { receiver.deinit(); pending.receiver = null; }
+        }
+    }
+    fn freshOAuthCurrent(self: *Engine, pending: *const FreshOAuthPending) bool {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.root_id == null or self.import_forget_epoch != pending.attempt.binding.forget_epoch or pending.attempt.until.clock != .awake or pending.attempt.until.durationFromNow(self.io).raw.toNanoseconds() <= 0 or self.now() >= pending.attempt.binding.consent_expires_at) return false;
+        oauth_enrollment.checkFlow(self.io, pending.attempt) catch return false;
+        if (pending.workUntil().durationFromNow(self.io).raw.toNanoseconds() <= 0) return false;
+        const ledger = if (self.fresh_oauth) |*value| value else return false;
+        const record = ledger.find(pending.attempt.binding.transaction_id) orelse return false;
+        return record.consent_status == .recorded and std.meta.eql(record.binding, pending.attempt.binding) and (record.phase == .prepared or record.phase == .callback_consumed or record.phase == .exchange_issued or record.phase == .verifying) and record.registration_profile_sha256 != null and std.crypto.timing_safe.eql([32]u8, record.registration_profile_sha256.?, pending.profile.view().sha256);
+    }
+    fn freshOAuthAuthorization(self: *Engine, allocator: std.mem.Allocator, id: [32]u8, revision: u64, until: std.Io.Clock.Timestamp) ![]u8 {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.EnrollmentAuthorityChanged;
+        if (self.revision != revision or until.clock != .awake or until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.StaleRevision;
+        for (self.fresh_oauth_pending.items) |*pending| {
+            if (!std.meta.eql(pending.attempt.binding.transaction_id, id)) continue;
+            if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+            const current = self.fresh_oauth.?.find(id) orelse return error.EnrollmentNotFound;
+            if (current.phase != .prepared or pending.receiver == null) return error.CallbackAlreadyConsumed;
+            if (pending.authorization_delivered) return error.AuthorizationAlreadyDelivered;
+            // Independent protected Store metadata, not caller-supplied URL
+            // hints, establishes the original committed consent/state tuple.
+            var retained = try self.db.?.readSnapshot();
+            defer retained.deinit();
+            if (retained.revision != revision) return error.StaleRevision;
+            const saved = try std.json.parseFromSlice(Persisted, allocator, retained.json, .{});
+            defer saved.deinit();
+            const rows = (saved.value.fresh_oauth_authority orelse return error.EnrollmentNotFound).records;
+            var matched = false;
+            for (rows) |row| if (std.meta.eql(row.binding.transaction_id, id)) {
+                if (row.phase != .prepared or row.consent_status != .recorded or !std.meta.eql(row.binding, pending.attempt.binding) or !std.meta.eql(row.state_digest, current.state_digest) or !std.meta.eql(row.challenge, current.challenge)) return error.EnrollmentAuthorityChanged;
+                matched = true;
+            };
+            if (!matched or !self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+            const result = try oauth_issue.authorizationUrl(self.io, allocator, pending.profile, pending.attempt, current.challenge);
+            pending.authorization_delivered = true;
+            return result;
+        }
+        return error.EnrollmentNotFound;
+    }
+    /// Rollback/revision restoration never reconstructs a live callback lease
+    /// or makes cancelled work live again. Drop only ephemeral stale receivers.
+    fn reconcileFreshOAuthFences(self: *Engine) void {
+        for (self.fresh_oauth_pending.items) |*pending| if (!self.freshOAuthCurrent(pending)) {
+            if (pending.fence) |fence| _ = fence.invalidate();
+            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
+            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
+            if (pending.receiver) |receiver| { receiver.deinit(); pending.receiver = null; }
+        };
+    }
+    fn freshOAuthUnknown(self: *Engine, pending: *FreshOAuthPending) !void {
+        if (pending.fence) |fence| _ = fence.invalidate();
+        if (self.fresh_oauth) |*ledger| {
+            const record = ledger.find(pending.attempt.binding.transaction_id) orelse return;
+            if (record.phase == .exchange_issued or record.phase == .completion_unknown or record.phase == .verifying) {
+                try ledger.markUnknown(self.allocator, pending.attempt.binding.transaction_id);
+            } else if (record.phase == .prepared or record.phase == .callback_consumed) try ledger.retire(self.allocator, pending.attempt.binding.transaction_id) else return;
+            try self.persist(&.{});
+        }
+    }
+    fn issueFreshOAuthCode(self: *Engine, pending: *FreshOAuthPending) !void {
+        if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+        const ledger = if (self.fresh_oauth) |*value| value else return error.EnrollmentNotFound;
+        // Callback consumption has already committed. No plaintext enters this
+        // snapshot; issuer opens only those independently reread Store capsules.
+        const exchange_until = try oauth_enrollment.exchangeDeadline(self.io, pending.attempt);
+        try ledger.markIssued(self.allocator, pending.attempt.binding);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = try self.snapshotUsage();
+        const serialized = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
+        defer self.allocator.free(serialized);
+        const ticket = oauth_issue.issueCode(self.io, self.allocator, &self.db.?, self.root_key, self.root_id.?, self.revision, serialized, pending.attempt.binding, pending.profile, exchange_until) catch |err| {
+            // A failure after actual Store commit/readback is not an unissued
+            // retry. Restore the Store row, retain issued uncertainty, and fence
+            // custody if its disposition cannot itself commit.
+            self.restoreCommitted() catch { self.poisoned = true; return err; };
+            self.freshOAuthUnknown(pending) catch { self.poisoned = true; };
+            return err;
+        };
+        self.revision = ticket.committedRevision();
+        if (!std.meta.eql(ticket.binding(), pending.attempt.binding) or !std.crypto.timing_safe.eql([32]u8, ticket.registrationProfileSha256(), pending.profile.view().sha256)) {
+            ticket.deinit();
+            return error.EnrollmentAuthorityChanged;
+        }
+        pending.ticket = ticket;
+        pending.fence = ticket.retainFence();
+        self.committed_nonledger_bytes = try self.nonledgerBytes();
+        self.committed_counts = self.actualCounts();
+        if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+        const client = self.network orelse return error.TransportUnavailable;
+        pending.transport_id = try client.startOAuth(ticket);
+    }
+    fn pollFreshOAuth(self: *Engine) !void {
+        var index: usize = 0;
+        while (index < self.fresh_oauth_pending.items.len) {
+            const pending = &self.fresh_oauth_pending.items[index];
+            if (!self.freshOAuthCurrent(pending)) {
+                if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
+                try self.freshOAuthUnknown(pending);
+                pending.deinit();
+                _ = self.fresh_oauth_pending.orderedRemove(index);
+                continue;
+            }
+            if (pending.receiver) |receiver| {
+                var captured = receiver.poll() catch |err| {
+                    self.fresh_oauth_failure = err;
+                    if (err == error.OutOfMemory) return err;
+                    receiver.acknowledge(.refused);
+                    try self.freshOAuthUnknown(pending);
+                    pending.deinit();
+                    _ = self.fresh_oauth_pending.orderedRemove(index);
+                    continue;
+                };
+                if (captured) |*callback| {
+                    defer callback.deinit();
+                    const ledger = if (self.fresh_oauth) |*value| value else return error.EnrollmentNotFound;
+                    if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+                    if (callback.denied) {
+                        try ledger.withdraw(self.allocator, pending.attempt.binding.transaction_id);
+                        try self.persist(&.{});
+                        receiver.acknowledge(.recorded);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(index);
+                        continue;
+                    }
+                    ledger.consumeOwnedCallback(self.io, self.allocator, self.root_key, self.root_id.?, pending.attempt, pending.attempt.binding, self.now(), &callback.state, callback.code.bytes, callback.client_id.bytes) catch |err| {
+                        receiver.acknowledge(.refused);
+                        return err;
+                    };
+                    // Encrypt first; actual actor commit precedes ACK or issue.
+                    try self.persist(&.{});
+                    receiver.acknowledge(.recorded);
+                    receiver.deinit();
+                    pending.receiver = null;
+                    self.issueFreshOAuthCode(pending) catch |err| {
+                        self.fresh_oauth_failure = err;
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(index);
+                        continue;
+                    };
+                }
+            }
+            index += 1;
+        }
+        if (self.network) |client| while (client.pollOAuth()) |value| {
+            var completion = value;
+            defer completion.deinit(self.allocator);
+            var found: ?usize = null;
+            for (self.fresh_oauth_pending.items, 0..) |pending, position| if (pending.transport_id == completion.id) { found = position; break; };
+            const position = found orelse continue;
+            const pending = &self.fresh_oauth_pending.items[position];
+            if (!self.freshOAuthCurrent(pending)) {
+                try self.freshOAuthUnknown(pending);
+            } else switch (completion.result) {
+                .failure => try self.freshOAuthUnknown(pending),
+                .response => |response| {
+                    response.recheck(pending.ticket orelse return error.EnrollmentAuthorityChanged) catch {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    };
+                    if (pending.ticket) |ticket| {
+                        if (self.revision < ticket.committedRevision() or !std.meta.eql(ticket.binding(), pending.attempt.binding) or !std.crypto.timing_safe.eql([32]u8, ticket.registrationProfileSha256(), pending.profile.view().sha256)) return error.EnrollmentAuthorityChanged;
+                        oauth_issue.verifyCurrentIssued(self.allocator, &self.db.?, ticket, pending.attempt.binding, pending.workUntil()) catch |err| switch (err) {
+                            error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
+                                try self.freshOAuthUnknown(pending);
+                                pending.deinit();
+                                _ = self.fresh_oauth_pending.orderedRemove(position);
+                                continue;
+                            },
+                            else => return err,
+                        };
+                    } else return error.EnrollmentAuthorityChanged;
+                    if (pending.fence) |fence| fence.checkBeforeCompletion() catch {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    } else return error.EnrollmentAuthorityChanged;
+                    var evidence = response.evidence(self.allocator) catch |err| {
+                        self.fresh_oauth_failure = err;
+                        if (err == error.OutOfMemory) return err;
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    };
+                    defer evidence.deinit();
+                    // Allocation and token parsing consume the original lease.
+                    // Repeat actual-row and atomic consent checks immediately
+                    // before the quarantine transaction, never renew the clock.
+                    if (!self.freshOAuthCurrent(pending)) {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    }
+                    oauth_issue.verifyCurrentIssued(self.allocator, &self.db.?, pending.ticket.?, pending.attempt.binding, pending.workUntil()) catch |err| switch (err) {
+                        error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
+                            try self.freshOAuthUnknown(pending);
+                            pending.deinit();
+                            _ = self.fresh_oauth_pending.orderedRemove(position);
+                            continue;
+                        },
+                        else => return err,
+                    };
+                    pending.fence.?.checkBeforeCompletion() catch {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    };
+                    // Token wire syntax is not identity/audience/family or
+                    // coexistence proof. No grant/owner is activated here.
+                    const ledger = if (self.fresh_oauth) |*item| item else return error.EnrollmentNotFound;
+                    const record = ledger.find(pending.attempt.binding.transaction_id) orelse return error.EnrollmentNotFound;
+                    var raw = try response.copyForEncryptedCustody(self.allocator, pending.ticket.?);
+                    defer raw.deinit();
+                    try oauth_enrollment.sealUnverifiedResponse(self.io, self.allocator, self.root_key, self.root_id.?, record, raw.bytes, pending.workUntil());
+                    if (self.now() >= pending.attempt.binding.consent_expires_at) {
+                        try ledger.withdraw(self.allocator, pending.attempt.binding.transaction_id);
+                        try self.persist(&.{});
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    }
+                    if (response.isOwnOss()) {
+                        try pending.ticket.?.requireOwnedOssEnrollment();
+                        record.phase = .verifying;
+                        try self.persist(&.{});
+                        response.retain();
+                        pending.response = response;
+                        pending.transport_id = null;
+                        pending.jwks_id = client.startJwks(pending.ticket.?) catch |err| {
+                            self.fresh_oauth_failure = err;
+                            try self.freshOAuthUnknown(pending);
+                            pending.deinit();
+                            _ = self.fresh_oauth_pending.orderedRemove(position);
+                            continue;
+                        };
+                        continue;
+                    }
+                    try self.persist(&.{});
+                },
+            }
+            pending.deinit();
+            _ = self.fresh_oauth_pending.orderedRemove(position);
+        };
+        if (self.network) |client| while (client.pollJwks()) |value| {
+            var completion = value;
+            defer completion.deinit(self.allocator);
+            for (self.fresh_oauth_pending.items) |*pending| {
+                if (pending.jwks_id != completion.id) continue;
+                pending.jwks_id = null;
+                if (!self.freshOAuthCurrent(pending)) { try self.freshOAuthUnknown(pending); break; }
+                switch (completion.result) {
+                    .failure => try self.freshOAuthUnknown(pending),
+                    .lease => |keys| self.startFreshOAuthVerification(pending, keys) catch |err| {
+                        self.fresh_oauth_failure = err;
+                        try self.freshOAuthUnknown(pending);
+                    },
+                }
+                break;
+            }
+        };
+    }
+
+    fn startFreshOAuthVerification(self: *Engine, pending: *FreshOAuthPending, keys: *transport.JwksLease) !void {
+        if (!self.freshOAuthCurrent(pending) or self.fresh_oauth_verifications.items.len >= oauth_callback.max_receivers) return error.EnrollmentAuthorityChanged;
+        const ticket = pending.ticket orelse return error.EnrollmentAuthorityChanged;
+        const response = pending.response orelse return error.EnrollmentAuthorityChanged;
+        try oauth_issue.verifyCurrentIssued(self.allocator, &self.db.?, ticket, pending.attempt.binding, pending.workUntil());
+        try response.recheck(ticket);
+        try keys.recheckTicket(ticket);
+        try self.fresh_oauth_verifications.ensureUnusedCapacity(self.allocator, 1);
+        const task = try self.allocator.create(FreshOAuthVerifyTask);
+        errdefer self.allocator.destroy(task);
+        ticket.retain(); errdefer ticket.deinit();
+        response.retain(); errdefer response.deinit();
+        keys.retain(); errdefer keys.deinit();
+        task.* = .{ .allocator = self.allocator, .ticket = ticket, .response = response, .jwks = keys, .job = .{ .lane = .continuation, .context = task, .run = FreshOAuthVerifyTask.run } };
+        try self.native_workers.?.enqueue(&task.job);
+        self.fresh_oauth_verifications.appendAssumeCapacity(task);
+    }
+    fn completeFreshOAuthVerification(self: *Engine, task: *FreshOAuthVerifyTask) !void {
+        for (self.fresh_oauth_pending.items, 0..) |*pending, index| {
+            if (!std.meta.eql(pending.attempt.binding.transaction_id, task.ticket.binding().transaction_id)) continue;
+            defer { pending.deinit(); _ = self.fresh_oauth_pending.orderedRemove(index); }
+            if (!self.freshOAuthCurrent(pending)) { try self.freshOAuthUnknown(pending); return; }
+            if (task.failure) |err| {
+                self.fresh_oauth_failure = err;
+                if (pending.fence) |fence| _ = fence.invalidate();
+                const record = self.fresh_oauth.?.find(pending.attempt.binding.transaction_id) orelse return;
+                record.phase = .quarantined;
+                try self.persist(&.{});
+                return;
+            }
+            self.activateFreshOAuthPair(pending, task.proof orelse return error.OIDCProofUnavailable, task.response) catch |err| switch (err) {
+                error.OwnedRefreshTokenMissing, error.SiwcDuplicateLineage, error.SiwcEnrollmentRefused, error.SiwcPairExpired,
+                error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
+                    self.fresh_oauth_failure = err;
+                    try self.freshOAuthUnknown(pending);
+                },
+                else => return err,
+            };
+            return;
+        }
+        // A cancelled/forgotten attempt cannot be recovered from a worker.
+    }
+    fn settleFreshOAuthAttempts(self: *Engine) !void {
+        const ledger = if (self.fresh_oauth) |*value| value else return;
+        if (ledger.records.items.len < oauth_enrollment.max_records) return;
+        var index: usize = 0;
+        while (index < ledger.records.items.len) {
+            const row = ledger.records.items[index];
+            var held = false;
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(row.binding.transaction_id, pending.attempt.binding.transaction_id)) { held = true; };
+            for (self.fresh_oauth_verifications.items) |task| if (std.meta.eql(row.binding.transaction_id, task.ticket.binding().transaction_id)) { held = true; };
+            if (!held and (row.phase == .prepared or row.phase == .callback_consumed) and self.now() >= row.binding.consent_expires_at) try ledger.retire(self.allocator, row.binding.transaction_id);
+            const phase = ledger.records.items[index].phase;
+            const transferred = self.owned_siwc_pairs.find(row.binding.transaction_id) != null;
+            if (!held and (phase == .retired or phase == .completion_unknown or phase == .quarantined or (phase == .active and transferred))) {
+                try ledger.settle(self.allocator, row.binding.transaction_id, transferred);
+                continue;
+            }
+            index += 1;
+        }
+    }
+    const FreshPairWriterFence = struct {
+        engine: *Engine,
+        pending: *FreshOAuthPending,
+        proof: *oauth_oidc.VerifiedProfile,
+        response: *transport.OAuthResponse,
+        fn check(context: *anyopaque, stage: storage.CommitStage) anyerror!void {
+            const self: *FreshPairWriterFence = @ptrCast(@alignCast(context));
+            const current = self.engine;
+            const ticket = self.pending.ticket orelse return error.EnrollmentAuthorityChanged;
+            const binding = ticket.binding();
+            if (current.stopping or current.poisoned or current.vault_locked or current.db == null or current.root_id == null or current.import_forget_epoch != binding.forget_epoch) return error.EnrollmentAuthorityChanged;
+            const attempt = current.fresh_oauth.?.find(binding.transaction_id) orelse return error.EnrollmentNotFound;
+            if (attempt.phase != .active or attempt.consent_status != .recorded or !std.meta.eql(attempt.binding, binding)) return error.EnrollmentAuthorityChanged;
+            const pair = current.owned_siwc_pairs.find(binding.transaction_id) orelse return error.SiwcPairUnavailable;
+            if (pair.status != .ready or pair.consent_status != .recorded or pair.forget_tombstone or pair.source_generation != binding.source_generation or pair.consent_generation != binding.consent_generation or !std.crypto.timing_safe.eql([32]u8, pair.activation_commitment, self.proof.activationCommitment())) return error.EnrollmentAuthorityChanged;
+            var authorized = false;
+            for (current.state.sources.items) |source| if (eql(source.id, pair.source_id)) {
+                authorized = source.status == .connected and eql(source.provider, "openai_siwc") and source.kind == .oauth and source.authorized_at <= current.now() and (source.authorized_until == null or source.authorized_until.? > current.now());
+            };
+            if (!authorized) return error.SourceUnauthorized;
+            if (stage == .before_begin) {
+                // Ciphertexts and validation already exist, but no SQL writer
+                // has begun: independently reread the original issued row now.
+                try oauth_issue.verifyCurrentIssued(current.allocator, &current.db.?, ticket, binding, self.pending.workUntil());
+            } else {
+                // Transaction has staged the new snapshot; its older checkpoint
+                // cannot authenticate that snapshot until COMMIT. Authenticate
+                // exact staged SQL rows and retained opaque proof instead.
+                const access = (try current.db.?.readGrantStatus(pair.account_id, pair.access_grant_id)) orelse return error.SiwcPairUnavailable;
+                const refresh = (try current.db.?.readGrantStatus(pair.account_id, pair.refresh_grant_id)) orelse return error.SiwcPairUnavailable;
+                if (access.state != .ready or refresh.state != .ready or access.renewal_owner != .omux or refresh.renewal_owner != .omux or access.generation != pair.access_generation or refresh.generation != pair.refresh_generation) return error.SiwcPairAuthorityChanged;
+            }
+            try self.proof.recheck(ticket, self.response);
+            try ticket.checkBeforeVerification();
+        }
+    };
+    /// Only this actual opaque verifier path creates the registry and two SQL
+    /// rows. A new Omux lineage is owned from inception; no import is adopted.
+    fn activateFreshOAuthPair(self: *Engine, pending: *FreshOAuthPending, proof: *oauth_oidc.VerifiedProfile, response: *transport.OAuthResponse) !void {
+        const a = self.allocator;
+        const ticket = pending.ticket orelse return error.EnrollmentAuthorityChanged;
+        if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+        try oauth_issue.verifyCurrentIssued(a, &self.db.?, ticket, pending.attempt.binding, pending.workUntil());
+        try proof.recheck(ticket, response);
+        var evidence = try response.evidence(a);
+        defer evidence.deinit();
+        try proof.matchesEvidence(ticket, &evidence);
+        const refresh = evidence.refresh_token orelse return error.OwnedRefreshTokenMissing;
+        if (refresh.len == 0 or proof.accessExpiresAt() <= self.now()) return error.SiwcPairExpired;
+        const binding = ticket.binding();
+        const source_id = std.fmt.bytesToHex(binding.source_id, .lower);
+        const access_id = std.fmt.bytesToHex(binding.grant_id, .lower);
+        var random: [64]u8 = undefined;
+        try self.io.randomSecure(&random);
+        const refresh_id = std.fmt.bytesToHex(random[0..32].*, .lower);
+        const identity = std.fmt.bytesToHex(proof.identityCommitment(), .lower);
+        // Exact registration-scoped identity. No workspace or independent
+        // capacity is inferred from sub, email, client count, or scopes.
+        const account_id = identity;
+        if (self.state.grant(&access_id) != null or self.state.grant(&refresh_id) != null or self.owned_siwc_pairs.find(binding.transaction_id) != null) return error.SiwcDuplicateLineage;
+        for (self.state.sources.items) |source| if (eql(source.id, &source_id)) return error.SiwcDuplicateLineage;
+        for (self.owned_siwc_pairs.records.items) |prior| {
+            if (prior.forget_tombstone and std.crypto.timing_safe.eql([32]u8, prior.provider_subject_commitment, proof.providerSubjectCommitment())) return error.SiwcEnrollmentRefused;
+            // The provider issues a stable registered client per account /
+            // workspace. Reauthorization may reuse that client; it must not
+            // reuse any retained refresh credential lineage.
+            if (std.crypto.timing_safe.eql([32]u8, prior.refresh_token_commitment, siwc_pair.tokenCommitment(self.root_key, refresh, .refresh))) return error.SiwcDuplicateLineage;
+        }
+        var identity_plain = try proof.copyIdentityForEncryption(a);
+        defer identity_plain.deinit();
+        var row: siwc_pair.Record = .{
+            .transaction_id = binding.transaction_id, .source_id = &source_id, .account_id = &account_id,
+            .access_grant_id = &access_id, .refresh_grant_id = &refresh_id,
+            .source_generation = binding.source_generation, .consent_id = binding.consent_id, .consent_generation = binding.consent_generation,
+            .lineage_id = random[32..64].*, .access_expires_at = proof.accessExpiresAt(),
+            .profile_sha256 = ticket.registrationProfileSha256(), .binding_sha256 = proof.bindingSha256(), .response_sha256 = proof.responseSha256(),
+            .activation_commitment = proof.activationCommitment(), .issued_client_commitment = proof.issuedClientCommitment(),
+            .identity_commitment = proof.identityCommitment(), .provider_subject_commitment = proof.providerSubjectCommitment(),
+            .refresh_token_commitment = siwc_pair.tokenCommitment(self.root_key, refresh, .refresh),
+            .access_token_commitment = siwc_pair.tokenCommitment(self.root_key, evidence.access_token, .access), .identity_capsule = &.{},
+        };
+        row.identity_capsule = try envelope.seal(self.io, a, self.root_key, siwc_pair.identityContext(self.root_id.?, row), identity_plain.bytes);
+        defer a.free(row.identity_capsule);
+        const access_plain = try std.json.Stringify.valueAlloc(a, .{ .access_token = evidence.access_token }, .{});
+        defer { std.crypto.secureZero(u8, access_plain); a.free(access_plain); }
+        const refresh_plain = try std.json.Stringify.valueAlloc(a, .{ .refresh_token = refresh, .client_id = ticket.issuedClientId() }, .{});
+        defer { std.crypto.secureZero(u8, refresh_plain); a.free(refresh_plain); }
+        // Precheck actual absence before any domain publication. Store commit
+        // still performs ownership/generation CAS, and seals all payloads before
+        // beginning its journal transaction.
+        if (try self.db.?.readGrantStatus(&account_id, &access_id) != null or try self.db.?.readGrantStatus(&account_id, &refresh_id) != null) return error.SiwcDuplicateLineage;
+        errdefer self.restoreCommitted() catch { self.poisoned = true; };
+        _ = try self.state.connectSource(.{ .id = &source_id, .provider = "openai_siwc", .kind = .oauth, .authorized_at = self.now() });
+        if (try self.importSourceGeneration(&source_id) != binding.source_generation) return error.EnrollmentAuthorityChanged;
+        const enrolled = try self.state.enroll(.{ .account_id = &account_id, .source_id = &source_id, .identity = .{ .provider = "openai_siwc", .issuer = siwc_pair.issuer_uri, .subject = &identity, .verified = true } }, self.now());
+        if (enrolled.status != .enrolled and enrolled.status != .existing) return error.SiwcEnrollmentRefused;
+        if (!eql(enrolled.account_id.?, &account_id)) return error.SiwcEnrollmentRefused;
+        _ = try self.state.addGrant(.{ .id = &access_id, .account_id = &account_id, .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .omux, .purposes = &.{.request}, .audience = siwc_pair.resource_uri, .scopes = &.{"resource.invoke", "chatgpt.tokens.use.direct"}, .provider_expires_at = proof.accessExpiresAt() });
+        _ = try self.state.addGrant(.{ .id = &refresh_id, .account_id = &account_id, .source_id = &source_id, .credential_kind = .oauth_refresh, .ownership = .omux, .purposes = &.{.renewal}, .audience = siwc_pair.resource_uri, .scopes = &.{"offline_access"} });
+        try self.owned_siwc_pairs.append(a, row);
+        try self.fresh_oauth.?.activate(a, binding);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = try self.snapshotUsage();
+        const nonledger = try self.nonledgerBytes();
+        const serialized = try std.json.Stringify.valueAlloc(a, self.persisted(), .{});
+        defer a.free(serialized);
+        // Last verification is after every allocation/serialization and exactly
+        // before the atomic Store writer; the original consent/cutoff is held.
+        try oauth_issue.verifyCurrentIssued(a, &self.db.?, ticket, binding, pending.workUntil());
+        try proof.recheck(ticket, response);
+        try proof.matchesEvidence(ticket, &evidence);
+        try ticket.checkBeforeVerification();
+        var writer_fence: FreshPairWriterFence = .{ .engine = self, .pending = pending, .proof = proof, .response = response };
+        self.revision = try self.db.?.commitFenced(self.revision, serialized, &.{
+            .{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = &account_id, .grant_id = &access_id, .generation = 1, .purpose = "request", .scope = siwc_pair.resource_uri }, .plaintext = access_plain, .renewal_owner = .omux } },
+            .{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = &account_id, .grant_id = &refresh_id, .generation = 1, .purpose = "renewal", .scope = siwc_pair.resource_uri }, .plaintext = refresh_plain, .renewal_owner = .omux } },
+        }, .{ .context = &writer_fence, .check = FreshPairWriterFence.check });
+        self.committed_nonledger_bytes = nonledger;
+        self.committed_counts = self.actualCounts();
+        // Readiness is served only by currentPair's actual authenticated rows;
+        // no success flag or caller digest substitutes for that lookup.
+    }
+
+    const SignedPairFixtureResult = struct { account_id: [64]u8, source_id: [64]u8, access_grant_id: [64]u8, refresh_grant_id: [64]u8 };
+    /// Actual same-Store constructor exercised only in the declared test graph.
+    /// The subject is synthetic signer input, never a production proof factory.
+    fn admitSignedOssPairForTest(self: *Engine, subject: []const u8) !SignedPairFixtureResult {
+        if (!builtin.is_test) return error.TestOnly;
+        const a = self.allocator;
+        const io = self.io;
+        const until = self.active_until orelse return error.InvalidDeadline;
+        if (subject.len == 0 or subject.len > 128) return error.InvalidFixtureSubject;
+        for (subject) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '-') return error.InvalidFixtureSubject;
+        const tool = std.c.getenv("OMUX_OIDC_OPENSSL") orelse return error.MissingDeclaredSigner;
+        var signer = try @import("oauth_oidc_fixture.zig").Signer.init(a, io, std.mem.span(tool), until);
+        defer signer.deinit() catch @panic("synthetic signing key cleanup failed");
+        var token_server = try transport.testing.Server.listenToken(a);
+        defer token_server.deinit();
+        var key_server = try transport.testing.Server.listenJwks(a);
+        defer key_server.deinit();
+        if (self.fresh_oauth == null) self.fresh_oauth = .{};
+        try self.settleFreshOAuthAttempts();
+        if (self.fresh_oauth_host_id == null) {
+            var host: [32]u8 = undefined;
+            try io.randomSecure(&host);
+            self.fresh_oauth_host_id = host;
+        }
+        const profile = try oauth_issue.documentedOssEnrollment(a, self.fresh_oauth_host_id.?, "http://127.0.0.1:54321/auth/callback");
+        defer profile.deinit();
+        const ledger = &self.fresh_oauth.?;
+        var original = try ledger.prepare(io, a, self.root_key, self.root_id.?, self.import_forget_epoch, self.now(), 60, until);
+        defer original.deinit();
+        ledger.find(original.binding.transaction_id).?.provider = .openai_siwc;
+        ledger.find(original.binding.transaction_id).?.consent_purpose = .fresh_openai_siwc_oauth_enrollment;
+        const operation = std.fmt.bytesToHex(original.binding.transaction_id, .lower);
+        const bound = try ledger.bindForIssue(io, a, self.root_key, self.root_id.?, original, &operation, profile.view().sha256, profile.view().exact_redirect_uri, profile.view().host_id);
+        profile.retain();
+        var pending: FreshOAuthPending = .{ .attempt = bound, .profile = profile };
+        defer pending.deinit();
+        try self.persist(&.{});
+        const client_id = try std.fmt.allocPrint(a, "oaiapp_synthetic_{s}", .{subject});
+        defer a.free(client_id);
+        try ledger.consumeOwnedCallback(io, a, self.root_key, self.root_id.?, bound, bound.binding, self.now(), &bound.callback_state, "synthetic-callback-code", client_id);
+        try self.persist(&.{});
+        try ledger.markIssued(a, bound.binding);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        const issued = try std.json.Stringify.valueAlloc(a, self.persisted(), .{});
+        defer a.free(issued);
+        pending.ticket = try oauth_issue.issueCode(io, a, &self.db.?, self.root_key, self.root_id.?, self.revision, issued, bound.binding, profile, until);
+        self.revision = pending.ticket.?.committedRevision();
+        pending.fence = pending.ticket.?.retainFence();
+        try oauth_issue.testing.attachOssModelRoutes(pending.ticket.?, .{ .token_port = token_server.port(), .jwks_port = key_server.port() });
+        var nonce: [43]u8 = undefined;
+        defer std.crypto.secureZero(u8, &nonce);
+        _ = std.base64.url_safe_no_pad.Encoder.encode(&nonce, &bound.oidc_nonce);
+        const claims = try std.json.Stringify.valueAlloc(a, .{ .iss = siwc_pair.issuer_uri, .aud = client_id, .sub = subject, .nonce = nonce[0..], .iat = self.now(), .exp = self.now() + 300 }, .{});
+        defer { std.crypto.secureZero(u8, claims); a.free(claims); }
+        const jwt = try signer.sign(claims);
+        defer { std.crypto.secureZero(u8, jwt); a.free(jwt); }
+        const access = try std.fmt.allocPrint(a, "synthetic-access-{s}", .{subject});
+        defer { std.crypto.secureZero(u8, access); a.free(access); }
+        const refresh = try std.fmt.allocPrint(a, "synthetic-refresh-{s}", .{subject});
+        defer { std.crypto.secureZero(u8, refresh); a.free(refresh); }
+        const body = try std.json.Stringify.valueAlloc(a, .{ .access_token = access, .refresh_token = refresh, .id_token = jwt, .token_type = "Bearer", .expires_in = 300, .scope = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" }, .{});
+        defer { std.crypto.secureZero(u8, body); a.free(body); }
+        const keys = try signer.jwks();
+        defer a.free(keys);
+        try token_server.setBody(body);
+        try key_server.setBody(keys);
+        try token_server.start(pending.ticket.?);
+        try key_server.start(pending.ticket.?);
+        const client = try transport.Client.init(a);
+        defer client.deinit();
+        const token_id = try client.startOAuth(pending.ticket.?);
+        var tokens: ?transport.OAuthCompletion = null;
+        while (tokens == null) {
+            try native_source_acquisition.deadline(io, until);
+            if (self.now() >= bound.binding.consent_expires_at) return error.OAuthConsentExpired;
+            tokens = client.pollOAuth();
+            if (tokens == null) try io.sleep(.fromMilliseconds(5), .awake);
+        }
+        defer tokens.?.deinit(a);
+        if (tokens.?.id != token_id) return error.InvalidFixtureCompletion;
+        const response = switch (tokens.?.result) { .response => |value| value, .failure => return error.InvalidFixtureCompletion };
+        try std.testing.expect(token_server.wireValid() and token_server.requestCount() == 1);
+        var raw = try response.copyForEncryptedCustody(a, pending.ticket.?);
+        defer raw.deinit();
+        try oauth_enrollment.sealUnverifiedResponse(io, a, self.root_key, self.root_id.?, ledger.find(bound.binding.transaction_id).?, raw.bytes, until);
+        ledger.find(bound.binding.transaction_id).?.phase = .verifying;
+        try self.persist(&.{});
+        const key_id = try client.startJwks(pending.ticket.?);
+        var key_completion: ?transport.JwksCompletion = null;
+        while (key_completion == null) {
+            try pending.ticket.?.checkBeforeVerification();
+            key_completion = client.pollJwks();
+            if (key_completion == null) try io.sleep(.fromMilliseconds(5), .awake);
+        }
+        defer key_completion.?.deinit(a);
+        if (key_completion.?.id != key_id) return error.InvalidFixtureCompletion;
+        const lease = switch (key_completion.?.result) { .lease => |value| value, .failure => return error.InvalidFixtureCompletion };
+        try std.testing.expect(key_server.wireValid() and key_server.requestCount() == 1);
+        const proof = try oauth_oidc.verifyOwnedResponse(a, pending.ticket.?, response, lease);
+        defer proof.deinit();
+        try self.activateFreshOAuthPair(&pending, proof, response);
+        const row = self.owned_siwc_pairs.find(bound.binding.transaction_id) orelse return error.SiwcPairUnavailable;
+        const authority = try siwc_pair.currentPair(&self.db.?, row.account_id, row.access_grant_id, row.access_generation, self.now());
+        defer authority.deinit();
+        var result: SignedPairFixtureResult = undefined;
+        @memcpy(&result.account_id, row.account_id);
+        @memcpy(&result.source_id, row.source_id);
+        @memcpy(&result.access_grant_id, row.access_grant_id);
+        @memcpy(&result.refresh_grant_id, row.refresh_grant_id);
+        return result;
+    }
+
+    fn freshOAuthDescriptor(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
+        if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return error.InvalidParams;
+        return control.success(allocator, request.id, .{
+            .schema_version = 1, .profile = siwc_pair.request_profile, .purpose = oauth_enrollment.oss_purpose,
+            .provider = "openai_siwc", .issuer = siwc_pair.issuer_uri, .audience = siwc_pair.resource_uri,
+            .enrollment_io_policy = "documented_oss_dynamic_registration_v1", .experimental = true,
+            .implemented = builtin.os.tag == .linux or builtin.os.tag == .macos,
+            .custody_available = !self.vault_locked and !self.poisoned and self.db != null,
+            .provider_proof = false, .native_support_proven = false, .live_handoff_proven = false,
+            .authorization_policy = .{ .scheme = "https", .host = "auth.openai.com", .path = "/api/accounts/authorize", .initial_client_id = "dynamic_agent_client", .agent_name_hint = "omux", .redirect_scheme = "http", .redirect_host = "127.0.0.1", .redirect_path = "/auth/callback", .redirect_port = "held_nonzero_loopback", .resource = siwc_pair.resource_uri, .scopes = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", .pkce = "S256" },
+            .methods = .{ .prepare = "oauth.enrollment.prepare.siwc.v1", .authorization = "oauth.enrollment.authorization.v1", .status = "oauth.enrollment.status.v1", .pending = "oauth.enrollment.pending.v1", .withdraw = "oauth.enrollment.withdraw.v1" },
+            .flow = .{ .minimum_seconds = 1, .maximum_seconds = 3600, .minted_once = true, .wall_and_awake = true, .rpc_deadline_separate = true, .exchange_max_seconds = 120, .authorization_deliveries = 1, .reconnect_renews = false },
+        });
+    }
+    fn freshOAuthPendingMetadata(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
+        if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return error.InvalidParams;
+        const PendingView = struct { transaction_id: []const u8, source_id: []const u8, phase: oauth_enrollment.Phase, flow_expires_at: i64, authorization_delivered: bool };
+        if (self.vault_locked or self.poisoned or self.db == null) return control.success(allocator, request.id, .{ .schema_version = 1, .custody_available = false, .status = "unknown", .pending = @as(?[]const PendingView, null) });
+        var saved = try self.db.?.readSnapshot();
+        defer saved.deinit();
+        const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+        defer parsed.deinit();
+        var rows: [oauth_enrollment.max_records]PendingView = undefined;
+        var transaction_ids: [oauth_enrollment.max_records][64]u8 = undefined;
+        var source_ids: [oauth_enrollment.max_records][64]u8 = undefined;
+        var count: usize = 0;
+        if (parsed.value.fresh_oauth_authority) |attempts| for (attempts.records) |record| {
+            if (record.provider != .openai_siwc or record.consent_status != .recorded or self.now() >= record.binding.consent_expires_at) continue;
+            if (record.phase != .prepared and record.phase != .callback_consumed and record.phase != .exchange_issued and record.phase != .verifying) continue;
+            // Only original live in-memory owners appear; restart never
+            // reconstructs a receiver/ticket from durable pending metadata.
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(pending.attempt.binding.transaction_id, record.binding.transaction_id) and self.freshOAuthCurrent(&pending)) {
+                if (count == rows.len) return error.InvalidOAuthEnrollment;
+                transaction_ids[count] = std.fmt.bytesToHex(record.binding.transaction_id, .lower);
+                source_ids[count] = std.fmt.bytesToHex(record.binding.source_id, .lower);
+                rows[count] = .{ .transaction_id = transaction_ids[count][0..], .source_id = source_ids[count][0..], .phase = record.phase, .flow_expires_at = record.binding.consent_expires_at, .authorization_delivered = pending.authorization_delivered };
+                count += 1;
+                break;
+            };
+        };
+        return control.success(allocator, request.id, .{ .schema_version = 1, .custody_available = true, .revision = saved.revision, .status = "current", .pending = rows[0..count] });
+    }
+    fn freshOAuthStatus(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
+        const params = request.params;
+        if (params != .object or params.object.count() != 2 or control.get(params, "purpose") == null or control.get(params, "transaction_id") == null) return error.InvalidParams;
+        if (!eql(try control.string(params, "purpose"), oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+        const id = try parseOpaqueId(try control.string(params, "transaction_id"));
+        const encoded_id = std.fmt.bytesToHex(id, .lower);
+        if (self.vault_locked or self.poisoned or self.db == null) return control.success(allocator, request.id, .{
+            .schema_version = 1, .transaction_id = encoded_id[0..], .status = "unknown", .phase = @as(?oauth_enrollment.Phase, null),
+            .custody_available = false, .paired_committed = @as(?bool, null), .grant_ready = @as(?bool, null), .reason = "custody_unavailable",
+        });
+        var saved = try self.db.?.readSnapshot();
+        defer saved.deinit();
+        const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+        defer parsed.deinit();
+        if (parsed.value.owned_siwc_pairs) |pairs| for (pairs.records) |pair| if (std.meta.eql(pair.transaction_id, id)) {
+            var ready = false;
+            var reason: ?[]const u8 = null;
+            if (pair.status == .ready) {
+                const current: ?*siwc_pair.PairAuthority = siwc_pair.currentPair(&self.db.?, pair.account_id, pair.access_grant_id, pair.access_generation, self.now()) catch |err| switch (err) {
+                    error.SiwcPairUnavailable, error.SiwcPairAuthorityChanged, error.SiwcPairQuarantined, error.SiwcPairExpired => missing: { reason = @errorName(err); break :missing null; },
+                    else => return err,
+                };
+                if (current) |authority| { authority.deinit(); ready = true; }
+                for (parsed.value.state.accounts) |account| if (eql(account.id, pair.account_id) and account.lifecycle != .active) { ready = false; reason = "account_paused_or_draining"; };
+            } else reason = if (pair.status == .retired) "consent_or_source_retired" else "renewal_unavailable";
+            return control.success(allocator, request.id, .{
+                .schema_version = 1, .transaction_id = encoded_id[0..], .revision = saved.revision, .status = if (pair.status == .retired) "retired" else "paired",
+                .phase = if (pair.status == .retired) oauth_enrollment.Phase.retired else oauth_enrollment.Phase.active,
+                .custody_available = true, .paired_committed = true, .grant_ready = ready, .reason = reason,
+                .consent_status = pair.consent_status, .retirement_reason = pair.retirement_reason,
+                .source_id = pair.source_id, .account_id = pair.account_id,
+            });
+        };
+        if (parsed.value.fresh_oauth_authority) |attempts| for (attempts.records) |row| if (std.meta.eql(row.binding.transaction_id, id)) {
+            if (row.provider != .openai_siwc) return error.WrongPurpose;
+            var expired = self.now() >= row.binding.consent_expires_at;
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(pending.attempt.binding.transaction_id, id) and pending.workUntil().durationFromNow(self.io).raw.toNanoseconds() <= 0) { expired = true; };
+            const status: []const u8 = switch (row.phase) {
+                .prepared, .callback_consumed, .exchange_issued, .verifying => if (expired) "expired" else "pending",
+                .completion_unknown, .active => "unknown",
+                .quarantined => "quarantined",
+                .retired => if (row.consent_status == .withdrawn) "cancelled" else if (expired) "expired" else "retired",
+            };
+            return control.success(allocator, request.id, .{
+                .schema_version = 1, .transaction_id = encoded_id[0..], .revision = saved.revision, .status = status, .phase = row.phase, .flow_expired = expired,
+                .custody_available = true, .paired_committed = false, .grant_ready = false, .consent_status = row.consent_status,
+                .flow_expires_at = row.binding.consent_expires_at, .flow_seconds = row.binding.flow_duration_seconds,
+                .source_id = std.fmt.bytesToHex(row.binding.source_id, .lower)[0..], .account_id = @as(?[]const u8, null),
+            });
+        };
+        // Reclaimed terminal records never revive; absence cannot be presented
+        // as zero accounts, an active flow, success or a reusable callback.
+        return control.success(allocator, request.id, .{
+            .schema_version = 1, .transaction_id = encoded_id[0..], .revision = saved.revision, .status = "not_retained", .phase = @as(?oauth_enrollment.Phase, null),
+            .custody_available = true, .paired_committed = @as(?bool, null), .grant_ready = @as(?bool, null), .reason = "terminal_or_unknown_handle",
+        });
+    }
+
     /// Identified local-atomic intent only. No caller client/endpoint/profile,
     /// callback code, native token or certificate can authorize provider IO.
     fn freshOAuthIntent(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
         const params = request.params;
-        const preparing = eql(request.method, "oauth.enrollment.prepare.v1");
+        const initial_oss = eql(request.method, "oauth.enrollment.prepare.siwc.v1");
+        const preparing = initial_oss or eql(request.method, "oauth.enrollment.prepare.v1");
         if (params != .object or params.object.count() != (if (preparing) @as(usize, 5) else 4)) return error.InvalidParams;
         for (params.object.keys()) |name| {
             if (!eql(name, "operation_id") and !eql(name, "expected_revision") and !eql(name, "purpose") and
                 !(preparing and (eql(name, "provider") or eql(name, "consent_seconds"))) and
                 !(!preparing and eql(name, "transaction_id"))) return error.InvalidParams;
         }
-        if (!eql(try control.string(params, "purpose"), oauth_enrollment.purpose)) return error.WrongPurpose;
+        const requested_purpose = try control.string(params, "purpose");
+        if (!eql(requested_purpose, oauth_enrollment.purpose) and !eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
         if (preparing) {
-            if (!eql(try control.string(params, "provider"), "codex")) return error.UnsupportedProvider;
+            const provider = try control.string(params, "provider");
+            const oss = eql(provider, "openai_siwc");
+            if (!oss and !eql(provider, "codex")) return error.UnsupportedProvider;
+            if (oss != eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+            if (initial_oss and (!oss or self.active_oauth_profile != null or self.active_oss_callback_port != null)) return error.WrongPurpose;
             const duration = control.get(params, "consent_seconds") orelse return error.InvalidParams;
             if (duration != .integer or duration.integer <= 0 or duration.integer > 3600) return error.InvalidParams;
             if (self.root_id == null or self.vault_locked) return error.WrappingKeyUnavailable;
             if (self.fresh_oauth == null) self.fresh_oauth = .{};
-            var prepared = try self.fresh_oauth.?.prepare(self.io, self.allocator, self.root_key, self.root_id.?, self.import_forget_epoch, self.now(), @intCast(duration.integer), self.active_until orelse return error.EnrollmentExpired);
+            try self.settleFreshOAuthAttempts();
+            const reply_until = self.active_until orelse return error.EnrollmentExpired;
+            var prepared = if (initial_oss) try self.fresh_oauth.?.prepareFlow(self.io, self.allocator, self.root_key, self.root_id.?, self.import_forget_epoch, self.now(), @intCast(duration.integer), reply_until) else try self.fresh_oauth.?.prepare(self.io, self.allocator, self.root_key, self.root_id.?, self.import_forget_epoch, self.now(), @intCast(duration.integer), reply_until);
             defer prepared.deinit();
+            if (oss) {
+                const record = self.fresh_oauth.?.find(prepared.binding.transaction_id).?;
+                record.provider = .openai_siwc;
+                record.consent_purpose = .fresh_openai_siwc_oauth_enrollment;
+            }
+            var owned_profile: ?*oauth_issue.EnrollmentProfile = null;
+            defer if (owned_profile) |profile| profile.deinit();
+            var reservation: ?*oauth_callback.ListenerReservation = null;
+            defer if (reservation) |listener| listener.deinit();
+            if (initial_oss) {
+                if (self.fresh_oauth_pending.items.len >= oauth_callback.max_receivers) return error.EnrollmentCapacity;
+                reservation = try oauth_callback.reserveDocumentedLoopback(self.io, self.allocator, prepared.until);
+            }
+            const selected_port: ?u16 = if (reservation) |listener| listener.port() else self.active_oss_callback_port;
+            if (selected_port) |port| {
+                if (!oss or self.active_oauth_profile != null) return error.WrongPurpose;
+                if (self.fresh_oauth_host_id == null) {
+                    var host: [32]u8 = undefined;
+                    try self.io.randomSecure(&host);
+                    if (std.mem.allEqual(u8, &host, 0)) return error.EnrollmentIdCollision;
+                    self.fresh_oauth_host_id = host;
+                }
+                const redirect = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}/auth/callback", .{port});
+                defer self.allocator.free(redirect);
+                owned_profile = try oauth_issue.documentedOssEnrollment(self.allocator, self.fresh_oauth_host_id.?, redirect);
+            }
+            if (owned_profile orelse self.active_oauth_profile) |profile| {
+                if (!oss) return error.WrongPurpose;
+                try profile.requireAvailable();
+                if (self.fresh_oauth_pending.items.len >= oauth_callback.max_receivers) return error.EnrollmentCapacity;
+                const operation = try control.operationId(params);
+                var bound = try self.fresh_oauth.?.bindForIssue(self.io, self.allocator, self.root_key, self.root_id.?, prepared, operation, profile.view().sha256, profile.view().exact_redirect_uri, profile.view().host_id);
+                defer bound.deinit();
+                const receiver = if (reservation) |listener| try listener.take(profile, bound) else try oauth_callback.open(self.io, self.allocator, profile, bound);
+                errdefer receiver.deinit();
+                try self.fresh_oauth_pending.ensureUnusedCapacity(self.allocator, 1);
+                profile.retain();
+                self.fresh_oauth_pending.appendAssumeCapacity(.{ .attempt = bound, .profile = profile, .receiver = receiver });
+                // Actor-owned copy retains private expected state after caller
+                // temporary is scrubbed; no raw state enters the response.
+            }
             try self.persist(&.{});
             const transaction_id = std.fmt.bytesToHex(prepared.binding.transaction_id, .lower);
-            return control.success(allocator, request.id, .{ .transaction_id = transaction_id[0..], .phase = oauth_enrollment.Phase.prepared, .consent_recorded = true, .registration = oauth_enrollment.Registration.unqualified, .blocked_reason = oauth_enrollment.BlockedReason.registration_profile_unavailable, .provider_request_initiated = false, .grant_activated = false });
+            const available = owned_profile != null or self.active_oauth_profile != null;
+            return control.success(allocator, request.id, .{ .transaction_id = transaction_id[0..], .source_id = std.fmt.bytesToHex(prepared.binding.source_id, .lower)[0..], .admitted_revision = if (self.staging_mutation) self.revision + 1 else self.revision, .flow_expires_at = prepared.binding.consent_expires_at, .flow_seconds = prepared.binding.flow_duration_seconds, .phase = oauth_enrollment.Phase.prepared, .consent_recorded = true, .registration = if (available) oauth_enrollment.Registration.enrollment_policy else .unqualified, .blocked_reason = if (available) @as(?oauth_enrollment.BlockedReason, null) else .registration_profile_unavailable, .authorization_available = available, .provider_request_initiated = false, .grant_activated = false });
         }
         const id = try parseOpaqueId(try control.string(params, "transaction_id"));
-        if (self.fresh_oauth) |*enrollments| try enrollments.retire(self.allocator, id) else return error.EnrollmentNotFound;
+        if (self.owned_siwc_pairs.find(id)) |pair| {
+            if (!eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+            if (!eql(request.method, "oauth.enrollment.withdraw.v1")) return error.EnrollmentAlreadyActivated;
+            // Source retirement and explicit consent withdrawal are distinct.
+            // A later withdrawal must record consent even after disconnection.
+            if (pair.consent_status != .withdrawn) {
+                if (pair.consent_generation == std.math.maxInt(u64)) return error.GenerationExhausted;
+                pair.consent_generation += 1;
+                pair.consent_status = .withdrawn;
+                pair.retirement_reason = .withdrawn;
+                pair.status = .retired;
+                self.allocator.free(pair.identity_capsule);
+                pair.identity_capsule = &.{};
+                try self.disconnectImportSource(pair.source_id);
+                if (self.fresh_oauth) |*ledger| if (ledger.find(id) != null) try ledger.withdraw(self.allocator, id);
+                self.cancelFreshOAuth(id);
+                try self.persist(&.{
+                    .{ .delete = .{ .account_id = pair.account_id, .grant_id = pair.access_grant_id } },
+                    .{ .delete = .{ .account_id = pair.account_id, .grant_id = pair.refresh_grant_id } },
+                });
+            }
+            return control.success(allocator, request.id, .{ .consent_withdrawn = true, .issued_work_may_have_occurred = true, .upstream_revoked = false });
+        }
+        const selected = if (self.fresh_oauth) |*ledger| ledger.find(id) orelse return error.EnrollmentNotFound else return error.EnrollmentNotFound;
+        if ((selected.provider == .openai_siwc) != eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+        const withdrawing = eql(request.method, "oauth.enrollment.withdraw.v1");
+        if (self.fresh_oauth) |*enrollments| {
+            if (withdrawing) try enrollments.withdraw(self.allocator, id) else try enrollments.retire(self.allocator, id);
+        } else return error.EnrollmentNotFound;
+        self.cancelFreshOAuth(id);
         try self.persist(&.{});
+        if (withdrawing) return control.success(allocator, request.id, .{ .consent_withdrawn = true, .issued_work_may_have_occurred = self.fresh_oauth.?.find(id).?.phase == .completion_unknown, .upstream_revoked = false });
         return control.success(allocator, request.id, .{ .retired = true, .provider_request_initiated = false });
     }
 
     fn handleRequest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) ![]u8 {
         const method = request.method;
         const params = request.params;
+        if (eql(method, "oauth.enrollment.pending.v1") or eql(method, "oauth.enrollment.descriptor.v1") or eql(method, "oauth.enrollment.status.v1")) {
+            if (channel != .control) return error.WrongChannel;
+            if (eql(method, "oauth.enrollment.pending.v1")) return self.freshOAuthPendingMetadata(allocator, request);
+            return if (eql(method, "oauth.enrollment.descriptor.v1")) self.freshOAuthDescriptor(allocator, request) else self.freshOAuthStatus(allocator, request);
+        }
         if (eql(method, "integrations.nativeFileCoordinationReadiness")) return self.nativeFileCoordinationReadiness(allocator, request, channel);
+        if (eql(method, "oauth.enrollment.authorization.v1")) {
+            if (channel != .control) return error.WrongChannel;
+            if (params != .object or params.object.count() != 3 or control.get(params, "purpose") == null or control.get(params, "transaction_id") == null or control.get(params, "expected_revision") == null) return error.InvalidParams;
+            if (!eql(try control.string(params, "purpose"), oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+            var url: envelope.Secret = .{ .allocator = allocator, .bytes = try self.freshOAuthAuthorization(allocator, try parseOpaqueId(try control.string(params, "transaction_id")), try control.expectedRevision(params), self.active_until orelse return error.EnrollmentExpired) };
+            defer url.deinit();
+            return control.success(allocator, request.id, .{ .authorization_url = url.bytes, .provider_request_initiated = false, .grant_activated = false });
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcPairHandles")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const account_id = try control.string(params, "account_id");
+            for (self.owned_siwc_pairs.records.items) |row| if (eql(row.account_id, account_id)) {
+                return control.success(allocator, request.id, .{ .transaction_id = std.fmt.bytesToHex(row.transaction_id, .lower)[0..] });
+            };
+            return error.SiwcPairUnavailable;
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcRejectCommitFault")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "codex")) return error.WrongPurpose;
+            if (sql_api.sqlite3_exec(self.db.?.db, "PRAGMA query_only=ON;", null, null, null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+            defer if (sql_api.sqlite3_exec(self.db.?.db, "PRAGMA query_only=OFF;", null, null, null) != sql_api.SQLITE_OK) {
+                self.poisoned = true;
+                self.db.?.poisoned = true;
+            };
+            // Actual persistence is denied before recovery reservation.
+            // Restore only fixture query_only control; never clear poison.
+            return self.siwcReject(allocator, request.id, params);
+        }
+        if (builtin.is_test and eql(method, "fixture.admitSignedOssPair")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const pair = try self.admitSignedOssPairForTest(try control.string(params, "subject"));
+            return control.success(allocator, request.id, .{ .account_id = pair.account_id[0..], .source_id = pair.source_id[0..], .access_grant_id = pair.access_grant_id[0..], .refresh_grant_id = pair.refresh_grant_id[0..] });
+        }
+        if (builtin.is_test and eql(method, "fixture.freshOAuthRetained")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const id = try parseOpaqueId(try control.string(params, "transaction_id"));
+            var saved = try self.db.?.readSnapshot();
+            defer saved.deinit();
+            const decoded = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+            defer decoded.deinit();
+            const records = (decoded.value.fresh_oauth_authority orelse return error.EnrollmentNotFound).records;
+            for (records) |record| if (std.meta.eql(record.binding.transaction_id, id)) {
+                return control.success(allocator, request.id, .{ .revision = saved.revision, .phase = record.phase, .consent_status = record.consent_status, .consent_generation = record.binding.consent_generation, .verifier_bytes = record.verifier_capsule.len, .callback_bytes = record.callback_capsule.len, .response_bytes = record.response_capsule.len, .pending = self.fresh_oauth_pending.items.len, .accounts = self.state.accounts.items.len, .grants = self.state.grants.items.len, .forget_epoch = self.import_forget_epoch, .host_id = decoded.value.fresh_oauth_host_id });
+            };
+            return error.EnrollmentNotFound;
+        }
         if (builtin.is_test and eql(method, "fixture.custodyObservationRollbackFault")) {
             if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
             const mode = if (control.get(params, "mode") != null) try control.string(params, "mode") else "rollback";
@@ -4459,7 +5454,7 @@ pub const Engine = struct {
             .protocol_version = control.protocol_version,
             .service = "omuxd",
             .channel = @tagName(channel),
-            .capabilities = .{ .native_launch = true, .credential_free_control = true, .custody_reopen = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true, .account_scoped_readiness_v2 = true },
+            .capabilities = .{ .owned_siwc_enrollment_v1 = builtin.os.tag == .linux or builtin.os.tag == .macos, .native_launch = true, .credential_free_control = true, .custody_reopen = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true, .account_scoped_readiness_v2 = true },
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);
@@ -4642,6 +5637,7 @@ pub const Engine = struct {
             defer changes.deinit(allocator);
             for (self.state.grants.items) |grant| if (eql(grant.source_id, id)) try changes.append(allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });
             try self.disconnectImportSource(id);
+            self.owned_siwc_pairs.retireFor(self.allocator, id, null);
             try self.persist(changes.items);
             return control.success(allocator, request.id, .{ .disconnected = true });
         }
@@ -4738,18 +5734,20 @@ pub const Engine = struct {
             try self.persist(&.{});
             return control.success(allocator, request.id, .{ .cancelled = true });
         }
-        if (eql(method, "oauth.enrollment.prepare.v1") or eql(method, "oauth.enrollment.retire.v1")) return self.freshOAuthIntent(allocator, request);
+        if (eql(method, "oauth.enrollment.prepare.v1") or eql(method, "oauth.enrollment.prepare.siwc.v1") or eql(method, "oauth.enrollment.retire.v1") or eql(method, "oauth.enrollment.withdraw.v1")) return self.freshOAuthIntent(allocator, request);
         if (std.mem.startsWith(u8, method, "account.")) {
             const id = try control.string(params, "account_id");
             if (eql(method, "account.pause")) try self.state.pause(id, true) else if (eql(method, "account.resume")) try self.state.pause(id, false) else if (eql(method, "account.drain")) try self.state.drain(id) else if (eql(method, "account.forget")) {
                 if (self.import_forget_epoch == std.math.maxInt(u64)) return error.GenerationConflict;
                 try self.state.forget(id);
+                self.owned_siwc_pairs.retireFor(self.allocator, null, id);
                 try self.retireObservationCredits(null, id, null);
                 self.import_forget_epoch += 1;
                 // Identity is not known yet: every pending fresh transaction
                 // must lose its old global forget fence, without touching
                 // independently valid enrolled sources/grants.
-                if (self.fresh_oauth) |*enrollments| enrollments.invalidateUnissued(self.allocator);
+                if (self.fresh_oauth) |*enrollments| enrollments.invalidateForForget(self.allocator);
+                self.cancelFreshOAuth(null);
                 try self.persist(&.{.{ .tombstone_account = id }});
                 return control.success(allocator, request.id, .{ .forgotten = true });
             } else return error.MethodNotFound;
@@ -4759,6 +5757,8 @@ pub const Engine = struct {
         if (std.mem.startsWith(u8, method, "integrations.")) return self.publicIntegration(allocator, request.id, method, params);
         if (eql(method, "credential.import")) return self.startImport(allocator, request.id, params);
         if (eql(method, "adapter.acquire")) return self.acquire(allocator, request.id, params);
+        if (eql(method, "adapter.siwcReject")) return self.siwcReject(allocator, request.id, params);
+        if (eql(method, "adapter.siwcAcquireReplacement")) return self.siwcAcquireReplacement(allocator, request.id, params);
         if (eql(method, "adapter.materialize")) return self.materialize(allocator, request.id, params);
         if (eql(method, "adapter.report")) return self.report(allocator, request.id, params);
         if (eql(method, "adapter.metadata")) return self.adapterMetadata(allocator, request.id, params);
@@ -6273,10 +7273,37 @@ pub const Engine = struct {
         try self.persistWithNativeFence(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }}, if (native_fresh) |fresh| .{ .pending = pending, .fresh = fresh, .rotation_revision = rotation_revision } else null);
     }
 
+    fn currentSiwcStamp(self: *Engine, grant: domain.Grant) !siwc_route.Stamp {
+        const pair_module = @import("siwc_pair.zig");
+        const account = self.state.account(grant.account_id) orelse return error.SiwcPairUnavailable;
+        if (!account.identity.verified or !eql(account.identity.provider, siwc_route.provider) or
+            !eql(account.identity.issuer, siwc_route.issuer) or grant.credential_kind != .oauth_access or
+            grant.ownership != .omux or grant.status != .ready or !eql(grant.audience, siwc_route.audience))
+            return error.SiwcPairUnavailable;
+        const authority = try pair_module.currentPair(&self.db.?, grant.account_id, grant.id, grant.generation, self.now());
+        defer authority.deinit();
+        if (!eql(authority.profile(), siwc_route.profile) or !eql(authority.issuer(), siwc_route.issuer) or
+            !eql(authority.audience(), siwc_route.audience) or !eql(authority.authMode(), siwc_route.auth_mode) or
+            authority.expiresAt() <= self.now() or grant.provider_expires_at == null or
+            authority.expiresAt() != grant.provider_expires_at.? or authority.refreshGrantId().len == 0 or
+            authority.refreshGeneration() == 0) return error.SiwcPairAuthorityChanged;
+        const stamp: siwc_route.Stamp = .{
+            .activation = authority.activationCommitment(),
+            .family_generation = authority.familyGeneration(),
+            .writer_generation = authority.writerRegistryGeneration(),
+            .source_generation = authority.sourceGeneration(),
+            .consent_generation = authority.consentGeneration(),
+        };
+        if (!siwc_route.validStamp(stamp)) return error.SiwcPairAuthorityChanged;
+        return stamp;
+    }
+
     fn acquire(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
         const native_ref = try self.protectedNativeRef(params, true);
         try self.expireLeases();
         const application = try control.string(params, "application");
+        const profile = try siwc_route.selected(application, try control.optionalString(params, "request_profile"));
+        if (profile == .siwc_responses) try siwc_route.onlyFields(params, &.{ "application", "capability", "native_ref", "session_id", "binding_id", "request_id", "request_profile", "demand" });
         const session_id = try control.string(params, "session_id");
         const request_id = try control.requestId(params);
         const external_binding = (try control.optionalString(params, "binding_id")) orelse session_id;
@@ -6290,7 +7317,9 @@ pub const Engine = struct {
         defer parsed.deinit();
         const d = parsed.value;
         if (eql(application, "enrollment") or d.purpose != .request) return error.WrongPurpose;
-        if ((eql(application, "codex") and (!eql(d.provider, "codex") or !eql(d.audience, "https://chatgpt.com") or !eql(d.resource.kind, "model"))) or (eql(application, "git") and (!eql(d.provider, "github") or !eql(d.audience, "https://github.com"))) or (eql(application, "claude") and !eql(d.provider, "claude"))) return error.WrongPurpose;
+        if (profile == .siwc_responses) {
+            try siwc_route.validateDemand(profile, application, d.provider, d.audience, d.purpose, d.resource);
+        } else if ((eql(application, "codex") and (!eql(d.provider, "codex") or !eql(d.audience, "https://chatgpt.com") or !eql(d.resource.kind, "model"))) or (eql(application, "git") and (!eql(d.provider, "github") or !eql(d.audience, "https://github.com"))) or (eql(application, "claude") and !eql(d.provider, "claude"))) return error.WrongPurpose;
         // A typed representation normalizes field order and default values.
         // Scope order does not affect authority, but duplicate scopes are
         // malformed instead of silently changing the declared demand.
@@ -6304,13 +7333,19 @@ pub const Engine = struct {
         for (scopes, 0..) |scope, index| if (index != 0 and eql(scope, scopes[index - 1])) return error.InvalidParams;
         var normalized = d;
         normalized.scopes = scopes;
-        const normalized_bytes = try std.json.Stringify.valueAlloc(allocator, normalized, .{});
+        const normalized_bytes = if (profile == .siwc_responses)
+            try std.json.Stringify.valueAlloc(allocator, .{ .request_profile = siwc_route.profile, .demand = normalized }, .{})
+        else
+            try std.json.Stringify.valueAlloc(allocator, normalized, .{});
         defer allocator.free(normalized_bytes);
         var fingerprint_bytes: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(normalized_bytes, &fingerprint_bytes, .{});
         const fingerprint = std.fmt.bytesToHex(fingerprint_bytes, .lower);
         const intent: request_authority.Intent = .{ .key = .{ .application = application, .session_id = session_id, .request_id = request_id }, .binding_id = binding_id, .demand_fingerprint = &fingerprint, .native_ref = native_ref };
         const attempt = try self.requests.checkIssue(intent);
+        // A provider error is not an independent quota/capacity witness. Never
+        // open the ordinary acquire path for a same-work SIWC second attempt.
+        if (profile == .siwc_responses and attempt != 1) return error.SiwcReplacementAuthorityUnavailable;
         const rejected_account = try self.requests.rejectedAccount(intent);
         if (self.native_leases.items.len >= 4096) return error.ServiceBusy;
         var allowed: std.ArrayList([]const u8) = .empty;
@@ -6320,10 +7355,29 @@ pub const Engine = struct {
             if (!rejected) try allowed.append(allocator, account.id);
         }
         if (allowed.items.len == 0) return error.NoReadyAccount;
-        const demand: domain.Demand = .{ .allowed_account_ids = allowed.items, .provider = d.provider, .audience = d.audience, .purpose = d.purpose, .resource = d.resource, .required = d.required, .scopes = d.scopes, .now = self.now() };
+        const demand: domain.Demand = .{ .allowed_account_ids = allowed.items, .provider = d.provider, .issuer = if (profile == .siwc_responses) siwc_route.issuer else null, .audience = d.audience, .purpose = d.purpose, .resource = d.resource, .required = d.required, .scopes = d.scopes, .now = self.now() };
         const previous = self.state.binding(binding_id);
-        const selected = try self.state.select(demand, if (previous != null) binding_id else null);
+        var paired_grants: std.ArrayList(domain.Grant) = .empty;
+        defer paired_grants.deinit(allocator);
+        var selectable = self.state;
+        if (profile == .siwc_responses) {
+            for (self.state.grants.items) |candidate| {
+                if (!eql(candidate.audience, siwc_route.audience)) continue;
+                _ = self.currentSiwcStamp(candidate) catch |err| switch (err) {
+                    error.SiwcPairUnavailable, error.SiwcPairAuthorityChanged, error.SiwcPairQuarantined, error.SiwcPairExpired => continue,
+                    else => return err,
+                };
+                try paired_grants.append(allocator, candidate);
+            }
+            if (paired_grants.items.len == 0) return error.SiwcPairUnavailable;
+            selectable.grants = paired_grants;
+        }
+        // Unknown quota does not remove otherwise technically compatible
+        // accounts. State.select applies actual pause/drain/expiry/scopes and
+        // sticky policy; no provider-error retry or reset is inferred here.
+        const selected = try selectable.select(demand, if (previous != null) binding_id else null);
         const grant = self.state.grant(selected.grant_id).?;
+        const siwc_activation: ?siwc_route.Stamp = if (profile == .siwc_responses) try self.currentSiwcStamp(grant) else null;
         const custody = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse return error.GrantNotReady;
         if (custody.state != .ready or custody.generation != grant.generation) return error.GrantNotReady;
         const route_generation = if (previous) |old| std.math.add(u64, old.route_generation, @as(u64, @intFromBool(!eql(old.grant_id, grant.id) or old.grant_generation != grant.generation))) catch return error.GenerationConflict else 1;
@@ -6339,6 +7393,8 @@ pub const Engine = struct {
         const report_plan = try domain.reportGrowth(held_lease);
         _ = try self.state.beginLease(held_lease, self.now());
         var record = try NativeLease.create(self.allocator, handle, application, request_id, binding_id, grant.account_id, encoded, attempt, expires, native_ref);
+        record.request_profile = profile;
+        record.siwc_activation = siwc_activation;
         var committed = false;
         errdefer if (!committed) record.deinit(self.allocator);
         try self.native_leases.append(self.allocator, record);
@@ -6496,6 +7552,12 @@ pub const Engine = struct {
     fn materialize(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
         _ = try self.protectedNativeRef(params, true);
         const native = try self.nativeLease(params);
+        const profile = try siwc_route.selected(native.application, try control.optionalString(params, "request_profile"));
+        if (profile != native.request_profile) return error.SiwcProfileMismatch;
+        if (profile == .siwc_responses) {
+            if (params != .object or params.object.count() != 5) return error.InvalidSiwcParams;
+            try siwc_route.onlyFields(params, &.{ "application", "capability", "native_ref", "lease_handle", "request_profile" });
+        }
         if (native.status != .issued) return error.LeaseNotMaterializable;
         var lease: ?domain.Lease = null;
         for (self.state.leases.items) |item| if (eql(item.id, &native.handle)) {
@@ -6505,6 +7567,27 @@ pub const Engine = struct {
         const held = lease orelse return error.UnknownLease;
         if (held.expires_at <= self.now()) return error.LeaseExpired;
         const grant = self.state.grant(held.grant_id) orelse return error.GrantNotReady;
+        if (profile == .siwc_responses) {
+            const binding = self.state.binding(held.binding_id) orelse return error.BindingChanged;
+            if (!eql(binding.account_id, held.account_id) or !eql(binding.grant_id, held.grant_id) or
+                binding.grant_generation != held.grant_generation or binding.route_generation != held.route_generation)
+                return error.BindingChanged;
+            const stamp = try self.currentSiwcStamp(grant);
+            if (!siwc_route.sameStamp(native.siwc_activation orelse return error.SiwcPairUnavailable, stamp)) return error.SiwcPairAuthorityChanged;
+            const StoredDemand = struct { provider: []const u8, audience: []const u8, purpose: domain.Purpose = .request, resource: domain.Resource, required: f64 = 1, scopes: []const []const u8 = &.{} };
+            const d = try std.json.parseFromSlice(StoredDemand, allocator, native.demand_json, .{});
+            defer d.deinit();
+            // Use the actual original request context, narrowed to this exact
+            // grant/account. A pause, drain, expired source or known rejection
+            // before materialization cannot be hidden by a ready SQL row.
+            var candidate = grant;
+            var selectable = self.state;
+            selectable.grants = .empty;
+            selectable.grants.items = (&candidate)[0..1];
+            selectable.grants.capacity = 1;
+            const demand: domain.Demand = .{ .provider = d.value.provider, .audience = d.value.audience, .purpose = d.value.purpose, .resource = d.value.resource, .required = d.value.required, .scopes = d.value.scopes, .now = self.now(), .issuer = siwc_route.issuer, .allowed_account_ids = &.{held.account_id} };
+            _ = try selectable.select(demand, null);
+        }
         if (held.purpose != .request or !eql(held.audience, grant.audience)) return error.WrongPurpose;
         _ = self.state.account(held.account_id) orelse return error.GrantNotReady;
         for (self.state.sources.items) |source| if (eql(source.id, grant.source_id)) {
@@ -6518,7 +7601,87 @@ pub const Engine = struct {
             control.wipeJson(parsed.value);
             parsed.deinit();
         }
+        if (profile == .siwc_responses) return control.success(allocator, id, .{
+            .request_profile = siwc_route.profile,
+            .issuer = siwc_route.issuer,
+            .audience = siwc_route.audience,
+            .auth_mode = siwc_route.auth_mode,
+            .access_token = try control.string(parsed.value, "access_token"),
+            .expires_at = held.expires_at,
+            .route_generation = held.route_generation,
+        });
         return control.success(allocator, id, .{ .access_token = try control.string(parsed.value, "access_token"), .provider_account_id = try control.optionalString(parsed.value, "provider_account_id"), .expires_at = held.expires_at, .route_generation = held.route_generation });
+    }
+
+    fn siwcReject(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
+        if (params != .object or params.object.count() != 11) return error.InvalidSiwcRejection;
+        const fields = [_][]const u8{ "application", "capability", "native_ref", "lease_handle", "request_profile", "status", "error_code", "error_param", "provider_request_id", "pre_acceptance", "response_started" };
+        try siwc_route.onlyFields(params, &fields);
+        const reference = (try self.protectedNativeRef(params, true)) orelse return error.NativeOwnerRequired;
+        const native = try self.nativeLease(params);
+        const profile = try siwc_route.selected(native.application, try control.optionalString(params, "request_profile"));
+        if (native.request_profile != .siwc_responses or profile != .siwc_responses) return error.SiwcProfileMismatch;
+        if (native.status != .issued or native.expires_at <= self.now()) return error.UnsafeReplay;
+        const status = control.get(params, "status") orelse return error.InvalidSiwcRejection;
+        if (status != .integer or status.integer < 400 or status.integer > 599) return error.InvalidSiwcRejection;
+        const cause = try siwc_route.rejection(@intCast(status.integer), try control.optionalString(params, "error_code"),
+            try control.optionalString(params, "error_param"), try control.optionalString(params, "provider_request_id"),
+            try control.boolean(params, "pre_acceptance", false), try control.boolean(params, "response_started", true));
+        const intent = self.requests.intentForHandle(native.application, &native.handle) orelse return error.UnknownLease;
+        if (!eql(intent.key.request_id, native.request_id) or !eql(intent.binding_id, native.binding_id)) return error.RequestMismatch;
+        const attempt = self.requests.attempt(native.application, &native.handle) orelse return error.UnknownLease;
+        if (attempt.state != .issued) return error.UnsafeReplay;
+        var selected: ?domain.Lease = null;
+        for (self.state.leases.items) |lease| {
+            if (eql(lease.id, &native.handle)) {
+                selected = lease;
+                break;
+            }
+        }
+        const lease = selected orelse return error.UnknownLease;
+        const binding = self.state.binding(native.binding_id) orelse return error.BindingChanged;
+        if (!eql(lease.account_id, native.account_id) or !eql(binding.grant_id, lease.grant_id) or
+            binding.grant_generation != lease.grant_generation or binding.route_generation != lease.route_generation)
+            return error.BindingChanged;
+        const grant = self.state.grant(lease.grant_id) orelse return error.GrantNotReady;
+        const stamp = try self.currentSiwcStamp(grant);
+        if (!siwc_route.sameStamp(native.siwc_activation orelse return error.SiwcPairUnavailable, stamp)) return error.SiwcPairAuthorityChanged;
+        // Structured 401/403/429 diagnostics do not authorize refresh, plan
+        // scope/reset inference or quota rotation. No real cause-specific SIWC
+        // independent capacity producer exists: close this request instead of
+        // minting a replacement ticket from model param or generic observations.
+        const evidence: request_authority.Report = .{ .event = .abandoned, .pre_acceptance = true, .response_started = false, .status = @intCast(status.integer) };
+        _ = try self.requests.checkReportForOwner(native.application, &native.handle, reference, evidence);
+        const credit = creditKey(.request, &native.handle, attempt.issued_sequence);
+        try self.state.completeLease(&native.handle);
+        _ = try self.requests.reportForOwner(native.application, &native.handle, reference, evidence);
+        try self.releaseOutcome(credit);
+        try self.persist(&.{});
+        // The durable terminal receipt owns this cache transition. A failed
+        // commit must leave its original issued handle fenced for recovery.
+        native.status = .abandoned;
+        return control.success(allocator, id, .{
+            .recorded = true,
+            .request_profile = siwc_route.profile,
+            .rejected_lease_handle = native.handle[0..],
+            .rejected_route_generation = lease.route_generation,
+            .disposition = siwc_route.disposition(cause),
+            .replacement = @as(?u8, null),
+        });
+    }
+
+    fn siwcAcquireReplacement(self: *Engine, _: std.mem.Allocator, _: std.json.Value, params: std.json.Value) ![]u8 {
+        _ = (try self.protectedNativeRef(params, true)) orelse return error.NativeOwnerRequired;
+        const profile = try siwc_route.selected(try control.string(params, "application"), try control.optionalString(params, "request_profile"));
+        if (profile != .siwc_responses) return error.SiwcProfileMismatch;
+        _ = try control.requestId(params);
+        const ticket = try control.string(params, "replacement_ticket");
+        if (ticket.len != 64) return error.InvalidSiwcReplacementTicket;
+        for (ticket) |byte| if (!std.ascii.isHex(byte)) return error.InvalidSiwcReplacementTicket;
+        // No positive ticket constructor exists without a cause-specific,
+        // independently qualified SIWC bucket authority. Explicit policy or
+        // credential lifecycle changes instead select on a NEW request ID.
+        return error.SiwcReplacementAuthorityUnavailable;
     }
 
     fn report(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
@@ -6526,6 +7689,10 @@ pub const Engine = struct {
         const event = try control.string(params, "event");
         const application = try control.string(params, "application");
         const handle = try control.string(params, "lease_handle");
+        if (eql(event, "rejected")) {
+            const native = try self.nativeLease(params);
+            if (native.request_profile == .siwc_responses) return error.SiwcStructuredRejectionRequired;
+        }
         const status_value = control.get(params, "status");
         const reported_status: u16 = if (status_value) |value| blk: {
             if (value != .integer or value.integer < 0 or value.integer > std.math.maxInt(u16)) return error.InvalidParams;
@@ -7687,6 +8854,12 @@ fn maintenanceReservation(saved: Persisted) !usize {
         const actual = try snapshot_admission.countJson(measurements, reliability.max_lifecycle_checkpoint_bytes);
         reserve = try std.math.add(usize, reserve, try reliability_commit.remainingReservation(actual));
     }
+    if (saved.owned_siwc_pairs) |pairs| {
+        try siwc_pair.validate(pairs);
+        const range = try scalarRange(siwc_pair.Record);
+        reserve += (range.maximum - range.minimum) * pairs.records.len;
+        for (pairs.records) |pair| reserve -= try scalarWidening(pair);
+    }
     if (saved.fresh_oauth_authority) |enrollments| {
         try oauth_enrollment.validate(enrollments);
         const actual = try snapshot_admission.countJson(enrollments, oauth_enrollment.maximum_snapshot_bytes);
@@ -7765,6 +8938,10 @@ fn validatePersistedAdmission(allocator: std.mem.Allocator, json: []const u8, cu
         const interval = std.math.sub(i64, intent.expires_at, intent.admitted_at) catch return error.InvalidNativeSourceAuthority;
         if (previous.same(intent.context) or intent.job_generation == 0 or interval <= 0 or interval > 13 or intent.expires_at > authority.consent.expires_at) return error.InvalidNativeSourceAuthority;
     };
+    if (saved.owned_siwc_pairs) |pairs| {
+        if (saved.schema_version != 2) return error.InvalidSiwcPair;
+        try siwc_pair.validate(pairs);
+    }
     if (saved.fresh_oauth_authority) |enrollments| {
         if (saved.schema_version != 2) return error.InvalidOAuthEnrollment;
         try oauth_enrollment.validate(enrollments);
@@ -8491,7 +9668,7 @@ fn parseNativeRef(params: std.json.Value) !native_owner.NativeRef {
 
 pub fn mutationKind(method: []const u8) ?mutation_authority.Kind {
     if (builtin.is_test and eql(method, "fixture.externalEffect")) return .external;
-    for ([_][]const u8{ "oauth.enrollment.prepare.v1", "oauth.enrollment.retire.v1", "policy.set", "account.pause", "account.resume", "account.drain", "account.forget", "operation.cancel" }) |candidate| if (eql(method, candidate)) return .local_atomic;
+    for ([_][]const u8{ "oauth.enrollment.prepare.v1", "oauth.enrollment.prepare.siwc.v1", "oauth.enrollment.retire.v1", "oauth.enrollment.withdraw.v1", "policy.set", "account.pause", "account.resume", "account.drain", "account.forget", "operation.cancel" }) |candidate| if (eql(method, candidate)) return .local_atomic;
     for ([_][]const u8{ "setup.refresh", "source.connect", "source.disconnect", "source.reconcile", "enrollment.start", "repair.start", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach" }) |candidate| if (eql(method, candidate)) return .external;
     return null;
 }
@@ -10791,6 +11968,401 @@ test "actual runtime commit refuses installation namespace replacement after wor
     try std.testing.expect((try @import("platform/file_metadata.zig").statFd(fresh)).ino != task.installation.?.witness.ino);
 }
 
+test "SIWC actor refuses ready verified owner rows without opaque paired activation" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/siwc.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .db = try storage.Store.open(io, allocator, database, @splat(0x61)),
+    };
+    defer {
+        current.db.?.close();
+        current.release();
+    }
+    const expires = current.now() + 3600;
+    _ = try current.state.connectSource(.{ .id = "synthetic-siwc-source", .kind = .oauth, .provider = siwc_route.provider });
+    _ = try current.state.enroll(.{ .account_id = "synthetic-siwc-account", .source_id = "synthetic-siwc-source", .identity = .{ .provider = siwc_route.provider, .issuer = siwc_route.issuer, .subject = "synthetic-registration-scoped-subject", .verified = true } }, current.now());
+    const grant = try current.state.addGrant(.{ .id = "synthetic-access-grant", .account_id = "synthetic-siwc-account", .source_id = "synthetic-siwc-source", .credential_kind = .oauth_access, .ownership = .omux, .purposes = &.{.request}, .audience = siwc_route.audience, .provider_expires_at = expires });
+    const snapshot = try std.json.Stringify.valueAlloc(allocator, .{ .schema_version = @as(u32, 2), .state = current.state.snapshot() }, .{});
+    defer allocator.free(snapshot);
+    const revision = try current.db.?.commit(0, snapshot, &.{.{ .put = .{ .context = .{ .account_id = grant.account_id, .grant_id = grant.id, .generation = grant.generation, .purpose = "request", .scope = siwc_route.audience }, .plaintext = "{\"access_token\":\"synthetic-not-activated-access\"}", .renewal_owner = .omux } }});
+    const row = (try current.db.?.readGrantStatus(grant.account_id, grant.id)).?;
+    try std.testing.expect(row.state == .ready and row.generation == grant.generation and row.renewal_owner == .omux);
+    // Actual encrypted ready SQL + verified public identity + Omux owner is
+    // still no signed OIDC/issued-client/paired activation or writer registry.
+    try std.testing.expectError(error.SiwcPairUnavailable, current.currentSiwcStamp(grant));
+    try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
+    var retained = try current.db.?.readSnapshot();
+    defer retained.deinit();
+    try std.testing.expectEqual(revision, retained.revision);
+    try std.testing.expectEqualStrings(snapshot, retained.json);
+    for ([_][]const u8{ "adapter.siwcReject", "adapter.siwcAcquireReplacement" }) |method| {
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = .{} }, .{});
+        defer allocator.free(raw);
+        var request = try control.parse(allocator, raw);
+        defer request.deinit();
+        try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .control));
+    }
+    const readiness_raw = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = "setup.applicationReadiness", .params = .{
+        .application = "codex",
+        .account_id = grant.account_id,
+        .expected_revision = current.revision,
+        .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens" } },
+    } }, .{});
+    defer allocator.free(readiness_raw);
+    var readiness = try control.parse(allocator, readiness_raw);
+    defer readiness.deinit();
+    try std.testing.expectError(error.SiwcReadinessProfileRequired, current.applicationReadiness(allocator, readiness));
+}
+
+// Offline signed issuer fixtures exercise actual actor ownership and SQL joins.
+// They do not establish real provider, native Codex or installed/live support.
+const SiwcActorTest = struct {
+    const Json = std.json.Parsed(std.json.Value);
+    const Pair = struct { account_id: [64]u8, source_id: [64]u8, access_grant_id: [64]u8, refresh_grant_id: [64]u8 };
+    const Producer = @import("native_owner_fixture.zig").Fixture;
+
+    fn dispose(value: *Json) void {
+        control.wipeJson(value.value);
+        value.deinit();
+    }
+    fn call(producer: *Producer, current: *Engine, method: []const u8, params: anytype, channel: Channel) !Json {
+        const a = std.testing.allocator;
+        const wire = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
+        defer { std.crypto.secureZero(u8, wire); a.free(wire); }
+        const reply = try producer.dispatch(current, a, wire, channel);
+        defer { std.crypto.secureZero(u8, reply); a.free(reply); }
+        return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
+    }
+    fn result(value: *const Json) !std.json.Value {
+        return control.get(value.value, "result") orelse return error.FixtureExpectedSuccess;
+    }
+    fn refusal(value: *const Json, expected: []const u8) !void {
+        try std.testing.expect(control.get(value.value, "result") == null);
+        const rejected = control.get(value.value, "error") orelse return error.FixtureExpectedRefusal;
+        try std.testing.expectEqualStrings(expected, try control.string(rejected, "message"));
+    }
+    fn admit(producer: *Producer, current: *Engine, subject: []const u8) !Pair {
+        var capability = try current.capabilityForTest("enrollment");
+        defer std.crypto.secureZero(u8, &capability);
+        var reply = try call(producer, current, "fixture.admitSignedOssPair", .{ .application = "enrollment", .capability = capability[0..], .subject = subject }, .adapter);
+        defer dispose(&reply);
+        const value = try result(&reply);
+        if (value != .object or value.object.count() != 4) return error.FixtureInvalidPair;
+        var pair: Pair = undefined;
+        inline for (.{ "account_id", "source_id", "access_grant_id", "refresh_grant_id" }) |field| {
+            const bytes = try control.string(value, field);
+            if (bytes.len != 64) return error.FixtureInvalidPair;
+            for (bytes) |byte| if (!std.ascii.isHex(byte)) return error.FixtureInvalidPair;
+            @memcpy(&@field(pair, field), bytes);
+        }
+        return pair;
+    }
+    fn native(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, method: []const u8, params: anytype) !Json {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const raw = try std.json.Stringify.valueAlloc(a, params, .{});
+        var parsed = try std.json.parseFromSlice(std.json.Value, a, raw, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.FixtureInvalidRequest;
+        var capability = try current.capabilityForTest("codex");
+        defer std.crypto.secureZero(u8, &capability);
+        try parsed.value.object.put(a, "application", .{ .string = "codex" });
+        try parsed.value.object.put(a, "capability", .{ .string = capability[0..] });
+        try parsed.value.object.put(a, "native_ref", try @import("native_owner_fixture.zig").referenceValue(a, reference));
+        return call(producer, current, method, parsed.value, .adapter);
+    }
+    fn acquire(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, request_id: []const u8) !Json {
+        return native(producer, current, reference, "adapter.acquire", .{
+            .session_id = "synthetic-siwc-thread", .binding_id = "synthetic-route", .request_id = request_id, .request_profile = siwc_route.profile,
+            .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .purpose = "request", .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens", .scope = "" }, .required = 1 },
+        });
+    }
+    fn handle(value: *const Json) ![64]u8 {
+        const bytes = try control.string(try result(value), "lease_handle");
+        if (bytes.len != 64) return error.FixtureInvalidLease;
+        var out: [64]u8 = undefined;
+        @memcpy(&out, bytes);
+        return out;
+    }
+    fn materialize(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8) !Json {
+        return native(producer, current, reference, "adapter.materialize", .{ .lease_handle = lease[0..], .request_profile = siwc_route.profile });
+    }
+    fn checkMaterialization(value: *const Json, generation: u64, grant_expiry: i64) !void {
+        const body = try result(value);
+        try std.testing.expect(body == .object and body.object.count() == 7);
+        try std.testing.expectEqualStrings(siwc_route.profile, try control.string(body, "request_profile"));
+        try std.testing.expectEqualStrings(siwc_route.issuer, try control.string(body, "issuer"));
+        try std.testing.expectEqualStrings(siwc_route.audience, try control.string(body, "audience"));
+        try std.testing.expectEqualStrings(siwc_route.auth_mode, try control.string(body, "auth_mode"));
+        try std.testing.expect((try control.string(body, "access_token")).len != 0);
+        try std.testing.expect(control.get(body, "provider_account_id") == null and control.get(body, "refresh_token") == null);
+        try std.testing.expectEqual(generation, @as(u64, @intCast(control.get(body, "route_generation").?.integer)));
+        try std.testing.expect(control.get(body, "expires_at").?.integer <= grant_expiry);
+    }
+    fn report(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8, event: []const u8) !Json {
+        return native(producer, current, reference, "adapter.report", .{ .lease_handle = lease[0..], .event = event });
+    }
+    fn reject(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8, status: u16, code: []const u8) !Json {
+        return rejectMethod(producer, current, reference, lease, "adapter.siwcReject", status, code);
+    }
+    fn rejectMethod(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8, method: []const u8, status: u16, code: []const u8) !Json {
+        return native(producer, current, reference, method, .{
+            .lease_handle = lease[0..], .request_profile = siwc_route.profile, .status = status, .error_code = code,
+            .error_param = @as(?[]const u8, "model"), .provider_request_id = @as(?[]const u8, "req_synthetic_actor"),
+            .pre_acceptance = true, .response_started = false,
+        });
+    }
+};
+
+test "signed owned single-account SIWC actor materializes only current paired access and stops provider errors without refresh or replay" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const producer = try fixture_mod.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try fixture_mod.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const pair = try SiwcActorTest.admit(producer, current, "single-account");
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    const original = current.state.grant(&pair.access_grant_id).?;
+    const refresh_before = current.state.grant(&pair.refresh_grant_id).?;
+    const cases = [_]struct { status: u16, code: []const u8, request_id: []const u8 }{
+        .{ .status = 401, .code = "subscription_sharing_invalid_user", .request_id = "siwc-credential-stop" },
+        .{ .status = 403, .code = "unsupported_country_region_territory", .request_id = "siwc-policy-stop" },
+        .{ .status = 429, .code = "subscription_sharing_usage_limit_exceeded", .request_id = "siwc-usage-stop" },
+        .{ .status = 502, .code = "unknown", .request_id = "siwc-unknown-stop" },
+    };
+    for (cases) |case| {
+        var acquired = try SiwcActorTest.acquire(producer, current, reference, case.request_id);
+        defer SiwcActorTest.dispose(&acquired);
+        try std.testing.expectEqualStrings(&pair.account_id, try control.string(try SiwcActorTest.result(&acquired), "account_id"));
+        const lease = try SiwcActorTest.handle(&acquired);
+        var credential = try SiwcActorTest.materialize(producer, current, reference, lease);
+        defer SiwcActorTest.dispose(&credential);
+        try SiwcActorTest.checkMaterialization(&credential, 1, original.provider_expires_at.?);
+        var rejected = try SiwcActorTest.reject(producer, current, reference, lease, case.status, case.code);
+        defer SiwcActorTest.dispose(&rejected);
+        const receipt = try SiwcActorTest.result(&rejected);
+        try std.testing.expect(receipt == .object and receipt.object.count() == 6);
+        try std.testing.expect(try control.boolean(receipt, "recorded", false));
+        try std.testing.expectEqualStrings(siwc_route.profile, try control.string(receipt, "request_profile"));
+        try std.testing.expectEqualStrings(&lease, try control.string(receipt, "rejected_lease_handle"));
+        try std.testing.expectEqual(@as(i64, 1), control.get(receipt, "rejected_route_generation").?.integer);
+        try std.testing.expectEqualStrings("stop", try control.string(receipt, "disposition"));
+        try std.testing.expect(control.get(receipt, "replacement").? == .null);
+        try std.testing.expect(current.requests.attempt("codex", &lease).?.state == .abandoned);
+        var replay = try SiwcActorTest.acquire(producer, current, reference, case.request_id);
+        defer SiwcActorTest.dispose(&replay);
+        try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
+        try std.testing.expectEqual(@as(usize, 0), current.state.leases.items.len);
+        try std.testing.expectEqual(@as(usize, 0), current.state.observations.items.len);
+        const access_after = current.state.grant(&pair.access_grant_id).?;
+        const refresh_after = current.state.grant(&pair.refresh_grant_id).?;
+        try std.testing.expect(access_after.status == .ready and access_after.generation == original.generation);
+        try std.testing.expect(refresh_after.status == .ready and refresh_after.ownership == .omux and refresh_after.generation == refresh_before.generation);
+        try std.testing.expect(current.state.account(&pair.account_id).?.lifecycle == .active);
+    }
+    const fake_ticket: [64]u8 = @splat('a');
+    var replacement = try SiwcActorTest.native(producer, current, reference, "adapter.siwcAcquireReplacement", .{ .request_profile = siwc_route.profile, .request_id = "siwc-usage-stop", .replacement_ticket = fake_ticket[0..] });
+    defer SiwcActorTest.dispose(&replacement);
+    try SiwcActorTest.refusal(&replacement, "SiwcReplacementAuthorityUnavailable");
+    // A fresh independent request rechecks actual paired SQL state on the actor
+    // writer after the final error. Test callers never read actor-owned SQLite.
+    var fresh = try SiwcActorTest.acquire(producer, current, reference, "siwc-after-stops");
+    defer SiwcActorTest.dispose(&fresh);
+    const fresh_lease = try SiwcActorTest.handle(&fresh);
+    var fresh_auth = try SiwcActorTest.materialize(producer, current, reference, fresh_lease);
+    defer SiwcActorTest.dispose(&fresh_auth);
+    try SiwcActorTest.checkMaterialization(&fresh_auth, 1, original.provider_expires_at.?);
+    var finished = try SiwcActorTest.report(producer, current, reference, fresh_lease, "abandoned");
+    defer SiwcActorTest.dispose(&finished);
+    _ = try SiwcActorTest.result(&finished);
+    var fault_work = try SiwcActorTest.acquire(producer, current, reference, "siwc-commit-fault-work");
+    defer SiwcActorTest.dispose(&fault_work);
+    const fault_lease = try SiwcActorTest.handle(&fault_work);
+    const fault_revision = current.revision;
+    const fault_checkpoint = current.db.?.checkpoint;
+    var failed_stop = try SiwcActorTest.rejectMethod(producer, current, reference, fault_lease, "fixture.siwcRejectCommitFault", 429, "subscription_sharing_usage_limit_exceeded");
+    defer SiwcActorTest.dispose(&failed_stop);
+    try SiwcActorTest.refusal(&failed_stop, "DatabaseDenied");
+    // Query-only denies a transaction/write before finishMutation can
+    // reserve recovery authority. Store rollback is safe, but persist still
+    // poisons the ACTOR; restoring fixture control cannot undo that fence.
+    try std.testing.expect(current.poisoned and !current.db.?.poisoned);
+    try std.testing.expectEqual(fault_revision, current.revision);
+    try std.testing.expect(std.meta.eql(fault_checkpoint, current.db.?.checkpoint));
+    try std.testing.expect(current.requests.attempt("codex", &fault_lease).?.state == .issued);
+    var native_issued = false;
+    for (current.native_leases.items) |held| if (eql(&held.handle, &fault_lease)) { native_issued = held.status == .issued; };
+    try std.testing.expect(native_issued);
+    try std.testing.expectEqual(@as(usize, 1), current.state.leases.items.len);
+    var fenced_cleanup = try SiwcActorTest.report(producer, current, reference, fault_lease, "abandoned");
+    defer SiwcActorTest.dispose(&fenced_cleanup);
+    try SiwcActorTest.refusal(&fenced_cleanup, "CustodyUnavailable");
+    // A real close/reopen validates the untouched recovery checkpoint. No
+    // fixture clears poison, reconstructs acceptance or restores retry budget.
+    try actor.restart();
+    const reopened = actor.engine.?;
+    try std.testing.expect(!reopened.poisoned);
+    try std.testing.expectEqual(@as(usize, 0), reopened.native_leases.items.len);
+    try std.testing.expectEqual(@as(usize, 1), reopened.state.leases.items.len);
+    try std.testing.expect(reopened.requests.attempt("codex", &fault_lease).?.state == .unknown);
+    const retained_intent = reopened.requests.intentForHandle("codex", &fault_lease).?;
+    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent));
+    var terminal_cleanup = try SiwcActorTest.report(producer, reopened, reference, fault_lease, "abandoned");
+    defer SiwcActorTest.dispose(&terminal_cleanup);
+    _ = try SiwcActorTest.result(&terminal_cleanup);
+    try std.testing.expectEqual(@as(usize, 0), reopened.state.leases.items.len);
+    try std.testing.expect(reopened.requests.attempt("codex", &fault_lease).?.state == .abandoned);
+    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent));
+}
+
+test "two genuinely signed owned SIWC pairs hand off only on a new request after explicit pause and preserve accepted work fences" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const producer = try fixture_mod.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try fixture_mod.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const first_pair = try SiwcActorTest.admit(producer, current, "first-account");
+    const other_pair = try SiwcActorTest.admit(producer, current, "other-account");
+    try std.testing.expect(!eql(&first_pair.account_id, &other_pair.account_id));
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    var first = try SiwcActorTest.acquire(producer, current, reference, "siwc-accepted-work");
+    defer SiwcActorTest.dispose(&first);
+    const first_result = try SiwcActorTest.result(&first);
+    try std.testing.expectEqualStrings(&first_pair.account_id, try control.string(first_result, "account_id"));
+    const first_lease = try SiwcActorTest.handle(&first);
+    var initial_auth = try SiwcActorTest.materialize(producer, current, reference, first_lease);
+    defer SiwcActorTest.dispose(&initial_auth);
+    try SiwcActorTest.checkMaterialization(&initial_auth, 1, current.state.grant(&first_pair.access_grant_id).?.provider_expires_at.?);
+    var accepted = try SiwcActorTest.report(producer, current, reference, first_lease, "accepted");
+    defer SiwcActorTest.dispose(&accepted);
+    _ = try SiwcActorTest.result(&accepted);
+    var pause = try SiwcActorTest.call(producer, current, "account.pause", .{ .account_id = first_pair.account_id[0..], .operation_id = "siwc-explicit-pause", .expected_revision = current.revision }, .control);
+    defer SiwcActorTest.dispose(&pause);
+    _ = try SiwcActorTest.result(&pause);
+    var overlap = try SiwcActorTest.acquire(producer, current, reference, "siwc-next-independent-work");
+    defer SiwcActorTest.dispose(&overlap);
+    try SiwcActorTest.refusal(&overlap, "InFlight");
+    var late_rejection = try SiwcActorTest.reject(producer, current, reference, first_lease, 429, "subscription_sharing_usage_limit_exceeded");
+    defer SiwcActorTest.dispose(&late_rejection);
+    try SiwcActorTest.refusal(&late_rejection, "UnsafeReplay");
+    try std.testing.expect(current.requests.attempt("codex", &first_lease).?.state == .accepted);
+    var complete = try SiwcActorTest.report(producer, current, reference, first_lease, "completed");
+    defer SiwcActorTest.dispose(&complete);
+    _ = try SiwcActorTest.result(&complete);
+    var same_work = try SiwcActorTest.acquire(producer, current, reference, "siwc-accepted-work");
+    defer SiwcActorTest.dispose(&same_work);
+    try SiwcActorTest.refusal(&same_work, "AttemptBudgetExhausted");
+    var next = try SiwcActorTest.acquire(producer, current, reference, "siwc-next-independent-work");
+    defer SiwcActorTest.dispose(&next);
+    const next_result = try SiwcActorTest.result(&next);
+    try std.testing.expectEqualStrings(&other_pair.account_id, try control.string(next_result, "account_id"));
+    try std.testing.expectEqual(@as(i64, 2), control.get(next_result, "route_generation").?.integer);
+    const next_lease = try SiwcActorTest.handle(&next);
+    var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+    defer SiwcActorTest.dispose(&next_auth);
+    try SiwcActorTest.checkMaterialization(&next_auth, 2, current.state.grant(&other_pair.access_grant_id).?.provider_expires_at.?);
+    try std.testing.expect(!eql(try control.string(try SiwcActorTest.result(&initial_auth), "access_token"), try control.string(try SiwcActorTest.result(&next_auth), "access_token")));
+    try std.testing.expectEqual(@as(usize, 1), current.state.bindings.items.len);
+    try std.testing.expectEqualStrings("synthetic-siwc-thread", current.state.bindings.items[0].session_id);
+    try std.testing.expect(current.state.bindings.items[0].native_ref.?.same(reference));
+    try std.testing.expectEqual(@as(usize, 0), current.state.observations.items.len);
+    var abandon = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+    defer SiwcActorTest.dispose(&abandon);
+    _ = try SiwcActorTest.result(&abandon);
+}
+
+test "actual native peer SIWC acquire refuses withdrawn paired source authority without adopting a lease" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture_mod.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture_mod.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const pair = try SiwcActorTest.admit(producer, current, "withdrawn-account");
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    // Source withdrawal executes on the real actor writer. Retained identity
+    // metadata and the original native owner cannot restore grant authority.
+    var disconnect = try SiwcActorTest.call(producer, current, "source.disconnect", .{ .source_id = pair.source_id[0..], .operation_id = "siwc-disconnect-source", .expected_revision = current.revision }, .control);
+    defer SiwcActorTest.dispose(&disconnect);
+    _ = try SiwcActorTest.result(&disconnect);
+    const before_revision = current.revision;
+    const before = try std.json.Stringify.valueAlloc(a, current.state.snapshot(), .{});
+    defer a.free(before);
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var capability = try current.capabilityForTest("codex");
+    defer std.crypto.secureZero(u8, &capability);
+    const wire_ref = try fixture_mod.referenceValue(scratch, reference);
+    const request = try std.json.Stringify.valueAlloc(scratch, .{ .jsonrpc = "2.0", .id = 1, .method = "adapter.acquire", .params = .{
+        .application = "codex", .capability = capability[0..], .native_ref = wire_ref,
+        .session_id = "synthetic-siwc-thread", .binding_id = "synthetic-route", .request_id = "synthetic-new-request", .request_profile = siwc_route.profile,
+        .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .purpose = "request", .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens", .scope = "" }, .required = 1 },
+    } }, .{});
+    defer std.crypto.secureZero(u8, request);
+    const response = try producer.dispatch(current, scratch, request, .adapter);
+    defer std.crypto.secureZero(u8, response);
+    const parsed = try std.json.parseFromSlice(std.json.Value, scratch, response, .{});
+    defer parsed.deinit();
+    try std.testing.expect(control.get(parsed.value, "result") == null);
+    const refused = control.get(parsed.value, "error") orelse return error.FixtureExpectedRefusal;
+    try std.testing.expectEqualStrings("SiwcPairUnavailable", try control.string(refused, "message"));
+    // Even the same authenticated owner cannot submit a public activation bit
+    // or native-copy consent as a substitute for actual paired authority.
+    var forged = try std.json.parseFromSlice(std.json.Value, scratch, request, .{});
+    defer forged.deinit();
+    var forged_params = control.get(forged.value, "params") orelse return error.FixtureInvalidRequest;
+    try forged_params.object.put(scratch, "verified", .{ .bool = true });
+    try forged.value.object.put(scratch, "params", forged_params);
+    const forged_wire = try std.json.Stringify.valueAlloc(scratch, forged.value, .{});
+    defer std.crypto.secureZero(u8, forged_wire);
+    const forged_response = try producer.dispatch(current, scratch, forged_wire, .adapter);
+    defer std.crypto.secureZero(u8, forged_response);
+    const forged_result = try std.json.parseFromSlice(std.json.Value, scratch, forged_response, .{});
+    defer forged_result.deinit();
+    try std.testing.expect(control.get(forged_result.value, "result") == null);
+    const forged_error = control.get(forged_result.value, "error") orelse return error.FixtureExpectedRefusal;
+    try std.testing.expectEqualStrings("InvalidSiwcParams", try control.string(forged_error, "message"));
+    try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
+    try std.testing.expectEqual(@as(usize, 0), current.state.leases.items.len);
+    const after = try std.json.Stringify.valueAlloc(a, current.state.snapshot(), .{});
+    defer a.free(after);
+    try std.testing.expectEqual(before_revision, current.revision);
+    try std.testing.expectEqualStrings(before, after);
+}
+
 test "actual acquisition refuses exhausted route generation before request or lease adoption" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -11491,4 +13063,650 @@ test "queued malformed control ingress preserves committed actor custody and com
     Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
     stage = "custody";
     retained.check(current, &witness, active_case) catch |err| return Diag.failure(active_case, stage, err);
+}
+
+const fresh_api = @import("c");
+const FreshOAuthActorModel = struct {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    const key: envelope.Key = @splat(0x64);
+    const Listener = struct {
+        fd: c_int,
+        port: u16,
+        fn open() !Listener {
+            const fd = fresh_api.socket(fresh_api.AF_INET, fresh_api.SOCK_STREAM, 0);
+            if (fd < 0) return error.FixtureSocket;
+            errdefer _ = fresh_api.close(fd);
+            var address = std.mem.zeroes(fresh_api.struct_sockaddr_in);
+            address.sin_family = fresh_api.AF_INET;
+            address.sin_addr.s_addr = fresh_api.htonl(0x7f000001);
+            if (@hasField(fresh_api.struct_sockaddr_in, "sin_len")) address.sin_len = @sizeOf(fresh_api.struct_sockaddr_in);
+            if (fresh_api.bind(fd, @ptrCast(&address), @sizeOf(fresh_api.struct_sockaddr_in)) != 0 or fresh_api.listen(fd, 1) != 0) return error.FixtureSocket;
+            var length: fresh_api.socklen_t = @sizeOf(fresh_api.struct_sockaddr_in);
+            if (fresh_api.getsockname(fd, @ptrCast(&address), &length) != 0) return error.FixtureSocket;
+            const flags = fresh_api.fcntl(fd, fresh_api.F_GETFL, @as(c_int, 0));
+            if (flags < 0 or fresh_api.fcntl(fd, fresh_api.F_SETFL, flags | fresh_api.O_NONBLOCK) != 0) return error.FixtureSocket;
+            return .{ .fd = fd, .port = fresh_api.ntohs(address.sin_port) };
+        }
+        fn close(self: *Listener) void { _ = fresh_api.close(self.fd); self.fd = -1; }
+        fn accept(self: *Listener) !c_int {
+            const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
+            while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
+                const fd = fresh_api.accept(self.fd, null, null);
+                if (fd >= 0) return fd;
+                if (std.posix.errno(fd) != .AGAIN and std.posix.errno(fd) != .INTR) return error.FixtureSocket;
+                try io.sleep(.fromMilliseconds(5), .awake);
+            }
+            return error.FixtureTimeout;
+        }
+    };
+    fn call(engine: *Engine, method: []const u8, params: anytype, channel: Channel) !std.json.Parsed(std.json.Value) {
+        const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
+        defer a.free(frame);
+        const bytes = try engine.dispatch(a, frame, channel);
+        defer { std.crypto.secureZero(u8, bytes); a.free(bytes); }
+        return std.json.parseFromSlice(std.json.Value, a, bytes, .{ .allocate = .alloc_always });
+    }
+    fn observe(engine: *Engine, id: []const u8) !std.json.Parsed(std.json.Value) {
+        const capability = try engine.capability("enrollment");
+        return call(engine, "fixture.freshOAuthRetained", .{ .application = "enrollment", .capability = capability[0..], .transaction_id = id }, .adapter);
+    }
+    fn wait(engine: *Engine, id: []const u8, phase: []const u8, pending: usize) !std.json.Parsed(std.json.Value) {
+        const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
+        while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
+            const result = try observe(engine, id);
+            const row = control.get(result.value, "result") orelse { result.deinit(); return error.FixtureRefused; };
+            if (eql(try control.string(row, "phase"), phase) and control.get(row, "pending").?.integer == pending) return result;
+            result.deinit();
+            try io.sleep(.fromMilliseconds(5), .awake);
+        }
+        return error.FixtureTimeout;
+    }
+    fn revision(engine: *Engine) !u64 {
+        const reply = try call(engine, "system.health", @as(?u8, null), .control);
+        defer reply.deinit();
+        return @intCast(control.get(control.get(reply.value, "result").?, "revision").?.integer);
+    }
+    fn seed(path: []const u8) !void {
+        var state = domain.State.init(a);
+        defer state.deinit();
+        _ = try state.connectSource(.{ .id = "synthetic-owned-other-source", .kind = .explicit, .provider = "codex" });
+        _ = try state.enroll(.{ .account_id = "synthetic-owned-other-account", .source_id = "synthetic-owned-other-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-owned-other-subject", .tenant = "synthetic-owned-other-tenant", .verified = true } }, 1);
+        try state.pause("synthetic-owned-other-account", true);
+        _ = try state.addGrant(.{ .id = "synthetic-owned-external-grant", .account_id = "synthetic-owned-other-account", .source_id = "synthetic-owned-other-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        var saved: Persisted = .{ .schema_version = 2, .state = state.snapshot() };
+        saved.maintenance_growth_bytes = try maintenanceReservation(saved);
+        const encoded = try std.json.Stringify.valueAlloc(a, saved, .{});
+        defer a.free(encoded);
+        const file = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(file);
+        var store = try storage.Store.openRootWithSnapshotValidator(io, a, file, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, encoded, &.{.{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "synthetic-owned-other-account", .grant_id = "synthetic-owned-external-grant", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-owned-independent-external", .renewal_owner = .external } }});
+    }
+    fn sendCallback(port: u16, state: []const u8, denied: bool) !c_int {
+        const fd = fresh_api.socket(fresh_api.AF_INET, fresh_api.SOCK_STREAM, 0);
+        if (fd < 0) return error.FixtureSocket;
+        errdefer _ = fresh_api.close(fd);
+        var address = std.mem.zeroes(fresh_api.struct_sockaddr_in);
+        address.sin_family = fresh_api.AF_INET;
+        address.sin_addr.s_addr = fresh_api.htonl(0x7f000001);
+        address.sin_port = fresh_api.htons(port);
+        if (@hasField(fresh_api.struct_sockaddr_in, "sin_len")) address.sin_len = @sizeOf(fresh_api.struct_sockaddr_in);
+        if (fresh_api.connect(fd, @ptrCast(&address), @sizeOf(fresh_api.struct_sockaddr_in)) != 0) return error.FixtureSocket;
+        const query = if (denied) "error=access_denied" else "code=synthetic-actor-owned-code&client_id=synthetic-actor-issued-client&scope=openid+chatgpt.tokens.use.direct";
+        const frame = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&{s} HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{ state, query, port });
+        defer { std.crypto.secureZero(u8, frame); a.free(frame); }
+        if (fresh_api.send(fd, frame.ptr, frame.len, if (@hasDecl(fresh_api, "MSG_NOSIGNAL")) fresh_api.MSG_NOSIGNAL else 0) != frame.len) return error.FixtureSocket;
+        return fd;
+    }
+    fn stateFromUrl(url: []const u8) ![]const u8 {
+        const prefix = "&state=";
+        const begin = (std.mem.indexOf(u8, url, prefix) orelse return error.FixtureRefused) + prefix.len;
+        const end = std.mem.indexOfScalarPos(u8, url, begin, '&') orelse return error.FixtureRefused;
+        if (end - begin != 43) return error.FixtureRefused;
+        return url[begin..end];
+    }
+    fn read(fd: c_int, output: []u8) ![]u8 {
+        const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
+        var length: usize = 0;
+        while (until.durationFromNow(io).raw.toNanoseconds() > 0 and length < output.len) {
+            var descriptor: fresh_api.struct_pollfd = .{ .fd = fd, .events = fresh_api.POLLIN, .revents = 0 };
+            if (fresh_api.poll(&descriptor, 1, 20) < 0) return error.FixtureSocket;
+            if (descriptor.revents & fresh_api.POLLIN == 0) continue;
+            const count = fresh_api.recv(fd, output[length..].ptr, output.len - length, 0);
+            if (count <= 0) return error.FixtureSocket;
+            length += @intCast(count);
+            if (std.mem.indexOf(u8, output[0..length], "\r\n\r\n")) |end| {
+                var lines = std.mem.splitSequence(u8, output[0..end], "\r\n");
+                var content_length: ?usize = null;
+                while (lines.next()) |line| {
+                    const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+                    if (std.ascii.eqlIgnoreCase(line[0..colon], "Content-Length")) content_length = try std.fmt.parseInt(usize, std.mem.trim(u8, line[colon + 1 ..], " "), 10);
+                }
+                const expected = try std.math.add(usize, end + 4, content_length orelse return error.FixtureInvalidHttp);
+                if (expected > output.len or length > expected) return error.FixtureInvalidHttp;
+                if (length == expected) return output[0..length];
+            }
+        }
+        return error.FixtureTimeout;
+    }
+};
+
+test "queued owned callback commits ciphertext then issues once and quarantines unverified response without changing external writer" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    var token_listener = try M.Listener.open();
+    defer token_listener.close();
+    var callback_reservation = try M.Listener.open();
+    const callback_port = callback_reservation.port;
+    // Free-port selection is only fixture setup. Production open binds the
+    // exact URI and refuses foreign appearance, with no fallback/adoption.
+    callback_reservation.close();
+    const uri = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/auth/callback", .{callback_port});
+    defer a.free(uri);
+    const profile = try oauth_issue.testing.profile(a, token_listener.port, uri);
+    defer profile.deinit();
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (current) |engine| engine.deinit();
+    const payload = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.prepare.v1", .params = .{ .operation_id = "owned-actor-callback", .expected_revision = try M.revision(current.?), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 } }, .{});
+    defer a.free(payload);
+    const reply_bytes = try current.?.prepareFreshOAuthWithProfile(a, payload, profile, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }));
+    defer a.free(reply_bytes);
+    const reply = try std.json.parseFromSlice(std.json.Value, a, reply_bytes, .{});
+    defer reply.deinit();
+    const id = try control.string(control.get(reply.value, "result").?, "transaction_id");
+    const id_bytes = try parseOpaqueId(id);
+    var url = try current.?.preparedFreshOAuthAuthorization(a, id_bytes, try M.revision(current.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+    defer url.deinit();
+    const browser = try M.sendCallback(callback_port, try M.stateFromUrl(url.bytes), false);
+    defer _ = fresh_api.close(browser);
+    var acknowledgment: [256]u8 = undefined;
+    try std.testing.expect(std.mem.startsWith(u8, try M.read(browser, &acknowledgment), "HTTP/1.1 200"));
+    const token_peer = try token_listener.accept();
+    defer _ = fresh_api.close(token_peer);
+    var request: [16 * 1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &request);
+    const posted = try M.read(token_peer, &request);
+    try std.testing.expect(std.mem.startsWith(u8, posted, "POST /oauth/token HTTP/1.1"));
+    try std.testing.expect(std.mem.indexOf(u8, posted, "client_id=synthetic-actor-issued-client") != null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "dynamic_agent_client") == null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "code_verifier=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "Authorization:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "Cookie:") == null);
+    const issued = try M.wait(current.?, id, "exchange_issued", 1);
+    defer issued.deinit();
+    const issued_row = control.get(issued.value, "result").?;
+    try std.testing.expectEqual(@as(i64, 0), control.get(issued_row, "verifier_bytes").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(issued_row, "callback_bytes").?.integer);
+    const body = "{\"access_token\":\"synthetic-unverified-actor-access\",\"refresh_token\":\"synthetic-unverified-actor-refresh\",\"token_type\":\"Bearer\",\"expires_in\":60,\"scope\":\"openid chatgpt.tokens.use.direct\"}";
+    const response = try std.fmt.allocPrint(a, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body });
+    defer a.free(response);
+    try std.testing.expectEqual(@as(isize, @intCast(response.len)), fresh_api.send(token_peer, response.ptr, response.len, if (@hasDecl(fresh_api, "MSG_NOSIGNAL")) fresh_api.MSG_NOSIGNAL else 0));
+    const quarantined = try M.wait(current.?, id, "quarantined", 0);
+    defer quarantined.deinit();
+    try std.testing.expect(control.get(control.get(quarantined.value, "result").?, "response_bytes").?.integer > 48);
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(quarantined.value, "result").?, "grants").?.integer);
+    try std.testing.expectError(error.EnrollmentNotFound, current.?.preparedFreshOAuthAuthorization(a, id_bytes, try M.revision(current.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(2) })));
+    current.?.deinit(); current = null;
+    const file = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(file);
+    var store = try storage.Store.openRootWithSnapshotValidator(io, a, file, instance.Selection.default.vaultRoot(), M.key, validatePersistedAdmission);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-unverified-actor-access") == null);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-unverified-actor-refresh") == null);
+    const status = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+    try std.testing.expectEqual(storage.RenewalOwner.external, status.renewal_owner);
+    try std.testing.expectEqual(@as(u64, 1), status.generation);
+}
+
+test "actual queued consent withdrawal and denial close callbacks while issued forget remains unknown and never restores work" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]enum { before_callback, after_issue, denied, forget }{ .before_callback, .after_issue, .denied, .forget }) |mode| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try M.seed(path);
+        var token_listener = try M.Listener.open();
+        defer token_listener.close();
+        var reservation = try M.Listener.open();
+        const callback_port = reservation.port;
+        reservation.close();
+        const uri = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/auth/callback", .{callback_port});
+        defer a.free(uri);
+        const profile = try oauth_issue.testing.profile(a, token_listener.port, uri);
+        defer profile.deinit();
+        var engine: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+        defer if (engine) |live| live.deinit();
+        const payload = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.prepare.v1", .params = .{ .operation_id = "owned-actor-withdraw", .expected_revision = try M.revision(engine.?), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 } }, .{});
+        defer a.free(payload);
+        const bytes = try engine.?.prepareFreshOAuthWithProfile(a, payload, profile, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }));
+        defer a.free(bytes);
+        const prepared = try std.json.parseFromSlice(std.json.Value, a, bytes, .{});
+        defer prepared.deinit();
+        const id = try control.string(control.get(prepared.value, "result").?, "transaction_id");
+        var authorization = try engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+        defer authorization.deinit();
+        var browser: c_int = -1;
+        defer if (browser >= 0) _ = fresh_api.close(browser);
+        var token_peer: c_int = -1;
+        defer if (token_peer >= 0) _ = fresh_api.close(token_peer);
+        if (mode != .before_callback) {
+            browser = try M.sendCallback(callback_port, try M.stateFromUrl(authorization.bytes), mode == .denied);
+            var ack: [256]u8 = undefined;
+            try std.testing.expect(std.mem.startsWith(u8, try M.read(browser, &ack), "HTTP/1.1 200"));
+            if (mode != .denied) {
+                token_peer = try token_listener.accept();
+                var request: [16 * 1024]u8 = undefined;
+                defer std.crypto.secureZero(u8, &request);
+                _ = try M.read(token_peer, &request);
+                const issued = try M.wait(engine.?, id, "exchange_issued", 1);
+                defer issued.deinit();
+            }
+        }
+        if (mode == .forget) {
+            const forgotten = try M.call(engine.?, "account.forget", .{ .operation_id = "owned-actor-forget", .expected_revision = try M.revision(engine.?), .account_id = "synthetic-owned-other-account" }, .control);
+            defer forgotten.deinit();
+            try std.testing.expect(control.get(forgotten.value, "result") != null);
+        } else if (mode != .denied) {
+            const withdrawn = try M.call(engine.?, "oauth.enrollment.withdraw.v1", .{ .operation_id = "owned-actor-withdraw-consent", .expected_revision = try M.revision(engine.?), .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+            defer withdrawn.deinit();
+            const result = control.get(withdrawn.value, "result") orelse return error.FixtureRefused;
+            try std.testing.expect(try control.boolean(result, "consent_withdrawn", false));
+            try std.testing.expectEqual(mode == .after_issue, try control.boolean(result, "issued_work_may_have_occurred", false));
+            try std.testing.expect(!try control.boolean(result, "upstream_revoked", true));
+        }
+        const expected_phase = if (mode == .after_issue or mode == .forget) "completion_unknown" else "retired";
+        const retained = try M.wait(engine.?, id, expected_phase, 0);
+        defer retained.deinit();
+        const row = control.get(retained.value, "result").?;
+        try std.testing.expectEqual(@as(i64, 0), control.get(row, "verifier_bytes").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(row, "callback_bytes").?.integer);
+        if (mode != .forget) {
+            try std.testing.expectEqualStrings("withdrawn", try control.string(row, "consent_status"));
+            try std.testing.expectEqual(@as(i64, 2), control.get(row, "consent_generation").?.integer);
+            try std.testing.expectEqual(@as(i64, 1), control.get(row, "grants").?.integer);
+        } else {
+            try std.testing.expectEqual(@as(i64, 1), control.get(row, "forget_epoch").?.integer);
+            try std.testing.expectEqual(@as(i64, 0), control.get(row, "grants").?.integer);
+        }
+        if (mode == .denied or mode == .before_callback) {
+            const unexpected = fresh_api.accept(token_listener.fd, null, null);
+            defer if (unexpected >= 0) _ = fresh_api.close(unexpected);
+            try std.testing.expect(unexpected < 0 and std.posix.errno(unexpected) == .AGAIN);
+        }
+        engine.?.deinit(); engine = null;
+        engine = try Engine.openWithKey(io, a, path, M.key);
+        const restarted = try M.observe(engine.?, id);
+        defer restarted.deinit();
+        try std.testing.expectEqualStrings(expected_phase, try control.string(control.get(restarted.value, "result").?, "phase"));
+        try std.testing.expectError(error.EnrollmentNotFound, engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(2) })));
+    }
+}
+
+test "documented OSS enrollment producer persists stable own host and private nonce URL without native client or provider call" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    var engine: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (engine) |live| live.deinit();
+    var host: ?[32]u8 = null;
+    for (0..2) |attempt| {
+        var reservation = try M.Listener.open();
+        const port = reservation.port;
+        reservation.close();
+        const operation = if (attempt == 0) "oss-first-host" else "oss-same-host-after-restart";
+        const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.prepare.v1", .params = .{ .operation_id = operation, .expected_revision = try M.revision(engine.?), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 } }, .{});
+        defer a.free(frame);
+        const bytes = try engine.?.prepareFreshOssEnrollment(a, frame, port, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }));
+        defer a.free(bytes);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, bytes, .{});
+        defer parsed.deinit();
+        const id = try control.string(control.get(parsed.value, "result").?, "transaction_id");
+        var authorization = try engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+        defer authorization.deinit();
+        try std.testing.expect(std.mem.startsWith(u8, authorization.bytes, "https://auth.openai.com/api/accounts/authorize?client_id=dynamic_agent_client"));
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "&agent_name_hint=omux&ext_agent_host_id=") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "&nonce=") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "&resource=https%3A%2F%2Fapi.openai.com%2Fv1") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "chatgpt.tokens.use.direct") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "app_EMoam") == null);
+        const observed = try M.observe(engine.?, id);
+        defer observed.deinit();
+        const row = control.get(observed.value, "result").?;
+        const host_value = control.get(row, "host_id").?;
+        const encoded = try std.json.Stringify.valueAlloc(a, host_value, .{});
+        defer a.free(encoded);
+        const decoded = try std.json.parseFromSlice([32]u8, a, encoded, .{});
+        defer decoded.deinit();
+        try std.testing.expect(!std.mem.allEqual(u8, &decoded.value, 0));
+        if (host) |prior| try std.testing.expectEqualSlices(u8, &prior, &decoded.value) else host = decoded.value;
+        try std.testing.expectEqualStrings("prepared", try control.string(row, "phase"));
+        try std.testing.expectEqual(@as(i64, 0), control.get(row, "grants").?.integer);
+        engine.?.deinit(); engine = null;
+        engine = try Engine.openWithKey(io, a, path, M.key);
+    }
+}
+
+
+test "actual actor SQLite enrollment cycles reclaim settled rows without replay and cap sixteen active intents" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (current) |value| value.deinit();
+    var old_id: [64]u8 = undefined;
+    var original_revision: u64 = 0;
+    for (0..32) |index| {
+        const operation = try std.fmt.allocPrint(a, "settled-prepare-{d}", .{index});
+        defer a.free(operation);
+        const revision = try M.revision(current.?);
+        if (index == 0) original_revision = revision;
+        const prepared = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = operation, .expected_revision = revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+        defer prepared.deinit();
+        const result = control.get(prepared.value, "result") orelse return error.FixtureRefused;
+        const transaction = try control.string(result, "transaction_id");
+        if (index == 0) @memcpy(&old_id, transaction);
+        const retire = try std.fmt.allocPrint(a, "settled-retire-{d}", .{index});
+        defer a.free(retire);
+        const retired = try M.call(current.?, "oauth.enrollment.retire.v1", .{ .operation_id = retire, .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.purpose, .transaction_id = transaction }, .control);
+        defer retired.deinit();
+        try std.testing.expect(control.get(retired.value, "result") != null);
+    }
+    const replay = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "settled-prepare-0", .expected_revision = original_revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+    defer replay.deinit();
+    try std.testing.expectEqualStrings(&old_id, try control.string(control.get(replay.value, "result").?, "transaction_id"));
+    // Historical ACK is preserved; it creates no current row or callback lease.
+    const absent = try M.observe(current.?, &old_id);
+    defer absent.deinit();
+    try std.testing.expectEqualStrings("EnrollmentNotFound", try control.string(control.get(absent.value, "error").?, "message"));
+    for (0..16) |index| {
+        const operation = try std.fmt.allocPrint(a, "active-prepare-{d}", .{index});
+        defer a.free(operation);
+        const active = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = operation, .expected_revision = try M.revision(current.?), .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+        defer active.deinit();
+        try std.testing.expect(control.get(active.value, "result") != null);
+    }
+    const refused = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "active-seventeenth", .expected_revision = try M.revision(current.?), .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("EnrollmentCapacity", try control.string(control.get(refused.value, "error").?, "message"));
+    current.?.deinit(); current = null;
+    const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(filename);
+    var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    const persisted = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer persisted.deinit();
+    try std.testing.expectEqual(@as(usize, 16), persisted.value.fresh_oauth_authority.?.records.len);
+    for (persisted.value.fresh_oauth_authority.?.records) |record| try std.testing.expectEqual(oauth_enrollment.Phase.prepared, record.phase);
+    try std.testing.expectEqual(@as(usize, 1), persisted.value.state.grants.len);
+    const external = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+    try std.testing.expectEqual(storage.RenewalOwner.external, external.renewal_owner);
+}
+
+test "same actor Store signed OSS exchange activates a paired writer and retains independent external custody" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (current) |value| value.deinit();
+    const capability = try current.?.capability("enrollment");
+    const activated = try M.call(current.?, "fixture.admitSignedOssPair", .{ .application = "enrollment", .capability = capability[0..], .subject = "synthetic-pair-one" }, .adapter);
+    defer activated.deinit();
+    const result = control.get(activated.value, "result") orelse return error.FixtureRefused;
+    const account = try a.dupe(u8, try control.string(result, "account_id"));
+    defer a.free(account);
+    const access_id = try a.dupe(u8, try control.string(result, "access_grant_id"));
+    defer a.free(access_id);
+    const refresh_id = try a.dupe(u8, try control.string(result, "refresh_grant_id"));
+    defer a.free(refresh_id);
+    current.?.deinit(); current = null;
+    const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(filename);
+    var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    const persisted = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer persisted.deinit();
+    try std.testing.expectEqual(@as(usize, 1), persisted.value.owned_siwc_pairs.?.records.len);
+    try std.testing.expectEqual(@as(usize, 3), persisted.value.state.grants.len);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-access-synthetic-pair-one") == null);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-refresh-synthetic-pair-one") == null);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "oaiapp_synthetic_synthetic-pair-one") == null);
+    const authority = try siwc_pair.currentPair(&store, account, access_id, 1, std.Io.Clock.real.now(io).toSeconds());
+    defer authority.deinit();
+    try std.testing.expectEqual(@as(u64, 1), authority.familyGeneration());
+    try std.testing.expectEqualStrings(refresh_id, authority.refreshGrantId());
+    const external = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+    try std.testing.expectEqual(storage.RenewalOwner.external, external.renewal_owner);
+    // A real in-flight one-use Store rotation refuses request admission; row
+    // ownership alone cannot make a refreshing pair ready again.
+    const rotation = try store.beginRotation(.{ .key_id = store.key_id, .account_id = account, .grant_id = refresh_id, .generation = 1, .purpose = "renewal", .scope = siwc_pair.resource_uri }, "synthetic-owned-rotation");
+    try std.testing.expect(rotation.may_issue);
+    try std.testing.expectError(error.SiwcPairQuarantined, siwc_pair.currentPair(&store, account, access_id, 1, std.Io.Clock.real.now(io).toSeconds()));
+}
+
+
+test "ordinary SIWC flow survives prompt delay past control RPC and queries never renew or redeliver authorization" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    const current = try Engine.openWithKey(io, a, path, M.key);
+    defer current.deinit();
+    const descriptor = try M.call(current, "oauth.enrollment.descriptor.v1", @as(?u8, null), .control);
+    defer descriptor.deinit();
+    try std.testing.expect(control.get(control.get(descriptor.value, "result").?, "implemented").?.bool);
+    const prepared = try M.call(current, "oauth.enrollment.prepare.siwc.v1", .{ .operation_id = "owned-finite-human-flow", .expected_revision = try M.revision(current), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 }, .control);
+    defer prepared.deinit();
+    const result = control.get(prepared.value, "result") orelse return error.FixtureRefused;
+    const id = try control.string(result, "transaction_id");
+    const expiry = control.get(result, "flow_expires_at").?.integer;
+    const before = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer before.deinit();
+    try std.testing.expectEqualStrings("pending", try control.string(control.get(before.value, "result").?, "status"));
+    // Real elapsed time exceeds the ordinary original 15s control envelope.
+    // This is a deliberate declared fixture, not a clock reset.
+    try io.sleep(.fromSeconds(16), .awake);
+    const recovered = try M.call(current, "oauth.enrollment.pending.v1", @as(?u8, null), .control);
+    defer recovered.deinit();
+    const pending = control.get(control.get(recovered.value, "result").?, "pending").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    try std.testing.expectEqualStrings(id, try control.string(pending[0], "transaction_id"));
+    try std.testing.expectEqual(expiry, control.get(pending[0], "flow_expires_at").?.integer);
+    const status = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer status.deinit();
+    const status_result = control.get(status.value, "result").?;
+    try std.testing.expectEqual(expiry, control.get(status_result, "flow_expires_at").?.integer);
+    const authorization = try M.call(current, "oauth.enrollment.authorization.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id, .expected_revision = control.get(status_result, "revision").?.integer }, .control);
+    defer authorization.deinit();
+    const url = try control.string(control.get(authorization.value, "result").?, "authorization_url");
+    defer std.crypto.secureZero(u8, @constCast(url));
+    try std.testing.expect(std.mem.startsWith(u8, url, "https://auth.openai.com/api/accounts/authorize?"));
+    const again = try M.call(current, "oauth.enrollment.authorization.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id, .expected_revision = control.get(status_result, "revision").?.integer }, .control);
+    defer again.deinit();
+    try std.testing.expectEqualStrings("AuthorizationAlreadyDelivered", try control.string(control.get(again.value, "error").?, "message"));
+    const withdrawn = try M.call(current, "oauth.enrollment.withdraw.v1", .{ .operation_id = "owned-finite-human-withdraw", .expected_revision = try M.revision(current), .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer withdrawn.deinit();
+    try std.testing.expect(control.get(withdrawn.value, "result") != null);
+    const cancelled = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer cancelled.deinit();
+    try std.testing.expectEqualStrings("cancelled", try control.string(control.get(cancelled.value, "result").?, "status"));
+}
+
+
+test "expired ordinary owned flow refuses receipt and control-only status is truthful without loaded custody" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    const current = try Engine.openWithKey(io, a, path, M.key);
+    defer current.deinit();
+    const prepared = try M.call(current, "oauth.enrollment.prepare.siwc.v1", .{ .operation_id = "owned-flow-expiry", .expected_revision = try M.revision(current), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 1 }, .control);
+    defer prepared.deinit();
+    const result = control.get(prepared.value, "result") orelse return error.FixtureRefused;
+    const id = try control.string(result, "transaction_id");
+    try io.sleep(.fromMilliseconds(1250), .awake);
+    const expired = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer expired.deinit();
+    const expired_result = control.get(expired.value, "result").?;
+    try std.testing.expectEqualStrings("expired", try control.string(expired_result, "status"));
+    try std.testing.expect(!control.get(expired_result, "grant_ready").?.bool);
+    const refused = try M.call(current, "oauth.enrollment.authorization.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id, .expected_revision = control.get(expired_result, "revision").?.integer }, .control);
+    defer refused.deinit();
+    try std.testing.expect(control.get(refused.value, "error") != null);
+    const pending = try M.call(current, "oauth.enrollment.pending.v1", @as(?u8, null), .control);
+    defer pending.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(control.get(pending.value, "result").?, "pending").?.array.items.len);
+
+    var unavailable: Engine = .{ .allocator = a, .io = io, .state_dir = try a.dupe(u8, path), .state = domain.State.init(a), .observers = observer.Coordinator.init(a), .requests = request_authority.Ledger.init(a, 4096), .mutations = try mutation_authority.Ledger.init(a, 4096), .admission = snapshot_admission.Ledger.init(a), .native_owners = native_owner.Ledger.init(a), .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }), .vault_locked = true, .startup_vault_failure = error.Locked };
+    defer { unavailable.release(); a.free(unavailable.state_dir); }
+    const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.status.v1", .params = .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id } }, .{});
+    defer a.free(frame);
+    const reply = try unavailable.lockedRequest(a, frame, .control);
+    defer a.free(reply);
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+    defer parsed.deinit();
+    const unknown = control.get(parsed.value, "result").?;
+    try std.testing.expectEqualStrings("unknown", try control.string(unknown, "status"));
+    try std.testing.expect(control.get(unknown, "paired_committed").? == .null and control.get(unknown, "grant_ready").? == .null);
+    try std.testing.expect(unavailable.db == null and unavailable.network == null and unavailable.fresh_oauth == null);
+}
+
+
+test "paired status distinguishes settled consent withdrawal source disconnection and account forget" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "withdraw", "disconnect", "forget", "disconnect_then_withdraw" }) |action| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try M.seed(path);
+        var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+        defer if (current) |value| value.deinit();
+        const capability = try current.?.capability("enrollment");
+        const admitted = try M.call(current.?, "fixture.admitSignedOssPair", .{ .application = "enrollment", .capability = capability[0..], .subject = "synthetic-retirement-pair" }, .adapter);
+        defer admitted.deinit();
+        const pair = control.get(admitted.value, "result") orelse return error.FixtureRefused;
+        const account = try control.string(pair, "account_id");
+        const source_id = try control.string(pair, "source_id");
+        // Transaction handle is the access-issued binding's original operation;
+        // read it only through authenticated actor fixture metadata below.
+        const handles = try M.call(current.?, "fixture.siwcPairHandles", .{ .application = "enrollment", .capability = capability[0..], .account_id = account }, .adapter);
+        defer handles.deinit();
+        const transaction = try control.string(control.get(handles.value, "result").?, "transaction_id");
+        // Real bounded actor mutations cause the active attempt row to be
+        // reclaimed after authority has transferred to the retained pair.
+        // Status and withdrawal must remain truthful without that old row.
+        for (0..16) |index| {
+            const operation = try std.fmt.allocPrint(a, "retirement-settle-prepare-{d}", .{index});
+            defer a.free(operation);
+            const prepared = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = operation, .expected_revision = try M.revision(current.?), .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+            defer prepared.deinit();
+            const prepared_id = try control.string(control.get(prepared.value, "result").?, "transaction_id");
+            const retirement = try std.fmt.allocPrint(a, "retirement-settle-retire-{d}", .{index});
+            defer a.free(retirement);
+            const retired = try M.call(current.?, "oauth.enrollment.retire.v1", .{ .operation_id = retirement, .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.purpose, .transaction_id = prepared_id }, .control);
+            defer retired.deinit();
+            try std.testing.expect(control.get(retired.value, "result") != null);
+        }
+        const settled = try M.observe(current.?, transaction);
+        defer settled.deinit();
+        try std.testing.expectEqualStrings("EnrollmentNotFound", try control.string(control.get(settled.value, "error").?, "message"));
+        if (eql(action, "withdraw")) {
+            const result = try M.call(current.?, "oauth.enrollment.withdraw.v1", .{ .operation_id = "specific-pair-withdraw", .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+            defer result.deinit();
+            try std.testing.expect(control.get(result.value, "result") != null);
+        } else if (eql(action, "disconnect") or eql(action, "disconnect_then_withdraw")) {
+            const result = try M.call(current.?, "source.disconnect", .{ .operation_id = "specific-pair-disconnect", .expected_revision = try M.revision(current.?), .source_id = source_id }, .control);
+            defer result.deinit();
+            try std.testing.expect(control.get(result.value, "result") != null);
+        } else {
+            const result = try M.call(current.?, "account.forget", .{ .operation_id = "specific-pair-forget", .expected_revision = try M.revision(current.?), .account_id = account }, .control);
+            defer result.deinit();
+            try std.testing.expect(control.get(result.value, "result") != null);
+        }
+        const status = try M.call(current.?, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+        defer status.deinit();
+        const observed = control.get(status.value, "result").?;
+        try std.testing.expectEqualStrings("retired", try control.string(observed, "status"));
+        try std.testing.expect(control.get(observed, "paired_committed").?.bool and !control.get(observed, "grant_ready").?.bool);
+        try std.testing.expectEqualStrings(if (eql(action, "withdraw")) "withdrawn" else "recorded", try control.string(observed, "consent_status"));
+        try std.testing.expectEqualStrings(if (eql(action, "withdraw")) "withdrawn" else if (eql(action, "disconnect") or eql(action, "disconnect_then_withdraw")) "source_disconnected" else "forgotten", try control.string(observed, "retirement_reason"));
+        if (eql(action, "disconnect_then_withdraw")) {
+            for ([_][]const u8{ "after-disconnect-withdraw", "after-disconnect-withdraw-again" }) |operation| {
+                const withdrawn = try M.call(current.?, "oauth.enrollment.withdraw.v1", .{ .operation_id = operation, .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+                defer withdrawn.deinit();
+                try std.testing.expect(control.get(control.get(withdrawn.value, "result").?, "consent_withdrawn").?.bool);
+            }
+            const after = try M.call(current.?, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+            defer after.deinit();
+            try std.testing.expectEqualStrings("withdrawn", try control.string(control.get(after.value, "result").?, "consent_status"));
+            try std.testing.expectEqualStrings("withdrawn", try control.string(control.get(after.value, "result").?, "retirement_reason"));
+        }
+        current.?.deinit(); current = null;
+        const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(filename);
+        var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
+        defer store.close();
+        var saved = try store.readSnapshot();
+        defer saved.deinit();
+        const parsed = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+        defer parsed.deinit();
+        const retained = parsed.value.owned_siwc_pairs.?.records[0];
+        try std.testing.expectEqual(if (eql(action, "withdraw") or eql(action, "disconnect_then_withdraw")) @as(u64, 2) else @as(u64, 1), retained.consent_generation);
+        try std.testing.expectEqual(if (eql(action, "withdraw") or eql(action, "disconnect_then_withdraw")) oauth_enrollment.ConsentStatus.withdrawn else oauth_enrollment.ConsentStatus.recorded, retained.consent_status);
+        try std.testing.expectEqual(@as(usize, 0), retained.identity_capsule.len);
+        try std.testing.expect((try store.readGrantStatus(account, retained.access_grant_id)) == null);
+        try std.testing.expect((try store.readGrantStatus(account, retained.refresh_grant_id)) == null);
+        const external = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+        try std.testing.expectEqual(storage.RenewalOwner.external, external.renewal_owner);
+        try std.testing.expectEqual(eql(action, "forget"), retained.forget_tombstone);
+    }
 }

@@ -6,6 +6,7 @@ load("//tools:rules.bzl", "python_test", "source_archive")
 load("//tools:reference_bundle.bzl", "reference_bundle")
 load("//tools:runtime_zig.bzl", "zig_binary", "zig_test")
 load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
+load("//tools:oauth_oidc_targets.bzl", "oauth_oidc_targets")
 # Genuine Bazel load/parser prerequisite; no evaluator/producer instantiation.
 load("//:nix/darwin-hm-evaluation.bzl", "darwin_home_manager_evaluation")
 
@@ -250,7 +251,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -268,7 +269,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -277,7 +278,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(name = "request_authority_test", main = "src/request_authority.zig", srcs = ZIG_SOURCES, deps = [":native_api"], linkopts = ZIG_NATIVE_LINKOPTS, data = ZIG_RUNTIME_DATA)
@@ -295,7 +296,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "reliability_lifecycle_native_removal_test",
@@ -305,7 +306,7 @@ zig_test(
     # Exercise the daemon's mode without extending native or test deadlines.
     zigopts = ["-O", "ReleaseSafe"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "terminal_removal_test",
@@ -313,7 +314,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(name = "enrollment_wait_test", main = "src/enrollment_wait.zig")
 zig_test(name = "reliability_test", main = "src/reliability.zig")
@@ -334,7 +335,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "runtime_selection_producer_test",
@@ -351,7 +352,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "reliability_adapter_setup_test",
@@ -359,7 +360,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "reliability_readiness_test",
@@ -367,7 +368,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(name = "setup_evidence_test", main = "src/setup_evidence_tests.zig", srcs = ["src/setup_evidence.zig", "src/onboarding.zig"])
 
@@ -404,7 +405,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "recovery_test",
@@ -526,7 +527,7 @@ zig_test(
 zig_test(
     name = "transport_test",
     main = "src/transport.zig",
-    srcs = ["src/browser_grant.zig"],
+    srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
@@ -623,7 +624,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -697,7 +698,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 # Diagnose the actual queued actor fixture before the full regression gates.
@@ -707,7 +708,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
     zigopts = [
         "--test-filter",
         "queued malformed control ingress preserves committed actor custody and completes allocator failures",
@@ -720,7 +721,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -729,7 +730,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -756,7 +757,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -767,7 +768,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -776,7 +777,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -791,7 +792,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -800,7 +801,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -809,7 +810,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -818,7 +819,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -827,7 +828,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -865,17 +866,7 @@ zig_test(
 zig_test(
     name = "observer_test",
     main = "src/observer.zig",
-    srcs = [
-        "src/domain.zig",
-        "src/snapshot_admission.zig",
-        "src/transport.zig",
-        "src/browser_grant.zig",
-        "src/native_owner.zig",
-        "src/platform/peer.zig",
-        "src/paths.zig",
-        "src/instance.zig",
-        "src/platform/file_metadata.zig",
-    ],
+    srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
@@ -884,11 +875,16 @@ zig_test(
 zig_binary(
     name = "tls_probe",
     main = "src/tls_probe.zig",
-    srcs = [
-        "src/transport.zig",
-        "src/browser_grant.zig",
-    ],
+    srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
+)
+
+# Owned OAuth verifier tests use the separately declared ephemeral signer.
+oauth_oidc_targets(
+    zig_sources = ZIG_SOURCES,
+    native_linkopts = ZIG_NATIVE_LINKOPTS,
+    runtime_data = ZIG_RUNTIME_DATA,
+    native_deps = [":native_api"],
 )
