@@ -173,7 +173,9 @@ class Publication:
             os.symlink(target, name, dir_fd=self.aliases)
             self.alias_records[name] = (target, core.identity(
                 os.stat(name, dir_fd=self.aliases, follow_symlinks=False)))
-        os.fchmod(self.aliases, 0o555)
+        # Keep this owned private directory writable until its parent changes.
+        # Linux cross-parent directory rename requires write access to update
+        # '..'. The published alias directory is sealed before any event/BUILD.
         self.alias_identity = core.identity(os.fstat(self.aliases), True)
         os.fsync(self.aliases)
         self.aliases_readback(self.stage)
@@ -195,6 +197,17 @@ class Publication:
             else:
                 raise ValueError('original SDK declaration refused: foreign output')
             os.rename(name, name, src_dir_fd=self.stage, dst_dir_fd=self.root)
+            if name == 'input-files':
+                # Join the moved owned directory before changing its held mode.
+                core.need(core.identity(os.fstat(self.aliases), True) == witness == core.identity(
+                    os.stat(name, dir_fd=self.root, follow_symlinks=False), True),
+                    'publication-moved-alias-parent')
+                os.fchmod(self.aliases, 0o555)
+                self.alias_identity = core.identity(os.fstat(self.aliases), True)
+                core.need(self.alias_identity == core.identity(os.stat(name, dir_fd=self.root,
+                    follow_symlinks=False), True), 'publication-sealed-alias-parent')
+                os.fsync(self.aliases)
+                witness = self.alias_identity
             self.published[name] = witness
             os.fsync(self.root)
             self.event('ready-published' if name == 'BUILD.bazel' else 'metadata-published')

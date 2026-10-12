@@ -662,6 +662,87 @@ class OriginalSDKInputsModels(unittest.TestCase):
             with self.assertRaises(OSError):
                 os.fstat(fd)
 
+    def test_real_ordinary_uid_stage_rename_then_seal_precedes_every_public_event(self):
+        self.assertNotEqual(os.geteuid(), 0, 'this fixed local gate must exercise ordinary UID permissions')
+        root = self.root / 'ordinary-uid-publication'
+        root.mkdir(mode=0o700)
+        phases, moves = [], []
+        publication = None
+        def event(phase):
+            phases.append(phase)
+            parent = root / 'input-files'
+            self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o555)
+            self.assertEqual(parent.stat().st_uid, os.getuid())
+            self.assertEqual(core.identity(parent.stat(), True), publication.alias_identity)
+            if phase != 'ready-published':
+                self.assertFalse((root / 'BUILD.bazel').exists())
+        publication = declaration.Publication(root, self.clock, event)
+        real_rename = os.rename
+        def rename(name, target, **kwargs):
+            if name == 'input-files':
+                self.assertEqual(kwargs, {'src_dir_fd': publication.stage, 'dst_dir_fd': publication.root})
+                self.assertEqual(stat.S_IMODE(os.fstat(publication.stage).st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(os.fstat(publication.root).st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(os.fstat(publication.aliases).st_mode), 0o700)
+                held = core.identity(os.fstat(publication.aliases), True)
+                self.assertEqual(held, core.identity(os.stat(name, dir_fd=publication.stage,
+                    follow_symlinks=False), True))
+                real_rename(name, target, **kwargs)  # actual kernel permission path
+                self.assertEqual(held, core.identity(os.stat(target, dir_fd=publication.root,
+                    follow_symlinks=False), True))
+                moves.append(held[:2])
+            else:
+                real_rename(name, target, **kwargs)
+        try:
+            with patch.object(os, 'rename', side_effect=rename):
+                publication.publish(self.plan['document'])
+            publication.final(self.plan['document'])
+            self.assertEqual(len(moves), 1)
+            self.assertEqual(phases, ['metadata-published', 'metadata-published', 'ready-published'])
+            self.assertEqual(core.identity((root / 'input-files').stat(), True)[:2], moves[0])
+            self.assertEqual(stat.S_IMODE((root / 'BUILD.bazel').stat().st_mode), 0o444)
+            publication.accepted = True
+        finally:
+            publication.close()
+
+    def test_moved_alias_seal_and_sync_refusals_roll_back_only_owned_outputs(self):
+        for failure in ('seal', 'sync'):
+            root = self.root / ('moved-alias-' + failure)
+            root.mkdir(mode=0o700)
+            foreign = root / 'keep'
+            self.fixture.write(foreign, b'foreign retained')
+            phases = []
+            publication = declaration.Publication(root, self.clock, phases.append)
+            real_chmod, real_sync = os.fchmod, os.fsync
+            failed = False
+            def chmod(fd, mode):
+                nonlocal failed
+                if failure == 'seal' and fd == publication.aliases and mode == 0o555 and not failed:
+                    self.assertTrue((root / 'input-files').exists())
+                    failed = True
+                    raise OSError('synthetic moved-directory seal failure')
+                real_chmod(fd, mode)
+            def sync(fd):
+                nonlocal failed
+                real_sync(fd)
+                if failure == 'sync' and fd == publication.aliases and \
+                        (root / 'input-files').exists() and not failed:
+                    self.assertEqual(stat.S_IMODE(os.fstat(fd).st_mode), 0o555)
+                    failed = True
+                    raise OSError('actual directory sync completed, synthetic refusal')
+            try:
+                with patch.object(os, 'fchmod', side_effect=chmod), \
+                        patch.object(os, 'fsync', side_effect=sync), self.assertRaises(OSError):
+                    publication.publish(self.plan['document'])
+            finally:
+                publication.close()
+            self.assertTrue(failed)
+            self.assertEqual(phases, [])
+            self.assertEqual(foreign.read_bytes(), b'foreign retained')
+            self.assertEqual(sorted(value.name for value in root.iterdir()), ['keep'])
+            self.assertTrue((self.fixture.origin / 'receipt.json').exists())
+            self.assertFalse(publication.accepted)
+
 
 if __name__ == '__main__':
     unittest.main()
