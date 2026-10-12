@@ -56,6 +56,7 @@ pub const methods = [_]Method{
     .{ .name = "credential.import", .summary = "Verify and retain a purpose-scoped grant through an authorized acquisition channel.", .channel = .adapter },
     .{ .name = "adapter.owner.register", .summary = "Register socket-verified native owner custody before authorization or thread readiness.", .channel = .adapter },
     .{ .name = "adapter.acquire", .summary = "Acquire a request-scoped route lease for a trusted native adapter.", .channel = .adapter },
+    .{ .name = "adapter.siwcCatalog", .summary = "Observe bounded account-scoped SIWC model metadata; Unknown does not change grant readiness or authorize a request.", .channel = .adapter },
     .{ .name = "adapter.siwcReject", .summary = "Record exact-lease structured pre-stream SIWC rejection without inferring refresh, quota reset or retry authority.", .channel = .adapter },
     .{ .name = "adapter.siwcAcquireReplacement", .summary = "Refuse unqualified SIWC replacement tickets; status and model parameters do not establish independent capacity authority.", .channel = .adapter },
     .{ .name = "adapter.materialize", .summary = "Materialize only the access credential authorized by an unexpired lease.", .channel = .adapter },

@@ -55,6 +55,8 @@ const native_owner = @import("native_owner.zig");
 const native_work = @import("native_owner_work.zig");
 const oauth_oidc = @import("oauth_oidc.zig");
 const siwc_pair = @import("siwc_pair.zig");
+const siwc_catalog = @import("siwc_catalog.zig");
+const siwc_catalog_authority = @import("siwc_catalog_authority.zig");
 const peer = @import("platform/peer.zig");
 const reliability = @import("reliability.zig");
 const sql_api = @import("c");
@@ -296,6 +298,7 @@ const Invocation = struct {
     qualified_candidate: ?*const runtime_selection_producer.ValidatedSelection = null,
     qualified_oauth_profile: ?*oauth_issue.EnrollmentProfile = null,
     owned_oss_callback_port: ?u16 = null,
+    catalog_model_server: ?*transport.testing.CatalogServer = null,
     oauth_authorization: ?struct { transaction_id: [32]u8, expected_revision: u64 } = null,
 };
 const FreshOAuthPending = struct {
@@ -1154,6 +1157,25 @@ const NativeLease = struct {
     }
 };
 
+const CatalogPending = struct {
+    invocation: *Invocation,
+    request: control.Request,
+    ticket: *siwc_catalog_authority.Ticket,
+    transport_id: u64,
+    fn deinit(self: *CatalogPending) void { self.request.deinit(); self.ticket.deinit(); }
+};
+const CatalogCache = struct {
+    handle: [64]u8,
+    context: siwc_pair.CatalogContext,
+    expires_at: i64,
+    adapter_epoch: u64,
+};
+fn catalogOpaque(bytes: []const u8) ![64]u8 {
+    if (bytes.len != 64) return error.InvalidSiwcParams;
+    for (bytes) |byte| if (!std.ascii.isDigit(byte) and (byte < 'a' or byte > 'f')) return error.InvalidSiwcParams;
+    return bytes[0..64].*;
+}
+
 const StartupCustodyNamespace = storage.OpeningExpectation;
 
 pub const Engine = struct {
@@ -1201,6 +1223,8 @@ pub const Engine = struct {
     fresh_oauth: ?oauth_enrollment.Ledger = null,
     fresh_oauth_host_id: ?[32]u8 = null,
     owned_siwc_pairs: siwc_pair.Registry = .{},
+    catalog_pending: std.ArrayList(CatalogPending) = .empty,
+    catalog_cache: std.ArrayList(CatalogCache) = .empty,
     fresh_oauth_verifications: std.ArrayList(*FreshOAuthVerifyTask) = .empty,
     fresh_oauth_pending: std.ArrayList(FreshOAuthPending) = .empty,
     owned_renewal_pending: std.ArrayList(OwnedRenewalPending) = .empty,
@@ -1432,6 +1456,9 @@ pub const Engine = struct {
         self.fixture_owned_renewal_servers.deinit(self.allocator);
         std.debug.assert(self.fresh_oauth_verifications.items.len == 0);
         self.fresh_oauth_verifications.deinit(self.allocator);
+        std.debug.assert(self.catalog_pending.items.len == 0);
+        self.catalog_pending.deinit(self.allocator);
+        self.catalog_cache.deinit(self.allocator);
         self.owned_siwc_pairs.deinit(self.allocator);
         if (self.fresh_oauth) |*enrollments| enrollments.deinit(self.allocator);
         self.observers.deinit();
@@ -1560,6 +1587,25 @@ pub const Engine = struct {
         return .{ .allocator = allocator, .bytes = invocation.response.? };
     }
 
+    // Test-only queue injection preserves the same actual private peer and
+    // stack-reference lifetime. It creates no Store/pair/curl authority.
+    pub fn dispatchCatalogForTest(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, until: std.Io.Clock.Timestamp, context: *const peer.Context, server: *transport.testing.CatalogServer) ![]u8 {
+        if (!builtin.is_test) return error.TestOnly;
+        try context.alive();
+        var invocation: Invocation = .{ .allocator = allocator, .payload = payload, .channel = .adapter, .until = until, .peer_context = try context.duplicate(), .catalog_model_server = server };
+        defer invocation.peer_context.?.deinit();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return invocation.response.?;
+    }
+
     fn dispatchOwnedPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: ?*const peer.Context) ![]u8 {
         const started = std.Io.Clock.awake.now(self.io);
         const operation = diagnosticOperation(allocator, payload, channel);
@@ -1648,6 +1694,7 @@ pub const Engine = struct {
 
     fn normalActor(self: *Engine) void {
         defer {
+            self.cancelCatalog();
             self.native_workers.?.deinit();
             self.network.?.deinit();
             self.db.?.close();
@@ -1697,6 +1744,7 @@ pub const Engine = struct {
             }
             if (!self.stopping and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() <= 0) {
                 self.mutex.unlock(self.io);
+                self.pollCatalog();
                 // This awake-clock schedule is independent of dispatch and
                 // queue emptiness. Continued inspection cannot starve already
                 // issued identity reads or credential expiry maintenance.
@@ -1754,6 +1802,20 @@ pub const Engine = struct {
                 self.active_peer = null;
                 self.active_oauth_profile = null;
                 self.active_oss_callback_port = null;
+                continue;
+            }
+            const catalog_deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startCatalogInvocation(item) catch |err| blk: {
+                var parsed = control.parse(item.allocator, item.payload) catch {
+                    self.finishInvocation(item, control.failure(item.allocator, .null, -32600, @errorName(err)));
+                    break :blk true;
+                };
+                defer parsed.deinit();
+                self.finishInvocation(item, control.failure(item.allocator, parsed.id, -32000, @errorName(err)));
+                break :blk true;
+            } else false;
+            if (catalog_deferred) {
+                self.active_peer = null; self.active_until = null;
+                self.active_oauth_profile = null; self.active_oss_callback_port = null;
                 continue;
             }
             const deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startNativeInvocation(item) catch |err| blk: {
@@ -1883,6 +1945,203 @@ pub const Engine = struct {
         item.finished = true;
         item.condition.signal(self.io);
         self.mutex.unlock(self.io);
+    }
+
+    fn catalogRecord(self: *Engine, ticket: *const siwc_catalog_authority.Ticket) ?siwc_pair.Record {
+        for (self.owned_siwc_pairs.records.items) |record| if (std.meta.eql(record.transaction_id, ticket.context().transaction_id)) return record;
+        return null;
+    }
+
+    fn catalogCurrent(self: *Engine, ticket: *const siwc_catalog_authority.Ticket) bool {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.db.?.poisoned) return false;
+        ticket.checkActive() catch return false;
+        const record = self.catalogRecord(ticket) orelse return false;
+        if (!ticket.matchesActorState(&self.state, record)) return false;
+        const captured = ticket.context();
+        if (ticket.leaseContext()) |lease| {
+            const owner = self.native_owners.lookupOwnerForRef(lease.reference) orelse return false;
+            const attachment = self.native_owners.lookupAttachment(lease.reference) orelse return false;
+            if (owner.phase != .open or attachment.phase != .attached or lease.reference.adapter_epoch != self.adapter_epochs[0] or self.native_owners.applicationRemoval("codex", lease.reference.adapter_epoch) != null) return false;
+            const stamp: siwc_route.Stamp = .{ .activation = captured.activation_commitment, .family_generation = captured.family_generation, .writer_generation = captured.writer_generation, .source_generation = captured.source_generation, .consent_generation = captured.consent_generation };
+            for (self.native_leases.items) |native| if (std.meta.eql(native.handle, lease.handle)) {
+                return native.siwc_activation != null and siwc_route.sameStamp(native.siwc_activation.?, stamp) and native.status == .issued and native.request_profile == .siwc_responses and native.expires_at > self.now() and eql(native.account_id, &captured.account_id) and native.native_ref != null and native.native_ref.?.same(lease.reference);
+            };
+            return false;
+        }
+        return true;
+    }
+
+    // Relevant staged mutations invalidate before the writer call. This check
+    // never opens SQLite, resets a cutoff or cancels reads for label/counter edits.
+    fn invalidateCatalogContexts(self: *Engine) void {
+        for (self.catalog_pending.items) |pending| if (!self.catalogCurrent(pending.ticket)) { _ = pending.ticket.invalidate(); };
+    }
+
+    fn cancelCatalog(self: *Engine) void {
+        while (self.catalog_pending.pop()) |value| {
+            var pending = value;
+            _ = pending.ticket.invalidate();
+            self.finishInvocation(pending.invocation, error.ServiceStopping);
+            pending.deinit();
+        }
+    }
+
+    fn catalogRequestCheck(self: *Engine, pending: *const CatalogPending) !void {
+        if (!self.catalogCurrent(pending.ticket)) return error.SiwcCatalogAuthorityChanged;
+        const application = try self.authenticate(pending.request.params);
+        if (!eql(application, "codex")) return error.WrongPurpose;
+        const context = self.active_peer orelse return error.NativePeerRequired;
+        try context.alive();
+        if (pending.ticket.leaseContext()) |lease| {
+            const reference = (try self.protectedNativeRef(pending.request.params, true)) orelse return error.NativeOwnerRequired;
+            const native = try self.nativeLease(pending.request.params);
+            if (!reference.same(lease.reference) or !std.meta.eql(native.handle, lease.handle) or native.status != .issued or native.request_profile != .siwc_responses) return error.SiwcCatalogLeaseChanged;
+        }
+        try pending.ticket.recheckStore(&self.db.?);
+    }
+
+    fn startCatalogInvocation(self: *Engine, invocation: *Invocation) !bool {
+        var request = try control.parse(self.allocator, invocation.payload);
+        var transferred = false;
+        defer if (!transferred) request.deinit();
+        if (!eql(request.method, "adapter.siwcCatalog")) return false;
+        if (invocation.channel != .adapter) return error.WrongChannel;
+        if (self.poisoned or self.vault_locked or self.db == null or self.network == null or self.stopping) return error.CustodyUnavailable;
+        if (self.catalog_pending.items.len >= 16) return error.SiwcCatalogBusy;
+        const application = try self.authenticate(request.params);
+        if (!eql(application, "codex") or !eql(try control.string(request.params, "request_profile"), siwc_pair.request_profile)) return error.SiwcProfileMismatch;
+        const verified_peer = self.active_peer orelse return error.NativePeerRequired;
+        try verified_peer.alive();
+        try siwc_route.onlyFields(request.params, &.{ "application", "capability", "request_profile", "catalog_binding", "lease_handle", "native_ref" });
+        const has_lease = control.get(request.params, "lease_handle") != null;
+        const has_reference = control.get(request.params, "native_ref") != null;
+        if (has_lease != has_reference) return error.InvalidSiwcParams;
+        var scope: siwc_catalog_authority.Scope = .bootstrap;
+        var selected_account: ?[64]u8 = null;
+        var selected_access: ?[64]u8 = null;
+        var generation: u64 = 0;
+        if (has_lease) {
+            const reference = (try self.protectedNativeRef(request.params, true)) orelse return error.NativeOwnerRequired;
+            const native = try self.nativeLease(request.params);
+            if (native.status != .issued or native.request_profile != .siwc_responses or native.expires_at <= self.now()) return error.LeaseNotMaterializable;
+            scope = .{ .lease = .{ .handle = native.handle, .reference = reference } };
+            for (self.state.leases.items) |lease| if (eql(lease.id, &native.handle)) {
+                selected_account = try catalogOpaque(lease.account_id);
+                selected_access = try catalogOpaque(lease.grant_id);
+                generation = lease.grant_generation;
+                break;
+            };
+            if (selected_account == null) return error.UnknownLease;
+        }
+        const preferred = if (try control.optionalString(request.params, "catalog_binding")) |handle| try catalogOpaque(handle) else null;
+        if (!has_lease) if (preferred) |handle| {
+            for (self.catalog_cache.items) |cached| if (std.meta.eql(handle, cached.handle) and cached.adapter_epoch == self.adapter_epochs[0] and cached.expires_at > self.now()) {
+                selected_account = cached.context.account_id;
+                selected_access = cached.context.access_grant_id;
+                generation = cached.context.access_generation;
+                break;
+            };
+        };
+        var ticket: ?*siwc_catalog_authority.Ticket = null;
+        if (selected_account) |account| {
+            ticket = siwc_catalog_authority.prepare(&self.db.?, &account, &selected_access.?, generation, invocation.until, scope) catch |err| switch (err) {
+                error.SiwcPairUnavailable, error.SiwcPairQuarantined, error.SiwcPairAuthorityChanged, error.SiwcPairExpired, error.SiwcCatalogAuthorityChanged => if (has_lease) return err else null,
+                else => return err,
+            };
+        }
+        if (ticket == null and !has_lease) for (self.owned_siwc_pairs.records.items) |record| {
+            const candidate = siwc_catalog_authority.prepare(&self.db.?, record.account_id, record.access_grant_id, record.access_generation, invocation.until, .bootstrap) catch |err| switch (err) {
+                error.SiwcPairUnavailable, error.SiwcPairQuarantined, error.SiwcPairAuthorityChanged, error.SiwcPairExpired, error.SiwcCatalogAuthorityChanged => continue,
+                else => return err,
+            };
+            ticket = candidate;
+            break;
+        };
+        const retained = ticket orelse return error.SiwcPairUnavailable;
+        errdefer retained.deinit();
+        var pending: CatalogPending = .{ .invocation = invocation, .request = request, .ticket = retained, .transport_id = 0 };
+        try self.catalogRequestCheck(&pending);
+        // Reserve all actor/cache bookkeeping before accepted network work.
+        try self.catalog_pending.ensureUnusedCapacity(self.allocator, 1);
+        try self.catalog_cache.ensureTotalCapacity(self.allocator, 32);
+        if (builtin.is_test) if (invocation.catalog_model_server) |server| {
+            try siwc_catalog_authority.testing.attachRoute(retained, server.port());
+            try server.start(retained);
+        };
+        try self.catalogRequestCheck(&pending);
+        pending.transport_id = try self.network.?.startCatalog(retained);
+        self.catalog_pending.appendAssumeCapacity(pending);
+        transferred = true;
+        return true;
+    }
+
+    fn catalogReply(self: *Engine, pending: *const CatalogPending, completion: *const transport.CatalogCompletion) ![]u8 {
+        try self.catalogRequestCheck(pending);
+        var observation: ?siwc_catalog.Catalog = null;
+        defer if (observation) |*value| value.deinit();
+        switch (completion.result) {
+            .failure => {}, // No response authority: truthful Unknown only.
+            .response => |response| {
+                observation = response.evidence(self.allocator, pending.ticket) catch |err| switch (err) {
+                    error.InvalidSiwcCatalog, error.SiwcCatalogUnavailable => null,
+                    else => return err,
+                };
+            },
+        }
+        try self.catalogRequestCheck(pending);
+        const handle = try self.identifier();
+        const context = pending.ticket.context();
+        const lease = pending.ticket.leaseContext();
+        const expires = pending.ticket.expiresAt();
+        const reply = try control.success(pending.invocation.allocator, pending.request.id, .{
+            .request_profile = siwc_pair.request_profile,
+            .audience = siwc_pair.resource_uri,
+            .catalog_binding = handle[0..],
+            .expires_at = expires,
+            .account_id = context.account_id[0..],
+            .lease_handle = if (lease != null) @as(?[]const u8, &lease.?.handle) else null,
+            .route_generation = if (lease) |bound| @as(?u64, bound.route_generation) else null,
+            .observation_status = if (observation != null) "known" else "unknown",
+            .models = if (observation) |*value| value.models() else &.{},
+        });
+        errdefer pending.invocation.allocator.free(reply);
+        // Allocation/serialization may consume time or reveal retirement. Check
+        // original peer/current tuple/Store again before any public publication.
+        try self.catalogRequestCheck(pending);
+        if (self.catalog_cache.items.len == 32) _ = self.catalog_cache.orderedRemove(0);
+        self.catalog_cache.appendAssumeCapacity(.{ .handle = handle, .context = context, .expires_at = expires, .adapter_epoch = self.adapter_epochs[0] });
+        return reply;
+    }
+
+    fn pollCatalog(self: *Engine) void {
+        self.invalidateCatalogContexts();
+        var position: usize = 0;
+        while (position < self.catalog_pending.items.len) {
+            if (self.catalogCurrent(self.catalog_pending.items[position].ticket)) { position += 1; continue; }
+            var pending = self.catalog_pending.orderedRemove(position);
+            _ = pending.ticket.invalidate();
+            self.finishInvocation(pending.invocation, error.SiwcCatalogAuthorityChanged);
+            pending.deinit();
+        }
+        while (self.network.?.pollCatalog()) |value| {
+            var completion = value;
+            defer completion.deinit(self.allocator);
+            var found: ?usize = null;
+            for (self.catalog_pending.items, 0..) |pending, index| if (pending.transport_id == completion.id) { found = index; break; };
+            const index = found orelse continue; // Retired work only gets wiped.
+            var pending = self.catalog_pending.orderedRemove(index);
+            defer pending.deinit();
+            const previous_peer = self.active_peer;
+            const previous_until = self.active_until;
+            self.active_peer = if (pending.invocation.peer_context) |*verified| verified else null;
+            self.active_until = pending.invocation.until;
+            defer { self.active_peer = previous_peer; self.active_until = previous_until; }
+            const reply = self.catalogReply(&pending, &completion) catch |err| {
+                self.finishInvocation(pending.invocation, control.failure(pending.invocation.allocator, pending.request.id, -32000, @errorName(err)));
+                continue;
+            };
+            self.finishInvocation(pending.invocation, reply);
+        }
     }
 
     fn startNativeInvocation(self: *Engine, invocation: *Invocation) !bool {
@@ -3400,6 +3659,7 @@ pub const Engine = struct {
         // as before the domain mutation. Expiry does not cancel started IO.
         if (native) |native_fence| try self.nativeImportWriterCheck(native_fence);
         if (runtime) |task| try self.checkRuntimeWriterFence(task);
+        self.invalidateCatalogContexts();
         self.revision = self.db.?.commit(self.revision, serialized, changes) catch |err| {
             // Ambiguous storage failure fences all further credential service.
             self.poisoned = true;
@@ -3744,7 +4004,7 @@ pub const Engine = struct {
         defer request.deinit();
         // Audit refusals do not restore or rewrite the actor's committed state.
         // Production control ingress already verifies the socket's peer user.
-        if (eql(request.method, "oauth.enrollment.pending.v1") or eql(request.method, "oauth.enrollment.status.v1") or eql(request.method, "oauth.enrollment.descriptor.v1") or eql(request.method, "oauth.enrollment.authorization.v1") or eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "integrations.nativeFileCoordinationReadiness") or eql(request.method, "custody.reopen") or eql(request.method, "custody.observation")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "adapter.siwcCatalog") or eql(request.method, "oauth.enrollment.pending.v1") or eql(request.method, "oauth.enrollment.status.v1") or eql(request.method, "oauth.enrollment.descriptor.v1") or eql(request.method, "oauth.enrollment.authorization.v1") or eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "integrations.nativeFileCoordinationReadiness") or eql(request.method, "custody.reopen") or eql(request.method, "custody.observation")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -4451,6 +4711,7 @@ pub const Engine = struct {
         const nonledger = try self.nonledgerBytes();
         const snapshot = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
         defer self.allocator.free(snapshot);
+        self.invalidateCatalogContexts();
         self.revision = try self.db.?.quarantineOwnedPairRotation(self.revision, snapshot, tuple);
         self.committed_nonledger_bytes = nonledger;
         self.committed_counts = self.actualCounts();
@@ -4479,6 +4740,7 @@ pub const Engine = struct {
         fn check(raw: *anyopaque, stage: storage.CommitStage) !void {
             const self: *OwnedRenewalIssueWriter = @ptrCast(@alignCast(raw));
             const current = self.engine;
+            current.invalidateCatalogContexts();
             if (current.stopping or current.poisoned or current.vault_locked or current.db == null) return error.OAuthAuthorityChanged;
             const row = current.owned_siwc_pairs.find(self.transaction) orelse return error.OAuthAuthorityChanged;
             if (row.status != .refreshing or row.renewal == null or !std.meta.eql(row.renewal.?, self.operation) or row.consent_status != .recorded or row.forget_tombstone or
@@ -4549,6 +4811,7 @@ pub const Engine = struct {
         defer self.allocator.free(snapshot);
         var writer: OwnedRenewalIssueWriter = .{ .engine = self, .transaction = row.transaction_id, .operation = row.renewal.? };
         const writer_guard: storage.CommitFence = .{ .context = &writer, .check = OwnedRenewalIssueWriter.check };
+        self.invalidateCatalogContexts();
         const ticket = try oauth_issue.issueOwnedRefresh(self.io, self.allocator, &self.db.?, self.revision, snapshot, row.account_id, row.access_grant_id, row.family_generation, until, &writer_guard);
         errdefer ticket.deinit();
         const binding = try ticket.renewalBinding();
@@ -4793,6 +5056,7 @@ pub const Engine = struct {
         fn check(raw: *anyopaque, stage: storage.CommitStage) !void {
             const self: *OwnedRenewalCommitWriter = @ptrCast(@alignCast(raw));
             const current = self.engine;
+            current.invalidateCatalogContexts();
             const binding = self.pending.binding;
             if (current.stopping or current.poisoned or current.vault_locked or current.db == null) return error.OAuthAuthorityChanged;
             const row = current.owned_siwc_pairs.find(binding.registration_transaction) orelse return error.OAuthAuthorityChanged;
@@ -4892,6 +5156,7 @@ pub const Engine = struct {
         try proof.matchesEvidence(pending.ticket, &evidence);
         var writer: OwnedRenewalCommitWriter = .{ .engine = self, .pending = pending, .proof = proof, .response = response, .successor_activation = activation };
         const guarded: storage.CommitFence = .{ .context = &writer, .check = OwnedRenewalCommitWriter.check };
+        self.invalidateCatalogContexts();
         self.revision = try self.db.?.completeOwnedPairRotation(self.revision, snapshot, original_tuple, .{
             .access = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.access_grant_id, .generation = next_generation, .purpose = "request", .scope = siwc_pair.resource_uri },
             .refresh = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = next_generation, .purpose = "renewal", .scope = siwc_pair.resource_uri },
@@ -5414,6 +5679,7 @@ pub const Engine = struct {
         try proof.matchesEvidence(ticket, &evidence);
         try ticket.checkBeforeVerification();
         var writer_fence: FreshPairWriterFence = .{ .engine = self, .pending = pending, .proof = proof, .response = response };
+        self.invalidateCatalogContexts();
         self.revision = try self.db.?.commitFenced(self.revision, serialized, &.{
             .{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = &account_id, .grant_id = &access_id, .generation = 1, .purpose = "request", .scope = siwc_pair.resource_uri }, .plaintext = access_plain, .renewal_owner = .omux } },
             .{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = &account_id, .grant_id = &refresh_id, .generation = 1, .purpose = "renewal", .scope = siwc_pair.resource_uri }, .plaintext = refresh_plain, .renewal_owner = .omux } },
@@ -5823,6 +6089,10 @@ pub const Engine = struct {
     fn handleRequest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) ![]u8 {
         const method = request.method;
         const params = request.params;
+        if (eql(method, "adapter.siwcCatalog")) {
+            if (channel != .adapter) return error.WrongChannel;
+            return error.SiwcCatalogRequiresActor;
+        }
         if (eql(method, "oauth.enrollment.pending.v1") or eql(method, "oauth.enrollment.descriptor.v1") or eql(method, "oauth.enrollment.status.v1")) {
             if (channel != .control) return error.WrongChannel;
             if (eql(method, "oauth.enrollment.pending.v1")) return self.freshOAuthPendingMetadata(allocator, request);
@@ -8601,6 +8871,7 @@ pub const Engine = struct {
         // The durable terminal receipt owns this cache transition. A failed
         // commit must leave its original issued handle fenced for recovery.
         native.status = .abandoned;
+        self.invalidateCatalogContexts();
         return control.success(allocator, id, .{
             .recorded = true,
             .request_profile = siwc_route.profile,
@@ -8708,6 +8979,7 @@ pub const Engine = struct {
             .issued => unreachable,
         }
         native.status = next;
+        self.invalidateCatalogContexts();
         _ = if (native_ref) |reference| try self.requests.reportForOwner(application, handle, reference, evidence) else try self.requests.report(handle, evidence);
         if (next != .accepted) try self.releaseOutcome(credit_key);
         try self.persist(&.{});
@@ -15838,4 +16110,426 @@ test "public expiry status skips an expired paired candidate and serves a genuin
         defer SiwcActorTest.dispose(&abandoned);
         _ = try SiwcActorTest.result(&abandoned);
     }
+}
+
+// Source-only models: synthetic signed issuer + actual encrypted actor Store +
+// authenticated private peer + real libcurl loopback. No live provider proof.
+const SiwcCatalogTest = struct {
+    const visible = "{\"models\":[{\"slug\":\"synthetic-z\",\"display_name\":\"Synthetic Z\",\"visibility\":\"list\"},{\"slug\":\"synthetic-hidden\",\"visibility\":\"hidden\"},{\"slug\":\"synthetic-a\",\"display_name\":\"Synthetic A\",\"visibility\":\"list\"}]}";
+    const Producer = SiwcActorTest.Producer;
+    const Json = SiwcActorTest.Json;
+    fn wire(current: *Engine, params: anytype) ![]u8 {
+        const a = std.testing.allocator;
+        var arena: std.heap.ArenaAllocator = .init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const raw = try std.json.Stringify.valueAlloc(scratch, params, .{});
+        var parsed = try std.json.parseFromSlice(std.json.Value, scratch, raw, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidFixture;
+        var capability = try current.capabilityForTest("codex");
+        defer std.crypto.secureZero(u8, &capability);
+        try parsed.value.object.put(scratch, "application", .{ .string = "codex" });
+        try parsed.value.object.put(scratch, "capability", .{ .string = capability[0..] });
+        try parsed.value.object.put(scratch, "request_profile", .{ .string = siwc_pair.request_profile });
+        return std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "adapter.siwcCatalog", .params = parsed.value }, .{});
+    }
+    fn raw(producer: *Producer, current: *Engine, server: *transport.testing.CatalogServer, payload: []const u8, until: std.Io.Clock.Timestamp) !Json {
+        const a = std.testing.allocator;
+        var buffer: [peer.maximum_packet]u8 = undefined;
+        defer std.crypto.secureZero(u8, &buffer);
+        const received = blk: {
+            producer.mutex.lockUncancelable(producer.io);
+            defer producer.mutex.unlock(producer.io);
+            if (sql_api.send(producer.sender, payload.ptr, payload.len, if (@hasDecl(sql_api, "MSG_NOSIGNAL")) sql_api.MSG_NOSIGNAL else 0) != payload.len) return error.FixtureSendFailed;
+            const length = try producer.packet_context.receivePacket(&buffer);
+            if (!eql(payload, buffer[0..length])) return error.FixturePacketMismatch;
+            break :blk length;
+        };
+        const reply = try current.dispatchCatalogForTest(a, buffer[0..received], until, &producer.packet_context, server);
+        defer { std.crypto.secureZero(u8, reply); a.free(reply); }
+        return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
+    }
+    fn observe(producer: *Producer, current: *Engine, server: *transport.testing.CatalogServer, params: anytype) !Json {
+        const bytes = try wire(current, params);
+        defer { std.crypto.secureZero(u8, bytes); std.testing.allocator.free(bytes); }
+        return raw(producer, current, server, bytes, .fromNow(current.io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+    }
+    fn check(reply: *const Json, account: [64]u8, known: bool) !std.json.Value {
+        const result = try SiwcActorTest.result(reply);
+        try std.testing.expect(result == .object and result.object.count() == 9);
+        try std.testing.expectEqualStrings(siwc_pair.request_profile, try control.string(result, "request_profile"));
+        try std.testing.expectEqualStrings(siwc_pair.resource_uri, try control.string(result, "audience"));
+        try std.testing.expectEqualStrings(&account, try control.string(result, "account_id"));
+        _ = try catalogOpaque(try control.string(result, "catalog_binding"));
+        const expires = control.get(result, "expires_at").?.integer;
+        const now = std.Io.Clock.real.now(std.testing.io).toSeconds();
+        try std.testing.expect(expires > now and expires <= now + 60);
+        try std.testing.expectEqualStrings(if (known) "known" else "unknown", try control.string(result, "observation_status"));
+        const models = control.get(result, "models").?.array.items;
+        try std.testing.expectEqual(if (known) @as(usize, 2) else 0, models.len);
+        if (known) {
+            try std.testing.expectEqualStrings("synthetic-z", try control.string(models[0], "slug"));
+            try std.testing.expectEqualStrings("synthetic-a", try control.string(models[1], "slug"));
+            for (models) |model| {
+                try std.testing.expect(model == .object and model.object.count() == 3);
+                try std.testing.expectEqualStrings("list", try control.string(model, "visibility"));
+            }
+        }
+        inline for (.{ "access_token", "refresh_token", "id_token", "issuer", "provider_account_id", "email", "subject", "quota" }) |forbidden| try std.testing.expect(control.get(result, forbidden) == null);
+        return result;
+    }
+    const Task = struct {
+        producer: *Producer,
+        current: *Engine,
+        server: *transport.testing.CatalogServer,
+        payload: []const u8,
+        until: std.Io.Clock.Timestamp,
+        reply: ?Json = null,
+        failure: ?anyerror = null,
+        fn run(self: *Task) void { self.reply = raw(self.producer, self.current, self.server, self.payload, self.until) catch |err| { self.failure = err; return; }; }
+        fn waitForRequest(self: *Task) !void {
+            const until = std.Io.Clock.Timestamp.fromNow(self.current.io, .{ .clock = .awake, .raw = .fromSeconds(2) });
+            while (self.server.requestCount() == 0) {
+                if (until.durationFromNow(self.current.io).raw.toMilliseconds() <= 0) return error.FixtureRequestNotIssued;
+                try self.current.io.sleep(.fromMilliseconds(5), .awake);
+            }
+        }
+        fn deinit(self: *Task) void { if (self.reply) |*value| SiwcActorTest.dispose(value); }
+    };
+};
+
+test "SIWC catalog real signed pair Store curl bootstrap is redacted ordered and does not lease renew or persist" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const owned = try SiwcActorTest.admit(producer, current, "synthetic-catalog-bootstrap");
+    const revision = current.revision;
+    const count = current.state.leases.items.len;
+    var server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer server.deinit();
+    var reply = try SiwcCatalogTest.observe(producer, current, &server, .{});
+    defer SiwcActorTest.dispose(&reply);
+    const result = try SiwcCatalogTest.check(&reply, owned.account_id, true);
+    try std.testing.expect(control.get(result, "lease_handle").? == .null and control.get(result, "route_generation").? == .null);
+    try std.testing.expectEqual(revision, current.revision);
+    try std.testing.expectEqual(count, current.state.leases.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+    try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+    try std.testing.expect(server.validWire());
+    try std.testing.expectError(error.SiwcCatalogTicketConsumed, current.network.?.startCatalog(server.ticket.?));
+    try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+    try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant(&owned.refresh_grant_id).?.status);
+    try std.testing.expectEqual(@as(u64, 1), current.state.grant(&owned.refresh_grant_id).?.generation);
+}
+
+test "SIWC catalog policy redirect malformed empty oversized observations are Unknown without grant or quota mutation" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const owned = try SiwcActorTest.admit(producer, current, "synthetic-catalog-unknown");
+    const revision = current.revision;
+    const observations = current.state.observations.items.len;
+    const large = try a.alloc(u8, siwc_catalog.maximum_body_bytes + 1);
+    defer a.free(large);
+    @memset(large, 'x');
+    const cases = [_]struct { status: u16, body: []const u8 }{
+        .{ .status = 403, .body = "{\"error\":\"synthetic_policy\"}" },
+        .{ .status = 302, .body = "synthetic-redirect" },
+        .{ .status = 200, .body = "{\"models\":[" },
+        .{ .status = 200, .body = "{\"models\":[]}" },
+        .{ .status = 200, .body = large },
+    };
+    for (cases) |case| {
+        var server = try transport.testing.CatalogServer.listen(a, case.status, case.body, 0);
+        defer server.deinit();
+        var reply = try SiwcCatalogTest.observe(producer, current, &server, .{});
+        defer SiwcActorTest.dispose(&reply);
+        _ = try SiwcCatalogTest.check(&reply, owned.account_id, false);
+        try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+        try std.testing.expect(server.validWire());
+        try std.testing.expectEqual(revision, current.revision);
+        try std.testing.expectEqual(observations, current.state.observations.items.len);
+        try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant(&owned.access_grant_id).?.status);
+        try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant(&owned.refresh_grant_id).?.status);
+    }
+}
+
+test "SIWC catalog prospective account switch and actual issued lease join never borrow old account metadata" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const first = try SiwcActorTest.admit(producer, current, "synthetic-catalog-first");
+    const second = try SiwcActorTest.admit(producer, current, "synthetic-catalog-second");
+    var one = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer one.deinit();
+    var before = try SiwcCatalogTest.observe(producer, current, &one, .{});
+    defer SiwcActorTest.dispose(&before);
+    const old = try SiwcCatalogTest.check(&before, first.account_id, true);
+    var pause = try SiwcActorTest.call(producer, current, "account.pause", .{ .account_id = first.account_id[0..], .operation_id = "catalog-account-switch", .expected_revision = current.revision }, .control);
+    defer SiwcActorTest.dispose(&pause);
+    _ = try SiwcActorTest.result(&pause);
+    var two = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer two.deinit();
+    var switched = try SiwcCatalogTest.observe(producer, current, &two, .{ .catalog_binding = try control.string(old, "catalog_binding") });
+    defer SiwcActorTest.dispose(&switched);
+    _ = try SiwcCatalogTest.check(&switched, second.account_id, true);
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    var acquired = try SiwcActorTest.acquire(producer, current, reference, "catalog-issued-lease");
+    defer SiwcActorTest.dispose(&acquired);
+    const lease = try SiwcActorTest.handle(&acquired);
+    var ref_arena: std.heap.ArenaAllocator = .init(a);
+    defer ref_arena.deinit();
+    const ref_value = try fixture.referenceValue(ref_arena.allocator(), reference);
+    var bound = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer bound.deinit();
+    var result = try SiwcCatalogTest.observe(producer, current, &bound, .{ .lease_handle = lease[0..], .native_ref = ref_value, .catalog_binding = try control.string(old, "catalog_binding") });
+    defer SiwcActorTest.dispose(&result);
+    const body = try SiwcCatalogTest.check(&result, second.account_id, true);
+    try std.testing.expectEqualStrings(&lease, try control.string(body, "lease_handle"));
+    try std.testing.expectEqual(@as(i64, 1), control.get(body, "route_generation").?.integer);
+    try std.testing.expect(control.get(body, "expires_at").?.integer <= control.get(try SiwcActorTest.result(&acquired), "expires_at").?.integer);
+    try std.testing.expectEqual(@as(u32, 1), bound.requestCount());
+    var rejected = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer rejected.deinit();
+    var fake = try SiwcCatalogTest.observe(producer, current, &rejected, .{ .lease_handle = lease[0..] });
+    defer SiwcActorTest.dispose(&fake);
+    try SiwcActorTest.refusal(&fake, "InvalidSiwcParams");
+    try std.testing.expectEqual(@as(u32, 0), rejected.requestCount());
+}
+
+test "SIWC catalog in-flight pause cancels publication while unrelated revision advances do not starve observation" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |retire| {
+        const producer = try fixture.Fixture.create(io, a);
+        defer producer.destroy();
+        const actor = try fixture.ActorFixture.create(io, a, producer);
+        defer actor.destroy();
+        try actor.install();
+        const current = actor.engine.?;
+        const owned = try SiwcActorTest.admit(producer, current, "synthetic-catalog-concurrent");
+        const before = current.revision;
+        var server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 600);
+        defer server.deinit();
+        const payload = try SiwcCatalogTest.wire(current, .{});
+        defer { std.crypto.secureZero(u8, payload); a.free(payload); }
+        var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &server, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }) };
+        defer task.deinit();
+        const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
+        var joined = false;
+        defer if (!joined) thread.join();
+        try task.waitForRequest();
+        var changed = if (retire)
+            try SiwcActorTest.call(producer, current, "account.pause", .{ .account_id = owned.account_id[0..], .operation_id = "catalog-pause-inflight", .expected_revision = before }, .control)
+        else
+            try SiwcActorTest.call(producer, current, "policy.set", .{ .operation_id = "catalog-unrelated-revision", .expected_revision = before, .sticky_routes = false, .warm_alternatives = false }, .control);
+        defer SiwcActorTest.dispose(&changed);
+        _ = try SiwcActorTest.result(&changed);
+        thread.join(); joined = true;
+        try std.testing.expect(current.revision > before);
+        if (retire) {
+            if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
+            try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
+        } else {
+            try std.testing.expect(task.failure == null);
+            _ = try SiwcCatalogTest.check(&task.reply.?, owned.account_id, true);
+        }
+        try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+        try std.testing.expect(server.validWire());
+    }
+}
+
+test "SIWC catalog caller flags thin channel missing owner and expired original cutoff never authorize network" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    var missing_server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer missing_server.deinit();
+    var missing = try SiwcCatalogTest.observe(producer, current, &missing_server, .{});
+    defer SiwcActorTest.dispose(&missing);
+    try SiwcActorTest.refusal(&missing, "SiwcPairUnavailable");
+    try std.testing.expectEqual(@as(u32, 0), missing_server.requestCount());
+    _ = try SiwcActorTest.admit(producer, current, "synthetic-catalog-refusal");
+    const revision = current.revision;
+    var server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer server.deinit();
+    var caller = try SiwcCatalogTest.observe(producer, current, &server, .{ .verified = true });
+    defer SiwcActorTest.dispose(&caller);
+    try SiwcActorTest.refusal(&caller, "InvalidSiwcParams");
+    const raw = try SiwcCatalogTest.wire(current, .{});
+    defer { std.crypto.secureZero(u8, raw); a.free(raw); }
+    const thin = try producer.dispatch(current, a, raw, .control);
+    defer a.free(thin);
+    const thin_value = try std.json.parseFromSlice(std.json.Value, a, thin, .{});
+    defer thin_value.deinit();
+    try SiwcActorTest.refusal(&thin_value, "WrongChannel");
+    const no_peer = try current.dispatch(a, raw, .adapter);
+    defer a.free(no_peer);
+    const no_peer_value = try std.json.parseFromSlice(std.json.Value, a, no_peer, .{});
+    defer no_peer_value.deinit();
+    try SiwcActorTest.refusal(&no_peer_value, "NativePeerRequired");
+    try std.testing.expectError(error.Timeout, SiwcCatalogTest.raw(producer, current, &server, raw, .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) })));
+    try std.testing.expectEqual(@as(u32, 0), server.requestCount());
+    try std.testing.expectEqual(revision, current.revision);
+    try std.testing.expectEqual(@as(usize, 0), current.catalog_pending.items.len);
+}
+
+// Material interaction models use the existing genuine Store-backed synthetic
+// renewal producer and actual token/JWKS/catalog curl, never raw ticket flags.
+test "catalog read cancels before renewal issue while fresh safe refreshing access remains observable" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const N = @import("native_owner_fixture.zig");
+    const M = OwnedRenewalActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try N.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const subject = "synthetic-catalog-issue";
+    const owned = try SiwcActorTest.admit(producer, current, subject);
+    var signer = try M.signer();
+    defer signer.deinit() catch @panic("catalog renewal signer cleanup failed");
+    const keys = try signer.jwks();
+    defer a.free(keys);
+    var token_body = try M.makeBody(&signer, subject, .{});
+    defer token_body.deinit();
+    var delayed = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 600);
+    defer delayed.deinit();
+    try delayed.holdReply();
+    const payload = try SiwcCatalogTest.wire(current, .{});
+    defer { std.crypto.secureZero(u8, payload); a.free(payload); }
+    var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &delayed, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }) };
+    defer task.deinit();
+    const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
+    var joined = false;
+    defer if (!joined) thread.join();
+    try task.waitForRequest();
+    const started = try M.start(current, &owned.account_id, token_body.bytes, keys, .{ .milliseconds = 10_000, .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    delayed.releaseReply();
+    thread.join(); joined = true;
+    if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
+    try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
+    const before = try M.observe(current, &owned.account_id);
+    defer before.deinit();
+    try M.assertPair(try M.result(&before), "refreshing", 1, true);
+    var fresh = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer fresh.deinit();
+    var observed = try SiwcCatalogTest.observe(producer, current, &fresh, .{});
+    defer SiwcActorTest.dispose(&observed);
+    _ = try SiwcCatalogTest.check(&observed, owned.account_id, true);
+    const captured = fresh.ticket.?.context();
+    try std.testing.expect(captured.status == .refreshing and captured.renewal != null);
+    const original = captured.renewal.?;
+    try std.testing.expectEqual(@as(u64, 1), original.family_generation);
+    try std.testing.expect(original.state == .issued);
+    try std.testing.expect(fresh.ticket.?.originalUntil().raw.nanoseconds <= original.until_nanoseconds);
+    try std.testing.expect(fresh.ticket.?.expiresAt() <= original.source_expires_at);
+    try std.testing.expect(std.meta.eql(captured.renewal, current.owned_siwc_pairs.find(captured.transaction_id).?.renewal));
+    try std.testing.expectEqual(@as(u32, 1), fresh.requestCount());
+    try std.testing.expect(fresh.validWire());
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = owned.account_id[0..] });
+    defer released.deinit();
+    _ = try M.result(&released);
+    const settled = try M.wait(current, &owned.account_id, "ready", 2);
+    defer settled.deinit();
+    try M.assertPair(try M.result(&settled), "ready", 2, true);
+}
+
+test "catalog refreshing HTTP cannot publish after atomic successor and completed witness does not cap new ready read" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const N = @import("native_owner_fixture.zig");
+    const M = OwnedRenewalActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try N.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const subject = "synthetic-catalog-successor";
+    const owned = try SiwcActorTest.admit(producer, current, subject);
+    var signer = try M.signer();
+    defer signer.deinit() catch @panic("catalog renewal signer cleanup failed");
+    const keys = try signer.jwks();
+    defer a.free(keys);
+    var token_body = try M.makeBody(&signer, subject, .{});
+    defer token_body.deinit();
+    const started = try M.start(current, &owned.account_id, token_body.bytes, keys, .{ .milliseconds = 10_000, .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    var delayed = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 1000);
+    defer delayed.deinit();
+    try delayed.holdReply();
+    const payload = try SiwcCatalogTest.wire(current, .{});
+    defer { std.crypto.secureZero(u8, payload); a.free(payload); }
+    var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &delayed, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }) };
+    defer task.deinit();
+    const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
+    var joined = false;
+    defer if (!joined) thread.join();
+    try task.waitForRequest();
+    const captured = delayed.ticket.?.context();
+    try std.testing.expect(captured.status == .refreshing and captured.renewal.?.state == .issued);
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = owned.account_id[0..] });
+    defer released.deinit();
+    _ = try M.result(&released);
+    const settled = try M.wait(current, &owned.account_id, "ready", 2);
+    defer settled.deinit();
+    delayed.releaseReply();
+    thread.join(); joined = true;
+    if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
+    try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
+    // Force old-operation cutoff to pass in genuine time, with no rewritten
+    // record/clock/credential. The completed operation remains historical only.
+    const left = captured.renewal.?.originalUntil().durationFromNow(io).raw.toNanoseconds();
+    if (left > 0) try io.sleep(.fromNanoseconds(left + 20_000_000), .awake);
+    var fresh = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer fresh.deinit();
+    var observed = try SiwcCatalogTest.observe(producer, current, &fresh, .{});
+    defer SiwcActorTest.dispose(&observed);
+    _ = try SiwcCatalogTest.check(&observed, owned.account_id, true);
+    const successor = fresh.ticket.?.context();
+    try std.testing.expect(successor.status == .ready and successor.renewal.?.state == .completed);
+    try std.testing.expectEqual(@as(u64, 2), successor.family_generation);
+    try std.testing.expect(std.meta.eql(successor.renewal.?.grant_window, captured.renewal.?.grant_window));
+    try std.testing.expect(fresh.ticket.?.originalUntil().raw.nanoseconds > successor.renewal.?.until_nanoseconds);
+    try std.testing.expectEqual(@as(u32, 1), fresh.requestCount());
+    try std.testing.expect(fresh.validWire());
 }

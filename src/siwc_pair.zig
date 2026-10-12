@@ -219,7 +219,49 @@ pub fn tokenCommitment(key: envelope.Key, token: []const u8, kind: enum { access
     hmac.final(&result);
     return result;
 }
-const Data = struct { allocator: std.mem.Allocator, row: Record };
+/// Secret-free catalog capture from an actual authenticated PairAuthority.
+/// This value is metadata, not a constructor/activation/refresh capability.
+pub const CatalogContext = struct {
+    renewal: ?Renewal,
+    status: @FieldType(Record, "status"),
+    response_sha256: [32]u8,
+    provider_subject_commitment: [32]u8,
+    transaction_id: [32]u8,
+    account_id: [64]u8,
+    source_id: [64]u8,
+    access_grant_id: [64]u8,
+    refresh_grant_id: [64]u8,
+    lineage_id: [32]u8,
+    consent_id: [32]u8,
+    profile_sha256: [32]u8,
+    binding_sha256: [32]u8,
+    activation_commitment: [32]u8,
+    identity_commitment: [32]u8,
+    issued_client_commitment: [32]u8,
+    access_token_commitment: [32]u8,
+    refresh_token_commitment: [32]u8,
+    source_generation: u64,
+    consent_generation: u64,
+    access_generation: u64,
+    refresh_generation: u64,
+    family_generation: u64,
+    writer_generation: u64,
+    identity_generation: u64,
+    access_expires_at: i64,
+};
+fn catalogContextFor(row: Record) !CatalogContext {
+    var result: CatalogContext = undefined;
+    inline for (.{ "account_id", "source_id", "access_grant_id", "refresh_grant_id" }) |name| {
+        const id = @field(row, name);
+        if (id.len != 64) return error.SiwcPairAuthorityChanged;
+        for (id) |byte| if (!std.ascii.isDigit(byte) and (byte < 'a' or byte > 'f')) return error.SiwcPairAuthorityChanged;
+        @memcpy(&@field(result, name), id);
+    }
+    inline for (.{ "renewal", "status", "response_sha256", "provider_subject_commitment", "transaction_id", "lineage_id", "consent_id", "profile_sha256", "binding_sha256", "activation_commitment", "identity_commitment", "issued_client_commitment", "access_token_commitment", "refresh_token_commitment", "source_generation", "consent_generation", "access_generation", "refresh_generation", "family_generation", "writer_generation", "identity_generation", "access_expires_at" }) |name| @field(result, name) = @field(row, name);
+    return result;
+}
+const Data = struct { allocator: std.mem.Allocator, row: Record, revision: u64 };
+
 pub const PairAuthority = opaque {
     pub fn deinit(self: *PairAuthority) void {
         const d = data(self);
@@ -261,6 +303,16 @@ pub const PairAuthority = opaque {
     }
     pub fn activationCommitment(self: *const PairAuthority) [32]u8 {
         return view(self).row.activation_commitment;
+    }
+    pub fn catalogContext(self: *const PairAuthority) !CatalogContext { return catalogContextFor(view(self).row); }
+    pub fn committedRevision(self: *const PairAuthority) u64 { return view(self).revision; }
+    /// A cache/pending operation may be cancelled from staged actor metadata;
+    /// constructing a Record here cannot construct a PairAuthority or ticket.
+    pub fn matchesCatalogRecord(self: *const PairAuthority, row: Record) bool {
+        if ((row.status != .ready and row.status != .refreshing) or row.consent_status != .recorded or row.retirement_reason != .none or row.forget_tombstone) return false;
+        const current = catalogContextFor(row) catch return false;
+        const held = self.catalogContext() catch return false;
+        return std.meta.eql(held, current);
     }
 };
 /// Permission to attempt one owned refresh, not request-access eligibility.
@@ -468,7 +520,7 @@ fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_
         if (!recovery_only) try window.check(returned_now);
         if (access_purpose == .request_access and row.access_expires_at <= returned_now) return error.SiwcPairExpired;
         if (renewing and !recovery_only) try checkRenewingAccess(store.io, row, returned_now);
-        result.* = .{ .allocator = a, .row = owned };
+        result.* = .{ .allocator = a, .row = owned, .revision = saved.revision };
         return result;
     }
     return error.SiwcPairUnavailable;

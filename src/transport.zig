@@ -10,6 +10,9 @@ const root = @import("root");
 const oauth_token = @import("oauth_token.zig");
 const oauth_authority = @import("oauth_issue_authority.zig");
 const oauth_enrollment = @import("oauth_enrollment.zig");
+const catalog_authority = @import("siwc_catalog_authority.zig");
+const siwc_catalog = @import("siwc_catalog.zig");
+const siwc_pair = @import("siwc_pair.zig");
 const envelope = @import("envelope.zig");
 // Only a dedicated Bazel test probe opts into local fixture transport. Shipping
 // daemon/CLI roots have no declaration and cannot enable fixtures through IPC.
@@ -42,6 +45,7 @@ pub const Endpoint = enum {
     fixture_oss_oauth_token,
     openai_jwks,
     fixture_jwks,
+    fixture_siwc_catalog,
 
     pub fn origin(self: Endpoint) []const u8 {
         return switch (self) {
@@ -51,7 +55,7 @@ pub const Endpoint = enum {
             .fixture_identity => "http://127.0.0.1",
             .fixture_tls_identity => "https://localhost",
             .codex_oauth_token, .omux_oss_oauth_token, .openai_jwks => "https://auth.openai.com",
-            .fixture_oauth_token, .fixture_oss_oauth_token, .fixture_jwks => "http://127.0.0.1",
+            .fixture_oauth_token, .fixture_oss_oauth_token, .fixture_jwks, .fixture_siwc_catalog => "http://127.0.0.1",
         };
     }
 
@@ -60,7 +64,7 @@ pub const Endpoint = enum {
             .github_identity => "/user",
             .github_capacity => "/rate_limit",
             .codex_identity, .codex_usage => "/backend-api/wham/usage",
-            .openai_model_catalog => "/v1/models",
+            .openai_model_catalog, .fixture_siwc_catalog => "/v1/models",
             .fixture_identity, .fixture_tls_identity => "/identity",
             .codex_oauth_token, .fixture_oauth_token => "/oauth/token",
             .omux_oss_oauth_token, .fixture_oss_oauth_token => "/api/accounts/oauth/token",
@@ -76,14 +80,14 @@ pub const Endpoint = enum {
             .fixture_identity => "127.0.0.1",
             .fixture_tls_identity => "localhost",
             .codex_oauth_token, .omux_oss_oauth_token, .openai_jwks => "auth.openai.com",
-            .fixture_oauth_token, .fixture_oss_oauth_token, .fixture_jwks => "127.0.0.1",
+            .fixture_oauth_token, .fixture_oss_oauth_token, .fixture_jwks, .fixture_siwc_catalog => "127.0.0.1",
         };
     }
 
     pub fn provesIdentity(self: Endpoint) bool {
         return switch (self) {
             .github_identity, .codex_identity, .codex_usage, .fixture_identity, .fixture_tls_identity => true,
-            .github_capacity, .openai_model_catalog, .codex_oauth_token, .omux_oss_oauth_token, .fixture_oauth_token, .fixture_oss_oauth_token, .openai_jwks, .fixture_jwks => false,
+            .github_capacity, .openai_model_catalog, .codex_oauth_token, .omux_oss_oauth_token, .fixture_oauth_token, .fixture_oss_oauth_token, .openai_jwks, .fixture_jwks, .fixture_siwc_catalog => false,
         };
     }
 };
@@ -129,7 +133,7 @@ pub const Request = struct {
     pub fn validate(self: Request) !void {
         // Even test roots cannot turn a resource request into a token issuer.
         if (self.endpoint == .codex_oauth_token or self.endpoint == .omux_oss_oauth_token or self.endpoint == .fixture_oauth_token or self.endpoint == .fixture_oss_oauth_token) return error.UndeclaredEndpoint;
-        if (self.endpoint == .openai_jwks or self.endpoint == .fixture_jwks) return error.UndeclaredEndpoint;
+        if (self.endpoint == .openai_jwks or self.endpoint == .fixture_jwks or self.endpoint == .fixture_siwc_catalog) return error.UndeclaredEndpoint;
         if (!validHandle(self.account_id) or !validHandle(self.grant_id)) return error.InvalidScope;
         if (self.timeout_ms == 0 or self.timeout_ms > Limits.deadline_ms) return error.InvalidDeadline;
         if (self.absolute_deadline) |deadline| _ = try deadline.remaining();
@@ -486,6 +490,67 @@ pub const OAuthCompletion = struct {
     }
 };
 
+const CatalogResponseData = struct {
+    allocator: std.mem.Allocator,
+    body: []u8,
+    digest: [32]u8,
+    received_unix: i64,
+    original: AbsoluteDeadline,
+    context: siwc_pair.CatalogContext,
+    lease: ?catalog_authority.LeaseContext,
+    revision: u64,
+    fence: *catalog_authority.DispatchFence,
+    fixture: bool,
+};
+/// Internal actual HTTPS/current-pair observation provenance, never a request
+/// lease, credential export or inference entitlement. Raw bodies cannot mint it.
+pub const CatalogResponse = opaque {
+    pub fn responseSha256(self: *const CatalogResponse) [32]u8 { return catalogResponseData(self).digest; }
+    pub fn receivedUnix(self: *const CatalogResponse) i64 { return catalogResponseData(self).received_unix; }
+    pub fn recheck(self: *const CatalogResponse, ticket: *const catalog_authority.Ticket) !void {
+        const d = catalogResponseData(self);
+        if (!std.meta.eql(d.context, ticket.context()) or !std.meta.eql(d.lease, ticket.leaseContext()) or d.revision != ticket.committedRevision() or !ticket.matchesFence(d.fence) or !std.meta.eql(d.original.io, ticket.clockIo()) or !std.meta.eql(d.original.until, ticket.originalUntil())) return error.SiwcCatalogAuthorityChanged;
+        try self.checkHeld();
+        try ticket.checkActive();
+    }
+    fn checkHeld(self: *const CatalogResponse) !void {
+        const d = catalogResponseData(self);
+        if (d.fixture and !builtin.is_test) return error.SiwcCatalogAuthorityChanged;
+        _ = try d.original.remaining();
+        try d.fence.checkAfterIo();
+        const now = std.Io.Clock.real.now(d.original.io).toSeconds();
+        if (now < d.received_unix or now - d.received_unix > siwc_catalog.freshness_seconds) return error.SiwcCatalogAuthorityChanged;
+        var actual: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(d.body, &actual, .{});
+        if (!std.crypto.timing_safe.eql([32]u8, d.digest, actual)) return error.SiwcCatalogAuthorityChanged;
+        _ = try d.original.remaining();
+        try d.fence.checkAfterIo();
+    }
+    pub fn evidence(self: *const CatalogResponse, a: std.mem.Allocator, ticket: *const catalog_authority.Ticket) !siwc_catalog.Catalog {
+        try self.recheck(ticket);
+        var parsed_catalog = try siwc_catalog.parse(a, 200, catalogResponseData(self).body);
+        errdefer parsed_catalog.deinit();
+        try self.recheck(ticket);
+        return parsed_catalog;
+    }
+    pub fn deinit(self: *CatalogResponse) void {
+        const d: *CatalogResponseData = @ptrCast(@alignCast(self));
+        std.crypto.secureZero(u8, d.body); d.allocator.free(d.body); d.fence.deinit(); d.allocator.destroy(d);
+    }
+};
+fn catalogResponseData(self: *const CatalogResponse) *const CatalogResponseData { return @ptrCast(@alignCast(self)); }
+pub const CatalogCompletion = struct {
+    id: u64,
+    owner: ?*Client = null,
+    result: union(enum) { response: *CatalogResponse, failure: Failure },
+    pub fn deinit(self: *CatalogCompletion, a: std.mem.Allocator) void {
+        _ = a;
+        switch (self.result) { .response => |response| response.deinit(), .failure => {} }
+        if (self.owner) |owner| owner.releaseCompletion(self.id);
+        self.* = undefined;
+    }
+};
+
 const JwksCapture = struct {
     binding: oauth_enrollment.Binding,
     profile_sha256: [32]u8,
@@ -632,6 +697,7 @@ fn Ring(comptime T: type, comptime capacity: usize) type {
 const OwnedRequest = struct {
     request: Request,
     oauth: ?oauth_authority.DispatchMaterial = null,
+    catalog: ?catalog_authority.DispatchMaterial = null,
     oauth_binding: ?oauth_enrollment.Binding = null,
     oauth_profile_sha256: [32]u8 = @splat(0),
     oauth_issued_revision: u64 = 0,
@@ -700,7 +766,29 @@ const OwnedRequest = struct {
         }, .oauth = material };
     }
 
+    fn initCatalog(a: std.mem.Allocator, material: catalog_authority.DispatchMaterial) !OwnedRequest {
+        try material.fence.checkBeforeDispatch();
+        if (material.fixture_port != 0 and !builtin.is_test) return error.UndeclaredEndpoint;
+        const original: AbsoluteDeadline = .{ .io = material.io, .until = material.until };
+        const remaining = try original.remaining();
+        const account_id = try a.dupe(u8, &material.context.account_id);
+        errdefer a.free(account_id);
+        const grant_id = try a.dupe(u8, &material.context.access_grant_id);
+        errdefer a.free(grant_id);
+        try material.fence.checkBeforeDispatch();
+        _ = try original.remaining();
+        return .{ .catalog = material, .request = .{
+            .endpoint = if (material.fixture_port != 0) .fixture_siwc_catalog else .openai_model_catalog,
+            .account_id = account_id, .grant_id = grant_id, .access_token = material.access.bytes,
+            .absolute_deadline = original, .timeout_ms = @min(remaining, 10_000),
+            .max_response_bytes = siwc_catalog.maximum_body_bytes, .fixture_port = material.fixture_port,
+        } };
+    }
+
     fn deinit(self: *OwnedRequest, allocator: std.mem.Allocator) void {
+        if (self.catalog) |*material| {
+            allocator.free(self.request.account_id); allocator.free(self.request.grant_id); material.deinit(); return;
+        }
         if (self.jwks) {
             if (self.jwks_capture) |capture| allocator.free(capture.issued_client_id);
             if (self.jwks_fence) |fence| fence.deinit();
@@ -745,6 +833,7 @@ const Transfer = struct {
     paused: bool = false,
     failure: ?Failure = null,
     oauth_dispatch_started: bool = false,
+    catalog_dispatch_started: bool = false,
 
     fn deinit(self: *Transfer) void {
         const allocator = self.owner.allocator;
@@ -793,6 +882,7 @@ pub const Client = struct {
     results: Ring(Completion, Limits.outstanding) = .{},
     oauth_results: Ring(OAuthCompletion, Limits.outstanding) = .{},
     jwks_results: Ring(JwksCompletion, Limits.outstanding) = .{},
+    catalog_results: Ring(CatalogCompletion, Limits.outstanding) = .{},
     chunks: Ring(Chunk, Limits.chunks) = .{},
     active: [Limits.concurrent]?*Transfer = @splat(null),
 
@@ -850,6 +940,9 @@ pub const Client = struct {
         while (self.pollOAuth()) |item| {
             var completion = item;
             completion.deinit(self.allocator);
+        }
+        while (self.pollCatalog()) |item| {
+            var completion = item; completion.deinit(self.allocator);
         }
         while (self.pollJwks()) |item| {
             var completion = item;
@@ -1044,6 +1137,33 @@ pub const Client = struct {
         return id;
     }
 
+    /// Actual actor/current-pair ticket only. Generic ATs, source labels or a
+    /// native thread placeholder cannot enter this observation result channel.
+    pub fn startCatalog(self: *Client, ticket: *catalog_authority.Ticket) !u64 {
+        var material: ?catalog_authority.DispatchMaterial = try ticket.claim(self.allocator);
+        defer if (material) |*held| held.deinit();
+        errdefer if (material) |*held| { _ = held.fence.invalidate(); };
+        self.lock();
+        if (self.stopping) { self.unlock(); return error.Stopping; }
+        if (self.outstanding == Limits.outstanding) { self.unlock(); return error.Backpressure; }
+        if (self.next_id == std.math.maxInt(u64)) { self.unlock(); return error.IdExhausted; }
+        const id = self.next_id; self.next_id += 1; self.outstanding += 1; self.unlock();
+        errdefer self.releaseReservation();
+        const admitted_at = monotonicMilliseconds();
+        var owned = try OwnedRequest.initCatalog(self.allocator, material.?);
+        material = null;
+        errdefer { _ = owned.catalog.?.fence.invalidate(); owned.deinit(self.allocator); }
+        const transfer = try self.allocator.create(Transfer);
+        errdefer self.allocator.destroy(transfer);
+        self.lock(); defer self.unlock();
+        if (self.stopping) return error.Stopping;
+        try owned.catalog.?.fence.checkBeforeDispatch();
+        _ = try owned.request.absolute_deadline.?.remaining();
+        transfer.* = .{ .owner = self, .id = id, .request = owned, .deadline = admitted_at + owned.request.timeout_ms };
+        std.debug.assert(self.starts.push(transfer)); self.wakeup(); return id;
+    }
+    pub fn pollCatalog(self: *Client) ?CatalogCompletion { self.lock(); defer self.unlock(); return self.catalog_results.pop(); }
+
     pub fn cancel(self: *Client, id: u64) !void {
         self.lock();
         defer self.unlock();
@@ -1163,7 +1283,10 @@ pub const Client = struct {
                     self.complete(item, .deadline);
                     continue;
                 }
-                if (item.request.oauth) |*material| {
+                if (item.request.catalog) |*material| {
+                    material.fence.beginDispatch() catch { self.complete(item, .canceled); continue; };
+                    item.catalog_dispatch_started = true;
+                } else if (item.request.oauth) |*material| {
                     material.fence.beginDispatch() catch {
                         self.complete(item, .canceled);
                         continue;
@@ -1285,15 +1408,15 @@ pub const Client = struct {
         const request = transfer.request.request;
         // Reserve the bounded token-response buffer before endpoint dispatch.
         // Appending secret bytes must never realloc/free an unwiped old buffer.
-        if (transfer.request.oauth != null or transfer.request.jwks) try transfer.body.ensureTotalCapacity(self.allocator, oauth_token.max_body_bytes);
+        if (transfer.request.catalog != null) try transfer.body.ensureTotalCapacity(self.allocator, siwc_catalog.maximum_body_bytes) else if (transfer.request.oauth != null or transfer.request.jwks) try transfer.body.ensureTotalCapacity(self.allocator, oauth_token.max_body_bytes);
         const easy = c.curl_easy_init() orelse return error.CurlInit;
         transfer.easy = easy;
-        transfer.url = if (request.endpoint == .fixture_identity or request.endpoint == .fixture_tls_identity or request.endpoint == .fixture_oauth_token or request.endpoint == .fixture_oss_oauth_token or request.endpoint == .fixture_jwks)
+        transfer.url = if (request.endpoint == .fixture_identity or request.endpoint == .fixture_tls_identity or request.endpoint == .fixture_oauth_token or request.endpoint == .fixture_oss_oauth_token or request.endpoint == .fixture_jwks or request.endpoint == .fixture_siwc_catalog)
             try self.allocator.printSentinel("{s}:{d}{s}", .{ request.endpoint.origin(), request.fixture_port, request.endpoint.path() }, 0)
         else
             try self.allocator.printSentinel("{s}{s}", .{ request.endpoint.origin(), request.endpoint.path() }, 0);
         try setPointer(easy, c.CURLOPT_URL, transfer.url.?.ptr);
-        const protocols: [*:0]const u8 = if (request.endpoint == .fixture_identity or request.endpoint == .fixture_oauth_token or request.endpoint == .fixture_oss_oauth_token or request.endpoint == .fixture_jwks) "http" else "https";
+        const protocols: [*:0]const u8 = if (request.endpoint == .fixture_identity or request.endpoint == .fixture_oauth_token or request.endpoint == .fixture_oss_oauth_token or request.endpoint == .fixture_jwks or request.endpoint == .fixture_siwc_catalog) "http" else "https";
         try setPointer(easy, c.CURLOPT_PROTOCOLS_STR, protocols);
         try setPointer(easy, c.CURLOPT_REDIR_PROTOCOLS_STR, "https");
         try setLong(easy, c.CURLOPT_FOLLOWLOCATION, 0);
@@ -1362,7 +1485,7 @@ pub const Client = struct {
             var status: c_long = 0;
             if (c.curl_easy_getinfo(transfer.easy.?, c.CURLINFO_RESPONSE_CODE, &status) != c.CURLE_OK or status < 100 or status > 599) {
                 result.result = .{ .failure = .transport };
-            } else if (if (transfer.request.oauth != null or transfer.request.jwks) self.allocator.dupe(u8, transfer.body.items) else transfer.body.toOwnedSlice(self.allocator)) |body| {
+            } else if (if (transfer.request.catalog != null or transfer.request.oauth != null or transfer.request.jwks) self.allocator.dupe(u8, transfer.body.items) else transfer.body.toOwnedSlice(self.allocator)) |body| {
                 // OAuth keeps the original allocation held until deinit wipes
                 // it; toOwnedSlice could shrink by freeing unwiped old storage.
                 result.result = .{ .response = .{ .status = @intCast(status), .body = body, .streaming = transfer.request.request.streaming } };
@@ -1428,9 +1551,25 @@ pub const Client = struct {
                 },
             }
         }
+        var catalog_result: ?CatalogCompletion = null;
+        if (transfer.request.catalog != null) {
+            catalog_result = .{ .id = result.id, .owner = self, .result = .{ .failure = .transport } };
+            switch (result.result) {
+                .failure => |reason| catalog_result.?.result = .{ .failure = reason },
+                .response => |response| {
+                    if (self.retainCatalogResponse(transfer, response)) |held| {
+                        catalog_result.?.result = .{ .response = held };
+                    } else |err| {
+                        std.crypto.secureZero(u8, response.body); self.allocator.free(response.body);
+                        catalog_result.?.result = .{ .failure = if (err == error.OutOfMemory) .allocation else if (err == error.InvalidDeadline) .deadline else .transport };
+                    }
+                },
+            }
+        }
         transfer.deinit();
         self.lock();
-        if (key_result) |keys| {
+        if (catalog_result) |models| { std.debug.assert(self.catalog_results.push(models)); }
+        else if (key_result) |keys| {
             std.debug.assert(self.jwks_results.push(keys));
         } else if (token_result) |tokens| {
             std.debug.assert(self.oauth_results.push(tokens));
@@ -1438,6 +1577,20 @@ pub const Client = struct {
             std.debug.assert(self.results.push(result));
         }
         self.unlock();
+    }
+
+    fn retainCatalogResponse(self: *Client, transfer: *const Transfer, response: Response) !*CatalogResponse {
+        const material = transfer.request.catalog orelse return error.SiwcCatalogAuthorityChanged;
+        const request = transfer.request.request;
+        if (!transfer.catalog_dispatch_started or response.status != 200 or response.body.len == 0 or response.body.len > siwc_catalog.maximum_body_bytes or request.method != .get or request.streaming or request.browser_authorization != null or request.provider_account_id != null or request.access_token == null or !std.mem.eql(u8, request.access_token.?, material.access.bytes)) return error.SiwcCatalogAuthorityChanged;
+        const fixture = switch (request.endpoint) { .openai_model_catalog => false, .fixture_siwc_catalog => if (builtin.is_test) true else return error.UndeclaredEndpoint, else => return error.UndeclaredEndpoint };
+        const original = request.absolute_deadline orelse return error.InvalidDeadline;
+        _ = try original.remaining(); try material.fence.checkAfterIo();
+        var digest: [32]u8 = undefined; std.crypto.hash.sha2.Sha256.hash(response.body, &digest, .{});
+        const d = try self.allocator.create(CatalogResponseData); errdefer self.allocator.destroy(d);
+        d.* = .{ .allocator = self.allocator, .body = response.body, .digest = digest, .received_unix = transfer.response_received_unix orelse return error.SiwcCatalogAuthorityChanged, .original = original, .context = material.context, .lease = material.lease, .revision = material.committed_revision, .fence = material.fence, .fixture = fixture };
+        const retained: *CatalogResponse = @ptrCast(d);
+        try retained.checkHeld(); material.fence.retain(); return retained;
     }
 
     /// Body ownership moves only on success; no exposed raw response factory.
@@ -1520,6 +1673,9 @@ fn failureFromCurl(code: c.CURLcode) ?Failure {
 }
 
 fn oauthFenceLive(transfer: *const Transfer) bool {
+    if (transfer.request.catalog) |material| {
+        if (transfer.catalog_dispatch_started) material.fence.checkAfterIo() catch return false else material.fence.checkBeforeDispatch() catch return false;
+    }
     if (transfer.request.jwks_fence) |fence| fence.checkBeforeCompletion() catch return false;
     if (transfer.request.oauth) |material| {
         if (transfer.oauth_dispatch_started) {
@@ -1587,7 +1743,7 @@ fn writeCallback(data: [*c]u8, size: usize, count: usize, context: ?*anyopaque) 
         return 0;
     }
     const bytes = data[0..length];
-    if (length != 0 and transfer.response_received_unix == null and (transfer.request.oauth != null or transfer.request.jwks)) {
+    if (length != 0 and transfer.response_received_unix == null and (transfer.request.catalog != null or transfer.request.oauth != null or transfer.request.jwks)) {
         const original = transfer.request.request.absolute_deadline orelse {
             transfer.failure = .transport;
             return 0;
@@ -1934,6 +2090,106 @@ fn awaitJwksResult(client: *Client) !JwksCompletion {
 }
 
 pub const testing = struct {
+    /// Independent fixture region: no token/JWKS Server bodies are changed.
+    /// Exact Bearer comparison is private to an actual Store-backed ticket.
+    pub const CatalogServer = struct {
+        allocator: std.mem.Allocator,
+        listener: c_int,
+        local_port: u16,
+        reply: envelope.Secret,
+        status: u16,
+        delay_ms: u32,
+        ticket: ?*catalog_authority.Ticket = null,
+        thread: ?std.Thread = null,
+        requests: std.atomic.Value(u32) = .init(0),
+        wire_valid: std.atomic.Value(bool) = .init(false),
+        hold_reply: std.atomic.Value(bool) = .init(false),
+        release_reply: std.atomic.Value(bool) = .init(false),
+
+        pub fn listen(a: std.mem.Allocator, status: u16, body: []const u8, delay_ms: u32) !CatalogServer {
+            if (!builtin.is_test) return error.TestOnly;
+            if (body.len == 0 or body.len > siwc_catalog.maximum_body_bytes + 1 or delay_ms > 1000 or status < 200 or status > 599) return error.InvalidModelRoute;
+            const listener = try Fixture.listen(.json);
+            errdefer _ = c.close(listener.descriptor);
+            return .{ .allocator = a, .listener = listener.descriptor, .local_port = listener.port, .reply = .{ .allocator = a, .bytes = try a.dupe(u8, body) }, .status = status, .delay_ms = delay_ms };
+        }
+        pub fn port(self: *const CatalogServer) u16 { return self.local_port; }
+        pub fn start(self: *CatalogServer, ticket: *catalog_authority.Ticket) !void {
+            if (!builtin.is_test or self.thread != null or self.ticket != null) return error.InvalidModelRoute;
+            try ticket.checkActive();
+            ticket.retain(); self.ticket = ticket;
+            errdefer { ticket.deinit(); self.ticket = null; }
+            self.thread = try std.Thread.spawn(.{}, serve, .{self});
+        }
+        pub fn requestCount(self: *const CatalogServer) u32 { return self.requests.load(.acquire); }
+        pub fn validWire(self: *const CatalogServer) bool { return self.wire_valid.load(.acquire); }
+        pub fn holdReply(self: *CatalogServer) !void {
+            if (!builtin.is_test or self.thread != null) return error.InvalidModelRoute;
+            self.hold_reply.store(true, .release);
+        }
+        pub fn releaseReply(self: *CatalogServer) void { self.release_reply.store(true, .release); }
+        pub fn deinit(self: *CatalogServer) void {
+            self.releaseReply();
+            if (self.thread) |thread| thread.join();
+            _ = c.close(self.listener);
+            if (self.ticket) |ticket| ticket.deinit();
+            self.reply.deinit();
+            self.* = undefined;
+        }
+        fn serve(self: *CatalogServer) void {
+            var readable: c.struct_pollfd = .{ .fd = self.listener, .events = c.POLLIN, .revents = 0 };
+            if (c.poll(&readable, 1, 2000) <= 0) return;
+            const descriptor = c.accept(self.listener, null, null);
+            if (descriptor < 0) return;
+            defer _ = c.close(descriptor);
+            if (@hasDecl(c, "SO_NOSIGPIPE")) {
+                const enabled: c_int = 1;
+                _ = c.setsockopt(descriptor, c.SOL_SOCKET, c.SO_NOSIGPIPE, &enabled, @sizeOf(c_int));
+            }
+            var request: [32 * 1024]u8 = undefined;
+            defer std.crypto.secureZero(u8, &request);
+            var length: usize = 0;
+            while (length < request.len) {
+                var ready: c.struct_pollfd = .{ .fd = descriptor, .events = c.POLLIN, .revents = 0 };
+                if (c.poll(&ready, 1, 1000) <= 0) return;
+                const count = c.recv(descriptor, request[length..].ptr, request.len - length, 0);
+                if (count <= 0) return;
+                length += @intCast(count);
+                if (std.mem.indexOf(u8, request[0..length], "\r\n\r\n") != null) break;
+            }
+            _ = self.requests.fetchAdd(1, .acq_rel);
+            const end = std.mem.indexOf(u8, request[0..length], "\r\n\r\n") orelse return;
+            const headers = request[0..end];
+            var authorization: ?[]const u8 = null;
+            var valid = std.mem.startsWith(u8, headers, "GET /v1/models HTTP/1.1\r\n") and length == end + 4;
+            var lines = std.mem.splitSequence(u8, headers, "\r\n");
+            _ = lines.next();
+            while (lines.next()) |line| {
+                const colon = std.mem.indexOfScalar(u8, line, ':') orelse { valid = false; continue; };
+                const name = line[0..colon];
+                const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+                if (std.ascii.eqlIgnoreCase(name, "authorization")) {
+                    if (authorization != null) valid = false;
+                    authorization = value;
+                }
+                if (std.ascii.eqlIgnoreCase(name, "cookie") or std.ascii.eqlIgnoreCase(name, "chatgpt-account-id") or std.ascii.eqlIgnoreCase(name, "content-length") or std.ascii.eqlIgnoreCase(name, "transfer-encoding")) valid = false;
+            }
+            valid = valid and authorization != null and catalog_authority.testing.matchesAuthorization(self.ticket.?, authorization.?);
+            self.wire_valid.store(valid, .release);
+            if (!valid) return;
+            if (self.delay_ms != 0) _ = c.poll(null, 0, @intCast(self.delay_ms));
+            while (self.hold_reply.load(.acquire) and !self.release_reply.load(.acquire)) {
+                if (self.ticket.?.originalUntil().durationFromNow(self.ticket.?.clockIo()).raw.toNanoseconds() <= 0) return;
+                _ = c.poll(null, 0, 5);
+            }
+            var header: [256]u8 = undefined;
+            const prefix = std.fmt.bufPrint(&header, "HTTP/1.1 {d} Catalog\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n{s}\r\n", .{ self.status, self.reply.bytes.len, if (self.status == 302) "Location: http://127.0.0.1:1/forbidden\r\n" else "" }) catch return;
+            Fixture.sendAll(descriptor, prefix);
+            Fixture.sendAll(descriptor, self.reply.bytes);
+        }
+    };
+
+
     /// Runtime synthetic signed replies still traverse real loopback curl.
     /// This server has no receipt/profile constructor or provider capability.
     pub const Server = struct {

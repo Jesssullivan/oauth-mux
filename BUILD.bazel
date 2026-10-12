@@ -902,3 +902,13 @@ oauth_oidc_targets(
     runtime_data = ZIG_RUNTIME_DATA,
     native_deps = [":native_api"],
 )
+
+# Actual catalog syntax models; actor/current-pair/curl models remain in engine_test.
+zig_test(
+    name = "siwc_catalog_test",
+    main = "src/siwc_catalog.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
