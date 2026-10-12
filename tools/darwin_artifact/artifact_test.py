@@ -233,7 +233,8 @@ class ArtifactModels(unittest.TestCase):
         alias = next(entry for entry in selected.entries if entry.destination.endswith("/omux-native-host"))
         self.assertEqual(alias.source, extra["omux-native-host"])
         with self.assertRaises(ValueError):
-            BUNDLE.plan_relocation(roots, custody, "arm64", channel_entrypoints={})
+            BUNDLE.plan_relocation(roots, custody, "arm64", read_binary=read, canonicalize=canonical,
+                                   channel_entrypoints={})
 
     def test_group_or_other_execute_never_promotes_owner_execute(self):
         pins = []
