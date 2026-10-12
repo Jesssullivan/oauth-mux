@@ -286,8 +286,16 @@ class N10ContentIntakeTests(unittest.TestCase):
                     (root / 'test-evidence' / leaf.name).chmod(0o600)
                     with self.assertRaises((ValueError, OSError)): inputs.read(leaf, source.sha(raw), source.DEADLINE)
                 else:
+                    # Capture the original physical proof before modelling a
+                    # late same-byte replacement. Role/alias admission alone
+                    # does not establish its unopened leaf's inode witness.
+                    self.assertEqual(inputs.read(leaf, source.sha(raw), source.DEADLINE), raw)
+                    original_anchor = inputs.held[str(leaf)][2]
+                    self.assertEqual(tenth.witness(os.fstat(inputs.held[str(leaf)][1])), original_anchor)
+                    self.assertEqual(tenth.witness(leaf.stat()), original_anchor)
                     replacement = leaf.parent / 'replacement'; replacement.write_bytes(raw); replacement.chmod(0o600)
                     replacement.replace(leaf)
+                    self.assertNotEqual(tenth.witness(leaf.stat()), original_anchor)
                     with self.assertRaises(ValueError): inputs.read(leaf, source.sha(raw), source.DEADLINE)
 
     def test_generated_control_0644_is_exact_role_and_late_drift_refuses(self):
