@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -131,7 +132,7 @@ class FileWriterDriverTests(unittest.TestCase):
         # original stream writers, held log/XML and receipt owners are real.
         for fault in ('none', 'log', 'receipt', 'child-failed'):
             root = Path(tempfile.mkdtemp()); owner = driver.family.HeldControls()
-            calls, observed_fds = [], []
+            calls, observed_fds, phases = [], [], []
             try:
                 publication = root / 'publication'; publication.mkdir(mode=0o700)
                 logs = root / 'logs'; logs.mkdir(mode=0o700)
@@ -164,10 +165,11 @@ class FileWriterDriverTests(unittest.TestCase):
                         patch.object(driver.family, 'producer_context', return_value=report['producer_context']), \
                         patch.object(driver.family.query_tools, 'verify_repository', return_value=tools):
                     if fault == 'child-failed':
-                        with self.assertRaises(ValueError): driver.native_child(pub, sdk, report, owner, inputs, entry, until, source.DEADLINE)
+                        with self.assertRaises(ValueError): driver.native_child(pub, sdk, report, owner, inputs, entry, until, source.DEADLINE, _phase=phases.append)
                         self.assertFalse((root / 'native-file-writer-models/models-receipt.json').exists())
+                        self.assertEqual(phases[-1], 'child-run')
                     else:
-                        row = driver.native_child(pub, sdk, report, owner, inputs, entry, until, source.DEADLINE)
+                        row = driver.native_child(pub, sdk, report, owner, inputs, entry, until, source.DEADLINE, _phase=phases.append)
                         actual = json.loads(owner.raws[row['path']])
                         self.assertEqual(actual['actual_libtest']['tests'], list(self.names))
                         self.assertEqual(actual['actual_libtest']['passed'], 19)
@@ -182,6 +184,8 @@ class FileWriterDriverTests(unittest.TestCase):
                             original = leaf.read_bytes(); mode = leaf.parent.stat().st_mode & 0o7777
                             leaf.parent.chmod(0o700); leaf.unlink(); leaf.write_bytes(original); leaf.chmod(0o444); leaf.parent.chmod(mode)
                             with self.assertRaises(ValueError): owner.fence()
+                self.assertTrue(all(phase in driver.CHILD_PHASES for phase in phases))
+                if fault != 'child-failed': self.assertEqual(phases[-1], 'child-close')
                 self.assertLess(calls.index('sdk-fence'), calls.index('source-terminal'))
                 self.assertLess(calls.index('source-terminal'), calls.index('child'))
                 observed_fds.extend(item[1] for item in owner.held.values())
@@ -197,12 +201,12 @@ class FileWriterDriverTests(unittest.TestCase):
             held, stdout = [], io.StringIO()
             try:
                 entry = time.monotonic_ns(); until = entry + 1200*10**9
-                def child(*arguments):
+                def child(*arguments, **keywords):
                     self.assertEqual(arguments[5:7], (entry, until))
                     row = driver.publish_result(root / 'result', {'public': 'actual held result seam'}, owner)
                     held.extend(item[1] for item in owner.held.values())
                     return row
-                def scope(callback):
+                def scope(callback, _phase):
                     # Full native source/SDK/child are explicit seams here;
                     # actual main callback, publication and final owner are real.
                     callback(None, None, None, owner, None, entry, until, source.DEADLINE)
@@ -212,6 +216,7 @@ class FileWriterDriverTests(unittest.TestCase):
                     elif fault == 'late-same-byte-replacement':
                         raw = leaf.read_bytes(); leaf.parent.chmod(0o700)
                         leaf.unlink(); leaf.write_bytes(raw); leaf.chmod(0o444); leaf.parent.chmod(0o555)
+                    _phase('final-control-input-read')
                     owner.full(); owner.fence()
                 with patch.object(driver.family, 'main', scope), patch.object(driver, 'native_child', child), \
                         patch.object(driver.sys, 'argv', ['native-model-driver']), patch('sys.stdout', stdout):
@@ -224,6 +229,37 @@ class FileWriterDriverTests(unittest.TestCase):
                 for fd in held:
                     with self.assertRaises(OSError): os.fstat(fd)
                 cleanup(root)
+
+    def test_actual_driver_refusal_categories_exclude_exception_payloads(self):
+        public_canary = 'public-exception-payload-must-not-appear'
+        for error, category in ((ValueError(public_canary), 'invariant'),
+                (OSError(public_canary), 'os'), (KeyError(public_canary), 'key'),
+                (TypeError(public_canary), 'type'), (UnicodeError(public_canary), 'unicode'),
+                (IndexError(public_canary), 'index'), (subprocess.SubprocessError(public_canary), 'subprocess')):
+            stderr, stdout = io.StringIO(), io.StringIO()
+            def scope(callback, _phase):
+                _phase('sdk-custody')
+                raise error
+            with patch.object(driver.family, 'main', scope), patch.object(driver, 'native_child') as child, \
+                    patch.object(driver.sys, 'argv', ['native-model-driver']), \
+                    patch('sys.stderr', stderr), patch('sys.stdout', stdout):
+                with self.assertRaises(type(error)): driver.main()
+                child.assert_not_called()
+            self.assertEqual(stderr.getvalue(), 'native file-writer models refused; phase=sdk-custody; category=' + category + '\n')
+            self.assertEqual(stdout.getvalue(), '')
+
+    def test_diagnostic_writer_failure_preserves_actual_driver_refusal(self):
+        original = ValueError('public original refusal canary')
+        class RefusingWriter:
+            def write(self, unused): raise OSError('public diagnostic IO canary')
+        def scope(callback, _phase):
+            _phase('final-owner-fences')
+            raise original
+        with patch.object(driver.family, 'main', scope), patch.object(driver, 'native_child') as child, \
+                patch.object(driver.sys, 'argv', ['native-model-driver']), patch('sys.stderr', RefusingWriter()):
+            with self.assertRaises(ValueError) as caught: driver.main()
+            self.assertIs(caught.exception, original)
+            child.assert_not_called()
 
     def test_one_child_is_not_started_when_original_final_proof_reserve_is_spent(self):
         root = Path(tempfile.mkdtemp()); streams = driver.ChildStreams(root / 'streams')

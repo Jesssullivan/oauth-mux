@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from codex_native_file_writer_models_test import FileWriterDriverTests
 import codex_native_file_writer_model_source as model
+import codex_native_file_writer_models as driver
 from codex_native_source_file_writer_test import cleanup
 
 source = model.source
@@ -309,6 +310,65 @@ class FileWriterModelSourceTests(unittest.TestCase):
             owner.expected = {**rows, ('sdk', name): row}
             with self.assertRaises(ValueError): model.original_hub(owner)
 
+    def test_actual_driver_early_refusal_keeps_closed_phases_and_retires_held_inputs(self):
+        # Actual admission, map, controls and Inputs run; no SDK/query/child is reached.
+        for fault, expected_phase, category in (
+                ('admission', 'source-admission', 'invariant'),
+                ('runfiles', 'runfiles', 'os'),
+                ('repository-map', 'repository-map', 'invariant'),
+                ('model-controls', 'model-controls', 'invariant'),
+                ('source-inputs', 'source-inputs', 'invariant')):
+            root = Path(tempfile.mkdtemp()); held = []; stderr = io.StringIO(); stdout = io.StringIO()
+            real_capture = model.Inputs._capture
+            def capture(owner, *arguments, **keywords):
+                raw = real_capture(owner, *arguments, **keywords)
+                held.extend(fd for parent, fd, unused, anchor in owner.held.values())
+                held.extend(parent for parent, fd, unused, anchor in owner.held.values())
+                return raw
+            try:
+                runfiles, leaf, repository = self.inputs_fixture(root)
+                controls_root = root / 'controls'; controls_root.mkdir()
+                for name in (model.CONFIG, model.CONTROLS, self.control['delta']['patch']['path'],
+                             self.control['delta']['manifest']['path'], self.control['tests']['path']):
+                    target = controls_root / name; target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes((ROOT / name).read_bytes()); target.chmod(0o444)
+                (runfiles / '_repo_mapping').write_bytes(('_main,' + model.REPOSITORY + ',models\n').encode())
+                (runfiles / '_repo_mapping').chmod(0o444)
+                outputs = root / 'outputs'; outputs.mkdir()
+                entry = time.monotonic_ns(); until = entry + 1200*10**9
+                env = {model.MODE: model.PROFILE, model.ENTRY: str(entry), model.UNTIL: str(until), 'TEST_TIMEOUT': '840',
+                    'TEST_SRCDIR': str(runfiles), 'TEST_UNDECLARED_OUTPUTS_DIR': str(outputs), 'TEST_TMPDIR': str(root),
+                    'OMUX_NATIVE_FILE_WRITER_MODELS_EPOCH': '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/01234567-0123-0123-0123-0123456789ab',
+                    'OMUX_NATIVE_FILE_WRITER_MODELS_SOURCE_COMMIT': 'a'*40, 'OMUX_NATIVE_FILE_WRITER_MODELS_GRAPH_SHA256': 'b'*64}
+                if fault == 'admission': env[model.MODE] = 'invalid-closed-profile'
+                elif fault == 'runfiles': env['TEST_SRCDIR'] = str(root / 'missing-runfiles')
+                elif fault == 'repository-map':
+                    path = runfiles / '_repo_mapping'; path.chmod(0o600); path.write_bytes(b'invalid,row\n'); path.chmod(0o444)
+                elif fault == 'model-controls':
+                    path = controls_root / model.CONFIG; path.chmod(0o600)
+                    path.write_bytes(b'{"public":"invalid controls"}\n'); path.chmod(0o444)
+                else:
+                    path = repository / 'source-inputs.json'
+                    path.write_bytes(source.encoded({'kind': 'invalid-closed-input-kind', 'selection': {}, 'inputs': []}))
+                source.DEADLINE = model.query.DEADLINE = None
+                with patch.dict(os.environ, env, clear=True), patch.object(model.sys, 'argv', ['native-model-driver']), \
+                        patch.object(model.binding.ninth.parent, 'ROOT', controls_root), \
+                        patch.object(model.Inputs, '_capture', capture), \
+                        patch.object(driver, 'native_child') as child, \
+                        patch('sys.stderr', stderr), patch('sys.stdout', stdout):
+                    with self.assertRaises(driver.REFUSAL_ERRORS): driver.main()
+                    child.assert_not_called()
+                self.assertEqual(stderr.getvalue(), 'native file-writer models refused; phase=' + expected_phase + '; category=' + category + '\n')
+                self.assertEqual(stdout.getvalue(), '')
+                self.assertEqual(list(outputs.iterdir()), [])
+                if fault in ('repository-map', 'model-controls', 'source-inputs'): self.assertTrue(held)
+                for fd in held:
+                    with self.assertRaises(OSError): os.fstat(fd)
+                self.assertIsNone(source.DEADLINE); self.assertIsNone(model.query.DEADLINE)
+            finally:
+                if (root / 'runfiles/models').is_symlink(): (root / 'runfiles/models').unlink()
+                cleanup(root); source.DEADLINE = time.monotonic() + 120
+
     def test_actual_main_late_sdk_phase_refuses_held_proof_alias_and_control_drift(self):
         # Entire actual main/Inputs/HeldControls/Publication flow executes; only
         # parent admission, full SDK/NAR and query child are explicit seams.
@@ -316,10 +376,10 @@ class FileWriterModelSourceTests(unittest.TestCase):
         for fault in ('none', 'proof-bytes', 'proof-replace', 'proof-alias', 'proof-alias-parent', 'carrier-alias', 'control', 'metadata', 'receipt',
                       'source-fence', 'output-fence', 'source-exit', 'output-exit',
                       'carrier-alias-fence', 'source-extra-name', 'source-directory-replace',
-                      'directory-fd-bound', 'directory-fstat', 'directory-close'):
+                      'directory-fd-bound', 'directory-fstat', 'directory-close', 'child-plan'):
             root = Path(tempfile.mkdtemp())
             state = {'entered': False, 'finished': False, 'closed': False, 'fd_fault': False, 'close_fault': False}
-            retained_fds = []
+            retained_fds, phases = [], []
             real_enroll, real_fstat, real_close = model.MemberDirectories.enroll, os.fstat, os.close
             def enroll(owner, fd):
                 value = real_enroll(owner, fd); retained_fds.append(fd); return value
@@ -429,13 +489,13 @@ class FileWriterModelSourceTests(unittest.TestCase):
                 sdk_module = SimpleNamespace(declared_manifest=lambda runfiles, rows: (root / 'manifest', root / 'manifest'), HeldOriginalSDK=SDK)
                 entry = time.monotonic_ns(); until = entry + 1200*10**9
                 env = {model.MODE: model.PROFILE, model.ENTRY: str(entry), model.UNTIL: str(until), 'TEST_TIMEOUT': '840',
-                    'TEST_SRCDIR': str(runfiles), 'TEST_UNDECLARED_OUTPUTS_DIR': str(outputs),
+                    'TEST_SRCDIR': str(runfiles), 'TEST_UNDECLARED_OUTPUTS_DIR': str(outputs), 'TEST_TMPDIR': str(root),
                     'OMUX_NATIVE_FILE_WRITER_MODELS_EPOCH': '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/01234567-0123-0123-0123-0123456789ab',
                     'OMUX_NATIVE_FILE_WRITER_MODELS_SOURCE_COMMIT': 'a'*40, 'OMUX_NATIVE_FILE_WRITER_MODELS_GRAPH_SHA256': 'b'*64}
                 (runfiles / '_repo_mapping').write_bytes(('_main,' + model.REPOSITORY + ',models\n').encode())
                 (runfiles / '_repo_mapping').chmod(0o444)
                 source.DEADLINE = model.query.DEADLINE = None
-                captured = io.StringIO()
+                captured, diagnostic = io.StringIO(), io.StringIO()
                 with ExitStack() as patch_scope:
                     patch_scope.enter_context(patch.dict(os.environ, env, clear=True))
                     patch_scope.enter_context(patch.object(model.sys, 'argv', ['model-source']))
@@ -456,11 +516,28 @@ class FileWriterModelSourceTests(unittest.TestCase):
                     patch_scope.enter_context(patch.object(model.os, 'fstat', checked_fstat))
                     patch_scope.enter_context(patch.object(model.os, 'close', checked_close))
                     patch_scope.enter_context(patch('sys.stdout', captured))
-                    if fault == 'none': model.main()
+                    patch_scope.enter_context(patch('sys.stderr', diagnostic))
+                    if fault == 'child-plan':
+                        patch_scope.enter_context(patch.object(driver, 'native_plan', side_effect=ValueError('public child-plan refusal seam')))
+                        with self.assertRaises(ValueError): driver.main()
+                        self.assertEqual(diagnostic.getvalue(), 'native file-writer models refused; phase=child-plan; category=invariant\n')
+                        self.assertFalse((outputs / 'native-file-writer-models').exists())
+                        self.assertFalse((root / 'model-native-work').exists())
+                    elif fault == 'none': model.main(_phase=phases.append)
                     else:
-                        with self.assertRaises((ValueError, OSError)): model.main()
+                        with self.assertRaises((ValueError, OSError)): model.main(_phase=phases.append)
                 self.assertTrue(state['entered'] and state['closed'])
-                self.assertEqual(state['finished'], fault not in ('directory-fd-bound', 'directory-fstat'))
+                self.assertTrue(all(phase in model.SOURCE_PHASES for phase in phases))
+                if fault == 'none': self.assertEqual(phases[-1], 'completion')
+                if fault in ('proof-bytes', 'proof-replace', 'proof-alias', 'proof-alias-parent', 'control'):
+                    self.assertEqual(phases[-1], 'final-control-input-read')
+                if fault == 'metadata': self.assertEqual(phases[-1], 'final-control-input-read')
+                if fault == 'receipt': self.assertEqual(phases[-1], 'final-owner-fences')
+                if fault == 'carrier-alias-fence': self.assertEqual(phases[-1], 'final-owner-fences')
+                if fault in ('source-fence', 'output-fence'):
+                    self.assertEqual(phases[-1], 'final-publication-terminal')
+                if fault in ('source-exit', 'output-exit'): self.assertEqual(phases[-1], 'final-publication-terminal')
+                self.assertEqual(state['finished'], fault not in ('directory-fd-bound', 'directory-fstat', 'child-plan'))
                 for fd in retained_fds:
                     with self.assertRaises(OSError): real_fstat(fd)
                 if fault == 'directory-fstat': self.assertTrue(state['fd_fault'])

@@ -813,7 +813,43 @@ class Publication:
 
 
 
-def main(_native_child=None):
+SOURCE_PHASES = frozenset((
+    'source-admission',
+    'runfiles',
+    'repository-map',
+    'model-controls',
+    'source-inputs',
+    'carrier-selection',
+    'carrier-declaration',
+    'carrier-proofs',
+    'producer-qualification',
+    'sdk-declaration',
+    'sdk-custody',
+    'query-tools',
+    'source-hub-production',
+    'native-child',
+    'final-publication-read',
+    'final-sdk-read',
+    'final-producer-recheck',
+    'final-control-input-read',
+    'final-owner-fences',
+    'sdk-close',
+    'final-publication-terminal',
+    'input-close',
+    'control-close',
+    'publication-close',
+    'completion',
+    'post-sdk-close-fences',
+    'post-input-close-fences',
+    'post-control-close-fences',
+))
+
+
+def main(_native_child=None, _phase=None):
+    source.require(_phase is None or callable(_phase))
+    def phase(name):
+        if _phase is not None: _phase(name)
+    phase('source-admission')
     source.require(_native_child is None or callable(_native_child))
     source.require(sys.argv in ([sys.argv[0]], [sys.argv[0], '--source-only']))
     source_only = len(sys.argv) == 2
@@ -822,24 +858,31 @@ def main(_native_child=None):
     sdk_session = None
     try:
         source.tick()
+        phase('runfiles')
         runfiles = Path(os.environ['TEST_SRCDIR']).resolve(strict=True)
         output = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True)
         with Publication() as published:
             with HeldControls() as retained:
+                phase('repository-map')
                 mapping = retained.add(runfiles / '_repo_mapping', maximum=1024*1024)
                 rows = [row.split(',') for row in mapping.decode().splitlines()]
                 source.require(all(len(row) == 3 for row in rows))
+                phase('model-controls')
                 initial_config, initial_control = retain_model_controls(retained)
                 initial_context = producer_context()
+                phase('source-inputs')
                 with Inputs(runfiles, rows) as inputs:
                     if not source_only:
                         import codex_original_sdk_inputs as original_sdk
                         import codex_native_carrier_metadata as metadata
                         with metadata.proof_scope(cutoff):
+                            phase('carrier-selection')
                             selected_raw = retained.add(binding.ninth.parent.ROOT / metadata.CONFIG, maximum=16384)
                             selected = metadata.selection(selected_raw)
+                            phase('carrier-declaration')
                             root, aliases, declaration = metadata.declared_carrier(runfiles, rows, selected, cutoff)
                             for alias, physical in aliases: retained.add_alias(alias, physical)
+                            phase('carrier-proofs')
                             proofs = metadata.declared_proofs(runfiles, rows, selected, cutoff)
                             retained.add(proofs.aliases[0][0], proofs.sha256, 65536)
                             for role, row in proofs.document['proofs'].items():
@@ -847,12 +890,17 @@ def main(_native_child=None):
                                 raw = retained.add(alias, row['sha256'])
                                 if role == 'test_xml': material.declared_xml_success(raw)
                             retained.add(Path(declaration['selection_path']), declaration['selection_sha256'], 8192)
+                            phase('producer-qualification')
                             qualified = metadata.qualify_producer(selected, cutoff, proofs)
+                            phase('sdk-declaration')
                             manifest_alias, manifest = original_sdk.declared_manifest(runfiles, rows)
+                            phase('sdk-custody')
                             sdk_session = original_sdk.HeldOriginalSDK(manifest_alias, manifest, root,
                                 selected['carrier']['receipt_sha256'], entry, until, declaration_context(initial_context))
                             sdk_session.__enter__()
+                            phase('query-tools')
                             query.declared_query_tools(runfiles, rows)
+                            phase('source-hub-production')
                             report = produce(output / OUTPUT, inputs, output / 'model-hub-work', published,
                                 sdk_session=sdk_session, query_repository=query.QUERY_REPOSITORY, context=initial_context,
                                 sdk_qualification={'selector_sha256': source.sha(selected_raw), 'selection': selected,
@@ -860,23 +908,31 @@ def main(_native_child=None):
                             if _native_child is not None:
                                 # One fixed native target executes inside the same
                                 # live source/HUB, proof and original SDK owners.
+                                phase('native-child')
                                 _native_child(published, sdk_session, report, retained, inputs, entry, until, cutoff)
+                            phase('final-publication-read')
                             if not published.members_captured: published.capture()
                             # All owners span the last full source/output/carrier/original reads.
                             published.full()
+                            phase('final-sdk-read')
                             sdk_session.finish()
+                            phase('final-producer-recheck')
                             source.require(metadata.qualify_producer(selected, cutoff, proofs) == qualified)
                             metadata.recheck_aliases(aliases, cutoff); proofs.recheck(cutoff)
                             source.require(declared(metadata.CONFIG, 16384) == selected_raw)
                             source.require(configuration() == initial_config and controls() == initial_control
                                 and producer_context() == initial_context)
+                            phase('final-control-input-read')
                             retained.full(); inputs.check_all()
                             # One same-held terminal observation phase. Full byte/NAR
                             # work precedes all physical-only namespace/FD/root joins.
+                            phase('final-owner-fences')
                             published.fence(); sdk_session.fence()
                             retained.fence(); inputs.check(); published.roots()
+                            phase('sdk-close')
                             sdk_session.__exit__(None, None, None)
                             sdk_session = None
+                            phase('post-sdk-close-fences')
                             retained.fence(); inputs.check(); published.roots()
                     else:
                         source.require(_native_child is None)
@@ -887,16 +943,23 @@ def main(_native_child=None):
                             and producer_context() == initial_context)
                         retained.full(); inputs.check_all(); published.fence()
                         retained.fence(); inputs.check(); published.roots()
+                    phase('final-publication-terminal')
                     # SDK bulk walks and normal SDK close have completed. Every
                     # SOURCE/output member now joins its original witness via
                     # retained parents while all proof/control/alias owners live.
                     retained.fence(); inputs.check()
                     published.terminal()
                     retained.fence(); inputs.check(); published.roots()
+                    phase('input-close')
+                phase('post-input-close-fences')
                 # Input close performs no full SOURCE/SDK work. Retain captured
                 # controls and publication descriptors through that cleanup.
                 retained.fence(); published.roots()
+                phase('control-close')
+            phase('post-control-close-fences')
             published.roots()
+            phase('publication-close')
+        phase('completion')
         source.tick()
         source.require(time.monotonic_ns() < entry + 600*10**9 and time.monotonic_ns() < until)
         print('native-file-writer-model-source: exact source composition' +

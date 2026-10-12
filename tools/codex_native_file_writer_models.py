@@ -283,7 +283,10 @@ def publish_result(path, report, owner, *, prepared=None, evidence=None):
     return result
 
 
-def native_child(published, sdk, report, retained, inputs, entry, until, cutoff):
+def native_child(published, sdk, report, retained, inputs, entry, until, cutoff, _phase=None):
+    def phase(name):
+        if _phase is not None: _phase(name)
+    phase('child-admission')
     source.require(cutoff == source.DEADLINE and time.monotonic_ns() < entry + 600*10**9)
     inputs.check_all(); retained.full(); sdk.fence(); published.fence()
     temporary = Path(os.environ['TEST_TMPDIR']).resolve(strict=True)
@@ -291,26 +294,33 @@ def native_child(published, sdk, report, retained, inputs, entry, until, cutoff)
     try: source.require(os.fstat(held_temporary).st_uid == os.getuid())
     finally: os.close(held_temporary)
     work = temporary / 'model-native-work'
+    phase('child-plan')
     plan = native_plan(published, sdk, report, work, cutoff)
     source.require(family.producer_context() == report['producer_context'])
     expected = expected_tests()
+    phase('child-streams')
     streams = ChildStreams(work / 'driver-streams')
     result_parent = published.path.parent / 'native-file-writer-models'
     result_fd = None
     try:
+        phase('child-output-setup')
         result_parent.mkdir(mode=0o700)
         result_fd = source.directory(result_parent)
         result_anchor = family.tenth.witness(os.fstat(result_fd))
         # Allocate every global output child before retaining directory anchors.
         # The actual child is preceded by the same-held original SDK bulk sweep
         # and a flat authenticated SOURCE/output member observation.
+        phase('child-preflight')
         published.capture()
         inputs.check_all(); retained.full(); published.fence(); sdk.fence()
         retained.fence(); inputs.check(); published.terminal()
+        phase('child-run')
         run_once(plan, streams, cutoff)
+        phase('child-evidence')
         output = actual_test_directory(work / 'output-base')
         raw_log, log_physical = read_actual(output / 'test.log', retained)
         raw_xml, xml_physical = read_actual(output / 'test.xml', retained)
+        phase('child-acceptance')
         family.material.declared_xml_success(raw_xml)
         accepted = accept_log(raw_log, expected)
         source.require(family.query_tools.verify_repository(family.query.QUERY_REPOSITORY, cutoff) == plan['qualified_query_tools'])
@@ -341,8 +351,11 @@ def native_child(published, sdk, report, retained, inputs, entry, until, cutoff)
             'actual_libtest': accepted, 'storage_models_compiled': True, 'storage_models_passed': True,
             'default_login_regression_passed': False, 'native_compiled': False, 'ordinary_native_qualified': False,
             'issuer_qualified': False, 'scheduler_qualified': False, 'provider_qualified': False}
+        phase('child-publication')
         row = publish_result(result_parent, result, retained, prepared=(result_fd, result_anchor), evidence=evidence)
+        phase('child-final-fences')
         inputs.check_all(); retained.full(); sdk.fence(); published.fence(); streams.fence()
+        phase('child-close')
         return row
     finally:
         first = None
@@ -353,22 +366,59 @@ def native_child(published, sdk, report, retained, inputs, entry, until, cutoff)
         if first is not None: raise first
 
 
+CHILD_PHASES = frozenset((
+    'child-admission',
+    'child-plan',
+    'child-streams',
+    'child-output-setup',
+    'child-preflight',
+    'child-run',
+    'child-evidence',
+    'child-acceptance',
+    'child-publication',
+    'child-final-fences',
+    'child-close',
+))
+REFUSAL_ERRORS = (ValueError, OSError, KeyError, TypeError, UnicodeError, IndexError, subprocess.SubprocessError)
+
+
+def refusal_category(error):
+    # Ordered closed types only: never format exception messages or attributes.
+    for kind, category in ((UnicodeError, 'unicode'), (ValueError, 'invariant'),
+            (OSError, 'os'), (KeyError, 'key'), (TypeError, 'type'),
+            (IndexError, 'index'), (subprocess.SubprocessError, 'subprocess')):
+        if isinstance(error, kind): return category
+    return 'unclassified'
+
+
 def main():
-    source.require(sys.argv == [sys.argv[0]])
-    result, envelope = [], []
-    def execute(*arguments):
-        envelope.append((arguments[5], arguments[6]))
-        result.append(native_child(*arguments))
-    family.main(execute)
-    source.require(len(result) == len(envelope) == 1)
-    entry, until = envelope[0]
-    source.require(time.monotonic_ns() < entry + 600*10**9 and time.monotonic_ns() < until)
-    print('native-file-writer-models: actual maintained login storage tests 19 passed; 0 failed; 0 ignored', flush=True)
-    source.require(time.monotonic_ns() < entry + 600*10**9 and time.monotonic_ns() < until)
+    current = 'driver-admission'
+    def phase(name):
+        nonlocal current
+        source.require(type(name) is str and name in family.SOURCE_PHASES | CHILD_PHASES)
+        current = name
+    try:
+        source.require(sys.argv == [sys.argv[0]])
+        result, envelope = [], []
+        def execute(*arguments):
+            envelope.append((arguments[5], arguments[6]))
+            result.append(native_child(*arguments, _phase=phase))
+        family.main(execute, _phase=phase)
+        current = 'driver-final-acceptance'
+        source.require(len(result) == len(envelope) == 1)
+        entry, until = envelope[0]
+        source.require(time.monotonic_ns() < entry + 600*10**9 and time.monotonic_ns() < until)
+        print('native-file-writer-models: actual maintained login storage tests 19 passed; 0 failed; 0 ignored', flush=True)
+        source.require(time.monotonic_ns() < entry + 600*10**9 and time.monotonic_ns() < until)
+    except REFUSAL_ERRORS as error:
+        try:
+            print('native file-writer models refused; phase=' + current + '; category=' + refusal_category(error), file=sys.stderr)
+        finally:
+            # Diagnostic IO cannot replace the original refusal or cleanup exit.
+            raise error from None
 
 
 if __name__ == '__main__':
     try: main()
-    except (ValueError, OSError, KeyError, TypeError, UnicodeError, IndexError, subprocess.SubprocessError):
-        print('native file-writer models refused', file=sys.stderr)
+    except REFUSAL_ERRORS:
         raise SystemExit(1) from None
