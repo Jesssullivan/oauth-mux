@@ -129,8 +129,8 @@ def produce(*args, **kwargs):
     return previous.produce(*args, **kwargs, _transform=compose, _report=make_report)
 
 
-def main(*, _child=None, _extra=None, _retainer=None):
-    previous.main(_child=_child, _extra=_extra,_producer=produce, _retainer=retain_controls if _retainer is None else _retainer,
+def main(*, _child=None, _extra=None, _retainer=None, _admitted=None):
+    previous.main(_child=_child, _extra=_extra, _admitted=_admitted, _producer=produce, _retainer=retain_controls if _retainer is None else _retainer,
         _output='native-siwc-catalog-source',
         _marker='native-siwc-catalog-source: exact V4 plus fourteen-path catalog composition')
 

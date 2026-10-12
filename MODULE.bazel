@@ -364,3 +364,8 @@ codex_native_siwc_catalog_model_inputs(
     name = "omux_native_siwc_catalog_model_inputs",
     selection = "//integrations/codex-upstream/siwc-native-catalog-models:qualified-source.json",
 )
+
+# Selected retained N10 content; the action supplies fresh current byte custody.
+native_n10_content = use_repo_rule("//tools:codex_native_n10_content_inputs.bzl", "codex_native_n10_content_inputs")
+native_n10_content(name = "omux_native_n10_content_inputs",
+    selection = "//integrations/codex-upstream:native-n10-content-input.json")

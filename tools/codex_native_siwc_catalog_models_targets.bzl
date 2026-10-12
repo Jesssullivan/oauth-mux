@@ -1,13 +1,14 @@
 """Additive SIWC source/HUB family; existing N10/login19 cohorts stay unchanged."""
 load(":rules.bzl", "python_test")
 load(":codex_native_acquisition_targets.bzl", "native_acquisition_source_closure")
+load(":codex_native_siwc_catalog_content_source_targets.bzl", "catalog_content_source_data", "catalog_content_controls")
 
 def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent_data, original_sdk_sources):
     sources = depset([
         src for src in native_acquisition_source_closure(source_sources, sdk_sources)
         if str(src) not in ("//delivery:portable.py", "codex_native_acquisition_bridge_material.py")
     ] + ["codex_native_source_file_writer.py", "guard_native_file_writer_source_reserved.py",
-        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "guard_native_siwc_catalog_source_reserved.py"]).to_list()
+        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "guard_native_siwc_catalog_source_reserved.py", "guard_native_siwc_catalog_content_source_reserved.py", "codex_native_n10_source_intake.py", "codex_native_siwc_catalog_content_source.py"]).to_list()
     controls = [
         "//integrations/codex-upstream/siwc-native:inputs",
         "//integrations/codex-upstream/siwc-native-catalog:inputs",
@@ -17,18 +18,12 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
         "//integrations/codex-upstream:native_file_writer_storage_patch",
         "//integrations/codex-upstream:native_file_writer_storage_manifest",
     ]
-    data = depset(parent_data + controls + [
-        "//integrations/codex-upstream:native_source_context_patch",
-        "//integrations/codex-upstream:native_acquisition_input_configuration",
-        "//integrations/codex-upstream:native_acquisition_n9_binding",
-        "@omux_native_carrier_source_inputs//:inputs",
-        "@omux_native_file_writer_model_source_inputs//:inputs",
+    # Current cold typed driver requests the complete explicit content closure.
+    # Old source statuses refuse if their historical declaration is unavailable;
+    # a new report is never interpreted as old ancestor custody.
+    data = depset(catalog_content_source_data() + [
+        "//integrations/codex-upstream/siwc-native-catalog-models:inputs",
         "@omux_native_siwc_catalog_model_inputs//:inputs",
-        "@omux_original_native_sdk_inputs//:inputs",
-        "@omux_native_sdk_carrier_inputs//:inputs",
-        "@omux_native_sdk_carrier_proof_inputs//:inputs",
-        "//integrations/codex-upstream:native-sdk-carrier-metadata-inputs.json",
-        "@omux_protocol_history_query_tools//:inputs",
     ]).to_list()
     python_test(
         name = "codex_native_siwc_catalog_models_producer",
@@ -44,10 +39,10 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
         name = "codex_native_siwc_catalog_models_test",
         main = "codex_native_siwc_catalog_models_test.py",
         srcs = sources,
-        data = controls + ["//integrations/codex-upstream/siwc-native:native_preimages",
+        data = depset(controls + catalog_content_controls()).to_list() + ["//integrations/codex-upstream/siwc-native:native_preimages",
             "//integrations/codex-upstream/siwc-native-catalog:native_preimages",
             "//integrations/codex-upstream/siwc-native-catalog:BUILD.bazel",
             "//integrations/codex-upstream/siwc-native:BUILD.bazel",
-            "codex_native_siwc_catalog_models_targets.bzl", "codex_native_siwc_catalog_model_inputs.bzl", "codex_native_siwc_catalog_models_BUILD.snippet", "codex_native_siwc_catalog_models_MODULE.snippet"],
+            "codex_native_siwc_catalog_models_targets.bzl", "codex_native_siwc_catalog_content_source_targets.bzl", "codex_native_siwc_catalog_model_inputs.bzl", "codex_native_siwc_catalog_models_BUILD.snippet", "codex_native_siwc_catalog_models_MODULE.snippet"],
         target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     )

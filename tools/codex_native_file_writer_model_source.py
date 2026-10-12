@@ -157,7 +157,8 @@ class Inputs:
     """
     def __init__(self, runfiles, rows, *, _repository=REPOSITORY, _kind=INPUT_KIND):
         source.require((_repository, _kind) in ((REPOSITORY, INPUT_KIND),
-            ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-model-input-v1')))
+            ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-model-input-v1'),
+            ('omux_native_n10_content_inputs', 'omux-native-n10-content-input-v1')))
         names = [row[2] for row in rows if len(row) == 3 and row[0] in ('', '_main') and row[1] == _repository]
         source.require(len(names) == 1 and re.fullmatch(r'[A-Za-z0-9_+.-]{1,256}', names[0]) is not None)
         self.stack, self.held = ExitStack(), {}
@@ -386,9 +387,11 @@ def retain_model_controls(owner):
 
 def guardian(selected, inputs, *, _guard=None):
     authority = parent_guard if _guard is None else _guard
-    source.require(authority.PROFILE in ('native-file-writer-source-reserved', 'native-siwc-catalog-source-reserved'))
-    projection_key = ('native_file_writer_source_reservation' if authority.PROFILE == parent_guard.PROFILE
-        else 'native_siwc_catalog_source_reservation')
+    source.require(authority.PROFILE in ('native-file-writer-source-reserved', 'native-siwc-catalog-source-reserved',
+        'native-siwc-catalog-content-source-reserved'))
+    projection_key = {'native-file-writer-source-reserved': 'native_file_writer_source_reservation',
+        'native-siwc-catalog-source-reserved': 'native_siwc_catalog_source_reservation',
+        'native-siwc-catalog-content-source-reserved': 'native_siwc_catalog_content_source_reservation'}[authority.PROFILE]
     producer = selected['producer']; protocol.producer_pin(producer)
     outer = inputs.read_json(Path(producer['receipt']), producer['sha256'], source.DEADLINE)
     reservation = outer[projection_key]
@@ -537,6 +540,22 @@ def admission():
     source.require(0 < entry <= time.monotonic_ns() < until and until - entry == 1200*10**9
         and int(env['TEST_TIMEOUT']) >= 660 and source.DEADLINE is None and query.DEADLINE is None)
     return entry, until, float((entry + 600*10**9) / 10**9)
+
+
+def reuse_admission(admitted):
+    """Reuse an already held original clock; this is not source qualification."""
+    source.require(type(admitted) is tuple and len(admitted) == 4)
+    entry, until, cutoff, raw_context = admitted
+    source.require(type(entry) is int and type(until) is int and type(cutoff) is float
+        and type(raw_context) is bytes and len(raw_context) <= 16384
+        and 0 < entry <= time.monotonic_ns() < entry + 600*10**9 < until
+        and until - entry == 1200*10**9 and cutoff == float((entry + 600*10**9) / 10**9)
+        and source.DEADLINE == query.DEADLINE == cutoff)
+    context = producer_context()
+    source.require(source.encoded(context) == raw_context and context['mode'] == PROFILE
+        and context['entry_monotonic_ns'] == entry and context['deadline_monotonic_ns'] == until
+        and os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR') and int(os.environ['TEST_TIMEOUT']) >= 660)
+    return entry, until, cutoff
 
 
 def original_hub(sdk_session):

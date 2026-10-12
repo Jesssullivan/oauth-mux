@@ -27,7 +27,12 @@ def _implementation(ctx):
         ctx.file("source-inputs.json", json.encode({"kind": "omux-native-siwc-catalog-model-input-v1", "selection": None, "inputs": []}) + "\n", executable = False)
         ctx.file("BUILD.bazel", 'package(default_visibility = ["//visibility:public"])\nfilegroup(name = "inputs", srcs = ["source-inputs.json"])\n', executable = False)
         return
-    _need(config["status"] == "qualified-catalog-source-hub-uncompiled")
+    _need(config["status"] in ["qualified-catalog-source-hub-uncompiled", "qualified-catalog-content-source-hub-uncompiled"])
+    content = config["status"] == "qualified-catalog-content-source-hub-uncompiled"
+    report_kind = "omux-native-siwc-catalog-content-source-v1" if content else "omux-native-siwc-catalog-source-v1"
+    report_status = "verified-siwc-catalog-content-source-uncompiled" if content else "verified-siwc-catalog-source-uncompiled"
+    profile = "native-siwc-catalog-content-source-reserved" if content else "native-siwc-catalog-source-reserved"
+    prefix = "codex_native_siwc_catalog_content_source" if content else "codex_native_siwc_catalog_source"
     selected = config["source"]
     _need(type(selected) == "dict" and sorted(selected.keys()) == ["inventory_sha256", "producer", "receipt_bytes", "receipt_sha256", "root"] and _sha(selected["inventory_sha256"]) and _sha(selected["receipt_sha256"]) and type(selected["receipt_bytes"]) == "int" and selected["receipt_bytes"] > 0 and selected["receipt_bytes"] <= 8 * 1024 * 1024)
     _physical(ctx, selected["root"], True)
@@ -37,15 +42,15 @@ def _implementation(ctx):
     _need(len(report_raw) == selected["receipt_bytes"])
     report = json.decode(report_raw)
     inventory = report.get("source_inventory")
-    _need(report.get("kind") == "omux-native-siwc-catalog-source-v1" and report.get("status") == "verified-siwc-catalog-source-uncompiled" and report.get("inventory_sha256") == selected["inventory_sha256"] and type(inventory) == "dict" and len(inventory) == 8557 and len(report.get("patch_sha256", [])) == 12 and report.get("native_controls_sha256") == config["catalog_controls_sha256"])
+    _need(report.get("kind") == report_kind and report.get("status") == report_status and report.get("inventory_sha256") == selected["inventory_sha256"] and type(inventory) == "dict" and len(inventory) == 8557 and len(report.get("patch_sha256", [])) == 12 and report.get("native_controls_sha256") == config["catalog_controls_sha256"])
     producer = selected["producer"]
     _need(type(producer) == "dict" and sorted(producer.keys()) == ["graph_sha256", "receipt", "sha256", "source_commit"] and _sha(producer["sha256"]) and _sha(producer["graph_sha256"]))
     outer = _physical(ctx, producer["receipt"])
     outer_raw = ctx.read(outer)
     _need(len(outer_raw) <= 16 * 1024 * 1024)
     authority = json.decode(outer_raw)
-    targets = ["//tools:codex_native_siwc_catalog_source_test", "//tools:codex_native_siwc_catalog_source_producer"]
-    _need(authority.get("profile") == "native-siwc-catalog-source-reserved" and authority.get("targets") == targets and authority.get("exit") == 0 and authority.get("workload_exit") == 0 and authority.get("source_commit") == producer["source_commit"] and authority.get("graph_sha256") == producer["graph_sha256"])
+    targets = ["//tools:" + prefix + "_test", "//tools:" + prefix + "_producer"]
+    _need(authority.get("profile") == profile and authority.get("targets") == targets and authority.get("exit") == 0 and authority.get("workload_exit") == 0 and authority.get("source_commit") == producer["source_commit"] and authority.get("graph_sha256") == producer["graph_sha256"])
     epoch = str(outer.dirname)
     evidence_path = _physical(ctx, epoch + "/test-evidence.json")
     evidence_raw = ctx.read(evidence_path)

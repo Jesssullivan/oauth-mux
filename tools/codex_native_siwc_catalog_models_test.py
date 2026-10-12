@@ -213,9 +213,120 @@ class CatalogDriverTests(unittest.TestCase):
         self.assertIn('len(paths) == 8564 + len(hub)',rule)
         self.assertIn('native-siwc-catalog-source-reserved',rule)
         self.assertIn('@omux_native_siwc_catalog_model_inputs//:inputs',macro)
-        self.assertIn('@omux_original_native_sdk_inputs//:inputs',macro)
+        shared_macro=(root/'tools/codex_native_siwc_catalog_content_source_targets.bzl').read_text()
+        self.assertIn('catalog_content_source_data()',macro)
+        for repo in ('omux_original_native_sdk_inputs','omux_native_n10_content_inputs',
+                'omux_native_sdk_carrier_inputs','omux_native_sdk_carrier_proof_inputs','omux_protocol_history_query_tools'):
+            self.assertIn('@'+repo+'//:inputs',shared_macro)
+        for old in ('omux_codex_owner_status_source_inputs','omux_codex_owner_status_persistence_source_inputs',
+                'omux_native_carrier_source_inputs','omux_native_file_writer_model_source_inputs'):
+            self.assertNotIn('@'+old+'//:inputs',shared_macro)
         for name in ('codex_native_file_writer_models.py','codex_native_siwc_catalog_models.py'):
             self.assertIn(name,macro)
+
+    def test_content_selector_binds_new_exact_source_role_without_constructor_readiness(self):
+        producer = model.family.configuration()[1]['parent']['producer']
+        epoch = Path(producer['receipt']).parent
+        prefix = epoch / 'output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools'
+        selected = {'schema_version': 1, 'kind': 'omux-native-siwc-catalog-model-selection-v1',
+            'catalog_controls_sha256': model.catalog.CONTROL_SHA,
+            'status': 'qualified-catalog-content-source-hub-uncompiled',
+            'source': {'root': str(prefix / 'codex_native_siwc_catalog_content_source_producer/test.outputs/native-siwc-catalog-content-source'),
+                'receipt_sha256': 'a' * 64, 'receipt_bytes': 1, 'inventory_sha256': 'b' * 64,
+                'producer': producer}}
+        # This validates only closed typed syntax. No path/read/guardian/source
+        # proof or ready authority is constructed by this fixture.
+        self.assertEqual(model.selection(json.dumps(selected).encode()), selected)
+        wrong = copy.deepcopy(selected)
+        wrong['source']['root'] = str(prefix / 'codex_native_siwc_catalog_source_producer/test.outputs/native-siwc-catalog-source')
+        with self.assertRaises(ValueError): model.selection(json.dumps(wrong).encode())
+        wrong = copy.deepcopy(selected); wrong['status'] = 'verified-by-caller'
+        with self.assertRaises(ValueError): model.selection(json.dumps(wrong).encode())
+        self.assertEqual(model.SOURCE_ROUTES[selected['status']][:2],
+            (model.content_catalog, model.content_source_guard))
+        self.assertEqual(model.SOURCE_ROUTES['qualified-catalog-source-hub-uncompiled'][:2],
+            (model.catalog, model.source_guard))
+
+    def test_receipt_only_content_method_refuses_before_sdk_plan_or_native_work(self):
+        report = {'kind': model.content_catalog.KIND, 'status': model.content_catalog.STATUS,
+            'patch_sha256': ['a' * 64] * 12, 'historical_ancestor_reexecution': False,
+            'native_runtime_qualified': False, 'source_intake': {'method': 'receipt-only'},
+            **{name: False for name in model.catalog.previous.FALSE_FLAGS}}
+        with tempfile.TemporaryDirectory() as temporary:
+            published, sdk = Mock(active=True), Mock()
+            with self.assertRaises(ValueError):
+                model.native_plan(published, sdk, report, Path(temporary) / 'work', model.source.DEADLINE)
+            sdk.check.assert_not_called(); published.full.assert_not_called()
+
+    def test_actual_driver_owns_original_clock_after_nested_return_and_on_every_refusal(self):
+        # Actual main/admission/route/execute/short/finally. The heavyweight
+        # controller/source/SDK/native IO is a seam here and real controller
+        # intake/child lifetime is exercised by the content-source test.
+        for fault in ('none', 'nested-refusal', 'short-refusal'):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); outputs = root / 'outputs'; outputs.mkdir()
+                entry = time.monotonic_ns(); until = entry + 1200*10**9
+                cutoff = float((entry + 600*10**9) / 10**9)
+                env = {model.family.MODE: model.family.PROFILE, model.family.ENTRY: str(entry),
+                    model.family.UNTIL: str(until), 'TEST_TIMEOUT': '840', 'TEST_UNDECLARED_OUTPUTS_DIR': str(outputs),
+                    'OMUX_NATIVE_FILE_WRITER_MODELS_EPOCH': '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/01234567-0123-0123-0123-0123456789ab',
+                    'OMUX_NATIVE_FILE_WRITER_MODELS_SOURCE_COMMIT': 'a'*40, 'OMUX_NATIVE_FILE_WRITER_MODELS_GRAPH_SHA256': 'b'*64}
+                phases = []
+                def clock(phase):
+                    self.assertEqual((model.source.DEADLINE, model.family.query.DEADLINE), (cutoff, cutoff))
+                    self.assertEqual(model.family.producer_context()['entry_monotonic_ns'], entry)
+                    self.assertEqual(model.family.producer_context()['deadline_monotonic_ns'], until)
+                    phases.append(phase)
+                class Extra:
+                    def __enter__(self): clock('outer-enter'); return self
+                    def __exit__(self, *args): clock('outer-close')
+                    def retain(self, owner): raise AssertionError('explicit nested IO seam')
+                    def short(self):
+                        clock('post-return-short')
+                        if fault == 'short-refusal': raise ValueError('public short refusal')
+                def nested(**kwargs):
+                    clock('nested-enter')
+                    self.assertEqual(model.family.reuse_admission(kwargs['_admitted']), (entry, until, cutoff))
+                    kwargs['_child'](None, None, None, None, None, entry, until, cutoff)
+                    clock('nested-return')
+                    if fault == 'nested-refusal': raise ValueError('public nested refusal')
+                def child(*args): clock('child'); return {'public': 'result seam'}
+                selected = {'status': 'qualified-catalog-content-source-hub-uncompiled'}
+                model.source.DEADLINE = model.family.query.DEADLINE = None
+                with patch.dict(os.environ, env, clear=True), patch.object(model.sys, 'argv', ['public-driver']), \
+                        patch.object(model.family, 'declared', return_value=b'public selected syntax seam'), \
+                        patch.object(model, 'selection', return_value=selected), patch.object(model, 'ExtraOwners', Extra), \
+                        patch.object(model.content_catalog, 'main', side_effect=nested), \
+                        patch.object(model, 'native_child', side_effect=child), patch('builtins.print') as marker:
+                    if fault == 'none': model.main()
+                    else:
+                        with self.assertRaises(ValueError): model.main()
+                self.assertEqual(phases[:4], ['outer-enter', 'nested-enter', 'child', 'nested-return'])
+                self.assertIn('outer-close', phases)
+                self.assertEqual('post-return-short' in phases, fault != 'nested-refusal')
+                self.assertEqual(marker.called, fault == 'none')
+                self.assertIsNone(model.source.DEADLINE); self.assertIsNone(model.family.query.DEADLINE)
+
+    def test_nested_clock_reuse_refuses_changed_context_cutoff_or_expiry_without_clearing_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            entry = time.monotonic_ns(); until = entry + 1200*10**9
+            cutoff = float((entry + 600*10**9) / 10**9)
+            env = {model.family.MODE: model.family.PROFILE, model.family.ENTRY: str(entry),
+                model.family.UNTIL: str(until), 'TEST_TIMEOUT': '840', 'TEST_UNDECLARED_OUTPUTS_DIR': temporary,
+                'OMUX_NATIVE_FILE_WRITER_MODELS_EPOCH': '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/01234567-0123-0123-0123-0123456789ab',
+                'OMUX_NATIVE_FILE_WRITER_MODELS_SOURCE_COMMIT': 'a'*40, 'OMUX_NATIVE_FILE_WRITER_MODELS_GRAPH_SHA256': 'b'*64}
+            model.source.DEADLINE = model.family.query.DEADLINE = cutoff
+            try:
+                with patch.dict(os.environ, env, clear=True):
+                    valid = (entry, until, cutoff, model.source.encoded(model.family.producer_context()))
+                    self.assertEqual(model.family.reuse_admission(valid), (entry, until, cutoff))
+                    for bad in ((entry, until, cutoff+1.0, valid[3]), (entry, until+1, cutoff, valid[3]),
+                            (entry, until, cutoff, b'public wrong context'), list(valid)):
+                        with self.assertRaises(ValueError): model.family.reuse_admission(bad)
+                    with patch.object(model.family.time, 'monotonic_ns', return_value=entry+600*10**9):
+                        with self.assertRaises(ValueError): model.family.reuse_admission(valid)
+                self.assertEqual((model.source.DEADLINE, model.family.query.DEADLINE), (cutoff, cutoff))
+            finally: model.source.DEADLINE = model.family.query.DEADLINE = None
 
 
 if __name__ == '__main__':unittest.main()

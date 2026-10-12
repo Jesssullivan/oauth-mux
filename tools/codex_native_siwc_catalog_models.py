@@ -9,9 +9,11 @@ import sys
 import time
 from types import SimpleNamespace
 import codex_native_siwc_catalog_source as catalog
+import codex_native_siwc_catalog_content_source as content_catalog
 import codex_native_file_writer_models as shared
 import codex_native_profile as native
 import guard_native_siwc_catalog_source_reserved as source_guard
+import guard_native_siwc_catalog_content_source_reserved as content_source_guard
 
 family, source = catalog.parent, catalog.source
 SELECTION = 'integrations/codex-upstream/siwc-native-catalog-models/qualified-source.json'
@@ -22,6 +24,13 @@ TARGETS = ('//codex-rs/core:core-unit-tests', '//codex-rs/tui:tui-unit-tests',
     '//codex-rs/app-server:app-server-unit-tests', '//codex-rs/models-manager:models-manager-unit-tests')
 ROLES = ('core', 'tui', 'app-server', 'models-manager')
 EVIDENCE_NAMES = tuple(role + '-test.' + extension for role in ROLES for extension in ('log','xml')) + ('native-stdout.log','native-stderr.log')
+SOURCE_ROUTES = {
+    'qualified-catalog-source-hub-uncompiled': (catalog, source_guard,
+        'codex_native_siwc_catalog_source_producer', 'native-siwc-catalog-source'),
+    'qualified-catalog-content-source-hub-uncompiled': (content_catalog, content_source_guard,
+        'codex_native_siwc_catalog_content_source_producer', 'native-siwc-catalog-content-source'),
+}
+
 SEMANTIC_FIELDS = ('kind','status','commit','qualified_parent','native_controls_sha256',
     'native_v4_controls_sha256','native_catalog_v3_manifest_sha256','native_delta_manifest_sha256',
     'patch_sha256','patches','source_inventory','inventory_sha256','tracked_files','source_bytes',
@@ -35,7 +44,7 @@ def selection(raw):
         and value['kind'] == 'omux-native-siwc-catalog-model-selection-v1'
         and value['catalog_controls_sha256'] == catalog.CONTROL_SHA)
     # Cold declaration is honest data, never a provisional success constructor.
-    source.require(value['status'] == 'qualified-catalog-source-hub-uncompiled' and type(value['source']) is dict)
+    source.require(value['status'] in SOURCE_ROUTES and type(value['source']) is dict)
     row = value['source']
     source.require(set(row) == {'root','receipt_sha256','receipt_bytes','inventory_sha256','producer'}
         and type(row['receipt_bytes']) is int and 0 < row['receipt_bytes'] <= source.MAX_METADATA)
@@ -43,7 +52,8 @@ def selection(raw):
     family.protocol.producer_pin(row['producer'])
     root = family.protocol.path(row['root'])
     prefix = str(Path(row['producer']['receipt']).parent / 'output-base/execroot/_main/bazel-out') + '/'
-    suffix = '/testlogs/tools/codex_native_siwc_catalog_source_producer/test.outputs/native-siwc-catalog-source'
+    unused_family, unused_guard, target, leaf = SOURCE_ROUTES[value['status']]
+    suffix = '/testlogs/tools/' + target + '/test.outputs/' + leaf
     source.require(str(root).startswith(prefix) and str(root).endswith(suffix)
         and re.fullmatch(r'[A-Za-z0-9_.-]+',str(root)[len(prefix):-len(suffix)]) is not None)
     return value
@@ -97,6 +107,8 @@ class SelectedSource(family.binding.SealedSource):
 class ExtraOwners:
     """Selected public proof and evidence stay owned through final SDK/SOURCE IO."""
     def __init__(self):
+        self.selected = None
+        self.source_family, self.source_guard = catalog, source_guard
         self.stack, self.evidence = ExitStack(), family.HeldControls()
         self.inputs = self.captured = self.row = self.raw_selection = None
         self.output_parent = self.output_anchor = self.streams = None
@@ -104,14 +116,18 @@ class ExtraOwners:
         self.source_outer = None
 
     def retain(self, owner):
-        original = catalog.retain_controls(owner)
+        original = self.source_family.retain_controls(owner)
         runfiles = Path(os.environ['TEST_SRCDIR']).resolve(strict=True)
         mapping = [physical for alias,physical,*unused in owner.aliases if alias == runfiles/'_repo_mapping']
         source.require(len(mapping) == 1)
         self.mapping_raw = owner.raws[str(mapping[0])]
         source.require(0 < len(self.mapping_raw) <= 1024*1024)
         raw = owner.add(family.binding.ninth.parent.ROOT / SELECTION, maximum=16384)
-        self.row = selection(raw)['source']; self.raw_selection = raw
+        selected = selection(raw)
+        source.require(self.selected is None or selected == self.selected)
+        self.selected = selected
+        self.source_family, self.source_guard, unused_target, unused_leaf = SOURCE_ROUTES[selected['status']]
+        self.row = selected['source']; self.raw_selection = raw
         return original
 
     def admit(self,published,report):
@@ -120,15 +136,26 @@ class ExtraOwners:
         # The main owner already bounded/held this exact repo mapping.
         rows = [row.split(',') for row in self.mapping_raw.decode().splitlines()]
         source.require(all(len(row) == 3 for row in rows))
-        self.inputs = self.stack.enter_context(family.Inputs(runfiles,rows,_repository=REPOSITORY,_kind=INPUT_KIND))
+        if self.source_family is content_catalog:
+            self.inputs = self.stack.enter_context(content_catalog.intake.ModelProofInputs(runfiles, rows))
+            source.require(self.inputs.selection == self.row)
+            self.inputs.admit_content_provenance(self.row)
+        else:
+            self.inputs = self.stack.enter_context(family.Inputs(runfiles,rows,_repository=REPOSITORY,_kind=INPUT_KIND))
         source.require(self.inputs.selection == self.row)
-        self.source_outer, required = family.guardian(self.row,self.inputs,_guard=source_guard)
+        self.source_outer, required = family.guardian(self.row,self.inputs,_guard=self.source_guard)
         old_report = self.inputs.read_json(Path(self.row['root'])/'source-receipt.json',self.row['receipt_sha256'],source.DEADLINE)
-        source.require(old_report['kind'] == catalog.KIND and old_report['status'] == 'verified-siwc-catalog-source-uncompiled'
+        expected_status = ('verified-siwc-catalog-source-uncompiled' if self.source_family is catalog
+            else content_catalog.STATUS)
+        source.require(old_report['kind'] == self.source_family.KIND and old_report['status'] == expected_status
             and old_report['inventory_sha256'] == self.row['inventory_sha256']
             and len(old_report['patch_sha256']) == 12
             and all(old_report[name] is False for name in catalog.previous.FALSE_FLAGS)
             and all(old_report[field] == report[field] for field in SEMANTIC_FIELDS))
+        if self.source_family is content_catalog:
+            content_catalog.validate_report_method(old_report)
+            content_catalog.validate_report_method(report)
+            source.require(old_report['source_intake'] == report['source_intake'])
         self.captured = self.stack.enter_context(SelectedSource(Path(self.row['root']),self.row['receipt_sha256'],
             size=self.row['receipt_bytes'],modes=(0o444,0o555)))
         self.captured.accept(old_report,published.files)
@@ -155,7 +182,7 @@ class ExtraOwners:
         source.require(self.captured is not None and self.inputs is not None)
         self.captured.recheck()
         source.verify_written(self.captured.root/'hub/source',self.hub)
-        source.require(family.guardian(self.row,self.inputs,_guard=source_guard)[0] == self.source_outer)
+        source.require(family.guardian(self.row,self.inputs,_guard=self.source_guard)[0] == self.source_outer)
         self.inputs.check_all(); self.evidence.full()
 
     def evidence_full(self):
@@ -194,8 +221,9 @@ class ExtraOwners:
 
 
 def native_plan(published,sdk,report,work,cutoff):
-    source.require(not work.exists() and report['kind'] == catalog.KIND and len(report['patch_sha256']) == 12
+    source.require(not work.exists() and report['kind'] in (catalog.KIND, content_catalog.KIND) and len(report['patch_sha256']) == 12
         and published.active and all(report[name] is False for name in catalog.previous.FALSE_FLAGS))
+    if report['kind'] == content_catalog.KIND: content_catalog.validate_report_method(report)
     sdk.check(); published.full()
     mapping = sdk.mapping()
     tools = family.query_tools.verify_repository(family.query.QUERY_REPOSITORY,cutoff)
@@ -310,18 +338,30 @@ def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
 
 def main():
     source.require(sys.argv == [sys.argv[0]])
-    results, envelope = [], []
-    with ExtraOwners() as extra:
-        def execute(*arguments):
-            envelope.append((arguments[5],arguments[6]))
-            results.append(native_child(extra,*arguments))
-        catalog.main(_child=execute,_extra=extra,_retainer=extra.retain)
-        extra.short()
-    source.require(len(results) == len(envelope) == 1)
-    entry,until = envelope[0]
-    source.require(time.monotonic_ns()<entry+600*10**9 and time.monotonic_ns()<until)
-    print('native-siwc-catalog-models: twenty new and fifteen original SIWC methods passed on four normal unit targets; native image unqualified',flush=True)
-    source.require(time.monotonic_ns()<entry+600*10**9 and time.monotonic_ns()<until)
+    entry, until, cutoff = family.admission()
+    source.DEADLINE = family.query.DEADLINE = cutoff
+    try:
+        context = family.producer_context()
+        initial = selection(family.declared(SELECTION,16384))
+        results, envelope = [], []
+        with ExtraOwners() as extra:
+            extra.selected = initial
+            extra.source_family, extra.source_guard, unused_target, unused_leaf = SOURCE_ROUTES[initial['status']]
+            def execute(*arguments):
+                source.require((arguments[5], arguments[6]) == (entry, until)
+                    and family.producer_context() == context)
+                envelope.append((arguments[5],arguments[6]))
+                results.append(native_child(extra,*arguments))
+            source.require(family.producer_context() == context)
+            extra.source_family.main(_child=execute,_extra=extra,_retainer=extra.retain,
+                _admitted=(entry, until, cutoff, source.encoded(context)))
+            extra.short()
+        source.require(len(results) == len(envelope) == 1 and envelope[0] == (entry, until))
+        source.require(time.monotonic_ns()<entry+600*10**9 and time.monotonic_ns()<until)
+        print('native-siwc-catalog-models: twenty new and fifteen original SIWC methods passed on four normal unit targets; native image unqualified',flush=True)
+        source.require(time.monotonic_ns()<entry+600*10**9 and time.monotonic_ns()<until)
+    finally:
+        source.DEADLINE = family.query.DEADLINE = None
 
 
 if __name__ == '__main__':

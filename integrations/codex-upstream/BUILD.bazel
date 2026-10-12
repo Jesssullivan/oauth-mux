@@ -106,3 +106,5 @@ filegroup(name = "native_file_writer_storage_patch", srcs = ["file-writer-bounda
 filegroup(name = "native_file_writer_storage_manifest", srcs = ["file-writer-boundary/native-file-writer-storage-v3-manifest.json"])
 filegroup(name = "native_file_writer_preimages", srcs = glob(["file-writer-preimages/**/*"], exclude_directories = 1))
 filegroup(name = "native_file_writer_source_declaration", srcs = ["BUILD.bazel"])
+
+exports_files(["native-n10-content-input.json"])

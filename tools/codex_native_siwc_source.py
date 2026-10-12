@@ -150,18 +150,19 @@ def retain_model_controls(owner):
     return (raw_config, config), (raw_control, control)
 
 
-def produce(output, inputs, work, publication, *, sdk_session=None, query_repository=None, context=None, sdk_qualification=None, _transform=None, _report=None):
+def produce(output, inputs, work, publication, *, sdk_session=None, query_repository=None, context=None, sdk_qualification=None, _transform=None, _report=None, _source_intake=None):
     """Called with one admitted cutoff; caller retains SDK/publication owners to final acceptance."""
+    intake_source = parent_source if _source_intake is None else _source_intake
     transform_source = transform if _transform is None else _transform
     report_source = make_report if _report is None else _report
-    source.require(callable(transform_source) and callable(report_source))
+    source.require(callable(intake_source) and callable(transform_source) and callable(report_source))
     raw_config, config = configuration()
     raw_control, control = controls()
     patch = model_patch(control)
     output_fd = receipt_fd = tree = None
     transferred = False
     try:
-        with parent_source(config, inputs, publication.parents) as (proof, captured, ancestors, before, parent_report):
+        with intake_source(config, inputs, publication.parents) as (proof, captured, ancestors, before, parent_report):
             files = transform_source(before, patch, control)
             output_fd = source.write_source(output, files)
             hub = plan = tools = None
@@ -226,20 +227,21 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
         if error is not None: raise error
 
 
-def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
+def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_factory=None, _admitted=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
     # Only pinned source-family modules supply these callables; no runtime flag
     # or request claims source qualification. Defaults retain the original route.
+    input_factory = Inputs if _input_factory is None else _input_factory
     produce_source = produce if _producer is None else _producer
     retain_source = retain_model_controls if _retainer is None else _retainer
-    source.require(callable(produce_source) and callable(retain_source)
+    source.require(callable(input_factory) and callable(produce_source) and callable(retain_source)
         and (_child is None or callable(_child)) and ((_child is None) == (_extra is None))
-        and _output in (OUTPUT, "native-siwc-catalog-source")
+        and _output in (OUTPUT, "native-siwc-catalog-source", "native-siwc-catalog-content-source")
         and type(_marker) is str)
     source.require(sys.argv in ([sys.argv[0]], [sys.argv[0], '--source-only']))
     source_only = len(sys.argv) == 2
     source.require(not source_only or _child is None)
-    entry, until, cutoff = admission()
-    source.DEADLINE = query.DEADLINE = cutoff
+    entry, until, cutoff = admission() if _admitted is None else parent.reuse_admission(_admitted)
+    if _admitted is None: source.DEADLINE = query.DEADLINE = cutoff
     sdk_session = None
     try:
         source.tick()
@@ -252,7 +254,7 @@ def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _output=OU
                 source.require(all(len(row) == 3 for row in rows))
                 initial_config, initial_control = retain_source(retained)
                 initial_context = producer_context()
-                with Inputs(runfiles, rows) as inputs:
+                with input_factory(runfiles, rows) as inputs:
                     if not source_only:
                         import codex_original_sdk_inputs as original_sdk
                         import codex_native_carrier_metadata as metadata
@@ -329,7 +331,7 @@ def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _output=OU
         try:
             if sdk_session is not None: sdk_session.__exit__(*sys.exc_info())
         finally:
-            source.DEADLINE = query.DEADLINE = None
+            if _admitted is None: source.DEADLINE = query.DEADLINE = None
 
 
 if __name__ == '__main__':
