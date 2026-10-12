@@ -2485,6 +2485,228 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         self.assertEqual(report['removed_entries'],0)
         self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
 
+    def test_ordinary_shared_base_is_retained_while_ephemeral_user_root_retires(self):
+        shared=self.state/'ordinary-check-v1-fixture'
+        shared.mkdir(mode=0o700)
+        (shared/'output-base').mkdir()
+        (shared/'output-base/routine-output').write_bytes(b'shared routine cache')
+        self.receipt['output_base']=str(shared/'output-base')
+        self.receipt['ordinary_check_output']={'scope':self.guard.ORDINARY_CHECK_SCOPE,
+            'physical_history_native_proof':False,'test_results_cached':False}
+        self.save_receipt()
+        before=(self.run/'receipt.json').read_bytes()
+        report=self.retire()
+        self.assertEqual(report['state'],'complete')
+        self.assertEqual(report['children']['output-base'],'excluded-shared-or-external-output-base')
+        self.assertEqual(report['children']['bazel-user-root'],'retired')
+        self.assertEqual((shared/'output-base/routine-output').read_bytes(),b'shared routine cache')
+        self.assertFalse((self.run/'bazel-user-root').exists())
+        self.assertEqual((self.run/'receipt.json').read_bytes(),before)
+        self.assertEqual((self.run/'test-evidence.json').read_bytes(),self.evidence)
+
+
+class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
+    def test_only_closed_standard_test_subsets_select_ordinary_reuse(self):
+        import execution_guard as guard
+        args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
+                             source_dirty='false',reuse_owned_cache=False,arguments=[])
+        self.assertEqual(len(guard.ORDINARY_CHECK_LABELS),12)
+        self.assertTrue(guard.ordinary_check_reuse_selected(args,['test',*sorted(guard.ORDINARY_CHECK_LABELS)]))
+        self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//tools:execution_guard_test','//:docs_check']))
+        self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//:engine_test','//:unit_tests',
+            '//:browser_attempt_transaction_test','//:oauth_oidc_signed_fixture_test','//:format_test','//:docs_check']))
+        for vector in ([],['test'],['build','//:engine_test'],['run','//:docs_check'],
+                ['test','//:engine_test','//:engine_test'],['test','//:engine_test','--nocache_test_results'],
+                ['test','//:engine_test','//tools:codex_owner_status_source_producer'],
+                ['test','//tools:native_flake_seed_plan_qualification'],['test','//:runtime_test'],
+                ['test','//:format'],['test','//tools:codex_native_profile_test']):
+            self.assertFalse(guard.ordinary_check_reuse_selected(args,vector))
+        for profile in ('codex-sdk','codex-native','dependency-prefetch','resident-continuity',
+                'native-file-writer-models-reserved','native-file-writer-source-reserved','site','codex-live'):
+            changed=SimpleNamespace(**{**vars(args),'profile':profile})
+            self.assertFalse(guard.ordinary_check_reuse_selected(changed,['test','//:engine_test']))
+        for name,value in (('native_mode','qualification-cli'),('native_owned_candidate_cache',True),
+                ('codex_pack_directory',Path('/selected')),('new_future_selector',0),
+                ('resident_epoch','an-epoch')):
+            changed=SimpleNamespace(**{**vars(args),name:value})
+            self.assertFalse(guard.ordinary_check_reuse_selected(changed,['test','//:engine_test']))
+
+    def test_source_advance_and_target_subset_do_not_partition_ordinary_policy(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            inputs={'bazel':'/nix/store/fixture/bin/bazel','java':'/nix/store/fixture-jdk'}
+            profile={'ordinary_check_scope':guard.ORDINARY_CHECK_SCOPE,'batch':True,'cache_test_results':False}
+            first=guard.stable_fingerprint(root,inputs,1000,1000,'system',profile)
+            args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
+                                 source_dirty='false',reuse_owned_cache=False)
+            self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//:engine_test']))
+            (root/'BUILD.bazel').write_text('declared source graph advances')
+            args.source_commit='b'*40
+            self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//:docs_check','//:format_test']))
+            self.assertEqual(first,guard.stable_fingerprint(root,inputs,1000,1000,'system',profile))
+            self.assertNotEqual(first,guard.stable_fingerprint(root,{**inputs,'java':'/nix/store/new-jdk'},
+                1000,1000,'system',profile))
+
+    def test_ordinary_commands_keep_batch_no_cached_tests_and_per_run_user_root(self):
+        import execution_guard as guard
+        run=Path('/owned/2a2d7631-f74f-49e4-af5e-23c01b430dc3')
+        shared=Path('/owned/ordinary-check-v1-checkout/output-base')
+        command=guard.bazel_command('/bazel',run,['test','//:engine_test','//:docs_check'],output_base=shared)
+        self.assertIn('--batch',command)
+        self.assertIn('--nocache_test_results',command)
+        self.assertEqual([item for item in command if item.startswith('--output_base=')],['--output_base='+str(shared)])
+        self.assertEqual([item for item in command if item.startswith('--output_user_root=')],
+                         ['--output_user_root='+str(run/'bazel-user-root')])
+        fresh=guard.bazel_command('/bazel',run,['test','//tools:codex_owner_status_source_producer'])
+        self.assertIn('--output_base='+str(run/'output-base'),fresh)
+
+
+class OrdinaryCheckLeaseFilesystemModels(unittest.TestCase):
+    """Real private tiny trees/locks/receipts; no Bazel or process launch.
+
+    Only the enclosing test TMPDIR ancestry is isolated, as in guard_cache_test;
+    the fixture state root, namespace, locks, base and receipts are real owned
+    objects with production nofollow/private checks. No runtime trust override.
+    """
+    def setUp(self):
+        import execution_guard as guard
+        self.guard=guard
+        self.temporary=tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name)
+        self.state=self.root/'state';self.state.mkdir(mode=0o700)
+        self.repository=self.root/'checkout';self.repository.mkdir(mode=0o700)
+        self.first_id='19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae'
+        self.second_id='62200eb5-2d0e-48a5-a5f0-7f5607f52457'
+        self.key='a'*64
+        def fixture_state(path):
+            if Path(path)!=self.state:raise ValueError('fixture state selection refused')
+            descriptor=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            info=os.fstat(descriptor)
+            if info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700:
+                os.close(descriptor);raise ValueError('fixture private state refused')
+            return descriptor
+        patcher=patch('guard_cache.trusted_directory',side_effect=fixture_state)
+        patcher.start();self.addCleanup(patcher.stop)
+
+    def lease(self,run_id=None,key=None,repository=None):
+        return self.guard.OrdinaryCheckLease(self.state,key or self.key,run_id or self.first_id,
+                                            repository or self.repository)
+
+    def receipt(self,run_id,*,empty=True,targets=None,source='a'*40):
+        run=self.state/run_id;run.mkdir(mode=0o700,exist_ok=True)
+        raw=(json.dumps({'id':run_id,'descendants_empty':empty,'verb':'test','profile':'standard',
+            'targets':targets or ['//tools:execution_guard_test'], 'source_commit':source,
+            'graph_sha256':source[:32]*2},sort_keys=True)+'\n').encode()
+        path=run/'receipt.json';path.write_bytes(raw);path.chmod(0o600)
+        with path.open('rb') as held:os.fsync(held.fileno())
+        return raw,hashlib.sha256(raw).hexdigest()
+
+    def completed(self):
+        lease=self.lease();lease.__enter__()
+        lease.output_base.mkdir(mode=0o700)
+        (lease.output_base/'payload').write_bytes(b'current routine output')
+        raw,digest=self.receipt(self.first_id)
+        lease.complete(True,digest);lease.close()
+        return lease,raw
+
+    def test_same_checkout_reuses_original_physical_base_after_bound_terminal_receipt(self):
+        first,raw=self.completed()
+        identity=first.output_base.stat()
+        (self.repository/'BUILD.bazel').write_text('new source, same canonical checkout')
+        with self.lease(self.second_id) as second:
+            self.assertEqual(first.name,second.name)
+            self.assertEqual(first.output_base,second.output_base)
+            self.assertEqual((identity.st_dev,identity.st_ino),
+                             (second.output_base.stat().st_dev,second.output_base.stat().st_ino))
+            self.assertEqual((second.output_base/'payload').read_bytes(),b'current routine output')
+            self.assertEqual((self.state/self.first_id/'receipt.json').read_bytes(),raw)
+            _,digest=self.receipt(self.second_id,targets=['//:docs_check'],source='b'*40)
+            second.complete(True,digest)
+        self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
+
+    def test_different_canonical_checkout_isolates_namespace(self):
+        first,_=self.completed()
+        other=self.root/'other-checkout';other.mkdir(mode=0o700)
+        with self.lease(self.second_id,repository=other) as second:
+            self.assertNotEqual(first.name,second.name)
+            self.assertNotEqual(first.output_base,second.output_base)
+            self.assertFalse(second.output_base.exists())
+
+    def test_changed_fingerprint_refuses_same_namespace_without_creating_another_base(self):
+        first,_=self.completed()
+        marker=(first.output_base.parent/'owner.json').read_bytes()
+        changed=self.lease(self.second_id,key='b'*64)
+        self.assertEqual(changed.name,first.name)
+        with self.assertRaises(ValueError):changed.__enter__()
+        self.assertEqual((first.output_base.parent/'owner.json').read_bytes(),marker)
+        self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
+
+    def test_live_exclusive_lock_and_dirty_exit_refuse_reuse(self):
+        with self.lease() as first:
+            with self.assertRaises(BlockingIOError):self.lease(self.second_id).__enter__()
+            with self.assertRaises(ValueError):first.complete(False,'a'*64)
+        with self.assertRaises(ValueError):self.lease(self.second_id).__enter__()
+
+    def test_absent_or_changed_last_terminal_receipt_refuses_reuse(self):
+        first,raw=self.completed()
+        receipt=self.state/self.first_id/'receipt.json'
+        receipt.unlink()
+        with self.assertRaises(FileNotFoundError):self.lease(self.second_id).__enter__()
+        receipt.write_bytes(raw+b' ');receipt.chmod(0o600)
+        with self.assertRaises(ValueError):self.lease(self.second_id).__enter__()
+        self.assertEqual((first.output_base/'payload').read_bytes(),b'current routine output')
+
+    def test_matching_digest_but_live_descendants_refuses_reuse(self):
+        first,_=self.completed()
+        _,digest=self.receipt(self.first_id,empty=False)
+        marker=first.output_base.parent/'owner.json'
+        value=json.loads(marker.read_bytes());value['cleanup_receipt_sha256']=digest
+        marker.write_text(json.dumps(value)+'\n');marker.chmod(0o600)
+        with self.assertRaises(ValueError):self.lease(self.second_id).__enter__()
+
+    def test_symlink_namespace_base_and_private_mode_refuse_without_external_effects(self):
+        first,_=self.completed()
+        original=first.output_base.parent
+        saved=self.state/'saved-ordinary-root';original.rename(saved)
+        original.symlink_to(saved,target_is_directory=True)
+        with self.assertRaises(OSError):self.lease(self.second_id).__enter__()
+        self.assertTrue(original.is_symlink())
+        original.unlink();saved.rename(original)
+        outside=self.root/'outside';outside.mkdir(mode=0o700)
+        (outside/'keep').write_bytes(b'external data')
+        first.output_base.rename(original/'saved-output')
+        first.output_base.symlink_to(outside,target_is_directory=True)
+        with self.assertRaises(OSError):self.lease(self.second_id).__enter__()
+        self.assertEqual((outside/'keep').read_bytes(),b'external data')
+        first.output_base.unlink();(original/'saved-output').rename(first.output_base)
+        original.chmod(0o755)
+        with self.assertRaises(ValueError):self.lease(self.second_id).__enter__()
+
+    def test_private_copied_evidence_survives_later_shared_testlog_overwrite(self):
+        with self.lease() as first:
+            logs=first.output_base/'execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/execution_guard_test'
+            logs.mkdir(parents=True)
+            epoch=time.time_ns()
+            (logs/'test.log').write_bytes(b'first actual invocation log')
+            (logs/'test.xml').write_bytes(b'<testsuite tests="1" failures="0"/>')
+            run=self.state/self.first_id;run.mkdir(mode=0o700)
+            manifest=self.guard.capture_test_evidence(first.output_base,run,['//tools:execution_guard_test'],0,epoch)
+            selected=next(row for row in manifest['results'][0]['files'] if row['source']=='test.log')
+            copy=run/'test-evidence'/selected['file']
+            before=copy.read_bytes()
+            raw,digest=self.receipt(self.first_id)
+            first.complete(True,digest)
+        with self.lease(self.second_id) as second:
+            self.assertEqual(first.output_base,second.output_base)
+            (logs/'test.log').write_bytes(b'second invocation overwrites shared physical log')
+            self.assertEqual(copy.read_bytes(),before)
+            self.assertEqual(before,b'first actual invocation log')
+            self.assertEqual((run/'receipt.json').read_bytes(),raw)
+
+
+
 
 
 if __name__ == '__main__':

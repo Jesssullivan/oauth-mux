@@ -1490,6 +1490,53 @@ def record_resident_lifecycle(receipt,admission,*,clock=time.monotonic_ns):
             'complete_supported_demand_coverage':False,'achieved_slo':False}
     receipt['resident_continuity']['lifecycle_attempt'] = observation
 
+ORDINARY_CHECK_SCOPE = 'closed-standard-test-checkout-output-v1'
+ORDINARY_CHECK_LABELS = frozenset({
+    '//:engine_test', '//:unit_tests', '//:transport_test', '//:observer_test',
+    '//:oauth_oidc_crypto_test', '//:oauth_oidc_profile_test',
+    '//:oauth_oidc_signed_fixture_test', '//:browser_attempt_transaction_test',
+    '//:storage_test', '//:format_test', '//:docs_check', '//tools:execution_guard_test',
+})
+ORDINARY_CHECK_ARGUMENT_FIELDS = frozenset({
+    'arguments', 'profile', 'manager', 'source_commit', 'source_dirty', 'state_dir',
+    'initialize_state_dir', 'coordination_dir', 'become_file', 'reuse_owned_cache',
+    'repository_cache', 'nixpkgs_source', 'python', 'systemd_run', 'systemctl',
+    'bazel', 'closure', 'bootstrap_closure', 'zig_sdk', 'java_home',
+})
+
+
+def ordinary_check_reuse_selected(args, arguments):
+    """Closed ordinary TEST scope, evaluated before profile-derived mutations.
+
+    No target suffix inference, aliases, flags, producer/native/reserved profiles
+    or cached test results. Other lanes keep their existing explicit policy.
+    """
+    if (args.profile != 'standard' or not isinstance(arguments, list)
+            or len(arguments) < 2 or arguments[0] != 'test'
+            or any(type(label) is not str or label not in ORDINARY_CHECK_LABELS for label in arguments[1:])
+            or len(set(arguments[1:])) != len(arguments)-1):
+        return False
+    # Unknown future non-default selectors cannot silently join this scope.
+    return all(name in ORDINARY_CHECK_ARGUMENT_FIELDS or value is None or value is False
+               for name, value in vars(args).items())
+
+
+class OrdinaryCheckLease(CacheLease):
+    """One namespace per canonical checkout; full fingerprint stays in marker.
+
+    Parent implementation retains private/nofollow directory and lock custody,
+    dirty-before-admission and digest-bound last empty-descendant receipt checks.
+    Different tools/containment/policy refuse this existing namespace rather than
+    creating another one. Invalidation/restoration is explicit operator work.
+    """
+    def __init__(self, state_root, key, run_id, repository):
+        super().__init__(state_root, key, run_id, policy_version=2)
+        checkout = Path(repository).resolve(strict=True)
+        namespace = hashlib.sha256(str(checkout).encode()).hexdigest()
+        self.name = 'ordinary-check-v1-' + namespace
+        self.output_base = self.state_root / self.name / 'output-base'
+
+
 # Finite output contracts for the six current graph/N10 producer families.
 # Routine tests retire by default. A future downstream payload consumer must
 # declare its exact producer vector and leaves here before producing its inputs.
@@ -2220,6 +2267,7 @@ def _main(argv, admission_resources, retirement_resources):
     resident_output = None
     if args.worker:
         return worker(args.worker, arguments)
+    ordinary_check_reuse = ordinary_check_reuse_selected(args, arguments)
     home_manager_owned = home_manager_owned_request(args,arguments,
         delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
     dev_stage_proof = dev_stage_request(args.profile,args.manager,arguments,args.reuse_owned_cache,
@@ -2910,7 +2958,7 @@ def _main(argv, admission_resources, retirement_resources):
                 yoga.require_unit_absent(control, identifier, args.yoga_deadline_monotonic_ns)
             if site and (graph_sha256, graph_inputs) != site_controller_graph:
                 raise ValueError('site controller source changed before dispatch')
-            if args.reuse_owned_cache:
+            if args.reuse_owned_cache or ordinary_check_reuse:
                 if args.state_dir.resolve().is_relative_to(Path.cwd().resolve()):
                     raise ValueError('owned output cache must remain outside the source repository')
                 cache_inputs = {key: environment[key] for key in
@@ -2958,9 +3006,15 @@ def _main(argv, admission_resources, retirement_resources):
                                                           test_strategy=None)
                     else:
                         cache_profile['execution']['strategy_exceptions'] = {'CopyFile': 'local'}
+                if ordinary_check_reuse:
+                    # Deliberately omit targets, source commit and graph from the
+                    # fixed policy. Bazel invalidates declared inputs/actions;
+                    # each epoch still captures its own graph and test evidence.
+                    cache_profile['ordinary_check_scope'] = ORDINARY_CHECK_SCOPE
                 cache_key = stable_fingerprint(workload_cwd if site else Path.cwd(), cache_inputs, os.getuid(), os.getgid(),
                                                args.manager, cache_profile)
-                lease = CacheLease(args.state_dir, cache_key, identifier, policy_version=2)
+                lease = (OrdinaryCheckLease(args.state_dir, cache_key, identifier, Path.cwd())
+                         if ordinary_check_reuse else CacheLease(args.state_dir, cache_key, identifier, policy_version=2))
                 resources.callback(lease.close)
                 lease.__enter__()
                 if sdk:
@@ -3699,7 +3753,13 @@ def _main(argv, admission_resources, retirement_resources):
                        'supervisor': {'pid': supervisor_pid, 'start_ticks': supervisor_start_ticks},
                        'cache_reuse_requested': args.reuse_owned_cache,
                        'cache_key': cache_key, 'graph_sha256': graph_sha256,
-                       'cache_policy': 2 if args.reuse_owned_cache else None,
+                       'cache_policy': 2 if args.reuse_owned_cache or ordinary_check_reuse else None,
+                       'ordinary_check_output': {'scope': ORDINARY_CHECK_SCOPE,
+                           'namespace': lease.name, 'mode': 'owned-shared-checkout-output-base',
+                           'test_results_cached': False, 'physical_history_native_proof': False,
+                           'source_and_targets_partition_namespace': False,
+                           'fingerprint_change': 'refuse; explicit operator invalidation required'}
+                           if ordinary_check_reuse else None,
                        'cache_profile': cache_profile,
                        'graph_inputs': graph_inputs,
                        'output_base': str(native_cli.lease.output_base if native_cli else native_history.lease.output_base if native_history
