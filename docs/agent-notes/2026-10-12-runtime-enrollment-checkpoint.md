@@ -586,3 +586,103 @@ accounts, provider or same-process live proof follows. Stock/Darwin, signing,
 publication and measured SLO gates remain open. Original SOURCE 600/action
 840/outer 1200 limits, native selector `source:null`, and the active, overdue,
 incomplete goal/acceptance clock are unchanged.
+
+## Component staging and transported input route — 2026-10-12 22:26 UTC
+
+DS2122 closed 0/0 at `d757f1d29b16e4fdc17000b38ec668e9b07e2f9c`:
+actual core, daemon, Qt control and unsigned Chromium development bytes were
+staged as one retained development generation. The stage action itself did
+not execute Qt, activate the daemon, reload Chromium or access a provider.
+Its declared dependency additionally ran the Qt `--self-check` against an
+offline private fixture socket, qualifying offscreen startup/library resolution
+only. The dependency-scope clarification preserves these distinct facts;
+interactive UI, installed activation and attended browser acquisition remain
+unproved.
+
+RB2139 closed BUILD-only 0/0 on that same source, retaining original generated
+reference, Chromium metadata and unsigned ZIP inputs for later SPA intake.
+The generated reference and package are actual bytes; import validation,
+website rendering/publication, signing and browser activation are separate.
+
+Current source `34fe55a1716e2246be6f7c0d90e77041f88ac23c` uses graph
+`fce3ec4b59fd8524a89fd7de8961625c4a3cba6d71facf71b8a0aa730d7b14c8`/523.
+It includes the distinct complete transported SDK/SOURCE route rather than inheriting
+original host inode authority. Original input provenance, complete content/NAR,
+held/named custody and original clock/resource checks remain required. Genuine
+producer acceptance, compiled native consumer and ordinary accepted-history
+continuity are separate gates.
+
+TM2157 at `118b0bec1d8303d73aa4f0c11989adb51a9dc515` failed 3/3: six of
+seven targets passed, while the 15-method driver suite errored on the legacy
+owner-refusal fixture with `TypeError` (`Mock` / `str`). The adopted two-file
+correction admits the concrete transported owner before SDK/publication/query
+IO or scratch effects and keeps later full owner-record/root joins. TM2212
+then closed 0/0 at current 34fe: all 15 driver models and docs passed. These
+finite models do not prove the genuine transported producer or installed/native
+continuity.
+
+Raw receipts, respectively DS2122, RB2139, TM2157 and TM2212:
+`acf525e141f347cb9ef09f7f223e7eb14c0b7cd55278526a56b7d6d925ab7cce`,
+`014da70e355d5a2553c04e123a849a800d3a08fa6f0bc3a32beae95ed90133de`,
+`47c3034fcdde94eb6eecd225c71a79681da97e05a30a55f5b261d8b2606d152a`,
+`b8c12b6200f0bfe5ec0caa57d8b90249d7eeef075ba850df8e31f23d38e4708a`.
+All four standard manager-cleanup receipts remain ownership unproved/readbacks
+0/stop not requested despite empty descendants/absent cgroup.
+
+The separate TM2157 administrative residual cleanup removed 279,411
+entries/last-link inodes with 758,829,056 observed allocated bytes, preserving
+required evidence and the original failed test receipt. The dated 22:08 UTC
+R-C618/R-C620 estate audit records 11 intentionally held output bases and
+additional retained products, without requalifying native content or attributing
+filesystem-wide net changes solely to Omux. Holds are current-input/ordinary
+cache custody, not delivered installed proof.
+
+At the retained 22:14:07 UTC observation, CNS2214, original handle 64212,
+epoch `dd0e66d6-e0a3-4b8f-a77d-7fb30c5c9e58`, was verified LIVE at 34fe/fce3.
+This is the first complete transported SDK/SOURCE producer attempt. No terminal
+result, budget fit, native qualification or emitted output is inferred.
+
+The original CNS2214 handle subsequently closed outer/workload 125/3 on the
+same 34fe/fce3/523 source. Content-source 45 methods passed; the genuine
+producer FAILED in 420.5 seconds (Bazel 595.095 seconds, 35,342 configured
+targets and 14 actions). Extraction created 20,756 directories by the
+9.627851797-second elapsed marker. At copy refusal, the 318.511951413-second
+elapsed marker recorded 125,581 copied files and 2,895,950,210 bytes. These
+are partial progress counters, not successful complete extraction/NAR proof
+or a measured pure-copy duration.
+
+The truncated redacted diagnostic joins `sdk-carrier:1629,1173,145,88,47`
+through unknown frames to the original 600-second SDK/SOURCE clock cutoff
+while copying. It does not establish complete RCA or measured improvement.
+A single retained resource sample reached the 3.75-GiB memory cap/peak, with
+zero sampled `oom`/`oom_kill` events and 35 current tasks; that sample does
+not establish the failure's cause. Raw receipt
+`af4f96e89cc8cb591d3cc4996f045f109497befdcc02fff2a8fb834157b8bfb8`;
+evidence manifest
+`97c525b12f4b6d94c1918e0483358d941a989f072867c8974ab1e33244cbc9bf`;
+workload log
+`c13cd11b672d18b7410c7a27be963a8bd2e7dcdeb9c4ac3188c10a6e5c7d39bd`.
+Reserved cleanup verified two readbacks, successful stop, empty descendants
+and absent cgroup. Automatic retirement was separately deferred at deadline,
+0 removed entries. Native selector remains `source:null`; genuine
+SDK/SOURCE/HUB/native flags remain false.
+
+Subsequent administrative handle 26924 closed exit 0 at the retained 22:26 UTC
+root readback. The residual result records 311,780 removed entries/last-link
+inodes and 3,417,645,056 observed allocated bytes, journal
+`5b9e9ef04038a2fed19d0a258bccacb0df2281f83fa5d03f6727793d36417d0f`.
+Required receipts, supervisor, copied test evidence and workload log remain;
+no source change or service signal occurred. Automatic retirement, administrative
+removal counters and concurrent filesystem-wide net changes retain separate
+scopes. The R-C618/R-C620 cleanup requirement remains in force.
+
+SPA intake of the unchanged original RB2139 reference/metadata/ZIP remains
+queued at this checkpoint; no import, site check or publication outcome is
+claimed.
+
+Normal OS-vault unlock and usable retained accounts, actual Home Manager
+installation, attended Yoga acquisition, ordinary application resume with
+preserved accepted history, same-process live handoff and Darwin remain open.
+The mandatory daemon/Omux-owned adapter architecture, original goal clock,
+resource/deadline limits, unsigned/unpublished status and unproved stock
+continuity/SLO gates are unchanged.
