@@ -16139,8 +16139,8 @@ const SiwcCatalogTest = struct {
         var arena: std.heap.ArenaAllocator = .init(a);
         defer arena.deinit();
         const scratch = arena.allocator();
-        const raw = try std.json.Stringify.valueAlloc(scratch, params, .{});
-        var parsed = try std.json.parseFromSlice(std.json.Value, scratch, raw, .{});
+        const serialized_params = try std.json.Stringify.valueAlloc(scratch, params, .{});
+        var parsed = try std.json.parseFromSlice(std.json.Value, scratch, serialized_params, .{});
         defer parsed.deinit();
         if (parsed.value != .object) return error.InvalidFixture;
         var capability = try current.capabilityForTest("codex");
