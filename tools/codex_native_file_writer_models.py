@@ -220,7 +220,7 @@ def read_actual(path, owner):
     finally: os.close(parent)
 
 
-def publish_result(path, report, owner, *, prepared=None, evidence=None):
+def publish_result(path, report, owner, *, prepared=None, evidence=None, _evidence_names=None):
     """Join original owned directory/writers; retain bounded child evidence."""
     if prepared is None:
         path.mkdir(mode=0o700)
@@ -239,8 +239,9 @@ def publish_result(path, report, owner, *, prepared=None, evidence=None):
         raw = source.encoded(report)
         source.require(0 < len(raw) <= source.MAX_METADATA)
         evidence = {} if evidence is None else evidence
-        source.require(type(evidence) is dict and (not evidence or set(evidence) == {
-            'native-test.log', 'native-test.xml', 'native-stdout.log', 'native-stderr.log'}))
+        evidence_names = {'native-test.log', 'native-test.xml', 'native-stdout.log', 'native-stderr.log'} if _evidence_names is None else set(_evidence_names)
+        source.require(0 < len(evidence_names) <= 10 and all(type(name) is str and re.fullmatch(r'[a-z-]+[.](log|xml)', name) is not None for name in evidence_names)
+            and type(evidence) is dict and (not evidence or set(evidence) == evidence_names))
         bodies = {**evidence, 'models-receipt.json': raw}
         anchors = {}
         for name, body in bodies.items():

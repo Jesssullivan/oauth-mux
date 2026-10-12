@@ -155,8 +155,10 @@ class Inputs:
 
     Held proof leaves stay alive until after final source/output fences.
     """
-    def __init__(self, runfiles, rows):
-        names = [row[2] for row in rows if len(row) == 3 and row[0] in ('', '_main') and row[1] == REPOSITORY]
+    def __init__(self, runfiles, rows, *, _repository=REPOSITORY, _kind=INPUT_KIND):
+        source.require((_repository, _kind) in ((REPOSITORY, INPUT_KIND),
+            ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-model-input-v1')))
+        names = [row[2] for row in rows if len(row) == 3 and row[0] in ('', '_main') and row[1] == _repository]
         source.require(len(names) == 1 and re.fullmatch(r'[A-Za-z0-9_+.-]{1,256}', names[0]) is not None)
         self.stack, self.held = ExitStack(), {}
         try:
@@ -178,7 +180,7 @@ class Inputs:
             self.raw = self._capture(self.path, source.MAX_METADATA, declaration=True)
             doc = decode(self.raw)
             source.require(type(doc) is dict and set(doc) == {'kind', 'selection', 'inputs'}
-                and doc['kind'] == INPUT_KIND and type(doc['inputs']) is list and len(doc['inputs']) <= 10000)
+                and doc['kind'] == _kind and type(doc['inputs']) is list and len(doc['inputs']) <= 10000)
             self.selection = doc['selection']
             self.rows = {}
             for index, row in enumerate(doc['inputs']):
@@ -382,22 +384,27 @@ def retain_model_controls(owner):
         owner.add(root / name, pin, maximum)
     return (raw_config, config), (raw_control, control)
 
-def guardian(selected, inputs):
+def guardian(selected, inputs, *, _guard=None):
+    authority = parent_guard if _guard is None else _guard
+    source.require(authority.PROFILE in ('native-file-writer-source-reserved', 'native-siwc-catalog-source-reserved'))
+    projection_key = ('native_file_writer_source_reservation' if authority.PROFILE == parent_guard.PROFILE
+        else 'native_siwc_catalog_source_reservation')
     producer = selected['producer']; protocol.producer_pin(producer)
     outer = inputs.read_json(Path(producer['receipt']), producer['sha256'], source.DEADLINE)
-    reservation = outer['native_file_writer_source_reservation']
-    source.require(reservation == parent_guard.projection(reservation['original_entry_monotonic_ns'],
+    reservation = outer[projection_key]
+    source.require(reservation == authority.projection(reservation['original_entry_monotonic_ns'],
         reservation['original_deadline_monotonic_ns'], True, reservation['resident'])
-        and outer['profile'] == parent_guard.PROFILE and outer['targets'] == parent_guard.ARGUMENTS[1:]
+        and outer['profile'] == authority.PROFILE and outer['targets'] == authority.ARGUMENTS[1:]
         and outer['source_commit'] == producer['source_commit'] and outer['graph_sha256'] == producer['graph_sha256']
         and outer['exit'] == 0 and outer['workload_exit'] == 0 and outer['controller_failure'] is None
         and outer['descendants_empty'] is True and outer['cleanup']['state'] == 'empty'
         and outer['source_dirty'] == 'false' and outer['verb'] == 'test' and outer['manager'] == 'system'
         and outer['cache_reuse_requested'] is False and outer['cache_policy'] is None and outer['cache_key'] is None
         and outer['test_evidence']['state'] == 'preserved')
-    kernel = parent_guard.kernel
+    kernel = authority.kernel
     kernel.kernel_bounds(reservation['resident']['kernel_bounds'])
-    binding.protocol.native.phase2_effective_runtime(outer['observed_properties']['RuntimeMaxUSec'], 1200)
+    binding.protocol.native.phase2_effective_runtime(outer['observed_properties']['RuntimeMaxUSec'],
+        1200 if _guard is None else authority.ACTION_SECONDS)
     # Exact independently pinned outer bytes include all observed caps and epoch facts.
     evidence_path = Path(producer['receipt']).parent / 'test-evidence.json'
     evidence = inputs.read_json(evidence_path, outer['test_evidence']['sha256'], source.DEADLINE)

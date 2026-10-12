@@ -2405,6 +2405,40 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         self.assertEqual(report['retained_output_contract'],[])
         self.assertFalse(self.output.exists())
 
+    def test_exact_catalog_models_vector_retains_both_source_and_actual_test_receipts(self):
+        self.producer('//tools:codex_native_siwc_catalog_models_producer')
+        self.receipt['targets']=['//tools:codex_native_siwc_catalog_models_test',
+            '//tools:codex_native_siwc_catalog_models_producer'];self.save_receipt()
+        original=self.output.stat();report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(report['retained_output_contract'],['//tools:codex_native_siwc_catalog_models_producer'])
+        self.assertEqual(report['retained_physical_root'],{'device':original.st_dev,'inode':original.st_ino})
+        self.assertTrue(self.output.exists());self.assertFalse((self.run/'bazel-user-root').exists())
+        self.assertIn('fresh qualification',report['proof_semantics'])
+
+    def test_catalog_models_missing_source_receipt_retires_even_with_model_receipt(self):
+        directory=self.producer('//tools:codex_native_siwc_catalog_models_producer')
+        self.receipt['targets']=['//tools:codex_native_siwc_catalog_models_test',
+            '//tools:codex_native_siwc_catalog_models_producer'];self.save_receipt()
+        (directory/'native-siwc-catalog-source/source-receipt.json').unlink()
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'missing-or-partial-declared-products')
+        self.assertFalse(self.output.exists())
+
+    def test_bare_catalog_models_target_has_no_retention_authority(self):
+        self.producer('//tools:codex_native_siwc_catalog_models_producer')
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'no-successful-current-output-contract')
+        self.assertFalse(self.output.exists())
+
+    def test_failed_catalog_models_workload_never_retains_apparent_completed_receipts(self):
+        self.producer('//tools:codex_native_siwc_catalog_models_producer')
+        self.receipt.update(targets=['//tools:codex_native_siwc_catalog_models_test',
+            '//tools:codex_native_siwc_catalog_models_producer'],exit=1,workload_exit=1);self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
     def test_depth_bound_refuses_before_any_tree_removal(self):
         directory=self.output
         for _ in range(self.guard.RETIREMENT_DEPTH):

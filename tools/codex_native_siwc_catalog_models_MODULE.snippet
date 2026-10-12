@@ -1,0 +1,6 @@
+# Root serial MODULE composition; selector stays cold until actual SOURCE receipt.
+codex_native_siwc_catalog_model_inputs = use_repo_rule("//tools:codex_native_siwc_catalog_model_inputs.bzl", "codex_native_siwc_catalog_model_inputs")
+codex_native_siwc_catalog_model_inputs(
+    name = "omux_native_siwc_catalog_model_inputs",
+    selection = "//integrations/codex-upstream/siwc-native-catalog-models:qualified-source.json",
+)

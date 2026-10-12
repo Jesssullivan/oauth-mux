@@ -226,16 +226,18 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
         if error is not None: raise error
 
 
-def main(*, _producer=None, _retainer=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
+def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
     # Only pinned source-family modules supply these callables; no runtime flag
     # or request claims source qualification. Defaults retain the original route.
     produce_source = produce if _producer is None else _producer
     retain_source = retain_model_controls if _retainer is None else _retainer
     source.require(callable(produce_source) and callable(retain_source)
+        and (_child is None or callable(_child)) and ((_child is None) == (_extra is None))
         and _output in (OUTPUT, "native-siwc-catalog-source")
         and type(_marker) is str)
     source.require(sys.argv in ([sys.argv[0]], [sys.argv[0], '--source-only']))
     source_only = len(sys.argv) == 2
+    source.require(not source_only or _child is None)
     entry, until, cutoff = admission()
     source.DEADLINE = query.DEADLINE = cutoff
     sdk_session = None
@@ -276,9 +278,12 @@ def main(*, _producer=None, _retainer=None, _output=OUTPUT, _marker="native-siwc
                                 sdk_session=sdk_session, query_repository=query.QUERY_REPOSITORY, context=initial_context,
                                 sdk_qualification={'selector_sha256': source.sha(selected_raw), 'selection': selected,
                                     'qualified_producer': qualified, 'declaration': declaration, 'proof_inputs': proofs.record()})
+                            if _child is not None:
+                                _child(published, sdk_session, report, retained, inputs, entry, until, cutoff)
                             if not published.members_captured: published.capture()
                             # All owners span the last full source/output/carrier/original reads.
                             published.full()
+                            if _extra is not None: _extra.full()
                             sdk_session.finish()
                             source.require(metadata.qualify_producer(selected, cutoff, proofs) == qualified)
                             metadata.recheck_aliases(aliases, cutoff); proofs.recheck(cutoff)
@@ -286,6 +291,7 @@ def main(*, _producer=None, _retainer=None, _output=OUTPUT, _marker="native-siwc
                             source.require(configuration() == initial_config and controls() == initial_control
                                 and producer_context() == initial_context)
                             retained.full(); inputs.check_all()
+                            if _extra is not None: _extra.evidence_full()
                             # One same-held terminal observation phase. Full byte/NAR
                             # work precedes all physical-only namespace/FD/root joins.
                             published.fence(); sdk_session.fence()
@@ -301,11 +307,13 @@ def main(*, _producer=None, _retainer=None, _output=OUTPUT, _marker="native-siwc
                             and producer_context() == initial_context)
                         retained.full(); inputs.check_all(); published.fence()
                         retained.fence(); inputs.check(); published.roots()
+                    if _extra is not None: _extra.fence()
                     # SDK bulk walks and normal SDK close have completed. Every
                     # SOURCE/output member now joins its original witness via
                     # retained parents while all proof/control/alias owners live.
                     retained.fence(); inputs.check()
                     published.terminal()
+                    if _extra is not None: _extra.short()
                     retained.fence(); inputs.check(); published.roots()
                 # Input close performs no full SOURCE/SDK work. Retain captured
                 # controls and publication descriptors through that cleanup.
