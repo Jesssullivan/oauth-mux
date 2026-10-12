@@ -700,6 +700,20 @@ zig_test(
     data = ZIG_RUNTIME_DATA,
 )
 
+# Diagnose the actual queued actor fixture before the full regression gates.
+zig_test(
+    name = "queued_ingress_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+    zigopts = [
+        "--test-filter",
+        "queued malformed control ingress preserves committed actor custody and completes allocator failures",
+    ],
+)
+
 zig_test(
     name = "browser_attempt_transaction_test",
     main = "src/browser_attempt_transaction_tests.zig",
