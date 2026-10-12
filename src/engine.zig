@@ -4556,9 +4556,9 @@ pub const Engine = struct {
         self.committed_nonledger_bytes = nonledger;
         self.committed_counts = self.actualCounts();
         if (routes) |model| try oauth_issue.testing.attachPairedRefreshModelRoutes(ticket, model);
-        const dispatch = ticket.retainFence();
-        errdefer dispatch.deinit();
-        var pending: OwnedRenewalPending = .{ .ticket = ticket, .fence = dispatch, .binding = binding };
+        const dispatch_fence = ticket.retainFence();
+        errdefer dispatch_fence.deinit();
+        var pending: OwnedRenewalPending = .{ .ticket = ticket, .fence = dispatch_fence, .binding = binding };
         try self.ownedRenewalCurrent(&pending);
         if (builtin.is_test) {
             var selected_servers = self.active_owned_renewal_fixture;
@@ -14876,7 +14876,10 @@ const OwnedRenewalActorModel = struct {
             const separator = std.mem.lastIndexOfScalar(u8, jwt, '.') orelse return error.InvalidFixtureJwt;
             jwt[separator + 1] = if (jwt[separator + 1] == 'A') 'B' else 'A';
         }
-        const refresh = try std.fmt.allocPrint(a, if (options.same_refresh) "synthetic-refresh-{s}" else "synthetic-renewed-refresh-{s}", .{subject});
+        const refresh = if (options.same_refresh)
+            try std.fmt.allocPrint(a, "synthetic-refresh-{s}", .{subject})
+        else
+            try std.fmt.allocPrint(a, "synthetic-renewed-refresh-{s}", .{subject});
         defer {
             std.crypto.secureZero(u8, refresh);
             a.free(refresh);

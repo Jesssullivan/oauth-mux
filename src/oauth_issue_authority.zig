@@ -114,11 +114,11 @@ pub fn authorizationUrl(io: std.Io, a: std.mem.Allocator, profile: *EnrollmentPr
         .{ .key = "nonce", .value = &nonce },
         .{ .key = "code_challenge_method", .value = "S256" },
         .{ .key = "code_challenge", .value = &challenge },
-    }, 0..) |pair, index| {
+    }, 0..) |form_field, index| {
         if (index != 0) try output.append(a, '&');
-        try output.appendSlice(a, pair.key);
+        try output.appendSlice(a, form_field.key);
         try output.append(a, '=');
-        try appendEncoded(a, &output, pair.value);
+        try appendEncoded(a, &output, form_field.value);
     }
     if (profile.view().resource) |resource| {
         try output.appendSlice(a, "&resource=");
