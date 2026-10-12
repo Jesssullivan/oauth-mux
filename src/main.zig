@@ -84,8 +84,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, command, "sign-in")) {
         return siwc_cli.run(io, allocator, locations, parameters, init.environ_map.get("OMUX_INSTALL_PREFIX")) catch |err| {
-            if (err == error.EnrollmentCustodyUnavailable) try output(io,
-                "Credential custody unavailable. Restore normal OS-vault access; unlock through its normal UI if requested, then use Setup Resume after vault unlock. Existing encrypted data is preserved; no key regeneration or plaintext fallback. The OS chooses the required authentication factor.\n");
+            if (err == error.EnrollmentCustodyUnavailable) try output(io, "Credential custody unavailable. Restore normal OS-vault access; unlock through its normal UI if requested, then use Setup Resume after vault unlock. Existing encrypted data is preserved; no key regeneration or plaintext fallback. The OS chooses the required authentication factor.\n");
             return err;
         };
     }
