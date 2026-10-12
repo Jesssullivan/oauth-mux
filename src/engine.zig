@@ -4262,7 +4262,7 @@ pub const Engine = struct {
     fn cancelFreshOAuth(self: *Engine, id: ?[32]u8) void {
         for (self.fresh_oauth_pending.items) |*pending| {
             if (id) |selected| if (!std.meta.eql(selected, pending.attempt.binding.transaction_id)) continue;
-            if (pending.fence) |fence| _ = fence.invalidate();
+            if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
             if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
             if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
             if (pending.receiver) |receiver| { receiver.deinit(); pending.receiver = null; }
@@ -4309,14 +4309,14 @@ pub const Engine = struct {
     /// or makes cancelled work live again. Drop only ephemeral stale receivers.
     fn reconcileFreshOAuthFences(self: *Engine) void {
         for (self.fresh_oauth_pending.items) |*pending| if (!self.freshOAuthCurrent(pending)) {
-            if (pending.fence) |fence| _ = fence.invalidate();
+            if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
             if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
             if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
             if (pending.receiver) |receiver| { receiver.deinit(); pending.receiver = null; }
         };
     }
     fn freshOAuthUnknown(self: *Engine, pending: *FreshOAuthPending) !void {
-        if (pending.fence) |fence| _ = fence.invalidate();
+        if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
         if (self.fresh_oauth) |*ledger| {
             const record = ledger.find(pending.attempt.binding.transaction_id) orelse return;
             if (record.phase == .exchange_issued or record.phase == .completion_unknown or record.phase == .verifying) {
@@ -4440,7 +4440,7 @@ pub const Engine = struct {
                             else => return err,
                         };
                     } else return error.EnrollmentAuthorityChanged;
-                    if (pending.fence) |fence| fence.checkBeforeCompletion() catch {
+                    if (pending.fence) |oauth_fence| oauth_fence.checkBeforeCompletion() catch {
                         try self.freshOAuthUnknown(pending);
                         pending.deinit();
                         _ = self.fresh_oauth_pending.orderedRemove(position);
@@ -4558,7 +4558,7 @@ pub const Engine = struct {
             if (!self.freshOAuthCurrent(pending)) { try self.freshOAuthUnknown(pending); return; }
             if (task.failure) |err| {
                 self.fresh_oauth_failure = err;
-                if (pending.fence) |fence| _ = fence.invalidate();
+                if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
                 const record = self.fresh_oauth.?.find(pending.attempt.binding.transaction_id) orelse return;
                 record.phase = .quarantined;
                 try self.persist(&.{});
@@ -12229,13 +12229,13 @@ test "signed owned single-account SIWC actor materializes only current paired ac
     try std.testing.expectEqual(@as(usize, 1), reopened.state.leases.items.len);
     try std.testing.expect(reopened.requests.attempt("codex", &fault_lease).?.state == .unknown);
     const retained_intent = reopened.requests.intentForHandle("codex", &fault_lease).?;
-    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent));
+    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent.*));
     var terminal_cleanup = try SiwcActorTest.report(producer, reopened, reference, fault_lease, "abandoned");
     defer SiwcActorTest.dispose(&terminal_cleanup);
     _ = try SiwcActorTest.result(&terminal_cleanup);
     try std.testing.expectEqual(@as(usize, 0), reopened.state.leases.items.len);
     try std.testing.expect(reopened.requests.attempt("codex", &fault_lease).?.state == .abandoned);
-    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent));
+    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent.*));
 }
 
 test "two genuinely signed owned SIWC pairs hand off only on a new request after explicit pause and preserve accepted work fences" {
@@ -13226,10 +13226,10 @@ test "queued owned callback commits ciphertext then issues once and quarantines 
     const id_bytes = try parseOpaqueId(id);
     var url = try current.?.preparedFreshOAuthAuthorization(a, id_bytes, try M.revision(current.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
     defer url.deinit();
-    const browser = try M.sendCallback(callback_port, try M.stateFromUrl(url.bytes), false);
-    defer _ = fresh_api.close(browser);
+    const browser_peer = try M.sendCallback(callback_port, try M.stateFromUrl(url.bytes), false);
+    defer _ = fresh_api.close(browser_peer);
     var acknowledgment: [256]u8 = undefined;
-    try std.testing.expect(std.mem.startsWith(u8, try M.read(browser, &acknowledgment), "HTTP/1.1 200"));
+    try std.testing.expect(std.mem.startsWith(u8, try M.read(browser_peer, &acknowledgment), "HTTP/1.1 200"));
     const token_peer = try token_listener.accept();
     defer _ = fresh_api.close(token_peer);
     var request: [16 * 1024]u8 = undefined;
@@ -13300,14 +13300,14 @@ test "actual queued consent withdrawal and denial close callbacks while issued f
         const id = try control.string(control.get(prepared.value, "result").?, "transaction_id");
         var authorization = try engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
         defer authorization.deinit();
-        var browser: c_int = -1;
-        defer if (browser >= 0) _ = fresh_api.close(browser);
+        var browser_peer: c_int = -1;
+        defer if (browser_peer >= 0) _ = fresh_api.close(browser_peer);
         var token_peer: c_int = -1;
         defer if (token_peer >= 0) _ = fresh_api.close(token_peer);
         if (mode != .before_callback) {
-            browser = try M.sendCallback(callback_port, try M.stateFromUrl(authorization.bytes), mode == .denied);
+            browser_peer = try M.sendCallback(callback_port, try M.stateFromUrl(authorization.bytes), mode == .denied);
             var ack: [256]u8 = undefined;
-            try std.testing.expect(std.mem.startsWith(u8, try M.read(browser, &ack), "HTTP/1.1 200"));
+            try std.testing.expect(std.mem.startsWith(u8, try M.read(browser_peer, &ack), "HTTP/1.1 200"));
             if (mode != .denied) {
                 token_peer = try token_listener.accept();
                 var request: [16 * 1024]u8 = undefined;

@@ -390,7 +390,7 @@ pub fn validate(saved: Snapshot) !void {
         for (saved.records[0..index]) |previous| if (std.meta.eql(previous.binding.transaction_id, record.binding.transaction_id) or std.meta.eql(previous.binding.source_id, record.binding.source_id) or std.meta.eql(previous.binding.consent_id, record.binding.consent_id) or std.meta.eql(previous.binding.grant_id, record.binding.grant_id)) return error.InvalidOAuthEnrollment;
         switch (record.phase) {
             .prepared => if (record.verifier_capsule.len != 134 or record.callback_capsule.len != 0) return error.InvalidOAuthEnrollment,
-            .callback_consumed => if (record.verifier_capsule.len != 134 or record.callback_capsule.len < 49 or record.callback_capsule.len > (if (record.callback_format == .legacy_code) max_code_bytes + 48 else 32 * 1024)) return error.InvalidOAuthEnrollment,
+            .callback_consumed => if (record.verifier_capsule.len != 134 or record.callback_capsule.len < 49 or record.callback_capsule.len > (if (record.callback_format == .legacy_code) @as(usize, max_code_bytes + 48) else 32 * 1024)) return error.InvalidOAuthEnrollment,
             // Issued rows never reconstruct a ticket; the exact Store-backed
             // private constructor must join the original committed transition.
             .exchange_issued, .verifying, .active, .completion_unknown, .quarantined, .retired => if (record.verifier_capsule.len != 0 or record.callback_capsule.len != 0) return error.InvalidOAuthEnrollment,

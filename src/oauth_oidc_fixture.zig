@@ -3,12 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const crypto = @import("oauth_oidc_crypto.zig");
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("sys/stat.h");
-});
+const c = @import("c");
 pub const Signer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,

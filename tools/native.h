@@ -8,6 +8,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
 #include <errno.h>

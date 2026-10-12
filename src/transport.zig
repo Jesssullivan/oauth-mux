@@ -1721,7 +1721,7 @@ const Fixture = struct {
         if (oauth_request) {
             const end = std.mem.indexOf(u8, request[0..length], "\r\n\r\n") orelse return;
             const header = request[0..end];
-            const content_at = std.ascii.indexOfIgnoreCase(header, "content-length:") orelse return;
+            const content_at = std.ascii.findIgnoreCase(header, "content-length:") orelse return;
             const number_start = content_at + "content-length:".len;
             const number_end = std.mem.indexOfScalarPos(u8, header, number_start, '\r') orelse header.len;
             const body_length = std.fmt.parseInt(usize, std.mem.trim(u8, header[number_start..number_end], " \t"), 10) catch return;
@@ -1734,8 +1734,8 @@ const Fixture = struct {
                 length += @intCast(received);
             }
             const body = request[end + 4 .. end + 4 + body_length];
-            self.oauth_no_ambient_headers.store(std.ascii.indexOfIgnoreCase(header, "authorization:") == null and std.ascii.indexOfIgnoreCase(header, "cookie:") == null and std.ascii.indexOfIgnoreCase(header, "chatgpt-account-id:") == null, .release);
-            var valid = std.ascii.indexOfIgnoreCase(header, "content-type: application/x-www-form-urlencoded") != null;
+            self.oauth_no_ambient_headers.store(std.ascii.findIgnoreCase(header, "authorization:") == null and std.ascii.findIgnoreCase(header, "cookie:") == null and std.ascii.findIgnoreCase(header, "chatgpt-account-id:") == null, .release);
+            var valid = std.ascii.findIgnoreCase(header, "content-type: application/x-www-form-urlencoded") != null;
             if (self.mode == .oauth_oss) {
                 valid = valid and std.mem.startsWith(u8, header, "POST /api/accounts/oauth/token HTTP/1.1\r\n") and self.ossFormMatches(body);
             } else {
@@ -1749,7 +1749,7 @@ const Fixture = struct {
             .jwks, .jwks_redirect, .jwks_large, .jwks_delayed => {
                 const end = std.mem.indexOf(u8, request[0..length], "\r\n\r\n") orelse return;
                 const header = request[0..end];
-                const valid = std.mem.startsWith(u8, header, "GET /.well-known/jwks.json HTTP/1.1\r\n") and std.ascii.indexOfIgnoreCase(header, "authorization:") == null and std.ascii.indexOfIgnoreCase(header, "cookie:") == null and std.ascii.indexOfIgnoreCase(header, "chatgpt-account-id:") == null and length == end + 4;
+                const valid = std.mem.startsWith(u8, header, "GET /.well-known/jwks.json HTTP/1.1\r\n") and std.ascii.findIgnoreCase(header, "authorization:") == null and std.ascii.findIgnoreCase(header, "cookie:") == null and std.ascii.findIgnoreCase(header, "chatgpt-account-id:") == null and length == end + 4;
                 self.jwks_wire_valid.store(valid, .release);
             },
             else => {},
