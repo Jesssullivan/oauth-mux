@@ -68,6 +68,132 @@ pub fn verifyIdToken(a: std.mem.Allocator, jwt: []const u8, jwks_bytes: []const 
     return .{ .allocator = a, .subject = try a.dupe(u8, checked.subject), .expires_at = checked.expires_at, .issued_at = checked.issued_at, .access_token_hash = checked.access_token_hash };
 }
 
+
+/// Refresh validates the signed resource token, not a fresh-login ID nonce.
+/// This primitive has no HTTP/pair/renewal authority; only the opaque response
+/// producer joins its claims to authenticated prior lineage and writer state.
+pub const AccessClaims = struct {
+    allocator: std.mem.Allocator,
+    subject: []u8,
+    scope: []u8,
+    expires_at: i64,
+    issued_at: i64,
+    pub fn deinit(self: *AccessClaims) void {
+        std.crypto.secureZero(u8, self.subject);
+        std.crypto.secureZero(u8, self.scope);
+        self.allocator.free(self.subject);
+        self.allocator.free(self.scope);
+        self.* = undefined;
+    }
+};
+pub fn verifyAccessToken(a: std.mem.Allocator, jwt: []const u8, jwks_bytes: []const u8, client: []const u8, now: i64) !AccessClaims {
+    if (jwt.len == 0 or jwt.len > max_jwt_bytes or jwks_bytes.len == 0 or jwks_bytes.len > max_jwks_bytes) return error.OidcInputBound;
+    var parts = std.mem.splitScalar(u8, jwt, '.');
+    const header64 = parts.next() orelse return error.InvalidJose;
+    const payload64 = parts.next() orelse return error.InvalidJose;
+    const signature64 = parts.next() orelse return error.InvalidJose;
+    if (parts.next() != null) return error.InvalidJose;
+    var header: [2048]u8 = undefined;
+    var payload: [12 * 1024]u8 = undefined;
+    var signature: [512]u8 = undefined;
+    defer std.crypto.secureZero(u8, &header);
+    defer std.crypto.secureZero(u8, &payload);
+    defer std.crypto.secureZero(u8, &signature);
+    const header_raw = try decode64(&header, header64);
+    const payload_raw = try decode64(&payload, payload64);
+    const signature_raw = try decode64(&signature, signature64);
+    var scratch: [512 * 1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &scratch);
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const allocator = fixed.allocator();
+    const parsed_header = try document(allocator, header_raw);
+    defer parsed_header.deinit();
+    const object = try asObject(parsed_header.value, 3);
+    var fields = object.iterator();
+    while (fields.next()) |row| {
+        const name = row.key_ptr.*;
+        if (!std.mem.eql(u8, name, "alg") and !std.mem.eql(u8, name, "kid") and !std.mem.eql(u8, name, "typ")) return error.UnsupportedJoseHeader;
+    }
+    if (!std.mem.eql(u8, try text(object, "alg", 16), "RS256")) return error.UnsupportedSigningAlgorithm;
+    const kid = try text(object, "kid", 128);
+    if (object.get("typ")) |value| {
+        if (value != .string or !std.mem.eql(u8, value.string, "JWT")) return error.UnsupportedJoseHeader;
+    }
+    const parsed_keys = try document(allocator, jwks_bytes);
+    defer parsed_keys.deinit();
+    const key = try selectKey(parsed_keys.value, kid);
+    const signing_input = jwt[0 .. header64.len + 1 + payload64.len];
+    try verifyRsa(signing_input, signature_raw, key);
+    // Claims cannot become authoritative before signature verification.
+    const parsed_claims = try document(allocator, payload_raw);
+    defer parsed_claims.deinit();
+    const checked = try validateAccessClaims(parsed_claims.value, client, now);
+    const subject = try a.dupe(u8, checked.subject);
+    errdefer { std.crypto.secureZero(u8, subject); a.free(subject); }
+    const scope = try a.dupe(u8, checked.scope);
+    return .{ .allocator = a, .subject = subject, .scope = scope, .expires_at = checked.expires_at, .issued_at = checked.issued_at };
+}
+
+const CheckedAccess = struct { subject: []const u8, scope: []const u8, expires_at: i64, issued_at: i64 };
+fn validateAccessClaims(value: std.json.Value, client: []const u8, now: i64) !CheckedAccess {
+    if (now <= 0 or now > 253_402_300_794) return error.InvalidOidcClock;
+    try visible(client, 256);
+    const object = try asObject(value, 32);
+    if (!std.mem.eql(u8, try text(object, "iss", 128), issuer)) return error.OidcIssuerMismatch;
+    if (!std.mem.eql(u8, try text(object, "aud", 128), "https://api.openai.com/v1")) return error.OidcAudienceMismatch;
+    if (!std.mem.eql(u8, try text(object, "client_id", 256), client)) return error.OidcAudienceMismatch;
+    const exp = try timestamp(object, "exp");
+    const iat = try timestamp(object, "iat");
+    if (exp <= now or exp <= iat or iat > now + 5) return error.OidcTokenTime;
+    if (object.get("nbf")) |_| {
+        const nbf = try timestamp(object, "nbf");
+        if (nbf > now + 5 or nbf >= exp) return error.OidcTokenTime;
+    }
+    const subject = try text(object, "sub", 512);
+    const scope_value = object.get("scope") orelse return error.OidcScopeMissing;
+    if (scope_value != .string) return error.OidcScopeInvalid;
+    const scope = scope_value.string;
+    _ = try directAccessScopeMask(scope);
+    // OpenAI authentication metadata remains opaque. No workspace/email/quota
+    // identity is inferred from it or from this registration's client ID.
+    return .{ .subject = subject, .scope = scope, .expires_at = exp, .issued_at = iat };
+}
+/// Closed semantic scope comparison also permits equivalent provider ordering.
+fn knownScopeMask(value: []const u8) !u8 {
+    if (value.len == 0 or value.len > 4096) return error.OidcScopeMissing;
+    var parts = std.mem.splitScalar(u8, value, ' ');
+    var mask: u8 = 0;
+    while (parts.next()) |part| {
+        if (part.len == 0) return error.OidcScopeInvalid;
+        var found = false;
+        for ([_][]const u8{ "openid", "profile", "email", "offline_access", "resource.invoke", "chatgpt.tokens.use.direct" }, 0..) |allowed, index| {
+            if (!std.mem.eql(u8, part, allowed)) continue;
+            const bit: u8 = @as(u8, 1) << @as(u3, @intCast(index));
+            if (mask & bit != 0) return error.OidcScopeInvalid;
+            mask |= bit;
+            found = true;
+            break;
+        }
+        if (!found) return error.OidcScopeInvalid;
+    }
+    return mask;
+}
+pub fn directScopeMask(value: []const u8) !u8 {
+    const mask = try knownScopeMask(value);
+    const required: u8 = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 5);
+    if (mask & required != required) return error.OidcScopeMissing;
+    return mask;
+}
+/// Initial OpenID/offline authority is already authenticated in the pair.
+/// A renewed resource token needs the two direct request scopes, without
+/// inventing ID-token/nonce requirements for the refresh-token exchange.
+pub fn directAccessScopeMask(value: []const u8) !u8 {
+    const mask = try knownScopeMask(value);
+    const required: u8 = (1 << 4) | (1 << 5);
+    if (mask & required != required) return error.OidcScopeMissing;
+    return mask;
+}
+
 fn document(a: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(std.json.Value) {
     // Bound nesting before parser allocations; quoted braces are inert.
     var depth: usize = 0;
@@ -407,4 +533,37 @@ test "actual JOSE signature refusal precedes claim interpretation and input limi
     try std.testing.expectError(error.InvalidOidcSignature, verifyIdToken(a, jwt, raw, "oaiapp_fixture", nonceHash(), 1000));
     const huge: [max_jwt_bytes + 1]u8 = @splat('A');
     try std.testing.expectError(error.OidcInputBound, verifyIdToken(a, &huge, raw, "oaiapp_fixture", nonceHash(), 1000));
+}
+
+test "rotated resource access scopes do not borrow initial OIDC nonce or offline scopes" {
+    try std.testing.expectEqual(@as(u8, 0b11_0000), try directAccessScopeMask("resource.invoke chatgpt.tokens.use.direct"));
+    try std.testing.expectError(error.OidcScopeMissing, directScopeMask("resource.invoke chatgpt.tokens.use.direct"));
+    for ([_][]const u8{ "openid offline_access", "resource.invoke", "chatgpt.tokens.use.direct" }) |scope|
+        try std.testing.expectError(error.OidcScopeMissing, directAccessScopeMask(scope));
+    for ([_][]const u8{ "resource.invoke chatgpt.tokens.use.direct admin", "resource.invoke chatgpt.tokens.use.direct resource.invoke", " resource.invoke chatgpt.tokens.use.direct" }) |scope|
+        try std.testing.expectError(error.OidcScopeInvalid, directAccessScopeMask(scope));
+}
+
+test "rotated access claim validation joins API resource issued client subject and current times" {
+    const a = std.testing.allocator;
+    const cases = [_]struct { issuer: []const u8 = "https://auth.openai.com", audience: []const u8 = "https://api.openai.com/v1", client: []const u8 = "oaiapp_synthetic_rotate", sub: []const u8 = "synthetic-rotate-subject", iat: i64 = 1000, exp: i64 = 1300, nbf: i64 = 1000, scope: []const u8 = "resource.invoke chatgpt.tokens.use.direct", expected: ?anyerror = null }{
+        .{}, .{ .issuer = "https://untrusted.invalid", .expected = error.OidcIssuerMismatch },
+        .{ .audience = "https://chatgpt.com", .expected = error.OidcAudienceMismatch },
+        .{ .client = "dynamic_agent_client", .expected = error.OidcAudienceMismatch },
+        .{ .exp = 1000, .expected = error.OidcTokenTime },
+        .{ .iat = 1100, .expected = error.OidcTokenTime },
+        .{ .nbf = 1100, .expected = error.OidcTokenTime },
+        .{ .sub = "", .expected = error.InvalidOidcClaim },
+        .{ .scope = "openid offline_access", .expected = error.OidcScopeMissing },
+    };
+    for (cases) |case| {
+        const bytes = try std.json.Stringify.valueAlloc(a, .{ .iss = case.issuer, .aud = case.audience, .client_id = case.client, .sub = case.sub, .iat = case.iat, .exp = case.exp, .nbf = case.nbf, .scope = case.scope }, .{});
+        defer a.free(bytes);
+        const parsed = try document(a, bytes); defer parsed.deinit();
+        if (case.expected) |expected| try std.testing.expectError(expected, validateAccessClaims(parsed.value, "oaiapp_synthetic_rotate", 1000)) else {
+            const claims = try validateAccessClaims(parsed.value, "oaiapp_synthetic_rotate", 1000);
+            try std.testing.expectEqualStrings("synthetic-rotate-subject", claims.subject);
+            try std.testing.expectEqual(@as(i64, 1300), claims.expires_at);
+        }
+    }
 }

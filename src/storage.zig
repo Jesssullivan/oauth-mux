@@ -110,6 +110,19 @@ pub const Snapshot = struct {
         self.* = undefined;
     }
 };
+/// Snapshot-coupled two-grant rotation. This Store tuple is not provider
+/// issuance authority: only the opaque paired issuer may dispatch its ticket.
+pub const OwnedPairRotation = struct {
+    operation_id: []const u8,
+    access: envelope.Context,
+    refresh: envelope.Context,
+};
+pub const OwnedPairSuccessor = struct {
+    access: envelope.Context,
+    refresh: envelope.Context,
+    access_plaintext: []const u8,
+    refresh_plaintext: []const u8,
+};
 pub const RotationStatus = enum { started, completed, quarantined };
 pub const RotationBegin = struct {
     status: RotationStatus,
@@ -977,6 +990,191 @@ pub const Store = struct {
         try bindText(finish, 1, operation_id);
         try bindInteger(finish, 2, revision);
         try expectDone(finish);
+        try self.updateSnapshot(revision, snapshot_json);
+        try self.finishMutation();
+        return revision;
+    }
+
+    fn validateOwnedPair(self: *Store, pair: OwnedPairRotation) !void {
+        try pair.access.validate();
+        try pair.refresh.validate();
+        if (pair.operation_id.len != 64 or !std.mem.eql(u8, pair.access.key_id, self.key_id) or !std.mem.eql(u8, pair.refresh.key_id, self.key_id) or
+            !std.mem.eql(u8, pair.access.account_id, pair.refresh.account_id) or std.mem.eql(u8, pair.access.grant_id, pair.refresh.grant_id) or
+            pair.access.generation != pair.refresh.generation or !std.mem.eql(u8, pair.access.purpose, "request") or !std.mem.eql(u8, pair.refresh.purpose, "renewal") or
+            !std.mem.eql(u8, pair.access.scope, "https://api.openai.com/v1") or !std.mem.eql(u8, pair.refresh.scope, pair.access.scope)) return error.PairRotationConflict;
+        for (pair.operation_id) |byte| if (!std.ascii.isHex(byte)) return error.InvalidOperation;
+    }
+    fn ownedPairRows(self: *Store, pair: OwnedPairRotation, rotating: bool) !void {
+        const access = (try self.readGrantStatus(pair.access.account_id, pair.access.grant_id)) orelse return error.PairRotationConflict;
+        const refresh = (try self.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)) orelse return error.PairRotationConflict;
+        if (access.generation != pair.access.generation or refresh.generation != pair.refresh.generation or access.renewal_owner != .omux or refresh.renewal_owner != .omux or
+            access.state != .ready or refresh.state != (if (rotating) GrantState.refreshing else GrantState.ready)) return error.PairRotationConflict;
+    }
+    /// Current authenticated pair metadata supplies the original tuple. Caller
+    /// must reread that metadata separately; an operation ID alone is no permit.
+    pub fn verifyOwnedPairRotation(self: *Store, pair: OwnedPairRotation) !void {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try self.ownedPairRows(pair, true);
+        const row = try self.prepare("SELECT account_id,grant_id,generation,state FROM operations WHERE operation_id=?1;");
+        defer finalize(row);
+        try bindText(row, 1, pair.operation_id);
+        try expectRow(row);
+        if (!std.mem.eql(u8, try textColumn(row, 0), pair.refresh.account_id) or !std.mem.eql(u8, try textColumn(row, 1), pair.refresh.grant_id) or
+            try integerColumn(row, 2) != pair.refresh.generation or try parseRotationStatus(try textColumn(row, 3)) != .started) return error.PairRotationConflict;
+    }
+    /// Authenticate the held rotating RT internally without exporting it to
+    /// request/catalog callers. Actual operation+row joins precede decryption.
+    pub fn authenticateOwnedPairRefresh(self: *Store, pair: OwnedPairRotation, client_id: []const u8, expected_commitment: [32]u8) !void {
+        try self.verifyOwnedPairRotation(pair);
+        const stmt = try self.prepare("SELECT ciphertext FROM grants WHERE account_id=?1 AND grant_id=?2 AND generation=?3 AND state='refreshing' AND renewal_owner='omux';");
+        defer finalize(stmt);
+        try bindText(stmt, 1, pair.refresh.account_id);
+        try bindText(stmt, 2, pair.refresh.grant_id);
+        try bindInteger(stmt, 3, pair.refresh.generation);
+        try expectRow(stmt);
+        var secret = try envelope.open(self.allocator, self.key, pair.refresh, try blobColumn(stmt, 0));
+        defer secret.deinit();
+        var scratch: [128 * 1024]u8 = undefined;
+        defer std.crypto.secureZero(u8, &scratch);
+        var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+        const parsed = try std.json.parseFromSlice(struct { refresh_token: []const u8, client_id: []const u8 }, fixed.allocator(), secret.bytes, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+        defer parsed.deinit();
+        if (!std.mem.eql(u8, parsed.value.client_id, client_id) or parsed.value.refresh_token.len == 0 or parsed.value.refresh_token.len > 16 * 1024) return error.PairRotationConflict;
+        var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.key);
+        hmac.update("omux-owned-siwc-refresh-v1");
+        var size: [8]u8 = undefined;
+        std.mem.writeInt(u64, &size, @intCast(parsed.value.refresh_token.len), .big);
+        hmac.update(&size);
+        hmac.update(parsed.value.refresh_token);
+        var commitment: [32]u8 = undefined;
+        hmac.final(&commitment);
+        if (!std.crypto.timing_safe.eql([32]u8, expected_commitment, commitment)) return error.PairRotationConflict;
+    }
+    /// The original owner snapshot and SQL intent commit together before one
+    /// issuer call. Existing IDs NEVER return issuance authority. Completed
+    /// older internal pair IDs can settle: old generation watermarks and the
+    /// opaque spent ticket still forbid replay, without unbounded SQL history.
+    pub fn beginOwnedPairRotation(self: *Store, expected_revision: u64, snapshot_json: []const u8, pair: OwnedPairRotation, fence: *const CommitFence) !u64 {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try validateMetadata(self.allocator, snapshot_json);
+        try fence.check(fence.context, .before_begin);
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer self.rollback();
+        const revision = try self.checkRevision(expected_revision);
+        if (try self.readOperation(pair.operation_id) != null) return error.PairIssueAlreadyAdmitted;
+        try self.ownedPairRows(pair, false);
+        const prune = try self.prepare("DELETE FROM operations WHERE account_id=?1 AND grant_id=?2 AND state='completed' AND generation<?3;");
+        defer finalize(prune);
+        try bindText(prune, 1, pair.refresh.account_id);
+        try bindText(prune, 2, pair.refresh.grant_id);
+        try bindInteger(prune, 3, pair.refresh.generation);
+        const update = try self.prepare("UPDATE grants SET state='refreshing' WHERE account_id=?1 AND grant_id=?2 AND generation=?3 AND renewal_owner='omux' AND state='ready';");
+        defer finalize(update);
+        try bindText(update, 1, pair.refresh.account_id);
+        try bindText(update, 2, pair.refresh.grant_id);
+        try bindInteger(update, 3, pair.refresh.generation);
+        const insert = try self.prepare("INSERT INTO operations(operation_id,account_id,grant_id,generation,state) VALUES(?1,?2,?3,?4,'started');");
+        defer finalize(insert);
+        try bindText(insert, 1, pair.operation_id);
+        try bindText(insert, 2, pair.refresh.account_id);
+        try bindText(insert, 3, pair.refresh.grant_id);
+        try bindInteger(insert, 4, pair.refresh.generation);
+        // Recheck after statement allocation/binding, before first SQL writer.
+        try fence.check(fence.context, .before_begin);
+        try expectDone(prune);
+        try expectDone(update);
+        if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
+        try expectDone(insert);
+        try self.updateSnapshot(revision, snapshot_json);
+        try self.finishMutationFenced(fence.*);
+        return revision;
+    }
+    /// Both encrypted successors, one current family/writer snapshot and the
+    /// original started operation publish atomically. All sealing precedes
+    /// journal writes; pre-reserve rollback/post-reserve poison are unchanged.
+    pub fn completeOwnedPairRotation(self: *Store, expected_revision: u64, snapshot_json: []const u8, pair: OwnedPairRotation, successor: OwnedPairSuccessor, fence: *const CommitFence) !u64 {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try validateMetadata(self.allocator, snapshot_json);
+        if (pair.access.generation >= std.math.maxInt(i64) or successor.access.generation != pair.access.generation + 1 or successor.refresh.generation != successor.access.generation or
+            !std.mem.eql(u8, successor.access.account_id, pair.access.account_id) or !std.mem.eql(u8, successor.refresh.account_id, pair.refresh.account_id) or
+            !std.mem.eql(u8, successor.access.grant_id, pair.access.grant_id) or !std.mem.eql(u8, successor.refresh.grant_id, pair.refresh.grant_id) or
+            successor.access_plaintext.len == 0 or successor.access_plaintext.len > 32 * 1024 or successor.refresh_plaintext.len == 0 or successor.refresh_plaintext.len > 32 * 1024) return error.PairRotationConflict;
+        try self.validateOwnedPair(.{ .operation_id = pair.operation_id, .access = successor.access, .refresh = successor.refresh });
+        const access_ciphertext = try envelope.seal(self.io, self.allocator, self.key, successor.access, successor.access_plaintext);
+        defer self.allocator.free(access_ciphertext);
+        const refresh_ciphertext = try envelope.seal(self.io, self.allocator, self.key, successor.refresh, successor.refresh_plaintext);
+        defer self.allocator.free(refresh_ciphertext);
+        try fence.check(fence.context, .before_begin);
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer self.rollback();
+        const revision = try self.checkRevision(expected_revision);
+        try self.verifyOwnedPairRotation(pair);
+        // Statement ownership remains local to each row update. The enclosing
+        // transaction rolls back both on any successor/metadata failure.
+        for ([_]struct { next: envelope.Context, ciphertext: []const u8, old: envelope.Context, state: []const u8 }{
+            .{ .next = successor.access, .ciphertext = access_ciphertext, .old = pair.access, .state = "ready" },
+            .{ .next = successor.refresh, .ciphertext = refresh_ciphertext, .old = pair.refresh, .state = "refreshing" },
+        }) |row| {
+            const update = try self.prepare("UPDATE grants SET generation=?3,purpose=?4,scope=?5,ciphertext=?6,state='ready' WHERE account_id=?1 AND grant_id=?2 AND generation=?7 AND state=?8 AND renewal_owner='omux';");
+            defer finalize(update);
+            try bindContext(update, row.next);
+            try bindBlob(update, 6, row.ciphertext);
+            try bindInteger(update, 7, row.old.generation);
+            try bindText(update, 8, row.state);
+            if (std.mem.eql(u8, row.state, "ready")) try fence.check(fence.context, .before_begin);
+            try expectDone(update);
+            if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
+            try self.recordGeneration(row.next);
+        }
+        const finish = try self.prepare("UPDATE operations SET state='completed',committed_revision=?2 WHERE operation_id=?1 AND state='started';");
+        defer finalize(finish);
+        try bindText(finish, 1, pair.operation_id);
+        try bindInteger(finish, 2, revision);
+        try expectDone(finish);
+        if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
+        try self.updateSnapshot(revision, snapshot_json);
+        try self.finishMutationFenced(fence.*);
+        return revision;
+    }
+    /// Indeterminate issued work quarantines the entire renewable pair. Never
+    /// rewrite old RT into ready state or infer an unsent success from cancel.
+    pub fn quarantineOwnedPairRotation(self: *Store, expected_revision: u64, snapshot_json: []const u8, pair: OwnedPairRotation) !u64 {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try validateMetadata(self.allocator, snapshot_json);
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer self.rollback();
+        const revision = try self.checkRevision(expected_revision);
+        // Store.open already reduces a crashed started RT to quarantined.
+        // Join that exact retained operation as well as a live started one;
+        // neither path may recreate issuance or touch a successor generation.
+        const operation = try self.prepare("SELECT account_id,grant_id,generation,state FROM operations WHERE operation_id=?1;");
+        defer finalize(operation);
+        try bindText(operation, 1, pair.operation_id);
+        try expectRow(operation);
+        const status = try parseRotationStatus(try textColumn(operation, 3));
+        if (!std.mem.eql(u8, try textColumn(operation, 0), pair.refresh.account_id) or !std.mem.eql(u8, try textColumn(operation, 1), pair.refresh.grant_id) or
+            try integerColumn(operation, 2) != pair.refresh.generation or status == .completed) return error.PairRotationConflict;
+        const access = (try self.readGrantStatus(pair.access.account_id, pair.access.grant_id)) orelse return error.PairRotationConflict;
+        const refresh = (try self.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)) orelse return error.PairRotationConflict;
+        if (access.generation != pair.access.generation or refresh.generation != pair.refresh.generation or access.renewal_owner != .omux or refresh.renewal_owner != .omux or
+            (access.state != .ready and access.state != .quarantined) or (refresh.state != .refreshing and refresh.state != .quarantined)) return error.PairRotationConflict;
+        const remove = try self.prepare("UPDATE grants SET state='quarantined' WHERE account_id=?1 AND (grant_id=?2 OR grant_id=?3) AND generation=?4 AND renewal_owner='omux';");
+        defer finalize(remove);
+        try bindText(remove, 1, pair.access.account_id);
+        try bindText(remove, 2, pair.access.grant_id);
+        try bindText(remove, 3, pair.refresh.grant_id);
+        try bindInteger(remove, 4, pair.access.generation);
+        try expectDone(remove);
+        if (c.sqlite3_changes(self.db) != 2) return error.PairRotationConflict;
+        const finish = try self.prepare("UPDATE operations SET state='quarantined' WHERE operation_id=?1 AND state IN ('started','quarantined');");
+        defer finalize(finish);
+        try bindText(finish, 1, pair.operation_id);
+        try expectDone(finish);
+        if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
         try self.updateSnapshot(revision, snapshot_json);
         try self.finishMutation();
         return revision;
@@ -2292,4 +2490,132 @@ test "sealed commit checks original deadline before SQL and before irreversible 
             try std.testing.expectEqual(@as(u64, 0), try store.scalar("SELECT count(*) FROM grant_generations;"));
         }
     }
+}
+
+// These real SQLite models prove the paired writer primitive, not token issuer
+// authority. Actor models separately construct its sealed ticket and proof.
+const OwnedPairStorageModel = struct {
+    const Allow = struct { fn check(_: *anyopaque, _: CommitStage) !void {} };
+    fn tuple(key_id: []const u8, generation: u64, operation: []const u8) OwnedPairRotation {
+        return .{ .operation_id = operation,
+            .access = .{ .key_id = key_id, .account_id = "synthetic-pair-account", .grant_id = "synthetic-pair-access", .generation = generation, .purpose = "request", .scope = "https://api.openai.com/v1" },
+            .refresh = .{ .key_id = key_id, .account_id = "synthetic-pair-account", .grant_id = "synthetic-pair-refresh", .generation = generation, .purpose = "renewal", .scope = "https://api.openai.com/v1" } };
+    }
+    fn seed(store: *Store, pair: OwnedPairRotation) !u64 {
+        return store.commit(0, "{}", &.{
+            .{ .put = .{ .context = pair.access, .plaintext = "{\"access_token\":\"synthetic-first-access\"}", .renewal_owner = .omux } },
+            .{ .put = .{ .context = pair.refresh, .plaintext = "{\"refresh_token\":\"synthetic-first-refresh\",\"client_id\":\"oaiapp_synthetic_pair\"}", .renewal_owner = .omux } } });
+    }
+    fn successor(pair: OwnedPairRotation) OwnedPairSuccessor {
+        var access = pair.access; access.generation += 1;
+        var refresh = pair.refresh; refresh.generation += 1;
+        return .{ .access = access, .refresh = refresh, .access_plaintext = "{\"access_token\":\"synthetic-successor-access\"}", .refresh_plaintext = "{\"refresh_token\":\"synthetic-successor-refresh\",\"client_id\":\"oaiapp_synthetic_pair\"}" };
+    }
+};
+
+test "paired SQLite rotation commits both generations and snapshot once and rejects second writer or replay" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{}); defer tmp.cleanup();
+    const path = try testPath(a, tmp); defer a.free(path);
+    var store = try Store.open(std.testing.io, a, path, @splat(91)); defer store.close();
+    const M = OwnedPairStorageModel;
+    const operation: [64]u8 = @splat('1');
+    const other: [64]u8 = @splat('2');
+    const pair = M.tuple(store.key_id, 1, &operation);
+    var cookie: u8 = 0;
+    const fence: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+    var revision = try M.seed(&store, pair);
+    revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+    try std.testing.expectError(error.PairIssueAlreadyAdmitted, store.beginOwnedPairRotation(revision, "{}", pair, &fence));
+    try std.testing.expectError(error.PairRotationConflict, store.beginOwnedPairRotation(revision, "{}", M.tuple(store.key_id, 1, &other), &fence));
+    try std.testing.expectEqual(GrantState.ready, (try store.readGrantStatus(pair.access.account_id, pair.access.grant_id)).?.state);
+    try std.testing.expectError(error.RotationInProgress, store.loadGrant(pair.refresh));
+    const next = M.successor(pair);
+    revision = try store.completeOwnedPairRotation(revision, "{\"paired\":\"completed\"}", pair, next, &fence);
+    var saved = try store.readSnapshot(); defer saved.deinit();
+    try std.testing.expectEqual(revision, saved.revision);
+    try std.testing.expectEqualStrings("{\"paired\":\"completed\"}", saved.json);
+    var access = try store.loadGrant(next.access); defer access.deinit();
+    var refresh = try store.loadGrant(next.refresh); defer refresh.deinit();
+    try std.testing.expectEqualStrings(next.access_plaintext, access.bytes);
+    try std.testing.expectEqualStrings(next.refresh_plaintext, refresh.bytes);
+    try std.testing.expectError(error.PairRotationConflict, store.completeOwnedPairRotation(revision, "{}", pair, next, &fence));
+    try std.testing.expectError(error.StaleGeneration, store.loadGrant(pair.refresh));
+    try std.testing.expectEqual(RotationStatus.completed, (try store.readOperation(&operation)).?.status);
+}
+
+test "paired successor fences after sealing and reservation preserve rollback versus poisoned uncertainty" {
+    const M = OwnedPairStorageModel;
+    const Held = struct {
+        stage: CommitStage,
+        checks: usize = 0,
+        fn check(raw: *anyopaque, stage: CommitStage) !void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.checks += 1;
+            if (stage == self.stage) return error.FixtureOriginalDeadline;
+        }
+    };
+    for ([_]CommitStage{ .before_begin, .before_reservation, .before_commit }) |stage| {
+        const a = std.testing.allocator;
+        var tmp = std.testing.tmpDir(.{}); defer tmp.cleanup();
+        const path = try testPath(a, tmp); defer a.free(path);
+        var store = try Store.open(std.testing.io, a, path, @splat(92)); defer store.close();
+        const operation: [64]u8 = @splat('3');
+        const pair = M.tuple(store.key_id, 1, &operation);
+        var cookie: u8 = 0;
+        const allow: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+        var revision = try M.seed(&store, pair);
+        revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &allow);
+        const checkpoint = store.checkpoint;
+        var held: Held = .{ .stage = stage };
+        const fence: CommitFence = .{ .context = &held, .check = Held.check };
+        try std.testing.expectError(error.FixtureOriginalDeadline, store.completeOwnedPairRotation(revision, "{\"paired\":\"completed\"}", pair, M.successor(pair), &fence));
+        try std.testing.expect(held.checks > 0);
+        if (stage == .before_commit) {
+            try std.testing.expect(store.poisoned);
+            try std.testing.expectError(error.DatabasePoisoned, store.readSnapshot());
+        } else {
+            try std.testing.expect(!store.poisoned and std.meta.eql(checkpoint, store.checkpoint));
+            var saved = try store.readSnapshot(); defer saved.deinit();
+            try std.testing.expectEqual(revision, saved.revision);
+            try std.testing.expectEqualStrings("{\"paired\":\"issued\"}", saved.json);
+            try std.testing.expectEqual(@as(u64, 1), (try store.readGrantStatus(pair.access.account_id, pair.access.grant_id)).?.generation);
+            try std.testing.expectEqual(GrantState.refreshing, (try store.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)).?.state);
+            try std.testing.expectEqual(RotationStatus.started, (try store.readOperation(&operation)).?.status);
+            try std.testing.expectError(error.PairIssueAlreadyAdmitted, store.beginOwnedPairRotation(revision, "{}", pair, &allow));
+        }
+    }
+}
+
+test "paired rotation cycles keep finite last operations and reopen never reconstructs an issued refresh" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{}); defer tmp.cleanup();
+    const path = try testPath(a, tmp); defer a.free(path);
+    const key: envelope.Key = @splat(93);
+    const M = OwnedPairStorageModel;
+    var cookie: u8 = 0;
+    const fence: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+    const pending: [64]u8 = @splat('f');
+    {
+        var store = try Store.open(std.testing.io, a, path, key); defer store.close();
+        const first: [64]u8 = @splat('1');
+        var revision = try M.seed(&store, M.tuple(store.key_id, 1, &first));
+        for (1..33) |generation| {
+            const operation = std.fmt.bytesToHex(@as([32]u8, @splat(@intCast(generation))), .lower);
+            const pair = M.tuple(store.key_id, @intCast(generation), &operation);
+            revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+            revision = try store.completeOwnedPairRotation(revision, "{\"paired\":\"completed\"}", pair, M.successor(pair), &fence);
+            try std.testing.expectEqual(@as(u64, 1), try store.scalar("SELECT count(*) FROM operations;"));
+        }
+        const pair = M.tuple(store.key_id, 33, &pending);
+        _ = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+    }
+    var reopened = try Store.open(std.testing.io, a, path, key); defer reopened.close();
+    const pair = M.tuple(reopened.key_id, 33, &pending);
+    var saved = try reopened.readSnapshot(); defer saved.deinit();
+    _ = try reopened.quarantineOwnedPairRotation(saved.revision, "{\"paired\":\"unknown\"}", pair);
+    try std.testing.expectEqual(GrantState.quarantined, (try reopened.readGrantStatus(pair.access.account_id, pair.access.grant_id)).?.state);
+    try std.testing.expectEqual(GrantState.quarantined, (try reopened.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)).?.state);
+    try std.testing.expectError(error.PairIssueAlreadyAdmitted, reopened.beginOwnedPairRotation(saved.revision + 1, "{}", pair, &fence));
+    try std.testing.expectError(error.GrantQuarantined, reopened.loadGrant(pair.refresh));
 }

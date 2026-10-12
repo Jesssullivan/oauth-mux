@@ -9,6 +9,8 @@ const storage = @import("storage.zig");
 const enrollment = @import("oauth_enrollment.zig");
 const token = @import("oauth_token.zig");
 
+const pair = @import("siwc_pair.zig");
+const domain = @import("domain.zig");
 pub const Endpoint = union(enum) { codex_token, omux_oss_token, fixture_token: u16 };
 pub const ProfileView = struct {
     endpoint: Endpoint,
@@ -20,7 +22,7 @@ pub const ProfileView = struct {
     sha256: [32]u8,
     host_id: [32]u8 = @splat(0),
 };
-const ProfileData = struct { allocator: std.mem.Allocator, view: ProfileView, references: std.atomic.Value(usize) = .init(1), qualification: enum { model_only, documented_oss_enrollment } = .model_only };
+const ProfileData = struct { allocator: std.mem.Allocator, view: ProfileView, references: std.atomic.Value(usize) = .init(1), qualification: enum { model_only, documented_oss_enrollment, owned_oss_renewal } = .model_only };
 /// Purpose-limited enrollment authority, not authenticated identity or ready
 /// request/renewal authority. The native Codex client remains unavailable.
 pub const EnrollmentProfile = opaque {
@@ -33,6 +35,7 @@ pub const EnrollmentProfile = opaque {
     pub fn deinit(self: *EnrollmentProfile) void {
         const data = profileDataMut(self);
         if (data.references.fetchSub(1, .acq_rel) != 1) return;
+        std.crypto.secureZero(u8, @constCast(data.view.client_id));
         data.allocator.free(data.view.client_id);
         if (data.view.resource) |resource| data.allocator.free(resource);
         data.allocator.free(data.view.exact_redirect_uri);
@@ -41,7 +44,7 @@ pub const EnrollmentProfile = opaque {
     pub fn requireAvailable(self: *const EnrollmentProfile) !void {
         switch (profileData(self).qualification) {
             .model_only => if (!builtin.is_test or self.view().endpoint != .fixture_token) return error.RegistrationProfileUnavailable,
-            .documented_oss_enrollment => if (self.view().endpoint != .omux_oss_token or std.mem.allEqual(u8, &self.view().host_id, 0)) return error.RegistrationProfileUnavailable,
+            .documented_oss_enrollment, .owned_oss_renewal => if (self.view().endpoint != .omux_oss_token or std.mem.allEqual(u8, &self.view().host_id, 0)) return error.RegistrationProfileUnavailable,
         }
     }
 };
@@ -143,6 +146,8 @@ const FenceData = struct {
     io: std.Io,
     until: std.Io.Clock.Timestamp,
     consent_expires_at: i64,
+    grant_window: ?pair.GrantWindow = null,
+    renewal_admitted_unix: ?i64 = null,
     references: std.atomic.Value(usize) = .init(1),
     phase: std.atomic.Value(FencePhase) = .init(.pending),
 };
@@ -158,8 +163,18 @@ pub const DispatchFence = opaque {
     pub fn checkBeforeDispatch(self: *DispatchFence) !void {
         const data = fenceData(self);
         try deadline(data.io, data.until);
+        if (data.renewal_admitted_unix) |admitted| if (std.Io.Clock.real.now(data.io).toSeconds() < admitted) return error.OAuthAuthorityChanged;
+        if (data.grant_window) |window| try window.check(std.Io.Clock.real.now(data.io).toSeconds());
         if (std.Io.Clock.real.now(data.io).toSeconds() >= data.consent_expires_at) return error.OAuthConsentExpired;
         if (data.phase.load(.acquire) != .pending) return error.OAuthDispatchRefused;
+    }
+    /// Actor-side queued/in-flight liveness, not another dispatch permission.
+    pub fn checkLive(self: *DispatchFence) !void {
+        const owner = fenceData(self);
+        try deadline(owner.io, owner.until);
+        if (owner.renewal_admitted_unix) |admitted| if (std.Io.Clock.real.now(owner.io).toSeconds() < admitted) return error.OAuthAuthorityChanged;
+        if (owner.grant_window) |window| try window.check(std.Io.Clock.real.now(owner.io).toSeconds());
+        if (std.Io.Clock.real.now(owner.io).toSeconds() >= owner.consent_expires_at or owner.phase.load(.acquire) == .cancelled) return error.OAuthCompletionIndeterminate;
     }
     /// Linearization, not a claim that cancellation can undo a sent request.
     pub fn beginDispatch(self: *DispatchFence) !void {
@@ -169,6 +184,8 @@ pub const DispatchFence = opaque {
     pub fn checkBeforeCompletion(self: *DispatchFence) !void {
         const data = fenceData(self);
         try deadline(data.io, data.until);
+        if (data.renewal_admitted_unix) |admitted| if (std.Io.Clock.real.now(data.io).toSeconds() < admitted) return error.OAuthAuthorityChanged;
+        if (data.grant_window) |window| try window.check(std.Io.Clock.real.now(data.io).toSeconds());
         if (std.Io.Clock.real.now(data.io).toSeconds() >= data.consent_expires_at) return error.OAuthConsentExpired;
         if (data.phase.load(.acquire) != .dispatching) return error.OAuthCompletionIndeterminate;
     }
@@ -208,6 +225,25 @@ pub const DispatchMaterial = struct {
         self.* = undefined;
     }
 };
+/// Immutable current-family tuple derived only from authenticated paired
+/// custody. It is secret-free diagnostic binding, not a ticket constructor.
+pub const RenewalBinding = struct {
+    account_id: [64]u8,
+    source_id: [64]u8,
+    access_grant_id: [64]u8,
+    refresh_grant_id: [64]u8,
+    lineage_id: [32]u8,
+    registration_transaction: [32]u8,
+    prior_record_commitment: [32]u8,
+    prior_activation: [32]u8,
+    profile_sha256: [32]u8,
+    identity_commitment: [32]u8,
+    provider_subject_commitment: [32]u8,
+    issued_client_commitment: [32]u8,
+    refresh_token_commitment: [32]u8,
+    previous_renewal: ?pair.Renewal,
+    operation: pair.Renewal,
+};
 const TicketData = struct {
     allocator: std.mem.Allocator,
     material: DispatchMaterial,
@@ -217,12 +253,13 @@ const TicketData = struct {
     committed_revision: u64 = 0,
     binding: enrollment.Binding,
     model_routes: ?ModelRoutes = null,
+    renewal_binding: ?RenewalBinding = null,
     references: std.atomic.Value(usize) = .init(1),
 };
 pub const ModelRoutes = struct { token_port: u16, jwks_port: u16 };
 pub const IssuedTicket = opaque {
-    /// Consumption precedes every allocation/queue failure. Exactly sixteen
-    /// source-ledger IDs cap all possible ticket secret clones, each bounded.
+    /// Consumption precedes every allocation/queue failure. Active enrollment
+    /// and owned-renewal caps bound all retained tickets and secret clones.
     pub fn claim(self: *IssuedTicket, a: std.mem.Allocator) !DispatchMaterial {
         const data = ticketData(self);
         if (data.claimed.swap(true, .acq_rel)) return error.OAuthTicketConsumed;
@@ -232,7 +269,7 @@ pub const IssuedTicket = opaque {
     }
     pub fn claimJwks(self: *IssuedTicket) !void {
         if (ticketData(self).jwks_claimed.swap(true, .acq_rel)) return error.OAuthJwksAlreadyIssued;
-        try self.requireOwnedOssEnrollment();
+        if (ticketData(self).renewal_binding != null) try self.requireOwnedOssRenewal() else try self.requireOwnedOssEnrollment();
         try self.checkBeforeVerification();
     }
     pub fn deinit(self: *IssuedTicket) void {
@@ -282,11 +319,21 @@ pub const IssuedTicket = opaque {
     }
     pub fn requireOwnedOssEnrollment(self: *const IssuedTicket) !void {
         const data = ticketDataConst(self);
-        if (data.profile.view().endpoint != .omux_oss_token or data.profile.view().resource == null or !std.mem.eql(u8, data.profile.view().resource.?, "https://api.openai.com/v1") or data.material.encoding != .form) return error.OAuthAuthorityChanged;
+        if (data.renewal_binding != null or data.material.grant != .code or data.profile.view().endpoint != .omux_oss_token or data.profile.view().resource == null or !std.mem.eql(u8, data.profile.view().resource.?, "https://api.openai.com/v1") or data.material.encoding != .form) return error.OAuthAuthorityChanged;
+        try data.profile.requireAvailable();
+    }
+    pub fn renewalBinding(self: *const IssuedTicket) !RenewalBinding { return ticketDataConst(self).renewal_binding orelse error.OAuthWrongPurpose; }
+    pub fn requireOwnedOssRenewal(self: *const IssuedTicket) !void {
+        const data = ticketDataConst(self);
+        const owned = data.renewal_binding orelse return error.OAuthWrongPurpose;
+        if (profileData(data.profile).qualification != .owned_oss_renewal or data.material.grant != .refresh or data.material.account_id == null or
+            !std.mem.eql(u8, data.material.account_id.?, &owned.account_id) or !std.mem.eql(u8, data.material.grant_id, &owned.refresh_grant_id) or
+            data.profile.view().endpoint != .omux_oss_token or data.material.encoding != .form or data.material.resource == null or !std.mem.eql(u8, data.material.resource.?, pair.resource_uri)) return error.OAuthAuthorityChanged;
         try data.profile.requireAvailable();
     }
     pub fn bindingSha256(self: *const IssuedTicket, a: std.mem.Allocator) ![32]u8 {
-        const encoded = try std.json.Stringify.valueAlloc(a, ticketDataConst(self).binding, .{});
+        const data = ticketDataConst(self);
+        const encoded = if (data.renewal_binding) |renewal_context| try std.json.Stringify.valueAlloc(a, .{ .purpose = "owned_siwc_pair_refresh_v1", .dispatch = data.binding, .pair = renewal_context }, .{}) else try std.json.Stringify.valueAlloc(a, data.binding, .{});
         defer a.free(encoded);
         var result: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(encoded, &result, .{});
@@ -413,6 +460,281 @@ pub fn issueCode(io: std.Io, a: std.mem.Allocator, store: *storage.Store, key: ?
     opaque_fence.deinit();
     return @ptrCast(ticket);
 }
+const RenewalRetained = struct {
+    schema_version: u32,
+    state: domain.Snapshot,
+    import_forget_epoch: u64,
+    fresh_oauth_host_id: ?[32]u8 = null,
+    owned_siwc_pairs: ?pair.Snapshot = null,
+    import_source_authority: []const struct { source_id: []const u8, generation: u64 } = &.{},
+};
+fn pairedRow(saved: RenewalRetained, account_id: []const u8, access_id: []const u8) !pair.Record {
+    if (saved.schema_version != 2) return error.OAuthAuthorityChanged;
+    const rows = saved.owned_siwc_pairs orelse return error.SiwcPairUnavailable;
+    try pair.validate(rows);
+    for (rows.records) |row| if (std.mem.eql(u8, row.account_id, account_id) and std.mem.eql(u8, row.access_grant_id, access_id)) return row;
+    return error.SiwcPairUnavailable;
+}
+fn recordCommitment(a: std.mem.Allocator, row: pair.Record) ![32]u8 {
+    const bytes = try std.json.Stringify.valueAlloc(a, row, .{});
+    defer a.free(bytes);
+    var result: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &result, .{});
+    return result;
+}
+fn fixedId(value: []const u8) ![64]u8 {
+    if (value.len != 64) return error.OAuthAuthorityChanged;
+    var out: [64]u8 = undefined;
+    for (value) |byte| if (!std.ascii.isHex(byte)) return error.OAuthAuthorityChanged;
+    @memcpy(&out, value);
+    return out;
+}
+fn decodedId(value: []const u8) ![32]u8 {
+    _ = try fixedId(value);
+    var out: [32]u8 = undefined;
+    if (try std.fmt.hexToBytes(&out, value) != out.len) return error.OAuthAuthorityChanged;
+    return out;
+}
+fn renewalTuple(store: *storage.Store, binding: *const RenewalBinding) storage.OwnedPairRotation {
+    return .{ .operation_id = &binding.operation.operation_id,
+        .access = .{ .key_id = store.key_id, .account_id = &binding.account_id, .grant_id = &binding.access_grant_id, .generation = binding.operation.family_generation, .purpose = "request", .scope = pair.resource_uri },
+        .refresh = .{ .key_id = store.key_id, .account_id = &binding.account_id, .grant_id = &binding.refresh_grant_id, .generation = binding.operation.family_generation, .purpose = "renewal", .scope = pair.resource_uri },
+    };
+}
+fn ongoingSourceExpiry(saved: RenewalRetained, row: pair.Record, now: i64) !i64 {
+    var source_ok = false;
+    var expires: i64 = 0;
+    for (saved.state.sources) |source| if (std.mem.eql(u8, source.id, row.source_id)) {
+        if (source.kind != .oauth or source.status == .disconnected or !std.mem.eql(u8, source.provider, "openai_siwc") or source.authorized_at > now or
+            (source.authorized_until != null and source.authorized_until.? <= now)) return error.OAuthAuthorityChanged;
+        source_ok = true;
+        expires = source.authorized_until orelse 253_402_300_799;
+    };
+    var generation_ok = false;
+    for (saved.import_source_authority) |source| if (std.mem.eql(u8, source.source_id, row.source_id) and source.generation == row.source_generation) { generation_ok = true; };
+    var account_ok = false;
+    const identity = std.fmt.bytesToHex(row.identity_commitment, .lower);
+    for (saved.state.accounts) |account| if (std.mem.eql(u8, account.id, row.account_id)) {
+        if (!account.identity.verified or !std.mem.eql(u8, account.identity.provider, "openai_siwc") or !std.mem.eql(u8, account.identity.issuer, pair.issuer_uri) or
+            !std.mem.eql(u8, account.identity.subject, &identity) or account.identity.tenant.len != 0) return error.OAuthAuthorityChanged;
+        for (account.source_ids) |source| if (std.mem.eql(u8, source, row.source_id)) { account_ok = true; };
+    };
+    if (!source_ok or !generation_ok or !account_ok or row.forget_tombstone or row.consent_status != .recorded) return error.OAuthAuthorityChanged;
+    return expires;
+}
+fn checkRenewalClock(io: std.Io, until: std.Io.Clock.Timestamp, binding: RenewalBinding) !void {
+    try deadline(io, until);
+    const now = std.Io.Clock.real.now(io).toSeconds();
+    try binding.operation.grant_window.check(now);
+    if (until.raw.nanoseconds != binding.operation.until_nanoseconds or now < binding.operation.admitted_unix or now >= binding.operation.source_expires_at) return error.OAuthAuthorityChanged;
+}
+fn checkRenewalRow(a: std.mem.Allocator, saved: RenewalRetained, binding: RenewalBinding, now: i64) !pair.Record {
+    const row = try pairedRow(saved, &binding.account_id, &binding.access_grant_id);
+    if (row.status != .refreshing or row.renewal == null or !std.meta.eql(row.renewal.?, binding.operation) or row.consent_status != .recorded or row.forget_tombstone or
+        row.family_generation != binding.operation.family_generation or row.writer_generation != binding.operation.writer_generation or
+        row.source_generation != binding.operation.source_generation or row.consent_generation != binding.operation.consent_generation or
+        saved.import_forget_epoch < binding.operation.forget_epoch) return error.OAuthAuthorityChanged;
+    const window = try pair.grantWindow(saved.state.grants, row);
+    if (!std.meta.eql(window, binding.operation.grant_window)) return error.OAuthAuthorityChanged;
+    try window.check(now);
+    if (try ongoingSourceExpiry(saved, row, now) != binding.operation.source_expires_at) return error.OAuthAuthorityChanged;
+    // Unrelated account forget can advance the global epoch without erasing an
+    // independently valid known family. Exact account/source/tombstone guards
+    // above still reject its own forget; rollback epochs always refuse.
+    var old = row;
+    old.status = .ready;
+    old.renewal = binding.previous_renewal;
+    if (!std.crypto.timing_safe.eql([32]u8, try recordCommitment(a, old), binding.prior_record_commitment)) return error.OAuthAuthorityChanged;
+    var access_ok = false;
+    var refresh_ok = false;
+    for (saved.state.grants) |grant| {
+        if (!std.mem.eql(u8, grant.account_id, row.account_id) or !std.mem.eql(u8, grant.source_id, row.source_id) or grant.ownership != .omux or !std.mem.eql(u8, grant.audience, pair.resource_uri)) continue;
+        if (std.mem.eql(u8, grant.id, row.access_grant_id) and grant.credential_kind == .oauth_access and grant.status == .ready and grant.generation == row.access_generation and grant.provider_expires_at == row.access_expires_at) {
+            var request = false; var invoke = false; var direct = false;
+            for (grant.purposes) |purpose| if (purpose == .request) { request = true; };
+            for (grant.scopes) |scope| { if (std.mem.eql(u8, scope, "resource.invoke")) invoke = true; if (std.mem.eql(u8, scope, "chatgpt.tokens.use.direct")) direct = true; }
+            access_ok = request and invoke and direct;
+        }
+        if (std.mem.eql(u8, grant.id, row.refresh_grant_id) and grant.credential_kind == .oauth_refresh and grant.status == .refreshing and grant.generation == row.refresh_generation) {
+            for (grant.purposes) |purpose| if (purpose == .renewal) { refresh_ok = true; };
+        }
+    }
+    if (!access_ok or !refresh_ok) return error.OAuthAuthorityChanged;
+    return row;
+}
+const RenewalIssueFence = struct {
+    io: std.Io,
+    until: std.Io.Clock.Timestamp,
+    allocator: std.mem.Allocator,
+    store: *storage.Store,
+    binding: RenewalBinding,
+    actor: *const storage.CommitFence,
+    client_id: []const u8,
+    pub fn check(raw: *anyopaque, stage: storage.CommitStage) !void {
+        const self: *RenewalIssueFence = @ptrCast(@alignCast(raw));
+        try checkRenewalClock(self.io, self.until, self.binding);
+        try self.actor.check(self.actor.context, stage);
+        if (stage == .before_begin) {
+            const current = try pair.currentRenewalOwner(self.store, &self.binding.account_id, &self.binding.access_grant_id, self.binding.operation.family_generation, std.Io.Clock.real.now(self.io).toSeconds());
+            defer current.deinit();
+            if (!std.crypto.timing_safe.eql([32]u8, current.activationCommitment(), self.binding.prior_activation)) return error.OAuthAuthorityChanged;
+        } else {
+            try self.store.authenticateOwnedPairRefresh(renewalTuple(self.store, &self.binding), self.client_id, self.binding.refresh_token_commitment);
+        }
+        try checkRenewalClock(self.io, self.until, self.binding);
+    }
+};
+/// New paired constructor, never a generic owner=omux-row shortcut. A real
+/// authenticated ready pair and exact original actor mutation precede the
+/// snapshot-coupled one-use intent. No source/registry/identity can change here.
+pub fn issueOwnedRefresh(io: std.Io, a: std.mem.Allocator, store: *storage.Store, expected_revision: u64, after: []const u8, account_id: []const u8, access_id: []const u8, generation: u64, until: std.Io.Clock.Timestamp, actor_fence: *const storage.CommitFence) !*IssuedTicket {
+    try deadline(io, until);
+    const authority = try pair.currentRenewalOwner(store, account_id, access_id, generation, std.Io.Clock.real.now(io).toSeconds());
+    defer authority.deinit();
+    var before = try store.readSnapshot();
+    defer before.deinit();
+    if (before.revision != expected_revision) return error.StaleRevision;
+    const prior = try std.json.parseFromSlice(RenewalRetained, a, before.json, .{ .ignore_unknown_fields = true });
+    defer prior.deinit();
+    const next = try std.json.parseFromSlice(RenewalRetained, a, after, .{ .ignore_unknown_fields = true });
+    defer next.deinit();
+    const old = try pairedRow(prior.value, account_id, access_id);
+    const proposed = try pairedRow(next.value, account_id, access_id);
+    if (old.status != .ready or old.family_generation != generation or !std.crypto.timing_safe.eql([32]u8, authority.activationCommitment(), old.activation_commitment)) return error.OAuthAuthorityChanged;
+    const operation = proposed.renewal orelse return error.OAuthAuthorityChanged;
+    const now = std.Io.Clock.real.now(io).toSeconds();
+    const original_window = try pair.grantWindow(prior.value.state.grants, old);
+    try original_window.check(now);
+    if (!std.meta.eql(operation.grant_window, original_window)) return error.OAuthAuthorityChanged;
+    if (proposed.status != .refreshing or operation.state != .issued or operation.family_generation != old.family_generation or operation.writer_generation != old.writer_generation or
+        operation.source_generation != old.source_generation or operation.consent_generation != old.consent_generation or operation.forget_epoch != prior.value.import_forget_epoch or
+        operation.admitted_unix > now or operation.until_nanoseconds != until.raw.nanoseconds or operation.admitted_awake_nanoseconds > std.Io.Clock.awake.now(io).nanoseconds or
+        operation.source_expires_at != try ongoingSourceExpiry(prior.value, old, now)) return error.OAuthAuthorityChanged;
+    const binding: RenewalBinding = .{ .account_id = try fixedId(old.account_id), .source_id = try fixedId(old.source_id), .access_grant_id = try fixedId(old.access_grant_id), .refresh_grant_id = try fixedId(old.refresh_grant_id),
+        .lineage_id = old.lineage_id, .registration_transaction = old.transaction_id, .prior_record_commitment = try recordCommitment(a, old), .prior_activation = old.activation_commitment,
+        .profile_sha256 = old.profile_sha256, .identity_commitment = old.identity_commitment, .provider_subject_commitment = old.provider_subject_commitment,
+        .issued_client_commitment = old.issued_client_commitment, .refresh_token_commitment = old.refresh_token_commitment, .previous_renewal = old.renewal, .operation = operation };
+    try checkRenewalClock(io, until, binding);
+    _ = try checkRenewalRow(a, next.value, binding, now);
+    try exactPairedIssueTransition(a, before.json, after, old.transaction_id, old.refresh_grant_id, operation);
+    var refresh_secret = try store.loadGrant(.{ .key_id = store.key_id, .account_id = old.account_id, .grant_id = old.refresh_grant_id, .generation = old.refresh_generation, .purpose = "renewal", .scope = pair.resource_uri });
+    defer refresh_secret.deinit();
+    var scratch: [128 * 1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &scratch);
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const saved = try std.json.parseFromSlice(struct { refresh_token: []const u8, client_id: []const u8 }, fixed.allocator(), refresh_secret.bytes, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+    defer saved.deinit();
+    if (!enrollment.validIssuedClient(saved.value.client_id) or saved.value.refresh_token.len == 0 or saved.value.refresh_token.len > token.max_credential_bytes or
+        !std.crypto.timing_safe.eql([32]u8, pair.tokenCommitment(store.key, saved.value.refresh_token, .refresh), old.refresh_token_commitment)) return error.OAuthAuthorityChanged;
+    const host = prior.value.fresh_oauth_host_id orelse return error.OAuthAuthorityChanged;
+    if (std.mem.allEqual(u8, &host, 0)) return error.OAuthAuthorityChanged;
+    const client = try a.dupe(u8, saved.value.client_id);
+    errdefer wipeFree(a, client);
+    const resource = try a.dupe(u8, pair.resource_uri);
+    errdefer a.free(resource);
+    const redirect = try a.dupe(u8, "");
+    errdefer a.free(redirect);
+    const profile_owner = try a.create(ProfileData);
+    errdefer a.destroy(profile_owner);
+    profile_owner.* = .{ .allocator = a, .qualification = .owned_oss_renewal, .view = .{ .endpoint = .omux_oss_token, .code_encoding = .form, .refresh_encoding = .form, .client_id = client, .resource = resource, .exact_redirect_uri = redirect, .sha256 = old.profile_sha256, .host_id = host } };
+    const profile: *EnrollmentProfile = @ptrCast(profile_owner);
+    // Field and owner errdefers remain disjoint until ticket ownership is
+    // transferred after the actual durable/readback boundary.
+    const fence_owner = try a.create(FenceData);
+    fence_owner.* = .{ .allocator = a, .io = io, .until = until, .consent_expires_at = operation.source_expires_at, .grant_window = operation.grant_window, .renewal_admitted_unix = operation.admitted_unix };
+    const fence: *DispatchFence = @ptrCast(fence_owner);
+    defer fence.deinit();
+    var material = try cloneMaterial(a, .{ .grant = .{ .refresh = saved.value.refresh_token }, .endpoint = .omux_oss_token, .encoding = .form, .client_id = saved.value.client_id, .resource = pair.resource_uri,
+        .account_id = old.account_id, .grant_id = old.refresh_grant_id, .io = io, .until = until, .fence = fence });
+    errdefer material.deinit(a);
+    const dispatch_binding: enrollment.Binding = .{ .transaction_id = operation.issued_transaction, .source_id = try decodedId(old.source_id), .source_generation = old.source_generation,
+        .consent_id = old.consent_id, .consent_generation = old.consent_generation, .forget_epoch = operation.forget_epoch, .grant_id = try decodedId(old.refresh_grant_id),
+        .expected_grant_generation = old.refresh_generation, .consent_expires_at = operation.source_expires_at, .host_id = host, .operation_id = operation.operation_id,
+        .operation_id_len = 64, .registration_profile_sha256 = old.profile_sha256 };
+    const data = try a.create(TicketData);
+    errdefer a.destroy(data);
+    var joined: RenewalIssueFence = .{ .io = io, .until = until, .allocator = a, .store = store, .binding = binding, .actor = actor_fence, .client_id = saved.value.client_id };
+    const guarded: storage.CommitFence = .{ .context = &joined, .check = RenewalIssueFence.check };
+    const committed = try store.beginOwnedPairRotation(expected_revision, after, renewalTuple(store, &binding), &guarded);
+    var final = try store.readSnapshot();
+    defer final.deinit();
+    if (final.revision != committed or !std.mem.eql(u8, final.json, after)) return error.OAuthIssueReadbackLost;
+    try store.authenticateOwnedPairRefresh(renewalTuple(store, &binding), saved.value.client_id, binding.refresh_token_commitment);
+    try checkRenewalClock(io, until, binding);
+    data.* = .{ .allocator = a, .material = material, .profile = profile, .committed_revision = committed, .renewal_binding = binding, .binding = dispatch_binding };
+    return @ptrCast(data);
+}
+/// Actor-owner SQL reread. Old access expiry does not forbid a timely authentic
+/// refresh completion; request-only currentPair still refuses expired access.
+pub fn verifyCurrentOwnedRefresh(a: std.mem.Allocator, store: *storage.Store, ticket: *const IssuedTicket) !void {
+    try ticket.requireOwnedOssRenewal();
+    const binding = try ticket.renewalBinding();
+    try checkRenewalClock(ticket.clockIo(), ticket.originalUntil(), binding);
+    var current = try store.readSnapshot();
+    defer current.deinit();
+    if (current.revision < ticket.committedRevision()) return error.OAuthAuthorityChanged;
+    const parsed = try std.json.parseFromSlice(RenewalRetained, a, current.json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    _ = try checkRenewalRow(a, parsed.value, binding, std.Io.Clock.real.now(store.io).toSeconds());
+    if (!std.meta.eql(parsed.value.fresh_oauth_host_id, @as(?[32]u8, ticketDataConst(ticket).profile.view().host_id))) return error.OAuthAuthorityChanged;
+    try store.authenticateOwnedPairRefresh(renewalTuple(store, &binding), ticket.issuedClientId(), binding.refresh_token_commitment);
+    try checkRenewalClock(ticket.clockIo(), ticket.originalUntil(), binding);
+}
+fn exactPairedIssueTransition(a: std.mem.Allocator, before: []const u8, after: []const u8, transaction: [32]u8, refresh_id: []const u8, operation: pair.Renewal) !void {
+    var old = try std.json.parseFromSlice(std.json.Value, a, before, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+    defer old.deinit();
+    const next = try std.json.parseFromSlice(std.json.Value, a, after, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+    defer next.deinit();
+    if (old.value != .object or next.value != .object) return error.OAuthAuthorityChanged;
+    const section = old.value.object.get("owned_siwc_pairs") orelse return error.OAuthAuthorityChanged;
+    const rows = if (section == .object) section.object.get("records") orelse return error.OAuthAuthorityChanged else return error.OAuthAuthorityChanged;
+    if (rows != .array) return error.OAuthAuthorityChanged;
+    const operation_bytes = try std.json.Stringify.valueAlloc(a, operation, .{});
+    defer a.free(operation_bytes);
+    const parsed_operation = try std.json.parseFromSlice(std.json.Value, a, operation_bytes, .{ .allocate = .alloc_always });
+    defer parsed_operation.deinit();
+    var found = false;
+    for (rows.array.items) |*row| {
+        const bytes = try std.json.Stringify.valueAlloc(a, row.*, .{});
+        defer a.free(bytes);
+        const checked = try std.json.parseFromSlice(pair.Record, a, bytes, .{});
+        defer checked.deinit();
+        if (!std.meta.eql(checked.value.transaction_id, transaction)) continue;
+        if (found or row.* != .object) return error.OAuthAuthorityChanged;
+        found = true;
+        try row.object.put(a, "status", .{ .string = "refreshing" });
+        try row.object.put(a, "renewal", parsed_operation.value);
+    }
+    if (!found) return error.OAuthAuthorityChanged;
+    var state = old.value.object.get("state") orelse return error.OAuthAuthorityChanged;
+    const next_state = next.value.object.get("state") orelse return error.OAuthAuthorityChanged;
+    if (state != .object or next_state != .object) return error.OAuthAuthorityChanged;
+    const grants = state.object.get("grants") orelse return error.OAuthAuthorityChanged;
+    if (grants != .array) return error.OAuthAuthorityChanged;
+    found = false;
+    for (grants.array.items) |*grant| {
+        if (grant.* != .object) return error.OAuthAuthorityChanged;
+        const id = grant.object.get("id") orelse return error.OAuthAuthorityChanged;
+        if (id != .string or !std.mem.eql(u8, id.string, refresh_id)) continue;
+        if (found) return error.OAuthAuthorityChanged;
+        found = true;
+        try grant.object.put(a, "status", .{ .string = "refreshing" });
+    }
+    if (!found) return error.OAuthAuthorityChanged;
+    const old_revision = state.object.get("revision") orelse return error.OAuthAuthorityChanged;
+    const next_revision = next_state.object.get("revision") orelse return error.OAuthAuthorityChanged;
+    if (old_revision != .integer or next_revision != .integer or old_revision.integer == std.math.maxInt(i64) or next_revision.integer != old_revision.integer + 1) return error.OAuthAuthorityChanged;
+    try state.object.put(a, "revision", next_revision);
+    const growth = next.value.object.get("maintenance_growth_bytes") orelse return error.OAuthAuthorityChanged;
+    if (growth != .integer or growth.integer < 0 or growth.integer > storage.maximum_snapshot_bytes) return error.OAuthAuthorityChanged;
+    try old.value.object.put(a, "maintenance_growth_bytes", growth);
+    const normalized = try std.json.Stringify.valueAlloc(a, old.value, .{});
+    defer a.free(normalized);
+    const expected = try std.json.Stringify.valueAlloc(a, next.value, .{});
+    defer a.free(expected);
+    if (!std.mem.eql(u8, normalized, expected)) return error.OAuthAuthorityChanged;
+}
+
 /// Actor-owner reread, never called on the libcurl thread. Parsed wire evidence
 /// has no authority to replace this exact issued-row/profile/generation join.
 pub fn verifyCurrentIssued(a: std.mem.Allocator, store: *storage.Store, ticket: *IssuedTicket, binding: enrollment.Binding, until: std.Io.Clock.Timestamp) !void {
@@ -484,12 +806,28 @@ fn exactTransition(a: std.mem.Allocator, before: []const u8, after: []const u8, 
 }
 
 pub const testing = struct {
+    /// Private retained-ticket comparison for the real loopback wire observer.
+    /// No bearer getter, ticket construction or production admission authority.
+    pub fn matchesOwnedRefreshWire(ticket: *const IssuedTicket, candidate: []const u8) bool {
+        if (!builtin.is_test) return false;
+        ticket.requireOwnedOssRenewal() catch return false;
+        const selected = ticketDataConst(ticket).material.grant;
+        return selected == .refresh and std.mem.eql(u8, selected.refresh, candidate);
+    }
+
     pub fn attachOssModelRoutes(ticket: *IssuedTicket, routes: ModelRoutes) !void {
         if (!builtin.is_test) return error.TestOnly;
         try ticket.requireOwnedOssEnrollment();
         const data = ticketData(ticket);
         if (routes.token_port == 0 or routes.jwks_port == 0 or data.model_routes != null or data.claimed.load(.acquire) or data.jwks_claimed.load(.acquire)) return error.InvalidModelProfile;
         data.model_routes = routes;
+    }
+    pub fn attachPairedRefreshModelRoutes(ticket: *IssuedTicket, routes: ModelRoutes) !void {
+        if (!builtin.is_test) return error.TestOnly;
+        try ticket.requireOwnedOssRenewal();
+        const owner = ticketData(ticket);
+        if (routes.token_port == 0 or routes.jwks_port == 0 or owner.model_routes != null or owner.claimed.load(.acquire) or owner.jwks_claimed.load(.acquire)) return error.InvalidModelProfile;
+        owner.model_routes = routes;
     }
     pub const OssRegistrationFixture = struct {
         pub fn create(io: std.Io, a: std.mem.Allocator, token_port: u16, jwks_port: u16, until: std.Io.Clock.Timestamp) !CodeFixture {

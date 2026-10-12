@@ -1661,6 +1661,13 @@ const Fixture = struct {
     expected_client_len: usize = 0,
     expected_redirect: [256]u8 = @splat(0),
     expected_redirect_len: usize = 0,
+    expected_refresh_ticket: ?*const oauth_authority.IssuedTicket = null,
+    suppress_reply: bool = false,
+    response_delay_ms: u32 = 0,
+    response_status: u16 = 200,
+    hold_reply: bool = false,
+    release_reply: std.atomic.Value(bool) = .init(false),
+    accept_timeout_ms: c_int = 1500,
     thread: ?std.Thread = null,
     request_seen: std.atomic.Value(bool) = .init(false),
     authorization_seen: std.atomic.Value(bool) = .init(false),
@@ -1697,7 +1704,7 @@ const Fixture = struct {
 
     fn serve(self: *Fixture) void {
         var pollfd: c.struct_pollfd = .{ .fd = self.descriptor, .events = c.POLLIN, .revents = 0 };
-        if (c.poll(&pollfd, 1, 1500) <= 0) return;
+        if (c.poll(&pollfd, 1, self.accept_timeout_ms) <= 0) return;
         const peer = c.accept(self.descriptor, null, null);
         if (peer < 0) return;
         defer _ = c.close(peer);
@@ -1757,6 +1764,15 @@ const Fixture = struct {
         _ = self.request_count.fetchAdd(1, .acq_rel);
         self.authorization_seen.store(std.mem.indexOf(u8, request[0..length], "Authorization: Bearer fixture-token") != null, .release);
         self.request_seen.store(true, .release);
+        if (self.suppress_reply) return;
+        if (self.hold_reply) {
+            const original = monotonicMilliseconds() + 3000;
+            while (!self.release_reply.load(.acquire)) {
+                if (monotonicMilliseconds() >= original) return;
+                sleepMilliseconds(2);
+            }
+        }
+        if (self.response_delay_ms != 0) sleepMilliseconds(self.response_delay_ms);
         switch (self.mode) {
             .json => sendAll(peer, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 23\r\nConnection: close\r\n\r\n{\"subject\":\"fixture-1\"}"),
             .redirect => sendAll(peer, "HTTP/1.1 302 Found\r\nLocation: https://undeclared.invalid/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
@@ -1772,7 +1788,7 @@ const Fixture = struct {
             .oauth_oss => {
                 const body = self.token_body orelse return;
                 var header: [256]u8 = undefined;
-                const bytes = std.fmt.bufPrint(&header, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{body.len}) catch return;
+                const bytes = std.fmt.bufPrint(&header, "HTTP/1.1 {d} Fixture\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ self.response_status, body.len }) catch return;
                 sendAll(peer, bytes);
                 sendAll(peer, body);
             },
@@ -1812,6 +1828,7 @@ const Fixture = struct {
     }
 
     fn ossFormMatches(self: *const Fixture, body: []const u8) bool {
+        if (self.expected_refresh_ticket) |ticket| return self.ossRefreshMatches(ticket, body);
         var iterator = std.mem.splitScalar(u8, body, '&');
         var seen: u8 = 0;
         while (iterator.next()) |field| {
@@ -1838,6 +1855,29 @@ const Fixture = struct {
             }
         }
         return seen == 0b11_1111;
+    }
+
+    fn ossRefreshMatches(self: *const Fixture, ticket: *const oauth_authority.IssuedTicket, body: []const u8) bool {
+        var iterator = std.mem.splitScalar(u8, body, '&');
+        var seen: u8 = 0;
+        while (iterator.next()) |field| {
+            const equals = std.mem.indexOfScalar(u8, field, '=') orelse return false;
+            const name = field[0..equals];
+            const index: u2 = if (std.mem.eql(u8, name, "grant_type")) 0 else if (std.mem.eql(u8, name, "client_id")) 1 else if (std.mem.eql(u8, name, "refresh_token")) 2 else if (std.mem.eql(u8, name, "resource")) 3 else return false;
+            const bit = @as(u8, 1) << index;
+            if (seen & bit != 0) return false;
+            seen |= bit;
+            var decoded: [16 * 1024]u8 = undefined;
+            defer std.crypto.secureZero(u8, &decoded);
+            const value = decodeFixtureForm(&decoded, field[equals + 1 ..]) orelse return false;
+            switch (index) {
+                0 => if (!std.mem.eql(u8, value, "refresh_token")) return false,
+                1 => if (!std.mem.eql(u8, value, self.expected_client[0..self.expected_client_len])) return false,
+                2 => if (!oauth_authority.testing.matchesOwnedRefreshWire(ticket, value)) return false,
+                3 => if (!std.mem.eql(u8, value, "https://api.openai.com/v1")) return false,
+            }
+        }
+        return seen == 0b1111;
     }
 
     fn decodeFixtureForm(storage: []u8, encoded: []const u8) ?[]const u8 {
@@ -1927,7 +1967,13 @@ pub const testing = struct {
         pub fn start(self: *Server, ticket: *const oauth_authority.IssuedTicket) !void {
             if (!builtin.is_test) return error.UndeclaredEndpoint;
             if (self.fixture.thread != null or self.body == null) return error.TestServerStarted;
-            try ticket.requireOwnedOssEnrollment();
+            const renewing = blk: {
+                ticket.requireOwnedOssRenewal() catch {
+                    try ticket.requireOwnedOssEnrollment();
+                    break :blk false;
+                };
+                break :blk true;
+            };
             const routes = ticket.modelRoutes() orelse return error.InvalidScope;
             switch (self.fixture.mode) {
                 .oauth_oss => {
@@ -1935,18 +1981,43 @@ pub const testing = struct {
                     const client_id = ticket.issuedClientId();
                     const binding = ticket.binding();
                     const redirect = binding.redirect();
-                    if (client_id.len == 0 or client_id.len > 256 or redirect.len == 0 or redirect.len > 256) return error.InvalidScope;
+                    if (renewing) {
+                        // The expectation retains only the original sealed
+                        // ticket; it never exposes or invents RT authority.
+                        const owned: *oauth_authority.IssuedTicket = @constCast(ticket);
+                        owned.retain();
+                        self.fixture.expected_refresh_ticket = ticket;
+                    }
+                    if (client_id.len == 0 or client_id.len > 256 or (!renewing and redirect.len == 0) or redirect.len > 256) return error.InvalidScope;
                     self.fixture.expected_client_len = client_id.len;
                     @memcpy(self.fixture.expected_client[0..client_id.len], client_id);
                     self.fixture.expected_redirect_len = redirect.len;
                     @memcpy(self.fixture.expected_redirect[0..redirect.len], redirect);
                 },
-                .jwks => if (routes.jwks_port != self.port()) return error.InvalidScope,
+                .jwks => {
+                    if (routes.jwks_port != self.port()) return error.InvalidScope;
+                    if (renewing) self.fixture.accept_timeout_ms = @intCast(@min(@as(u64, 5000), try (AbsoluteDeadline{ .io = ticket.clockIo(), .until = ticket.originalUntil() }).remaining()));
+                },
                 else => unreachable,
             }
             _ = try (AbsoluteDeadline{ .io = ticket.clockIo(), .until = ticket.originalUntil() }).remaining();
             try self.fixture.start();
         }
+        pub fn setFailureModel(self: *Server, suppress_reply: bool, delay_ms: u32) !void {
+            if (!builtin.is_test or self.fixture.thread != null or delay_ms > 3000) return error.InvalidScope;
+            self.fixture.suppress_reply = suppress_reply;
+            self.fixture.response_delay_ms = delay_ms;
+        }
+        pub fn setHoldModel(self: *Server) !void {
+            if (!builtin.is_test or self.fixture.thread != null) return error.InvalidScope;
+            self.fixture.hold_reply = true;
+        }
+        pub fn releaseModelReply(self: *Server) void { if (builtin.is_test) self.fixture.release_reply.store(true, .release); }
+        pub fn setStatusModel(self: *Server, status: u16) !void {
+            if (!builtin.is_test or self.fixture.thread != null or status < 200 or status > 599) return error.InvalidScope;
+            self.fixture.response_status = status;
+        }
+        pub fn started(self: *const Server) bool { return self.fixture.thread != null; }
         pub fn requestCount(self: *const Server) u32 {
             return self.fixture.request_count.load(.acquire);
         }
@@ -1959,6 +2030,7 @@ pub const testing = struct {
         }
         pub fn deinit(self: *Server) void {
             self.fixture.deinit();
+            if (self.fixture.expected_refresh_ticket) |ticket| @constCast(ticket).deinit();
             if (self.body) |*body| body.deinit();
             std.crypto.secureZero(u8, &self.fixture.expected_client);
             std.crypto.secureZero(u8, &self.fixture.expected_redirect);
