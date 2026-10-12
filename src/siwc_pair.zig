@@ -54,8 +54,7 @@ pub fn grantWindow(grants: []const domain.Grant, row: Record) !GrantWindow {
     }
     const at = access orelse return error.SiwcPairAuthorityChanged;
     const rt = refresh orelse return error.SiwcPairAuthorityChanged;
-    return .{ .access_provider_expires_at = at.provider_expires_at, .access_custody_expires_at = at.custody_expires_at,
-        .refresh_provider_expires_at = rt.provider_expires_at, .refresh_custody_expires_at = rt.custody_expires_at };
+    return .{ .access_provider_expires_at = at.provider_expires_at, .access_custody_expires_at = at.custody_expires_at, .refresh_provider_expires_at = rt.provider_expires_at, .refresh_custody_expires_at = rt.custody_expires_at };
 }
 /// One fixed-size last-operation witness per pair. Only a new snapshot-
 /// coupled actual Store intent can set issued; restart never recreates a ticket.
@@ -73,7 +72,9 @@ pub const Renewal = struct {
     source_expires_at: i64,
     grant_window: GrantWindow = .{},
     state: enum { issued, completed, unknown } = .issued,
-    pub fn originalUntil(self: Renewal) std.Io.Clock.Timestamp { return .{ .clock = .awake, .raw = .{ .nanoseconds = self.until_nanoseconds } }; }
+    pub fn originalUntil(self: Renewal) std.Io.Clock.Timestamp {
+        return .{ .clock = .awake, .raw = .{ .nanoseconds = self.until_nanoseconds } };
+    }
 };
 pub const Record = struct {
     transaction_id: [32]u8,
@@ -135,7 +136,9 @@ pub const Registry = struct {
             if (source_id) |id| if (!std.mem.eql(u8, id, row.source_id)) continue;
             if (account_id) |id| if (!std.mem.eql(u8, id, row.account_id)) continue;
             row.status = .retired;
-            if (row.renewal) |*renewal| if (renewal.state == .issued) { renewal.state = .unknown; };
+            if (row.renewal) |*renewal| if (renewal.state == .issued) {
+                renewal.state = .unknown;
+            };
             if (account_id != null) {
                 row.forget_tombstone = true;
                 row.retirement_reason = .forgotten;
@@ -300,7 +303,10 @@ pub fn currentRenewalOwner(store: *storage.Store, account_id: []const u8, access
 /// refresh permit and never bypasses source/consent/SQL/identity joins.
 pub fn retainExpiredAccessForRenewal(store: *storage.Store, account_id: []const u8, access_grant_id: []const u8, access_generation: u64, now: i64) !void {
     const owner = try authenticatePair(store, account_id, access_grant_id, access_generation, now, .retained_access);
-    defer { freeRecord(owner.allocator, owner.row); owner.allocator.destroy(owner); }
+    defer {
+        freeRecord(owner.allocator, owner.row);
+        owner.allocator.destroy(owner);
+    }
 }
 fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_id: []const u8, access_generation: u64, now: i64, access_purpose: enum { request_access, renewal_issue, retained_access }) !*Data {
     const a = store.allocator;
@@ -397,7 +403,8 @@ fn authenticatePair(store: *storage.Store, account_id: []const u8, access_grant_
             !same(clientCommitment(identity_envelope.value.client_id), row.issued_client_commitment) or !same(registrationIdentity(identity_envelope.value.client_id, identity_envelope.value.subject), row.identity_commitment)) return error.SiwcPairAuthorityChanged;
         if (renewing) {
             const renewal = row.renewal.?;
-            try store.authenticateOwnedPairRefresh(.{ .operation_id = &renewal.operation_id,
+            try store.authenticateOwnedPairRefresh(.{
+                .operation_id = &renewal.operation_id,
                 .access = .{ .key_id = store.key_id, .account_id = row.account_id, .grant_id = row.access_grant_id, .generation = row.access_generation, .purpose = "request", .scope = resource_uri },
                 .refresh = .{ .key_id = store.key_id, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = row.refresh_generation, .purpose = "renewal", .scope = resource_uri },
             }, identity_envelope.value.client_id, row.refresh_token_commitment);

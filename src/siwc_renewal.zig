@@ -28,9 +28,15 @@ pub const VerifiedRotation = opaque {
         std.crypto.secureZero(u8, std.mem.asBytes(owner));
         a.destroy(owner);
     }
-    pub fn accessExpiresAt(self: *const VerifiedRotation) i64 { return rotationView(self).access_expires_at; }
-    pub fn responseSha256(self: *const VerifiedRotation) [32]u8 { return rotationView(self).response_sha256; }
-    pub fn identityCommitment(self: *const VerifiedRotation) [32]u8 { return rotationView(self).identity_commitment; }
+    pub fn accessExpiresAt(self: *const VerifiedRotation) i64 {
+        return rotationView(self).access_expires_at;
+    }
+    pub fn responseSha256(self: *const VerifiedRotation) [32]u8 {
+        return rotationView(self).response_sha256;
+    }
+    pub fn identityCommitment(self: *const VerifiedRotation) [32]u8 {
+        return rotationView(self).identity_commitment;
+    }
     /// New receipt authority is valid only while this opaque proof rechecks.
     /// A serialized commitment is never a renewal/admission constructor.
     pub fn successorCommitment(self: *const VerifiedRotation, ticket: *const issue.IssuedTicket) ![32]u8 {
@@ -42,8 +48,7 @@ pub const VerifiedRotation = opaque {
         frame(&hash, pair.issuer_uri);
         frame(&hash, pair.resource_uri);
         frame(&hash, ticket.issuedClientId());
-        for ([_][32]u8{ binding.prior_activation, binding.profile_sha256, binding.lineage_id, owner.binding_sha256,
-            owner.response_sha256, owner.pair_sha256, owner.identity_commitment, owner.keys.sha256() }) |digest| hash.update(&digest);
+        for ([_][32]u8{ binding.prior_activation, binding.profile_sha256, binding.lineage_id, owner.binding_sha256, owner.response_sha256, owner.pair_sha256, owner.identity_commitment, owner.keys.sha256() }) |digest| hash.update(&digest);
         var number: [8]u8 = undefined;
         for ([_]i64{ owner.received_at, owner.signed_expires_at, owner.access_expires_at, owner.keys.receivedUnix() }) |value| {
             std.mem.writeInt(i64, &number, value, .big);
@@ -87,9 +92,15 @@ pub const VerifiedRotation = opaque {
         try self.checkTicket(ticket);
     }
 };
-fn rotationView(self: *const VerifiedRotation) *const RotationData { return @ptrCast(@alignCast(self)); }
-fn rotationMutable(self: *VerifiedRotation) *RotationData { return @ptrCast(@alignCast(self)); }
-fn same(a: [32]u8, b: [32]u8) bool { return std.crypto.timing_safe.eql([32]u8, a, b); }
+fn rotationView(self: *const VerifiedRotation) *const RotationData {
+    return @ptrCast(@alignCast(self));
+}
+fn rotationMutable(self: *VerifiedRotation) *RotationData {
+    return @ptrCast(@alignCast(self));
+}
+fn same(a: [32]u8, b: [32]u8) bool {
+    return std.crypto.timing_safe.eql([32]u8, a, b);
+}
 fn wallTime(io: std.Io) !i64 {
     const now = std.Io.Clock.real.now(io).toSeconds();
     if (now <= 0 or now > 253_402_300_794) return error.OidcClockChanged;
@@ -170,9 +181,7 @@ pub fn verifyOwnedRotation(a: std.mem.Allocator, ticket: *const issue.IssuedTick
     const binding_digest = try ticket.bindingSha256(a);
     const owner = try a.create(RotationData);
     keys.retain();
-    owner.* = .{ .allocator = a, .binding_sha256 = binding_digest, .response_sha256 = evidence.response_sha256,
-        .pair_sha256 = digest, .identity_commitment = identity, .received_at = received, .signed_expires_at = claims.expires_at,
-        .access_expires_at = expires, .scope_mask = mask, .keys = keys };
+    owner.* = .{ .allocator = a, .binding_sha256 = binding_digest, .response_sha256 = evidence.response_sha256, .pair_sha256 = digest, .identity_commitment = identity, .received_at = received, .signed_expires_at = claims.expires_at, .access_expires_at = expires, .scope_mask = mask, .keys = keys };
     const proof: *VerifiedRotation = @ptrCast(owner);
     errdefer proof.deinit();
     try proof.recheck(ticket, response);

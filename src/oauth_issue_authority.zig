@@ -322,7 +322,9 @@ pub const IssuedTicket = opaque {
         if (data.renewal_binding != null or data.material.grant != .code or data.profile.view().endpoint != .omux_oss_token or data.profile.view().resource == null or !std.mem.eql(u8, data.profile.view().resource.?, "https://api.openai.com/v1") or data.material.encoding != .form) return error.OAuthAuthorityChanged;
         try data.profile.requireAvailable();
     }
-    pub fn renewalBinding(self: *const IssuedTicket) !RenewalBinding { return ticketDataConst(self).renewal_binding orelse error.OAuthWrongPurpose; }
+    pub fn renewalBinding(self: *const IssuedTicket) !RenewalBinding {
+        return ticketDataConst(self).renewal_binding orelse error.OAuthWrongPurpose;
+    }
     pub fn requireOwnedOssRenewal(self: *const IssuedTicket) !void {
         const data = ticketDataConst(self);
         const owned = data.renewal_binding orelse return error.OAuthWrongPurpose;
@@ -496,7 +498,8 @@ fn decodedId(value: []const u8) ![32]u8 {
     return out;
 }
 fn renewalTuple(store: *storage.Store, binding: *const RenewalBinding) storage.OwnedPairRotation {
-    return .{ .operation_id = &binding.operation.operation_id,
+    return .{
+        .operation_id = &binding.operation.operation_id,
         .access = .{ .key_id = store.key_id, .account_id = &binding.account_id, .grant_id = &binding.access_grant_id, .generation = binding.operation.family_generation, .purpose = "request", .scope = pair.resource_uri },
         .refresh = .{ .key_id = store.key_id, .account_id = &binding.account_id, .grant_id = &binding.refresh_grant_id, .generation = binding.operation.family_generation, .purpose = "renewal", .scope = pair.resource_uri },
     };
@@ -511,13 +514,17 @@ fn ongoingSourceExpiry(saved: RenewalRetained, row: pair.Record, now: i64) !i64 
         expires = source.authorized_until orelse 253_402_300_799;
     };
     var generation_ok = false;
-    for (saved.import_source_authority) |source| if (std.mem.eql(u8, source.source_id, row.source_id) and source.generation == row.source_generation) { generation_ok = true; };
+    for (saved.import_source_authority) |source| if (std.mem.eql(u8, source.source_id, row.source_id) and source.generation == row.source_generation) {
+        generation_ok = true;
+    };
     var account_ok = false;
     const identity = std.fmt.bytesToHex(row.identity_commitment, .lower);
     for (saved.state.accounts) |account| if (std.mem.eql(u8, account.id, row.account_id)) {
         if (!account.identity.verified or !std.mem.eql(u8, account.identity.provider, "openai_siwc") or !std.mem.eql(u8, account.identity.issuer, pair.issuer_uri) or
             !std.mem.eql(u8, account.identity.subject, &identity) or account.identity.tenant.len != 0) return error.OAuthAuthorityChanged;
-        for (account.source_ids) |source| if (std.mem.eql(u8, source, row.source_id)) { account_ok = true; };
+        for (account.source_ids) |source| if (std.mem.eql(u8, source, row.source_id)) {
+            account_ok = true;
+        };
     };
     if (!source_ok or !generation_ok or !account_ok or row.forget_tombstone or row.consent_status != .recorded) return error.OAuthAuthorityChanged;
     return expires;
@@ -550,13 +557,22 @@ fn checkRenewalRow(a: std.mem.Allocator, saved: RenewalRetained, binding: Renewa
     for (saved.state.grants) |grant| {
         if (!std.mem.eql(u8, grant.account_id, row.account_id) or !std.mem.eql(u8, grant.source_id, row.source_id) or grant.ownership != .omux or !std.mem.eql(u8, grant.audience, pair.resource_uri)) continue;
         if (std.mem.eql(u8, grant.id, row.access_grant_id) and grant.credential_kind == .oauth_access and grant.status == .ready and grant.generation == row.access_generation and grant.provider_expires_at == row.access_expires_at) {
-            var request = false; var invoke = false; var direct = false;
-            for (grant.purposes) |purpose| if (purpose == .request) { request = true; };
-            for (grant.scopes) |scope| { if (std.mem.eql(u8, scope, "resource.invoke")) invoke = true; if (std.mem.eql(u8, scope, "chatgpt.tokens.use.direct")) direct = true; }
+            var request = false;
+            var invoke = false;
+            var direct = false;
+            for (grant.purposes) |purpose| if (purpose == .request) {
+                request = true;
+            };
+            for (grant.scopes) |scope| {
+                if (std.mem.eql(u8, scope, "resource.invoke")) invoke = true;
+                if (std.mem.eql(u8, scope, "chatgpt.tokens.use.direct")) direct = true;
+            }
             access_ok = request and invoke and direct;
         }
         if (std.mem.eql(u8, grant.id, row.refresh_grant_id) and grant.credential_kind == .oauth_refresh and grant.status == .refreshing and grant.generation == row.refresh_generation) {
-            for (grant.purposes) |purpose| if (purpose == .renewal) { refresh_ok = true; };
+            for (grant.purposes) |purpose| if (purpose == .renewal) {
+                refresh_ok = true;
+            };
         }
     }
     if (!access_ok or !refresh_ok) return error.OAuthAuthorityChanged;
@@ -610,10 +626,7 @@ pub fn issueOwnedRefresh(io: std.Io, a: std.mem.Allocator, store: *storage.Store
         operation.source_generation != old.source_generation or operation.consent_generation != old.consent_generation or operation.forget_epoch != prior.value.import_forget_epoch or
         operation.admitted_unix > now or operation.until_nanoseconds != until.raw.nanoseconds or operation.admitted_awake_nanoseconds > std.Io.Clock.awake.now(io).nanoseconds or
         operation.source_expires_at != try ongoingSourceExpiry(prior.value, old, now)) return error.OAuthAuthorityChanged;
-    const binding: RenewalBinding = .{ .account_id = try fixedId(old.account_id), .source_id = try fixedId(old.source_id), .access_grant_id = try fixedId(old.access_grant_id), .refresh_grant_id = try fixedId(old.refresh_grant_id),
-        .lineage_id = old.lineage_id, .registration_transaction = old.transaction_id, .prior_record_commitment = try recordCommitment(a, old), .prior_activation = old.activation_commitment,
-        .profile_sha256 = old.profile_sha256, .identity_commitment = old.identity_commitment, .provider_subject_commitment = old.provider_subject_commitment,
-        .issued_client_commitment = old.issued_client_commitment, .refresh_token_commitment = old.refresh_token_commitment, .previous_renewal = old.renewal, .operation = operation };
+    const binding: RenewalBinding = .{ .account_id = try fixedId(old.account_id), .source_id = try fixedId(old.source_id), .access_grant_id = try fixedId(old.access_grant_id), .refresh_grant_id = try fixedId(old.refresh_grant_id), .lineage_id = old.lineage_id, .registration_transaction = old.transaction_id, .prior_record_commitment = try recordCommitment(a, old), .prior_activation = old.activation_commitment, .profile_sha256 = old.profile_sha256, .identity_commitment = old.identity_commitment, .provider_subject_commitment = old.provider_subject_commitment, .issued_client_commitment = old.issued_client_commitment, .refresh_token_commitment = old.refresh_token_commitment, .previous_renewal = old.renewal, .operation = operation };
     try checkRenewalClock(io, until, binding);
     _ = try checkRenewalRow(a, next.value, binding, now);
     try exactPairedIssueTransition(a, before.json, after, old.transaction_id, old.refresh_grant_id, operation);
@@ -644,13 +657,9 @@ pub fn issueOwnedRefresh(io: std.Io, a: std.mem.Allocator, store: *storage.Store
     fence_owner.* = .{ .allocator = a, .io = io, .until = until, .consent_expires_at = operation.source_expires_at, .grant_window = operation.grant_window, .renewal_admitted_unix = operation.admitted_unix };
     const fence: *DispatchFence = @ptrCast(fence_owner);
     defer fence.deinit();
-    var material = try cloneMaterial(a, .{ .grant = .{ .refresh = saved.value.refresh_token }, .endpoint = .omux_oss_token, .encoding = .form, .client_id = saved.value.client_id, .resource = pair.resource_uri,
-        .account_id = old.account_id, .grant_id = old.refresh_grant_id, .io = io, .until = until, .fence = fence });
+    var material = try cloneMaterial(a, .{ .grant = .{ .refresh = saved.value.refresh_token }, .endpoint = .omux_oss_token, .encoding = .form, .client_id = saved.value.client_id, .resource = pair.resource_uri, .account_id = old.account_id, .grant_id = old.refresh_grant_id, .io = io, .until = until, .fence = fence });
     errdefer material.deinit(a);
-    const dispatch_binding: enrollment.Binding = .{ .transaction_id = operation.issued_transaction, .source_id = try decodedId(old.source_id), .source_generation = old.source_generation,
-        .consent_id = old.consent_id, .consent_generation = old.consent_generation, .forget_epoch = operation.forget_epoch, .grant_id = try decodedId(old.refresh_grant_id),
-        .expected_grant_generation = old.refresh_generation, .consent_expires_at = operation.source_expires_at, .host_id = host, .operation_id = operation.operation_id,
-        .operation_id_len = 64, .registration_profile_sha256 = old.profile_sha256 };
+    const dispatch_binding: enrollment.Binding = .{ .transaction_id = operation.issued_transaction, .source_id = try decodedId(old.source_id), .source_generation = old.source_generation, .consent_id = old.consent_id, .consent_generation = old.consent_generation, .forget_epoch = operation.forget_epoch, .grant_id = try decodedId(old.refresh_grant_id), .expected_grant_generation = old.refresh_generation, .consent_expires_at = operation.source_expires_at, .host_id = host, .operation_id = operation.operation_id, .operation_id_len = 64, .registration_profile_sha256 = old.profile_sha256 };
     const data = try a.create(TicketData);
     errdefer a.destroy(data);
     var joined: RenewalIssueFence = .{ .io = io, .until = until, .allocator = a, .store = store, .binding = binding, .actor = actor_fence, .client_id = saved.value.client_id };

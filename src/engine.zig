@@ -380,23 +380,40 @@ const OwnedRenewalVerifyTask = struct {
     job: native_work.Job,
     fn run(raw: *anyopaque, cancelled: bool) void {
         const self: *OwnedRenewalVerifyTask = @ptrCast(@alignCast(raw));
-        if (cancelled) { self.failure = error.ServiceStopping; return; }
+        if (cancelled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
         self.proof = siwc_renewal.verifyOwnedRotation(self.allocator, self.ticket, self.response, self.keys) catch |err| failed: {
             self.failure = err;
             break :failed null;
         };
         if (builtin.is_test and self.fixture_hold_window and self.proof != null) {
             self.fixture_verified_before_hold = true;
-            const binding = self.ticket.renewalBinding() catch |err| { self.failure = err; return; };
-            const limit = binding.operation.grant_window.limitingExpiry() orelse { self.failure = error.InvalidFixtureWindow; return; };
+            const binding = self.ticket.renewalBinding() catch |err| {
+                self.failure = err;
+                return;
+            };
+            const limit = binding.operation.grant_window.limitingExpiry() orelse {
+                self.failure = error.InvalidFixtureWindow;
+                return;
+            };
             const seconds = limit - std.Io.Clock.real.now(self.ticket.clockIo()).toSeconds();
-            if (seconds > 3) { self.failure = error.InvalidFixtureWindow; return; }
-            if (seconds > 0) self.ticket.clockIo().sleep(.fromSeconds(seconds), .awake) catch |err| { self.failure = err; return; };
+            if (seconds > 3) {
+                self.failure = error.InvalidFixtureWindow;
+                return;
+            }
+            if (seconds > 0) self.ticket.clockIo().sleep(.fromSeconds(seconds), .awake) catch |err| {
+                self.failure = err;
+                return;
+            };
         }
     }
     fn deinit(self: *OwnedRenewalVerifyTask) void {
         if (self.proof) |proof| proof.deinit();
-        self.keys.deinit(); self.response.deinit(); self.ticket.deinit();
+        self.keys.deinit();
+        self.response.deinit();
+        self.ticket.deinit();
         self.allocator.destroy(self);
     }
 };
@@ -407,7 +424,9 @@ const OwnedRenewalFixtureServers = struct {
     token: transport.testing.Server,
     keys: transport.testing.Server,
     fn deinit(self: *OwnedRenewalFixtureServers) void {
-        self.token.deinit(); self.keys.deinit(); self.allocator.destroy(self);
+        self.token.deinit();
+        self.keys.deinit();
+        self.allocator.destroy(self);
     }
 };
 const NativeRuntimeCommitTask = struct {
@@ -1681,7 +1700,9 @@ pub const Engine = struct {
                 // This awake-clock schedule is independent of dispatch and
                 // queue emptiness. Continued inspection cannot starve already
                 // issued identity reads or credential expiry maintenance.
-                if (!self.poisoned) self.pollOwnedRenewals() catch { self.fence(); };
+                if (!self.poisoned) self.pollOwnedRenewals() catch {
+                    self.fence();
+                };
                 if (!self.poisoned) self.pollFreshOAuth() catch {
                     self.fence();
                 };
@@ -1723,7 +1744,10 @@ pub const Engine = struct {
                 self.finishInvocation(item, response);
                 continue;
             }
-            if (self.stopping) { self.cancelFreshOAuth(null); self.cancelOwnedRenewals(null, null); }
+            if (self.stopping) {
+                self.cancelFreshOAuth(null);
+                self.cancelOwnedRenewals(null, null);
+            }
             if (item.qualified_candidate != null) {
                 self.startNativeRuntimeCommit(item) catch |err| self.finishInvocation(item, err);
                 self.active_until = null;
@@ -4380,8 +4404,12 @@ pub const Engine = struct {
             if (account_id) |id| if (!eql(id, &pending.binding.account_id)) continue;
             _ = pending.fence.invalidate();
             if (self.network) |client| {
-                if (pending.transport_id) |id| client.cancel(id) catch |err| { self.owned_renewal_cancel_failure = err; };
-                if (pending.jwks_id) |id| client.cancel(id) catch |err| { self.owned_renewal_cancel_failure = err; };
+                if (pending.transport_id) |id| client.cancel(id) catch |err| {
+                    self.owned_renewal_cancel_failure = err;
+                };
+                if (pending.jwks_id) |id| client.cancel(id) catch |err| {
+                    self.owned_renewal_cancel_failure = err;
+                };
             }
         }
     }
@@ -4396,7 +4424,8 @@ pub const Engine = struct {
     }
     fn ownedPairTuple(self: *Engine, row: *const siwc_pair.Record) !storage.OwnedPairRotation {
         const renewal = row.renewal orelse return error.OAuthAuthorityChanged;
-        return .{ .operation_id = &row.renewal.?.operation_id,
+        return .{
+            .operation_id = &row.renewal.?.operation_id,
             .access = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.access_grant_id, .generation = renewal.family_generation, .purpose = "request", .scope = siwc_pair.resource_uri },
             .refresh = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = renewal.family_generation, .purpose = "renewal", .scope = siwc_pair.resource_uri },
         };
@@ -4407,10 +4436,14 @@ pub const Engine = struct {
         // Reduction of authority can run after the issuance deadline. It must
         // still name the exact actual operation, not a newer replacement pair.
         const tuple = try self.ownedPairTuple(row);
-        errdefer self.restoreCommitted() catch { self.poisoned = true; };
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
         row.status = .quarantined;
         row.renewal.?.state = .unknown;
-        for (self.state.grants.items) |*grant| if (eql(grant.id, row.access_grant_id) or eql(grant.id, row.refresh_grant_id)) { grant.status = .quarantined; };
+        for (self.state.grants.items) |*grant| if (eql(grant.id, row.access_grant_id) or eql(grant.id, row.refresh_grant_id)) {
+            grant.status = .quarantined;
+        };
         if (self.state.revision == std.math.maxInt(u64)) return error.GenerationExhausted;
         self.state.revision += 1;
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
@@ -4491,17 +4524,22 @@ pub const Engine = struct {
         try self.io.randomSecure(&nonce);
         const operation = std.fmt.bytesToHex(nonce, .lower);
         var source_expiry: i64 = 0;
-        for (self.state.sources.items) |source| if (eql(source.id, row.source_id)) { source_expiry = source.authorized_until orelse 253_402_300_799; };
+        for (self.state.sources.items) |source| if (eql(source.id, row.source_id)) {
+            source_expiry = source.authorized_until orelse 253_402_300_799;
+        };
         if (source_expiry <= self.now()) return error.OAuthAuthorityChanged;
         const window = try siwc_pair.grantWindow(self.state.grants.items, row.*);
         try window.check(self.now());
-        errdefer self.restoreCommitted() catch { self.poisoned = true; };
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
         row.status = .refreshing;
-        row.renewal = .{ .operation_id = operation, .issued_transaction = nonce, .family_generation = row.family_generation, .writer_generation = row.writer_generation,
-            .source_generation = row.source_generation, .consent_generation = row.consent_generation, .forget_epoch = self.import_forget_epoch,
-            .admitted_unix = self.now(), .admitted_awake_nanoseconds = std.Io.Clock.awake.now(self.io).nanoseconds, .until_nanoseconds = until.raw.nanoseconds, .source_expires_at = source_expiry, .grant_window = window };
+        row.renewal = .{ .operation_id = operation, .issued_transaction = nonce, .family_generation = row.family_generation, .writer_generation = row.writer_generation, .source_generation = row.source_generation, .consent_generation = row.consent_generation, .forget_epoch = self.import_forget_epoch, .admitted_unix = self.now(), .admitted_awake_nanoseconds = std.Io.Clock.awake.now(self.io).nanoseconds, .until_nanoseconds = until.raw.nanoseconds, .source_expires_at = source_expiry, .grant_window = window };
         var found = false;
-        for (self.state.grants.items) |*grant| if (eql(grant.id, row.refresh_grant_id) and grant.credential_kind == .oauth_refresh and grant.ownership == .omux and grant.generation == row.refresh_generation and grant.status == .ready) { grant.status = .refreshing; found = true; };
+        for (self.state.grants.items) |*grant| if (eql(grant.id, row.refresh_grant_id) and grant.credential_kind == .oauth_refresh and grant.ownership == .omux and grant.generation == row.refresh_generation and grant.status == .ready) {
+            grant.status = .refreshing;
+            found = true;
+        };
         if (!found) return error.RenewalNotOwned;
         self.state.revision += 1;
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
@@ -4525,7 +4563,10 @@ pub const Engine = struct {
         if (builtin.is_test) {
             var selected_servers = self.active_owned_renewal_fixture;
             if (selected_servers == null) for (self.fixture_owned_renewal_servers.items) |servers| {
-                if (eql(&servers.account_id, &binding.account_id) and !servers.token.started()) { selected_servers = servers; break; }
+                if (eql(&servers.account_id, &binding.account_id) and !servers.token.started()) {
+                    selected_servers = servers;
+                    break;
+                }
             };
             if (selected_servers) |servers| {
                 if (!eql(&servers.account_id, &binding.account_id)) return error.InvalidFixtureSubject;
@@ -4566,7 +4607,9 @@ pub const Engine = struct {
         for (self.owned_siwc_pairs.records.items) |row| {
             if (row.status != .refreshing or row.renewal == null) continue;
             var held = false;
-            for (self.owned_renewal_pending.items) |pending| if (std.meta.eql(pending.binding.operation.operation_id, row.renewal.?.operation_id)) { held = true; };
+            for (self.owned_renewal_pending.items) |pending| if (std.meta.eql(pending.binding.operation.operation_id, row.renewal.?.operation_id)) {
+                held = true;
+            };
             if (!held) try self.quarantineOwnedRenewalRow(row.transaction_id, row.renewal.?.operation_id);
         }
         if (self.stopping or self.network == null or self.native_workers == null or self.owned_renewal_pending.items.len >= max_owned_renewals) return;
@@ -4582,13 +4625,18 @@ pub const Engine = struct {
             if (row.status != .ready or row.consent_status != .recorded or row.forget_tombstone or row.access_expires_at > self.now() + 60) continue;
             var routes: ?oauth_issue.ModelRoutes = null;
             if (builtin.is_test) {
-                for (self.fixture_owned_renewal_routes.items) |model| if (eql(&model.account_id, row.account_id)) { routes = model.routes; break; };
+                for (self.fixture_owned_renewal_routes.items) |model| if (eql(&model.account_id, row.account_id)) {
+                    routes = model.routes;
+                    break;
+                };
                 // Declared tests never accidentally call the real provider.
                 if (routes == null) continue;
             }
             _ = self.startOwnedRenewal(row.account_id, row.access_grant_id, .fromNow(self.io, .{ .clock = .awake, .raw = .fromSeconds(120) }), routes) catch |err| switch (err) {
                 error.OutOfMemory => return err,
-                error.SiwcPairUnavailable, error.SiwcPairQuarantined, error.SiwcPairAuthorityChanged, error.SiwcPairExpired, error.OAuthAuthorityChanged, error.Backpressure, error.RenewalNotOwned => { self.owned_renewal_failure = err; },
+                error.SiwcPairUnavailable, error.SiwcPairQuarantined, error.SiwcPairAuthorityChanged, error.SiwcPairExpired, error.OAuthAuthorityChanged, error.Backpressure, error.RenewalNotOwned => {
+                    self.owned_renewal_failure = err;
+                },
                 else => return err,
             };
             return;
@@ -4693,12 +4741,13 @@ pub const Engine = struct {
         try self.owned_renewal_tasks.ensureUnusedCapacity(self.allocator, 1);
         const task = try self.allocator.create(OwnedRenewalVerifyTask);
         errdefer self.allocator.destroy(task);
-        pending.ticket.retain(); errdefer pending.ticket.deinit();
-        response.retain(); errdefer response.deinit();
-        keys.retain(); errdefer keys.deinit();
-        task.* = .{ .allocator = self.allocator, .ticket = pending.ticket, .response = response, .keys = keys,
-            .fixture_hold_window = builtin.is_test and self.fixture_owned_renewal_worker_hold,
-            .job = .{ .lane = .continuation, .context = task, .run = OwnedRenewalVerifyTask.run } };
+        pending.ticket.retain();
+        errdefer pending.ticket.deinit();
+        response.retain();
+        errdefer response.deinit();
+        keys.retain();
+        errdefer keys.deinit();
+        task.* = .{ .allocator = self.allocator, .ticket = pending.ticket, .response = response, .keys = keys, .fixture_hold_window = builtin.is_test and self.fixture_owned_renewal_worker_hold, .job = .{ .lane = .continuation, .context = task, .run = OwnedRenewalVerifyTask.run } };
         if (builtin.is_test) self.fixture_owned_renewal_worker_hold = false;
         try self.ownedRenewalCurrent(pending);
         try self.native_workers.?.enqueue(&task.job);
@@ -4710,7 +4759,10 @@ pub const Engine = struct {
         const binding = try task.ticket.renewalBinding();
         for (self.owned_renewal_pending.items, 0..) |*pending, index| {
             if (!std.meta.eql(pending.binding.operation.operation_id, binding.operation.operation_id)) continue;
-            defer { pending.deinit(); _ = self.owned_renewal_pending.orderedRemove(index); }
+            defer {
+                pending.deinit();
+                _ = self.owned_renewal_pending.orderedRemove(index);
+            }
             self.ownedRenewalCurrent(pending) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 self.owned_renewal_failure = err;
@@ -4796,16 +4848,27 @@ pub const Engine = struct {
         const activation = try proof.successorCommitment(pending.ticket);
         if (!std.crypto.timing_safe.eql([32]u8, proof.identityCommitment(), row.identity_commitment)) return error.OidcIdentityChanged;
         const access_plain = try std.json.Stringify.valueAlloc(a, .{ .access_token = evidence.access_token }, .{});
-        defer { std.crypto.secureZero(u8, access_plain); a.free(access_plain); }
+        defer {
+            std.crypto.secureZero(u8, access_plain);
+            a.free(access_plain);
+        }
         const refresh_plain = try std.json.Stringify.valueAlloc(a, .{ .refresh_token = replacement, .client_id = pending.ticket.issuedClientId() }, .{});
-        defer { std.crypto.secureZero(u8, refresh_plain); a.free(refresh_plain); }
+        defer {
+            std.crypto.secureZero(u8, refresh_plain);
+            a.free(refresh_plain);
+        }
         // Same-byte returned RT is not a cached-token fallback. It remains
         // authenticated actual response provenance and a new consumed generation.
-        errdefer self.restoreCommitted() catch { self.poisoned = true; };
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
         var access = self.state.grant(row.access_grant_id) orelse return error.OAuthAuthorityChanged;
         var refresh = self.state.grant(row.refresh_grant_id) orelse return error.OAuthAuthorityChanged;
-        access.generation = next_generation; access.status = .ready; access.provider_expires_at = proof.accessExpiresAt();
-        refresh.generation = next_generation; refresh.status = .ready;
+        access.generation = next_generation;
+        access.status = .ready;
+        access.provider_expires_at = proof.accessExpiresAt();
+        refresh.generation = next_generation;
+        refresh.status = .ready;
         _ = try self.state.addGrant(access);
         _ = try self.state.addGrant(refresh);
         row.status = .ready;
@@ -4832,7 +4895,8 @@ pub const Engine = struct {
         self.revision = try self.db.?.completeOwnedPairRotation(self.revision, snapshot, original_tuple, .{
             .access = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.access_grant_id, .generation = next_generation, .purpose = "request", .scope = siwc_pair.resource_uri },
             .refresh = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = next_generation, .purpose = "renewal", .scope = siwc_pair.resource_uri },
-            .access_plaintext = access_plain, .refresh_plaintext = refresh_plain,
+            .access_plaintext = access_plain,
+            .refresh_plaintext = refresh_plain,
         }, &guarded);
         self.committed_nonledger_bytes = nonledger;
         self.committed_counts = self.actualCounts();
@@ -5728,7 +5792,9 @@ pub const Engine = struct {
                 pair.consent_status = .withdrawn;
                 pair.retirement_reason = .withdrawn;
                 pair.status = .retired;
-                if (pair.renewal) |*renewal| if (renewal.state == .issued) { renewal.state = .unknown; };
+                if (pair.renewal) |*renewal| if (renewal.state == .issued) {
+                    renewal.state = .unknown;
+                };
                 self.cancelOwnedRenewals(pair.source_id, pair.account_id);
                 self.allocator.free(pair.identity_capsule);
                 pair.identity_capsule = &.{};
@@ -5814,7 +5880,10 @@ pub const Engine = struct {
             }
             servers.* = .{ .allocator = self.allocator, .account_id = account_id[0..64].*, .token = token, .keys = keys };
             transferred_servers = true;
-            errdefer if (!retained_servers) { servers.token.deinit(); servers.keys.deinit(); };
+            errdefer if (!retained_servers) {
+                servers.token.deinit();
+                servers.keys.deinit();
+            };
             try self.fixture_owned_renewal_servers.ensureUnusedCapacity(self.allocator, 1);
             if (try control.boolean(params, "scheduled", false)) {
                 try self.fixture_owned_renewal_routes.append(self.allocator, .{ .account_id = servers.account_id, .routes = .{ .token_port = servers.token.port(), .jwks_port = servers.keys.port() } });
@@ -5859,7 +5928,9 @@ pub const Engine = struct {
         if (builtin.is_test and eql(method, "fixture.siwcRenewalRelease")) {
             if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
             const account_id = try control.string(params, "account_id");
-            for (self.fixture_owned_renewal_servers.items) |servers| if (eql(&servers.account_id, account_id)) { servers.token.releaseModelReply(); };
+            for (self.fixture_owned_renewal_servers.items) |servers| if (eql(&servers.account_id, account_id)) {
+                servers.token.releaseModelReply();
+            };
             return control.success(allocator, request.id, .{ .released = true });
         }
         if (builtin.is_test and eql(method, "fixture.siwcRenewalObserve")) {
@@ -5873,33 +5944,29 @@ pub const Engine = struct {
                     else => null,
                 };
                 defer if (access_authority) |authority| authority.deinit();
-                var token_count: u32 = 0; var key_count: u32 = 0; var wire_valid = false;
+                var token_count: u32 = 0;
+                var key_count: u32 = 0;
+                var wire_valid = false;
                 for (self.fixture_owned_renewal_servers.items) |servers| if (eql(&servers.account_id, account_id)) {
-                    token_count += servers.token.requestCount(); key_count += servers.keys.requestCount();
+                    token_count += servers.token.requestCount();
+                    key_count += servers.keys.requestCount();
                     wire_valid = servers.token.wireValid() and (servers.keys.requestCount() == 0 or servers.keys.wireValid());
                 };
-                var saved = try self.db.?.readSnapshot(); defer saved.deinit();
-                const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{}); defer parsed.deinit();
+                var saved = try self.db.?.readSnapshot();
+                defer saved.deinit();
+                const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+                defer parsed.deinit();
                 var persisted_status: ?@FieldType(siwc_pair.Record, "status") = null;
                 var persisted_generation: ?u64 = null;
                 var persisted_window: ?siwc_pair.GrantWindow = null;
                 for (parsed.value.owned_siwc_pairs.?.records) |retained| if (eql(retained.account_id, account_id)) {
-                    persisted_status = retained.status; persisted_generation = retained.family_generation;
+                    persisted_status = retained.status;
+                    persisted_generation = retained.family_generation;
                     persisted_window = siwc_pair.grantWindow(parsed.value.state.grants, retained) catch null;
                 };
                 const independent = try self.db.?.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant");
                 const external_retained = self.state.grant("synthetic-owned-external-grant") != null and independent != null and independent.?.renewal_owner == .external and independent.?.generation == 1 and independent.?.state == .ready;
-                return control.success(allocator, request.id, .{ .status = row.status, .generation = row.family_generation,
-                    .renewal_state = if (row.renewal) |operation| @as(?@FieldType(siwc_pair.Renewal, "state"), operation.state) else null,
-                    .original_grant_window = if (row.renewal) |operation| @as(?siwc_pair.GrantWindow, operation.grant_window) else null,
-                    .access_authorized = access_authority != null, .access_sql = actual_access, .refresh_sql = actual_refresh,
-                    .persisted_status = persisted_status, .persisted_generation = persisted_generation, .revision = saved.revision,
-                    .persisted_grant_window = persisted_window,
-                    .pending = self.owned_renewal_pending.items.len, .workers = self.owned_renewal_tasks.items.len,
-                    .token_count = token_count, .key_count = key_count, .wire_valid = wire_valid,
-                    .verified_before_expiry = self.fixture_owned_renewal_verified_before_expiry,
-                    .failure = if (self.owned_renewal_failure) |failure| @as(?[]const u8, @errorName(failure)) else null,
-                    .external_retained = external_retained });
+                return control.success(allocator, request.id, .{ .status = row.status, .generation = row.family_generation, .renewal_state = if (row.renewal) |operation| @as(?@FieldType(siwc_pair.Renewal, "state"), operation.state) else null, .original_grant_window = if (row.renewal) |operation| @as(?siwc_pair.GrantWindow, operation.grant_window) else null, .access_authorized = access_authority != null, .access_sql = actual_access, .refresh_sql = actual_refresh, .persisted_status = persisted_status, .persisted_generation = persisted_generation, .revision = saved.revision, .persisted_grant_window = persisted_window, .pending = self.owned_renewal_pending.items.len, .workers = self.owned_renewal_tasks.items.len, .token_count = token_count, .key_count = key_count, .wire_valid = wire_valid, .verified_before_expiry = self.fixture_owned_renewal_verified_before_expiry, .failure = if (self.owned_renewal_failure) |failure| @as(?[]const u8, @errorName(failure)) else null, .external_retained = external_retained });
             };
             return error.SiwcPairUnavailable;
         }
@@ -5910,7 +5977,9 @@ pub const Engine = struct {
                 // Downgrade only: the real signed admission is retained, and
                 // the authentic encrypted AT remains joined to this exact row.
                 row.access_expires_at = self.now() - 1;
-                for (self.state.grants.items) |*grant| if (eql(grant.id, row.access_grant_id)) { grant.provider_expires_at = row.access_expires_at; };
+                for (self.state.grants.items) |*grant| if (eql(grant.id, row.access_grant_id)) {
+                    grant.provider_expires_at = row.access_expires_at;
+                };
                 self.state.revision += 1;
                 try self.persist(&.{});
                 return control.success(allocator, request.id, .{ .expired = true });
@@ -14725,26 +14794,39 @@ const OwnedRenewalActorModel = struct {
     };
     fn call(current: *Engine, method: []const u8, params: anytype, channel: Channel) !Json {
         const raw = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
-        defer { std.crypto.secureZero(u8, raw); a.free(raw); }
+        defer {
+            std.crypto.secureZero(u8, raw);
+            a.free(raw);
+        }
         const reply = try current.dispatch(a, raw, channel);
-        defer { std.crypto.secureZero(u8, reply); a.free(reply); }
+        defer {
+            std.crypto.secureZero(u8, reply);
+            a.free(reply);
+        }
         return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
     }
     fn fixture(current: *Engine, method: []const u8, values: anytype) !Json {
-        var arena: std.heap.ArenaAllocator = .init(a); defer arena.deinit();
+        var arena: std.heap.ArenaAllocator = .init(a);
+        defer arena.deinit();
         const allocator = arena.allocator();
         const raw = try std.json.Stringify.valueAlloc(allocator, values, .{});
         defer std.crypto.secureZero(u8, raw);
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{}); defer parsed.deinit();
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+        defer parsed.deinit();
         if (parsed.value != .object) return error.InvalidFixtureParams;
         var object = parsed.value.object;
-        var capability = try current.capabilityForTest("enrollment"); defer std.crypto.secureZero(u8, &capability);
+        var capability = try current.capabilityForTest("enrollment");
+        defer std.crypto.secureZero(u8, &capability);
         try object.put(allocator, "application", .{ .string = "enrollment" });
         try object.put(allocator, "capability", .{ .string = &capability });
         return call(current, method, @as(std.json.Value, .{ .object = object }), .adapter);
     }
-    fn result(reply: *const Json) !std.json.Value { return control.get(reply.value, "result") orelse return error.FixtureExpectedSuccess; }
-    fn observe(current: *Engine, account: []const u8) !Json { return fixture(current, "fixture.siwcRenewalObserve", .{ .account_id = account }); }
+    fn result(reply: *const Json) !std.json.Value {
+        return control.get(reply.value, "result") orelse return error.FixtureExpectedSuccess;
+    }
+    fn observe(current: *Engine, account: []const u8) !Json {
+        return fixture(current, "fixture.siwcRenewalObserve", .{ .account_id = account });
+    }
     fn wait(current: *Engine, account: []const u8, status: []const u8, generation: u64) !Json {
         const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(12) });
         while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
@@ -14758,10 +14840,7 @@ const OwnedRenewalActorModel = struct {
         return error.FixtureTimeout;
     }
     fn start(current: *Engine, account: []const u8, body: []const u8, keys: []const u8, options: Options) !Json {
-        return fixture(current, "fixture.siwcRenewalStart", .{ .account_id = account, .body = body, .keys = keys,
-            .milliseconds = options.milliseconds, .delay_ms = options.delay_ms, .lost_reply = options.lost_reply, .hold_reply = options.hold_reply, .scheduled = options.scheduled,
-            .http_status = options.http_status, .hold_stage = options.hold_stage, .hold_kind = options.hold_kind,
-            .hold_window = options.hold_window, .hold_before_dispatch = options.hold_before_dispatch, .hold_worker = options.hold_worker });
+        return fixture(current, "fixture.siwcRenewalStart", .{ .account_id = account, .body = body, .keys = keys, .milliseconds = options.milliseconds, .delay_ms = options.delay_ms, .lost_reply = options.lost_reply, .hold_reply = options.hold_reply, .scheduled = options.scheduled, .http_status = options.http_status, .hold_stage = options.hold_stage, .hold_kind = options.hold_kind, .hold_window = options.hold_window, .hold_before_dispatch = options.hold_before_dispatch, .hold_worker = options.hold_worker });
     }
     fn window(current: *Engine, account: []const u8, bound: []const u8, seconds: i64) !i64 {
         const narrowed = try fixture(current, "fixture.siwcGrantWindow", .{ .account_id = account, .bound = bound, .seconds = seconds });
@@ -14779,25 +14858,33 @@ const OwnedRenewalActorModel = struct {
     }
     const BodyOptions = struct { wrong_client: bool = false, wrong_subject: bool = false, wrong_audience: bool = false, tamper: bool = false, missing_refresh: bool = false, same_refresh: bool = false, missing_scope: bool = false };
     fn makeBody(key: *@import("oauth_oidc_fixture.zig").Signer, subject: []const u8, options: BodyOptions) !envelope.Secret {
-        const client_id = try std.fmt.allocPrint(a, "oaiapp_synthetic_{s}", .{subject}); defer a.free(client_id);
+        const client_id = try std.fmt.allocPrint(a, "oaiapp_synthetic_{s}", .{subject});
+        defer a.free(client_id);
         const timestamp = std.Io.Clock.real.now(io).toSeconds();
         const scope = if (options.missing_scope) "openid offline_access" else "resource.invoke chatgpt.tokens.use.direct";
-        const claims = try std.json.Stringify.valueAlloc(a, .{ .iss = siwc_pair.issuer_uri,
-            .aud = if (options.wrong_audience) "https://chatgpt.com" else siwc_pair.resource_uri,
-            .client_id = if (options.wrong_client) "oaiapp_synthetic_foreign" else client_id,
-            .sub = if (options.wrong_subject) "synthetic-foreign-subject" else subject,
-            .iat = timestamp, .nbf = timestamp, .exp = timestamp + 300, .scope = scope }, .{});
-        defer { std.crypto.secureZero(u8, claims); a.free(claims); }
-        const jwt = try key.sign(claims); defer { std.crypto.secureZero(u8, jwt); a.free(jwt); }
+        const claims = try std.json.Stringify.valueAlloc(a, .{ .iss = siwc_pair.issuer_uri, .aud = if (options.wrong_audience) "https://chatgpt.com" else siwc_pair.resource_uri, .client_id = if (options.wrong_client) "oaiapp_synthetic_foreign" else client_id, .sub = if (options.wrong_subject) "synthetic-foreign-subject" else subject, .iat = timestamp, .nbf = timestamp, .exp = timestamp + 300, .scope = scope }, .{});
+        defer {
+            std.crypto.secureZero(u8, claims);
+            a.free(claims);
+        }
+        const jwt = try key.sign(claims);
+        defer {
+            std.crypto.secureZero(u8, jwt);
+            a.free(jwt);
+        }
         if (options.tamper) {
             const separator = std.mem.lastIndexOfScalar(u8, jwt, '.') orelse return error.InvalidFixtureJwt;
             jwt[separator + 1] = if (jwt[separator + 1] == 'A') 'B' else 'A';
         }
         const refresh = try std.fmt.allocPrint(a, if (options.same_refresh) "synthetic-refresh-{s}" else "synthetic-renewed-refresh-{s}", .{subject});
-        defer { std.crypto.secureZero(u8, refresh); a.free(refresh); }
+        defer {
+            std.crypto.secureZero(u8, refresh);
+            a.free(refresh);
+        }
         const bytes = if (options.missing_refresh)
             try std.json.Stringify.valueAlloc(a, .{ .access_token = jwt, .token_type = "Bearer", .expires_in = 300, .scope = scope }, .{})
-        else try std.json.Stringify.valueAlloc(a, .{ .access_token = jwt, .refresh_token = refresh, .token_type = "Bearer", .expires_in = 300, .scope = scope }, .{});
+        else
+            try std.json.Stringify.valueAlloc(a, .{ .access_token = jwt, .refresh_token = refresh, .token_type = "Bearer", .expires_in = 300, .scope = scope }, .{});
         return .{ .allocator = a, .bytes = bytes };
     }
     fn assertPair(value: std.json.Value, status: []const u8, generation: i64, request_ready: bool) !void {
@@ -14814,55 +14901,75 @@ test "owned paired renewal preserves usable current access and accepted native w
     const N = @import("native_owner_fixture.zig");
     const M = OwnedRenewalActorModel;
     const a = std.testing.allocator;
-    const producer = try N.Fixture.create(std.testing.io, a); defer producer.destroy();
-    const actor = try N.ActorFixture.create(std.testing.io, a, producer); defer actor.destroy();
+    const producer = try N.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
     try actor.install();
     const current = actor.engine.?;
     const pair = try SiwcActorTest.admit(producer, current, "renew-concurrent");
     const reference = try producer.register(current, "synthetic-siwc-thread");
-    var acquired = try SiwcActorTest.acquire(producer, current, reference, "renew-accepted-original"); defer SiwcActorTest.dispose(&acquired);
+    var acquired = try SiwcActorTest.acquire(producer, current, reference, "renew-accepted-original");
+    defer SiwcActorTest.dispose(&acquired);
     const lease = try SiwcActorTest.handle(&acquired);
-    var materialized = try SiwcActorTest.materialize(producer, current, reference, lease); defer SiwcActorTest.dispose(&materialized);
-    var accepted = try SiwcActorTest.report(producer, current, reference, lease, "accepted"); defer SiwcActorTest.dispose(&accepted);
+    var materialized = try SiwcActorTest.materialize(producer, current, reference, lease);
+    defer SiwcActorTest.dispose(&materialized);
+    var accepted = try SiwcActorTest.report(producer, current, reference, lease, "accepted");
+    defer SiwcActorTest.dispose(&accepted);
     _ = try SiwcActorTest.result(&accepted);
-    var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-    const keys = try key.jwks(); defer a.free(keys);
-    var body = try M.makeBody(&key, "renew-concurrent", .{ .same_refresh = true }); defer body.deinit();
-    const started = try M.start(current, &pair.account_id, body.bytes, keys, .{ .hold_reply = true }); defer started.deinit();
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-concurrent", .{ .same_refresh = true });
+    defer body.deinit();
+    const started = try M.start(current, &pair.account_id, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
     _ = try M.result(&started);
-    const live = try M.observe(current, &pair.account_id); defer live.deinit();
+    const live = try M.observe(current, &pair.account_id);
+    defer live.deinit();
     const live_value = try M.result(&live);
     try M.assertPair(live_value, "refreshing", 1, true);
     try std.testing.expectEqualStrings("ready", try control.string(control.get(live_value, "access_sql").?, "state"));
     try std.testing.expectEqualStrings("refreshing", try control.string(control.get(live_value, "refresh_sql").?, "state"));
-    const second_writer = try M.start(current, &pair.account_id, body.bytes, keys, .{}); defer second_writer.deinit();
+    const second_writer = try M.start(current, &pair.account_id, body.bytes, keys, .{});
+    defer second_writer.deinit();
     try SiwcActorTest.refusal(&second_writer, "RenewalNotOwned");
-    var overlap = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent"); defer SiwcActorTest.dispose(&overlap);
+    var overlap = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent");
+    defer SiwcActorTest.dispose(&overlap);
     try SiwcActorTest.refusal(&overlap, "InFlight");
-    var accepted_retry = try SiwcActorTest.reject(producer, current, reference, lease, 429, "subscription_sharing_usage_limit_exceeded"); defer SiwcActorTest.dispose(&accepted_retry);
+    var accepted_retry = try SiwcActorTest.reject(producer, current, reference, lease, 429, "subscription_sharing_usage_limit_exceeded");
+    defer SiwcActorTest.dispose(&accepted_retry);
     try SiwcActorTest.refusal(&accepted_retry, "UnsafeReplay");
-    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = pair.account_id[0..] }); defer released.deinit();
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = pair.account_id[0..] });
+    defer released.deinit();
     _ = try M.result(&released);
-    const renewed = try M.wait(current, &pair.account_id, "ready", 2); defer renewed.deinit();
+    const renewed = try M.wait(current, &pair.account_id, "ready", 2);
+    defer renewed.deinit();
     const renewed_value = try M.result(&renewed);
     try M.assertPair(renewed_value, "ready", 2, true);
     try std.testing.expectEqualStrings("completed", try control.string(renewed_value, "renewal_state"));
     try std.testing.expectEqual(@as(i64, 1), control.get(renewed_value, "token_count").?.integer);
     try std.testing.expectEqual(@as(i64, 1), control.get(renewed_value, "key_count").?.integer);
     try std.testing.expect(try control.boolean(renewed_value, "wire_valid", false));
-    var completed = try SiwcActorTest.report(producer, current, reference, lease, "completed"); defer SiwcActorTest.dispose(&completed);
+    var completed = try SiwcActorTest.report(producer, current, reference, lease, "completed");
+    defer SiwcActorTest.dispose(&completed);
     _ = try SiwcActorTest.result(&completed);
-    var replay = try SiwcActorTest.acquire(producer, current, reference, "renew-accepted-original"); defer SiwcActorTest.dispose(&replay);
+    var replay = try SiwcActorTest.acquire(producer, current, reference, "renew-accepted-original");
+    defer SiwcActorTest.dispose(&replay);
     try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
-    var next = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent"); defer SiwcActorTest.dispose(&next);
+    var next = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent");
+    defer SiwcActorTest.dispose(&next);
     const next_lease = try SiwcActorTest.handle(&next);
-    var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease); defer SiwcActorTest.dispose(&next_auth);
+    var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+    defer SiwcActorTest.dispose(&next_auth);
     const credentials = try SiwcActorTest.result(&next_auth);
     try std.testing.expectEqualStrings(siwc_pair.auth_mode, try control.string(credentials, "auth_mode"));
     try std.testing.expectEqual(@as(usize, 7), credentials.object.count());
     try std.testing.expect(!eql(try control.string(credentials, "access_token"), try control.string(try SiwcActorTest.result(&materialized), "access_token")));
     try std.testing.expectEqual(@as(i64, 2), control.get(credentials, "route_generation").?.integer);
-    var finished = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned"); defer SiwcActorTest.dispose(&finished);
+    var finished = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+    defer SiwcActorTest.dispose(&finished);
     _ = try SiwcActorTest.result(&finished);
 }
 
@@ -14871,44 +14978,61 @@ test "periodic owned renewal repairs expired access without user reconsent while
     const N = @import("native_owner_fixture.zig");
     const M = OwnedRenewalActorModel;
     const a = std.testing.allocator;
-    const producer = try N.Fixture.create(std.testing.io, a); defer producer.destroy();
-    const actor = try N.ActorFixture.create(std.testing.io, a, producer); defer actor.destroy();
+    const producer = try N.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
     try actor.install();
     const current = actor.engine.?;
     const first = try SiwcActorTest.admit(producer, current, "renew-expired");
     const alternative = try SiwcActorTest.admit(producer, current, "renew-alternative");
     const reference = try producer.register(current, "synthetic-siwc-thread");
-    var original = try SiwcActorTest.acquire(producer, current, reference, "expiry-original-work"); defer SiwcActorTest.dispose(&original);
+    var original = try SiwcActorTest.acquire(producer, current, reference, "expiry-original-work");
+    defer SiwcActorTest.dispose(&original);
     try std.testing.expectEqualStrings(&first.account_id, try control.string(try SiwcActorTest.result(&original), "account_id"));
     const original_lease = try SiwcActorTest.handle(&original);
-    var accepted = try SiwcActorTest.report(producer, current, reference, original_lease, "accepted"); defer SiwcActorTest.dispose(&accepted);
+    var accepted = try SiwcActorTest.report(producer, current, reference, original_lease, "accepted");
+    defer SiwcActorTest.dispose(&accepted);
     _ = try SiwcActorTest.result(&accepted);
-    var completed = try SiwcActorTest.report(producer, current, reference, original_lease, "completed"); defer SiwcActorTest.dispose(&completed);
+    var completed = try SiwcActorTest.report(producer, current, reference, original_lease, "completed");
+    defer SiwcActorTest.dispose(&completed);
     _ = try SiwcActorTest.result(&completed);
-    const expired = try M.fixture(current, "fixture.siwcExpireAccess", .{ .account_id = first.account_id[0..] }); defer expired.deinit();
+    const expired = try M.fixture(current, "fixture.siwcExpireAccess", .{ .account_id = first.account_id[0..] });
+    defer expired.deinit();
     _ = try M.result(&expired);
-    const before = try M.observe(current, &first.account_id); defer before.deinit();
+    const before = try M.observe(current, &first.account_id);
+    defer before.deinit();
     try M.assertPair(try M.result(&before), "ready", 1, false);
-    var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-    const keys = try key.jwks(); defer a.free(keys);
-    var body = try M.makeBody(&key, "renew-expired", .{}); defer body.deinit();
-    const configured = try M.start(current, &first.account_id, body.bytes, keys, .{ .scheduled = true, .hold_reply = true }); defer configured.deinit();
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-expired", .{});
+    defer body.deinit();
+    const configured = try M.start(current, &first.account_id, body.bytes, keys, .{ .scheduled = true, .hold_reply = true });
+    defer configured.deinit();
     try std.testing.expect(!(try control.boolean(try M.result(&configured), "issued", true)));
-    var next = try SiwcActorTest.acquire(producer, current, reference, "expiry-new-work"); defer SiwcActorTest.dispose(&next);
+    var next = try SiwcActorTest.acquire(producer, current, reference, "expiry-new-work");
+    defer SiwcActorTest.dispose(&next);
     try std.testing.expectEqualStrings(&alternative.account_id, try control.string(try SiwcActorTest.result(&next), "account_id"));
     const next_lease = try SiwcActorTest.handle(&next);
-    var credentials = try SiwcActorTest.materialize(producer, current, reference, next_lease); defer SiwcActorTest.dispose(&credentials);
+    var credentials = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+    defer SiwcActorTest.dispose(&credentials);
     try std.testing.expectEqual(@as(usize, 7), (try SiwcActorTest.result(&credentials)).object.count());
-    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = first.account_id[0..] }); defer released.deinit();
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = first.account_id[0..] });
+    defer released.deinit();
     _ = try M.result(&released);
-    const repaired = try M.wait(current, &first.account_id, "ready", 2); defer repaired.deinit();
+    const repaired = try M.wait(current, &first.account_id, "ready", 2);
+    defer repaired.deinit();
     const value = try M.result(&repaired);
     try M.assertPair(value, "ready", 2, true);
     try std.testing.expect(try control.boolean(value, "wire_valid", false));
     try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
-    var abandoned = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned"); defer SiwcActorTest.dispose(&abandoned);
+    var abandoned = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+    defer SiwcActorTest.dispose(&abandoned);
     _ = try SiwcActorTest.result(&abandoned);
-    var replay = try SiwcActorTest.acquire(producer, current, reference, "expiry-original-work"); defer SiwcActorTest.dispose(&replay);
+    var replay = try SiwcActorTest.acquire(producer, current, reference, "expiry-original-work");
+    defer SiwcActorTest.dispose(&replay);
     try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
 }
 
@@ -14928,24 +15052,34 @@ test "actual owned token replies with missing successor altered identity signatu
         .{ .http_status = 400 },
     };
     for (cases, 0..) |case, index| {
-        var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
         try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-        const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
         try F.seed(path);
-        const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-        const subject = try std.fmt.allocPrint(a, "renew-negative-{d}", .{index}); defer a.free(subject);
-        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject }); defer admitted.deinit();
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-negative-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
         const account = try control.string(try M.result(&admitted), "account_id");
-        var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-        const keys = try key.jwks(); defer a.free(keys);
-        var body = try M.makeBody(&key, subject, case.body); defer body.deinit();
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, case.body);
+        defer body.deinit();
         if (case.http_status != 200) {
             body.deinit();
             body = .{ .allocator = a, .bytes = try a.dupe(u8, "{\"error\":\"invalid_grant\"}") };
         }
-        const started = try M.start(current, account, body.bytes, keys, .{ .lost_reply = case.lost_reply, .http_status = case.http_status }); defer started.deinit();
+        const started = try M.start(current, account, body.bytes, keys, .{ .lost_reply = case.lost_reply, .http_status = case.http_status });
+        defer started.deinit();
         _ = try M.result(&started);
-        const refused = try M.wait(current, account, "quarantined", 1); defer refused.deinit();
+        const refused = try M.wait(current, account, "quarantined", 1);
+        defer refused.deinit();
         const value = try M.result(&refused);
         try M.assertPair(value, "quarantined", 1, false);
         try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
@@ -14954,9 +15088,11 @@ test "actual owned token replies with missing successor altered identity signatu
         try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
         try std.testing.expect(try control.boolean(value, "wire_valid", false));
         try std.testing.expect(try control.boolean(value, "external_retained", false));
-        const replay = try M.start(current, account, body.bytes, keys, .{}); defer replay.deinit();
+        const replay = try M.start(current, account, body.bytes, keys, .{});
+        defer replay.deinit();
         try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
-        const still = try M.observe(current, account); defer still.deinit();
+        const still = try M.observe(current, account);
+        defer still.deinit();
         try M.assertPair(try M.result(&still), "quarantined", 1, false);
         try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&still), "token_count").?.integer);
     }
@@ -14968,40 +15104,54 @@ test "actual disconnect withdrawal and forget retire held owned renewals without
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_][]const u8{ "source.disconnect", "oauth.enrollment.withdraw.v1", "account.forget" }, 0..) |method, index| {
-        var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
         try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-        const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
         try F.seed(path);
-        const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-        const subject = try std.fmt.allocPrint(a, "renew-retire-{d}", .{index}); defer a.free(subject);
-        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject }); defer admitted.deinit();
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-retire-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
         const pair = try M.result(&admitted);
         const account = try control.string(pair, "account_id");
         const source = try control.string(pair, "source_id");
-        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account }); defer handles.deinit();
+        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
+        defer handles.deinit();
         const transaction = try control.string(try M.result(&handles), "transaction_id");
-        var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-        const keys = try key.jwks(); defer a.free(keys);
-        var body = try M.makeBody(&key, subject, .{}); defer body.deinit();
-        const started = try M.start(current, account, body.bytes, keys, .{ .hold_reply = true }); defer started.deinit();
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        const started = try M.start(current, account, body.bytes, keys, .{ .hold_reply = true });
+        defer started.deinit();
         _ = try M.result(&started);
         const revision = try F.revision(current);
         const retired = if (index == 0)
             try M.call(current, method, .{ .source_id = source, .operation_id = "renew-source-retire", .expected_revision = revision }, .control)
         else if (index == 1)
             try M.call(current, method, .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose, .operation_id = "renew-consent-withdraw", .expected_revision = revision }, .control)
-        else try M.call(current, method, .{ .account_id = account, .operation_id = "renew-account-forget", .expected_revision = revision }, .control);
+        else
+            try M.call(current, method, .{ .account_id = account, .operation_id = "renew-account-forget", .expected_revision = revision }, .control);
         defer retired.deinit();
         _ = try M.result(&retired);
-        const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account }); defer released.deinit();
+        const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
+        defer released.deinit();
         _ = try M.result(&released);
-        const observed = try M.wait(current, account, "retired", 1); defer observed.deinit();
+        const observed = try M.wait(current, account, "retired", 1);
+        defer observed.deinit();
         const value = try M.result(&observed);
         try M.assertPair(value, "retired", 1, false);
         try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
         try std.testing.expect(control.get(value, "access_sql").? == .null and control.get(value, "refresh_sql").? == .null);
         try std.testing.expect(try control.boolean(value, "external_retained", false));
-        const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control); defer status.deinit();
+        const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+        defer status.deinit();
         const metadata = try M.result(&status);
         try std.testing.expectEqualStrings(if (index == 1) "withdrawn" else "recorded", try control.string(metadata, "consent_status"));
         try std.testing.expect(!(try control.boolean(metadata, "grant_ready", true)));
@@ -15014,23 +15164,34 @@ test "actual paired successor original cutoff refuses after sealing before reser
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_][]const u8{ "before_begin", "before_reservation", "before_commit" }, 0..) |stage, index| {
-        var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
         try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-        const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
         try F.seed(path);
-        const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-        const subject = try std.fmt.allocPrint(a, "renew-cutoff-{d}", .{index}); defer a.free(subject);
-        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject }); defer admitted.deinit();
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-cutoff-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
         const account = try control.string(try M.result(&admitted), "account_id");
-        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account }); defer handles.deinit();
+        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
+        defer handles.deinit();
         const transaction = try control.string(try M.result(&handles), "transaction_id");
-        var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-        const keys = try key.jwks(); defer a.free(keys);
-        var body = try M.makeBody(&key, subject, .{}); defer body.deinit();
-        const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 3000, .hold_stage = stage }); defer started.deinit();
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 3000, .hold_stage = stage });
+        defer started.deinit();
         _ = try M.result(&started);
         if (index != 2) {
-            const refused = try M.wait(current, account, "quarantined", 1); defer refused.deinit();
+            const refused = try M.wait(current, account, "quarantined", 1);
+            defer refused.deinit();
             const value = try M.result(&refused);
             try M.assertPair(value, "quarantined", 1, false);
             try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
@@ -15040,7 +15201,8 @@ test "actual paired successor original cutoff refuses after sealing before reser
             const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(8) });
             var poisoned = false;
             while (!poisoned and until.durationFromNow(io).raw.toNanoseconds() > 0) {
-                const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control); defer status.deinit();
+                const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+                defer status.deinit();
                 const value = try M.result(&status);
                 poisoned = !(try control.boolean(value, "custody_available", true));
                 if (poisoned) {
@@ -15058,21 +15220,31 @@ test "actual issued paired renewal restart quarantines retained tuple without re
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
-    var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
     try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-    const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
     try F.seed(path);
-    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key); defer if (current) |engine| engine.deinit();
-    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "renew-restart" }); defer admitted.deinit();
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |engine| engine.deinit();
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "renew-restart" });
+    defer admitted.deinit();
     const account = try control.string(try M.result(&admitted), "account_id");
-    var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-    const keys = try key.jwks(); defer a.free(keys);
-    var body = try M.makeBody(&key, "renew-restart", .{}); defer body.deinit();
-    const started = try M.start(current.?, account, body.bytes, keys, .{ .hold_reply = true }); defer started.deinit();
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-restart", .{});
+    defer body.deinit();
+    const started = try M.start(current.?, account, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
     _ = try M.result(&started);
-    current.?.deinit(); current = null;
+    current.?.deinit();
+    current = null;
     current = try Engine.openWithKey(io, a, path, F.key);
-    const observed = try M.wait(current.?, account, "quarantined", 1); defer observed.deinit();
+    const observed = try M.wait(current.?, account, "quarantined", 1);
+    defer observed.deinit();
     const value = try M.result(&observed);
     try M.assertPair(value, "quarantined", 1, false);
     try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
@@ -15080,7 +15252,8 @@ test "actual issued paired renewal restart quarantines retained tuple without re
     try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
     try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
     try std.testing.expect(try control.boolean(value, "external_retained", false));
-    const replay = try M.start(current.?, account, body.bytes, keys, .{}); defer replay.deinit();
+    const replay = try M.start(current.?, account, body.bytes, keys, .{});
+    defer replay.deinit();
     try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
 }
 
@@ -15089,21 +15262,31 @@ test "actual paired issuance cutoff before recovery reservation returns no ticke
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
-    var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
     try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-    const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
     try F.seed(path);
-    const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-unsent" }); defer admitted.deinit();
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-unsent" });
+    defer admitted.deinit();
     const account = try control.string(try M.result(&admitted), "account_id");
-    var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-    const keys = try key.jwks(); defer a.free(keys);
-    var body = try M.makeBody(&key, "renew-unsent", .{}); defer body.deinit();
-    const before = try M.observe(current, account); defer before.deinit();
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-unsent", .{});
+    defer body.deinit();
+    const before = try M.observe(current, account);
+    defer before.deinit();
     const revision = control.get(try M.result(&before), "revision").?.integer;
-    const failed = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 500, .hold_stage = "before_reservation", .hold_kind = "issue" }); defer failed.deinit();
+    const failed = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 500, .hold_stage = "before_reservation", .hold_kind = "issue" });
+    defer failed.deinit();
     try std.testing.expect(control.get(failed.value, "error") != null);
-    const after = try M.observe(current, account); defer after.deinit();
+    const after = try M.observe(current, account);
+    defer after.deinit();
     const value = try M.result(&after);
     try M.assertPair(value, "ready", 1, true);
     try std.testing.expectEqual(revision, control.get(value, "revision").?.integer);
@@ -15118,29 +15301,40 @@ test "unrelated account forget does not steal an independently authenticated kno
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
-    var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
     try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-    const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
     try F.seed(path);
-    const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-independent" }); defer admitted.deinit();
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-independent" });
+    defer admitted.deinit();
     const account = try control.string(try M.result(&admitted), "account_id");
-    var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-    const keys = try key.jwks(); defer a.free(keys);
-    var body = try M.makeBody(&key, "renew-independent", .{}); defer body.deinit();
-    const started = try M.start(current, account, body.bytes, keys, .{ .hold_reply = true }); defer started.deinit();
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-independent", .{});
+    defer body.deinit();
+    const started = try M.start(current, account, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
     _ = try M.result(&started);
-    const forgotten = try M.call(current, "account.forget", .{ .account_id = "synthetic-owned-other-account", .operation_id = "renew-unrelated-forget", .expected_revision = try F.revision(current) }, .control); defer forgotten.deinit();
+    const forgotten = try M.call(current, "account.forget", .{ .account_id = "synthetic-owned-other-account", .operation_id = "renew-unrelated-forget", .expected_revision = try F.revision(current) }, .control);
+    defer forgotten.deinit();
     _ = try M.result(&forgotten);
-    const live = try M.observe(current, account); defer live.deinit();
+    const live = try M.observe(current, account);
+    defer live.deinit();
     try M.assertPair(try M.result(&live), "refreshing", 1, true);
-    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account }); defer released.deinit();
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
+    defer released.deinit();
     _ = try M.result(&released);
-    const renewed = try M.wait(current, account, "ready", 2); defer renewed.deinit();
+    const renewed = try M.wait(current, account, "ready", 2);
+    defer renewed.deinit();
     try M.assertPair(try M.result(&renewed), "ready", 2, true);
     try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&renewed), "token_count").?.integer);
 }
-
 
 test "owned renewal refuses each expired actual grant bound before issuing or dispatching" {
     const M = OwnedRenewalActorModel;
@@ -15148,21 +15342,31 @@ test "owned renewal refuses each expired actual grant bound before issuing or di
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, index| {
-        var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
         try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-        const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
         try F.seed(path);
-        const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-        const subject = try std.fmt.allocPrint(a, "renew-expired-window-{d}", .{index}); defer a.free(subject);
-        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject }); defer admitted.deinit();
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-expired-window-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
         const account = try control.string(try M.result(&admitted), "account_id");
-        var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-        const keys = try key.jwks(); defer a.free(keys);
-        var body = try M.makeBody(&key, subject, .{}); defer body.deinit();
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
         _ = try M.window(current, account, bound, 0);
-        const refused = try M.start(current, account, body.bytes, keys, .{}); defer refused.deinit();
+        const refused = try M.start(current, account, body.bytes, keys, .{});
+        defer refused.deinit();
         try std.testing.expect(control.get(refused.value, "error") != null);
-        const observed = try M.observe(current, account); defer observed.deinit();
+        const observed = try M.observe(current, account);
+        defer observed.deinit();
         const value = try M.result(&observed);
         try M.assertPair(value, "ready", 1, false);
         try std.testing.expect(control.get(value, "renewal_state").? == .null);
@@ -15180,29 +15384,40 @@ test "original owned grant bounds refuse queued dispatch and late actual respons
     const io = std.testing.io;
     for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, bound_index| {
         for (0..3) |stage| {
-            var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+            var directory = std.testing.tmpDir(.{});
+            defer directory.cleanup();
             try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-            const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+            const path = try directory.dir.realPathFileAlloc(io, ".", a);
+            defer a.free(path);
             try F.seed(path);
-            const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-            const subject = try std.fmt.allocPrint(a, "renew-held-window-{d}-{d}", .{bound_index, stage}); defer a.free(subject);
-            const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject }); defer admitted.deinit();
+            const current = try Engine.openWithKey(io, a, path, F.key);
+            defer current.deinit();
+            const subject = try std.fmt.allocPrint(a, "renew-held-window-{d}-{d}", .{ bound_index, stage });
+            defer a.free(subject);
+            const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+            defer admitted.deinit();
             const account = try control.string(try M.result(&admitted), "account_id");
-            var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-            const keys = try key.jwks(); defer a.free(keys);
-            var body = try M.makeBody(&key, subject, .{}); defer body.deinit();
+            var key = try M.signer();
+            defer key.deinit() catch @panic("renewal signing key cleanup failed");
+            const keys = try key.jwks();
+            defer a.free(keys);
+            var body = try M.makeBody(&key, subject, .{});
+            defer body.deinit();
             const expiry = try M.window(current, account, bound, 3);
-            const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_window = true,
-                .hold_before_dispatch = stage == 0, .hold_reply = stage == 1, .hold_worker = stage == 2 }); defer started.deinit();
+            const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_window = true, .hold_before_dispatch = stage == 0, .hold_reply = stage == 1, .hold_worker = stage == 2 });
+            defer started.deinit();
             if (stage == 0) try std.testing.expect(control.get(started.value, "error") != null) else _ = try M.result(&started);
             if (stage == 1) {
-                const live = try M.observe(current, account); defer live.deinit();
+                const live = try M.observe(current, account);
+                defer live.deinit();
                 try M.assertPair(try M.result(&live), "refreshing", 1, true);
                 while (std.Io.Clock.real.now(io).toSeconds() < expiry) try io.sleep(.fromMilliseconds(5), .awake);
-                const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account }); defer released.deinit();
+                const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
+                defer released.deinit();
                 _ = try M.result(&released);
             }
-            const refused = try M.wait(current, account, "quarantined", 1); defer refused.deinit();
+            const refused = try M.wait(current, account, "quarantined", 1);
+            defer refused.deinit();
             const value = try M.result(&refused);
             try M.assertPair(value, "quarantined", 1, false);
             try M.assertOriginalWindow(value, bound, expiry);
@@ -15224,24 +15439,35 @@ test "paired grant expiry after sealing and before recovery publication rolls ba
     const io = std.testing.io;
     for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, bound_index| {
         for ([_][]const u8{ "before_begin", "before_reservation", "before_commit" }, 0..) |stage, stage_index| {
-            var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+            var directory = std.testing.tmpDir(.{});
+            defer directory.cleanup();
             try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-            const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+            const path = try directory.dir.realPathFileAlloc(io, ".", a);
+            defer a.free(path);
             try F.seed(path);
-            const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-            const subject = try std.fmt.allocPrint(a, "renew-sql-window-{d}-{d}", .{bound_index, stage_index}); defer a.free(subject);
-            const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject }); defer admitted.deinit();
+            const current = try Engine.openWithKey(io, a, path, F.key);
+            defer current.deinit();
+            const subject = try std.fmt.allocPrint(a, "renew-sql-window-{d}-{d}", .{ bound_index, stage_index });
+            defer a.free(subject);
+            const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+            defer admitted.deinit();
             const account = try control.string(try M.result(&admitted), "account_id");
-            const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account }); defer handles.deinit();
+            const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
+            defer handles.deinit();
             const transaction = try control.string(try M.result(&handles), "transaction_id");
-            var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-            const keys = try key.jwks(); defer a.free(keys);
-            var body = try M.makeBody(&key, subject, .{}); defer body.deinit();
+            var key = try M.signer();
+            defer key.deinit() catch @panic("renewal signing key cleanup failed");
+            const keys = try key.jwks();
+            defer a.free(keys);
+            var body = try M.makeBody(&key, subject, .{});
+            defer body.deinit();
             const expiry = try M.window(current, account, bound, 3);
-            const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_stage = stage, .hold_window = true }); defer started.deinit();
+            const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_stage = stage, .hold_window = true });
+            defer started.deinit();
             _ = try M.result(&started);
             if (stage_index != 2) {
-                const refused = try M.wait(current, account, "quarantined", 1); defer refused.deinit();
+                const refused = try M.wait(current, account, "quarantined", 1);
+                defer refused.deinit();
                 const value = try M.result(&refused);
                 try M.assertPair(value, "quarantined", 1, false);
                 try M.assertOriginalWindow(value, bound, expiry);
@@ -15252,7 +15478,8 @@ test "paired grant expiry after sealing and before recovery publication rolls ba
                 const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(10) });
                 var poisoned = false;
                 while (!poisoned and until.durationFromNow(io).raw.toNanoseconds() > 0) {
-                    const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control); defer status.deinit();
+                    const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+                    defer status.deinit();
                     const value = try M.result(&status);
                     poisoned = !(try control.boolean(value, "custody_available", true));
                     if (poisoned) {
@@ -15272,21 +15499,31 @@ test "paired issuance original grant expiry before reserve cannot return ticket 
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, index| {
-        var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
         try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-        const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
         try F.seed(path);
-        const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-        const subject = try std.fmt.allocPrint(a, "renew-issue-window-{d}", .{index}); defer a.free(subject);
-        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject }); defer admitted.deinit();
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-issue-window-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
         const account = try control.string(try M.result(&admitted), "account_id");
-        var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-        const keys = try key.jwks(); defer a.free(keys);
-        var body = try M.makeBody(&key, subject, .{}); defer body.deinit();
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
         _ = try M.window(current, account, bound, 3);
-        const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_stage = "before_reservation", .hold_kind = "issue", .hold_window = true }); defer started.deinit();
+        const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_stage = "before_reservation", .hold_kind = "issue", .hold_window = true });
+        defer started.deinit();
         try std.testing.expect(control.get(started.value, "error") != null);
-        const observed = try M.observe(current, account); defer observed.deinit();
+        const observed = try M.observe(current, account);
+        defer observed.deinit();
         const value = try M.result(&observed);
         try M.assertPair(value, "ready", 1, false);
         try std.testing.expect(control.get(value, "renewal_state").? == .null);
@@ -15296,28 +15533,36 @@ test "paired issuance original grant expiry before reserve cannot return ticket 
     }
 }
 
-
 test "actual returned renewal successor preserves finite custody and refresh windows without extending them" {
     const M = OwnedRenewalActorModel;
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
-    var directory = std.testing.tmpDir(.{}); defer directory.cleanup();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
     try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-    const path = try directory.dir.realPathFileAlloc(io, ".", a); defer a.free(path);
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
     try F.seed(path);
-    const current = try Engine.openWithKey(io, a, path, F.key); defer current.deinit();
-    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-finite-positive" }); defer admitted.deinit();
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-finite-positive" });
+    defer admitted.deinit();
     const account = try control.string(try M.result(&admitted), "account_id");
-    var key = try M.signer(); defer key.deinit() catch @panic("renewal signing key cleanup failed");
-    const keys = try key.jwks(); defer a.free(keys);
-    var body = try M.makeBody(&key, "renew-finite-positive", .{ .same_refresh = true }); defer body.deinit();
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-finite-positive", .{ .same_refresh = true });
+    defer body.deinit();
     const access_custody = try M.window(current, account, "access_custody", 30);
     const refresh_custody = try M.window(current, account, "refresh_custody", 30);
     const refresh_provider = try M.window(current, account, "refresh_provider", 30);
-    const started = try M.start(current, account, body.bytes, keys, .{}); defer started.deinit();
+    const started = try M.start(current, account, body.bytes, keys, .{});
+    defer started.deinit();
     _ = try M.result(&started);
-    const renewed = try M.wait(current, account, "ready", 2); defer renewed.deinit();
+    const renewed = try M.wait(current, account, "ready", 2);
+    defer renewed.deinit();
     const value = try M.result(&renewed);
     try M.assertPair(value, "ready", 2, true);
     try M.assertOriginalWindow(value, "access_custody", access_custody);
@@ -15333,7 +15578,6 @@ test "actual returned renewal successor preserves finite custody and refresh win
     try std.testing.expect(try control.boolean(value, "wire_valid", false));
 }
 
-
 test "public expiry status skips an expired paired candidate and serves a genuinely ready native alternative" {
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
     const N = @import("native_owner_fixture.zig");
@@ -15341,52 +15585,68 @@ test "public expiry status skips an expired paired candidate and serves a genuin
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, index| {
-        const producer = try N.Fixture.create(io, a); defer producer.destroy();
-        const actor = try N.ActorFixture.create(io, a, producer); defer actor.destroy();
+        const producer = try N.Fixture.create(io, a);
+        defer producer.destroy();
+        const actor = try N.ActorFixture.create(io, a, producer);
+        defer actor.destroy();
         try actor.install();
         const current = actor.engine.?;
-        const first_subject = try std.fmt.allocPrint(a, "renew-public-expiry-{d}", .{index}); defer a.free(first_subject);
-        const second_subject = try std.fmt.allocPrint(a, "renew-public-ready-{d}", .{index}); defer a.free(second_subject);
+        const first_subject = try std.fmt.allocPrint(a, "renew-public-expiry-{d}", .{index});
+        defer a.free(first_subject);
+        const second_subject = try std.fmt.allocPrint(a, "renew-public-ready-{d}", .{index});
+        defer a.free(second_subject);
         const first_pair = try SiwcActorTest.admit(producer, current, first_subject);
         const other_pair = try SiwcActorTest.admit(producer, current, second_subject);
         const reference = try producer.register(current, "synthetic-siwc-thread");
-        var initial = try SiwcActorTest.acquire(producer, current, reference, "expiry-completed-work"); defer SiwcActorTest.dispose(&initial);
+        var initial = try SiwcActorTest.acquire(producer, current, reference, "expiry-completed-work");
+        defer SiwcActorTest.dispose(&initial);
         try std.testing.expectEqualStrings(&first_pair.account_id, try control.string(try SiwcActorTest.result(&initial), "account_id"));
         const first_lease = try SiwcActorTest.handle(&initial);
-        var initial_auth = try SiwcActorTest.materialize(producer, current, reference, first_lease); defer SiwcActorTest.dispose(&initial_auth);
+        var initial_auth = try SiwcActorTest.materialize(producer, current, reference, first_lease);
+        defer SiwcActorTest.dispose(&initial_auth);
         _ = try SiwcActorTest.result(&initial_auth);
-        var accepted = try SiwcActorTest.report(producer, current, reference, first_lease, "accepted"); defer SiwcActorTest.dispose(&accepted);
+        var accepted = try SiwcActorTest.report(producer, current, reference, first_lease, "accepted");
+        defer SiwcActorTest.dispose(&accepted);
         _ = try SiwcActorTest.result(&accepted);
-        var completed = try SiwcActorTest.report(producer, current, reference, first_lease, "completed"); defer SiwcActorTest.dispose(&completed);
+        var completed = try SiwcActorTest.report(producer, current, reference, first_lease, "completed");
+        defer SiwcActorTest.dispose(&completed);
         _ = try SiwcActorTest.result(&completed);
-        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = first_pair.account_id[0..] }); defer handles.deinit();
+        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = first_pair.account_id[0..] });
+        defer handles.deinit();
         const transaction = try control.string(try M.result(&handles), "transaction_id");
-        const narrowed = try M.fixture(current, "fixture.siwcGrantWindow", .{ .account_id = first_pair.account_id[0..], .bound = bound, .seconds = 0, .hold_prune = true }); defer narrowed.deinit();
+        const narrowed = try M.fixture(current, "fixture.siwcGrantWindow", .{ .account_id = first_pair.account_id[0..], .bound = bound, .seconds = 0, .hold_prune = true });
+        defer narrowed.deinit();
         _ = try M.result(&narrowed);
-        const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control); defer status.deinit();
+        const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+        defer status.deinit();
         const status_value = try M.result(&status);
         try std.testing.expect(try control.boolean(status_value, "custody_available", false));
         try std.testing.expect(try control.boolean(status_value, "paired_committed", false));
         try std.testing.expect(!(try control.boolean(status_value, "grant_ready", true)));
         try std.testing.expectEqualStrings("SiwcPairExpired", try control.string(status_value, "reason"));
-        const live_rows = try M.observe(current, &first_pair.account_id); defer live_rows.deinit();
+        const live_rows = try M.observe(current, &first_pair.account_id);
+        defer live_rows.deinit();
         const live_value = try M.result(&live_rows);
         try M.assertPair(live_value, "ready", 1, false);
         // Actual ready ciphertext still exists: this isolates the expiry error
         // path from both pruning and a generic missing-row refusal.
         try std.testing.expectEqualStrings("ready", try control.string(control.get(live_value, "access_sql").?, "state"));
         try std.testing.expectEqualStrings("ready", try control.string(control.get(live_value, "refresh_sql").?, "state"));
-        var replay = try SiwcActorTest.acquire(producer, current, reference, "expiry-completed-work"); defer SiwcActorTest.dispose(&replay);
+        var replay = try SiwcActorTest.acquire(producer, current, reference, "expiry-completed-work");
+        defer SiwcActorTest.dispose(&replay);
         try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
-        var next = try SiwcActorTest.acquire(producer, current, reference, "expiry-next-independent-work"); defer SiwcActorTest.dispose(&next);
+        var next = try SiwcActorTest.acquire(producer, current, reference, "expiry-next-independent-work");
+        defer SiwcActorTest.dispose(&next);
         try std.testing.expectEqualStrings(&other_pair.account_id, try control.string(try SiwcActorTest.result(&next), "account_id"));
         const next_lease = try SiwcActorTest.handle(&next);
-        var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease); defer SiwcActorTest.dispose(&next_auth);
+        var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+        defer SiwcActorTest.dispose(&next_auth);
         const credential = try SiwcActorTest.result(&next_auth);
         try std.testing.expectEqual(@as(usize, 7), credential.object.count());
         try std.testing.expectEqualStrings(siwc_pair.auth_mode, try control.string(credential, "auth_mode"));
         try std.testing.expectEqual(@as(i64, 2), control.get(credential, "route_generation").?.integer);
-        var abandoned = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned"); defer SiwcActorTest.dispose(&abandoned);
+        var abandoned = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+        defer SiwcActorTest.dispose(&abandoned);
         _ = try SiwcActorTest.result(&abandoned);
     }
 }

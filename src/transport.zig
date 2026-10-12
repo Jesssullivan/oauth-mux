@@ -2012,12 +2012,16 @@ pub const testing = struct {
             if (!builtin.is_test or self.fixture.thread != null) return error.InvalidScope;
             self.fixture.hold_reply = true;
         }
-        pub fn releaseModelReply(self: *Server) void { if (builtin.is_test) self.fixture.release_reply.store(true, .release); }
+        pub fn releaseModelReply(self: *Server) void {
+            if (builtin.is_test) self.fixture.release_reply.store(true, .release);
+        }
         pub fn setStatusModel(self: *Server, status: u16) !void {
             if (!builtin.is_test or self.fixture.thread != null or status < 200 or status > 599) return error.InvalidScope;
             self.fixture.response_status = status;
         }
-        pub fn started(self: *const Server) bool { return self.fixture.thread != null; }
+        pub fn started(self: *const Server) bool {
+            return self.fixture.thread != null;
+        }
         pub fn requestCount(self: *const Server) u32 {
             return self.fixture.request_count.load(.acquire);
         }

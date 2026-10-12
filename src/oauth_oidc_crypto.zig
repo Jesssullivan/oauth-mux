@@ -68,7 +68,6 @@ pub fn verifyIdToken(a: std.mem.Allocator, jwt: []const u8, jwks_bytes: []const 
     return .{ .allocator = a, .subject = try a.dupe(u8, checked.subject), .expires_at = checked.expires_at, .issued_at = checked.issued_at, .access_token_hash = checked.access_token_hash };
 }
 
-
 /// Refresh validates the signed resource token, not a fresh-login ID nonce.
 /// This primitive has no HTTP/pair/renewal authority; only the opaque response
 /// producer joins its claims to authenticated prior lineage and writer state.
@@ -129,7 +128,10 @@ pub fn verifyAccessToken(a: std.mem.Allocator, jwt: []const u8, jwks_bytes: []co
     defer parsed_claims.deinit();
     const checked = try validateAccessClaims(parsed_claims.value, client, now);
     const subject = try a.dupe(u8, checked.subject);
-    errdefer { std.crypto.secureZero(u8, subject); a.free(subject); }
+    errdefer {
+        std.crypto.secureZero(u8, subject);
+        a.free(subject);
+    }
     const scope = try a.dupe(u8, checked.scope);
     return .{ .allocator = a, .subject = subject, .scope = scope, .expires_at = checked.expires_at, .issued_at = checked.issued_at };
 }
@@ -547,19 +549,17 @@ test "rotated resource access scopes do not borrow initial OIDC nonce or offline
 test "rotated access claim validation joins API resource issued client subject and current times" {
     const a = std.testing.allocator;
     const cases = [_]struct { issuer: []const u8 = "https://auth.openai.com", audience: []const u8 = "https://api.openai.com/v1", client: []const u8 = "oaiapp_synthetic_rotate", sub: []const u8 = "synthetic-rotate-subject", iat: i64 = 1000, exp: i64 = 1300, nbf: i64 = 1000, scope: []const u8 = "resource.invoke chatgpt.tokens.use.direct", expected: ?anyerror = null }{
-        .{}, .{ .issuer = "https://untrusted.invalid", .expected = error.OidcIssuerMismatch },
-        .{ .audience = "https://chatgpt.com", .expected = error.OidcAudienceMismatch },
-        .{ .client = "dynamic_agent_client", .expected = error.OidcAudienceMismatch },
-        .{ .exp = 1000, .expected = error.OidcTokenTime },
-        .{ .iat = 1100, .expected = error.OidcTokenTime },
-        .{ .nbf = 1100, .expected = error.OidcTokenTime },
-        .{ .sub = "", .expected = error.InvalidOidcClaim },
+        .{},                                                                            .{ .issuer = "https://untrusted.invalid", .expected = error.OidcIssuerMismatch },
+        .{ .audience = "https://chatgpt.com", .expected = error.OidcAudienceMismatch }, .{ .client = "dynamic_agent_client", .expected = error.OidcAudienceMismatch },
+        .{ .exp = 1000, .expected = error.OidcTokenTime },                              .{ .iat = 1100, .expected = error.OidcTokenTime },
+        .{ .nbf = 1100, .expected = error.OidcTokenTime },                              .{ .sub = "", .expected = error.InvalidOidcClaim },
         .{ .scope = "openid offline_access", .expected = error.OidcScopeMissing },
     };
     for (cases) |case| {
         const bytes = try std.json.Stringify.valueAlloc(a, .{ .iss = case.issuer, .aud = case.audience, .client_id = case.client, .sub = case.sub, .iat = case.iat, .exp = case.exp, .nbf = case.nbf, .scope = case.scope }, .{});
         defer a.free(bytes);
-        const parsed = try document(a, bytes); defer parsed.deinit();
+        const parsed = try document(a, bytes);
+        defer parsed.deinit();
         if (case.expected) |expected| try std.testing.expectError(expected, validateAccessClaims(parsed.value, "oaiapp_synthetic_rotate", 1000)) else {
             const claims = try validateAccessClaims(parsed.value, "oaiapp_synthetic_rotate", 1000);
             try std.testing.expectEqualStrings("synthetic-rotate-subject", claims.subject);
