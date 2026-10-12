@@ -1275,8 +1275,17 @@ class GuardTest(unittest.TestCase):
             reader.assert_not_called()
 
     def test_site_inventory_accepts_original_epoch_output_with_exact_digest_and_suffix(self):
-        with tempfile.TemporaryDirectory() as directory:
-            state = Path(directory)
+        # Model only external sandbox ancestry; retain real selected-root custody.
+        def fixture_private(path, owner_only=True):
+            self.assertEqual(path, state)
+            self.assertIs(owner_only, True)
+            self.assertEqual(state.resolve(strict=True), state)
+            metadata = state.lstat()
+            self.assertTrue(stat.S_ISDIR(metadata.st_mode))
+            self.assertEqual(metadata.st_uid, os.getuid())
+            self.assertEqual(stat.S_IMODE(metadata.st_mode), 0o700)
+        with tempfile.TemporaryDirectory() as directory, patch('execution_guard.private', side_effect=fixture_private):
+            state = Path(directory).resolve(strict=True)
             epoch = state / '72bf2f84-641d-4ca2-8aeb-4e42d279aaf7'
             suffix = 'output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/cached_site_inventory_probe/test.outputs/inventory.json'
             inventory = epoch / suffix
