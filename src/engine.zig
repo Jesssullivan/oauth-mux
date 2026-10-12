@@ -7825,10 +7825,6 @@ pub const Engine = struct {
         const event = try control.string(params, "event");
         const application = try control.string(params, "application");
         const handle = try control.string(params, "lease_handle");
-        if (eql(event, "rejected")) {
-            const native = try self.nativeLease(params);
-            if (native.request_profile == .siwc_responses) return error.SiwcStructuredRejectionRequired;
-        }
         const status_value = control.get(params, "status");
         const reported_status: u16 = if (status_value) |value| blk: {
             if (value != .integer or value.integer < 0 or value.integer > std.math.maxInt(u16)) return error.InvalidParams;
@@ -7840,6 +7836,8 @@ pub const Engine = struct {
             .response_started = try control.boolean(params, "response_started", true),
             .status = reported_status,
         };
+        // Original owner-bound durable evidence adjudicates exact duplicates
+        // and recovered uncertainty before requiring an ephemeral lease cache.
         const transition = if (native_ref) |reference| try self.requests.checkReportForOwner(application, handle, reference, evidence) else try self.requests.checkReport(application, handle, evidence);
         if (!transition) return control.success(allocator, id, .{ .recorded = true });
         const authority = self.requests.attempt(application, handle) orelse return error.UnknownLease;
@@ -7867,6 +7865,7 @@ pub const Engine = struct {
             try self.persist(&.{});
             return control.success(allocator, id, .{ .recorded = true });
         };
+        if (evidence.event == .rejected and native.request_profile == .siwc_responses) return error.SiwcStructuredRejectionRequired;
         var held: ?domain.Lease = null;
         for (self.state.leases.items) |lease| if (eql(lease.id, &native.handle)) {
             held = lease;
@@ -12193,7 +12192,7 @@ test "SIWC actor refuses ready verified owner rows without opaque paired activat
     try std.testing.expectEqual(revision, retained.revision);
     try std.testing.expectEqualStrings(snapshot, retained.json);
     for ([_][]const u8{ "adapter.siwcReject", "adapter.siwcAcquireReplacement" }) |method| {
-        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = .{} }, .{});
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
         defer allocator.free(raw);
         var request = try control.parse(allocator, raw);
         defer request.deinit();
@@ -12385,6 +12384,12 @@ test "signed owned single-account SIWC actor materializes only current paired ac
     var fresh = try SiwcActorTest.acquire(producer, current, reference, "siwc-after-stops");
     defer SiwcActorTest.dispose(&fresh);
     const fresh_lease = try SiwcActorTest.handle(&fresh);
+    const generic_rejection_revision = current.revision;
+    var generic_rejection = try SiwcActorTest.native(producer, current, reference, "adapter.report", .{ .lease_handle = fresh_lease[0..], .event = "rejected", .status = 429, .pre_acceptance = true, .response_started = false });
+    defer SiwcActorTest.dispose(&generic_rejection);
+    try SiwcActorTest.refusal(&generic_rejection, "SiwcStructuredRejectionRequired");
+    try std.testing.expectEqual(generic_rejection_revision, current.revision);
+    try std.testing.expect(current.requests.attempt("codex", &fresh_lease).?.state == .issued);
     var fresh_auth = try SiwcActorTest.materialize(producer, current, reference, fresh_lease);
     defer SiwcActorTest.dispose(&fresh_auth);
     try SiwcActorTest.checkMaterialization(&fresh_auth, 1, original.provider_expires_at.?);
