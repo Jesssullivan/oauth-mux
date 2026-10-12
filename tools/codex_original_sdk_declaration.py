@@ -105,6 +105,7 @@ class Publication:
         self.root = sdk.open_dir(self.path)
         self.stage = self.aliases = None
         self.records, self.alias_records, self.published = {}, {}, {}
+        self.file_fds, self.cleanup_records = {}, {}
         self.accepted = False
         try:
             core.need(os.fstat(self.root).st_uid == os.getuid(), 'publication-owner')
@@ -135,7 +136,8 @@ class Publication:
 
     def file(self, name, raw):
         self.check_root()
-        core.need(len(raw) <= core.MAX_METADATA, 'publication-file-bound')
+        core.need(name in (inputs.MANIFEST, 'BUILD.bazel') and name not in self.records
+                  and len(self.file_fds) < 2 and len(raw) <= core.MAX_METADATA, 'publication-file-bound')
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                      0o600, dir_fd=self.stage)
         try:
@@ -143,8 +145,45 @@ class Publication:
             os.fchmod(fd, 0o444)
             os.fsync(fd)
             self.records[name] = core.identity(os.fstat(fd))
+            self.cleanup_records[name] = self.records[name]
+            # Enroll the bounded readonly owner before any fallible identity IO.
+            held = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                           dir_fd=self.stage)
+            self.file_fds[name] = held
+            core.need(core.identity(os.fstat(held)) == self.records[name] == core.identity(
+                os.stat(name, dir_fd=self.stage, follow_symlinks=False)), 'publication-writer-reader-join')
         finally:
             os.close(fd)
+
+    def renamed_file(self, name, raw, before):
+        """Authenticate this same held creator inode across the authorized move."""
+        self.check_root()
+        fd = self.file_fds[name]
+        held = core.identity(os.fstat(fd))
+        named = core.identity(os.stat(name, dir_fd=self.root, follow_symlinks=False))
+        # Cleanup ownership is distinct from a content/readiness witness. It is
+        # bound to the creator-held inode, never merely the new destination name.
+        core.need(held[:4] == before[:4] and stat.S_ISREG(held[4]) and held[5] == 1
+                  and named == held, 'publication-moved-file-owner')
+        self.cleanup_records[name] = held
+        # Only ctime can change at rename. Every other field remains exact.
+        core.need(held[:8] == before[:8], 'publication-moved-file-immutable')
+        os.lseek(fd, 0, os.SEEK_SET)
+        total, digest = 0, hashlib.sha256()
+        while True:
+            self.clock.tick()
+            block = os.read(fd, 65536)
+            if not block:
+                break
+            total += len(block)
+            core.need(total <= len(raw), 'publication-moved-file-growth')
+            digest.update(block)
+        core.need(total == len(raw) and digest.hexdigest() == core.sha(raw)
+                  and core.identity(os.fstat(fd)) == held == core.identity(
+                  os.stat(name, dir_fd=self.root, follow_symlinks=False)),
+                  'publication-moved-file-bytes-name-held')
+        # Advance authority only after complete actual-byte and full-nine joins.
+        self.records[name] = held
 
     def aliases_readback(self, parent):
         self.check_root()
@@ -179,9 +218,10 @@ class Publication:
         self.alias_identity = core.identity(os.fstat(self.aliases), True)
         os.fsync(self.aliases)
         self.aliases_readback(self.stage)
-        raw = core.encoded(document)
-        self.file(inputs.MANIFEST, raw)
-        self.file('BUILD.bazel', build(document).encode('utf-8'))
+        raws = {inputs.MANIFEST: core.encoded(document),
+                'BUILD.bazel': build(document).encode('utf-8')}
+        for name, raw in raws.items():
+            self.file(name, raw)
         os.fsync(self.stage)
         # Publish aliases and metadata first. BUILD is the last visible target.
         for name in ('input-files', inputs.MANIFEST, 'BUILD.bazel'):
@@ -196,6 +236,9 @@ class Publication:
                 pass
             else:
                 raise ValueError('original SDK declaration refused: foreign output')
+            if name != 'input-files':
+                core.need(core.identity(os.fstat(self.file_fds[name])) == witness,
+                          'publication-staged-file-held')
             os.rename(name, name, src_dir_fd=self.stage, dst_dir_fd=self.root)
             if name == 'input-files':
                 # Join the moved owned directory before changing its held mode.
@@ -208,6 +251,9 @@ class Publication:
                     follow_symlinks=False), True), 'publication-sealed-alias-parent')
                 os.fsync(self.aliases)
                 witness = self.alias_identity
+            else:
+                self.renamed_file(name, raws[name], witness)
+                witness = self.records[name]
             self.published[name] = witness
             os.fsync(self.root)
             self.event('ready-published' if name == 'BUILD.bazel' else 'metadata-published')
@@ -219,6 +265,8 @@ class Publication:
         for name, raw in ((inputs.MANIFEST, core.encoded(document)),
                           ('BUILD.bazel', build(document).encode('utf-8'))):
             self.check_root()
+            core.need(core.identity(os.fstat(self.file_fds[name])) == self.records[name],
+                      'publication-final-continuous-file-held')
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=self.root)
             try:
                 need_size, parts, count = len(raw), [], 0
@@ -245,7 +293,31 @@ class Publication:
                 self.rollback()
             except BaseException as exc:
                 error = exc
-        owned = (self.aliases, self.stage, self.root)
+        if not rollback or self.accepted:
+            for name, fd in self.file_fds.items():
+                try:
+                    current = core.identity(os.fstat(fd))
+                    before = self.records[name]
+                    owned_name = None
+                    for parent in (self.root, self.stage):
+                        if parent is None:
+                            continue
+                        try:
+                            if core.identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == current:
+                                owned_name = parent
+                                break
+                        except FileNotFoundError:
+                            pass
+                    if current[:4] == before[:4] and stat.S_ISREG(current[4]) and current[5] == 1 \
+                            and owned_name is not None:
+                        self.cleanup_records[name] = current
+                    core.need(current == before and owned_name == self.root,
+                              'publication-terminal-file-held-name')
+                except BaseException as exc:
+                    if error is None:
+                        error = exc
+        owned = tuple(self.file_fds.values()) + (self.aliases, self.stage, self.root)
+        self.file_fds = {}
         self.aliases = self.stage = self.root = None
         for fd in owned:
             if fd is None:
@@ -265,7 +337,7 @@ class Publication:
         Foreign replacements are retained. Original outer ownership cleanup is
         the ultimate bound for interrupted/uncompleted cleanup.
         """
-        core.need(self.root is None and self.stage is None and self.aliases is None,
+        core.need(self.root is None and self.stage is None and self.aliases is None and not self.file_fds,
                   'cleanup-resources-detached')
         # Enroll the newly returned descriptor before any fallible identity IO.
         # Identity refusal still precedes every filesystem cleanup mutation.
@@ -327,7 +399,15 @@ class Publication:
                         os.rmdir('input-files', dir_fd=parent)
                 except FileNotFoundError:
                     pass
-        for name, witness in self.records.items():
+        for name, witness in self.cleanup_records.items():
+            # While the creator FD is live, a mutated owned object may still be
+            # deleted; a replacement inode never becomes a cleanup capability.
+            fd = self.file_fds.get(name)
+            if fd is not None:
+                current = core.identity(os.fstat(fd))
+                if current[:4] != witness[:4] or not stat.S_ISREG(current[4]) or current[5] != 1:
+                    continue
+                witness = current
             for parent in (self.root, self.stage):
                 if parent is None:
                     continue

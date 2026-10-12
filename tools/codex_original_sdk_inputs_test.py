@@ -5,6 +5,7 @@ full SDK and carrier validators run. No source/native admission is modeled.
 """
 from contextlib import ExitStack
 import copy
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -742,6 +743,226 @@ class OriginalSDKInputsModels(unittest.TestCase):
             self.assertEqual(sorted(value.name for value in root.iterdir()), ['keep'])
             self.assertTrue((self.fixture.origin / 'receipt.json').exists())
             self.assertFalse(publication.accepted)
+
+    def test_actual_metadata_creator_fds_survive_rename_and_authenticate_post_witness(self):
+        root = self.root / 'held-file-publication'
+        root.mkdir(mode=0o700)
+        moved, events = {}, []
+        publication = None
+        def event(phase):
+            events.append(phase)
+            for name, post in moved.items():
+                fd = publication.file_fds[name]
+                self.assertEqual(fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE, os.O_RDONLY)
+                self.assertEqual(core.identity(os.fstat(fd)), publication.records[name])
+                self.assertEqual(post, publication.records[name])
+                self.assertEqual(post, core.identity(os.stat(root / name, follow_symlinks=False)))
+                raw = core.encoded(self.plan['document']) if name == inputs.MANIFEST else \
+                    declaration.build(self.plan['document']).encode('utf-8')
+                self.assertEqual(os.pread(fd, len(raw) + 1, 0), raw)
+            self.assertLessEqual(len(publication.file_fds), 2)
+        publication = declaration.Publication(root, self.clock, event)
+        real_rename = os.rename
+        def rename(name, target, **kwargs):
+            if name == 'input-files':
+                return real_rename(name, target, **kwargs)
+            fd = publication.file_fds[name]
+            before = publication.records[name]
+            self.assertEqual(core.identity(os.fstat(fd)), before)
+            real_rename(name, target, **kwargs)
+            after = core.identity(os.fstat(fd))
+            self.assertEqual(before[:8], after[:8])
+            self.assertEqual(after, core.identity(os.stat(target, dir_fd=publication.root,
+                follow_symlinks=False)))
+            moved[name] = after
+        try:
+            with patch.object(os, 'rename', side_effect=rename):
+                publication.publish(self.plan['document'])
+            self.assertEqual(set(moved), {inputs.MANIFEST, 'BUILD.bazel'})
+            self.assertEqual(events, ['metadata-published', 'metadata-published', 'ready-published'])
+            publication.final(self.plan['document'])
+            publication.accepted = True
+        finally:
+            fds = list(publication.file_fds.values())
+            publication.close()
+        self.assertEqual(publication.file_fds, {})
+        for fd in fds:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    def test_actual_rename_window_replacement_symlink_bytes_mode_size_time_refuse(self):
+        for selected in (inputs.MANIFEST, 'BUILD.bazel'):
+            for change in ('replacement', 'symlink', 'bytes', 'mode', 'size', 'time'):
+                with self.subTest(name=selected, change=change):
+                    root = self.root / ('rename-window-' + selected.replace('.', '-') + '-' + change)
+                    root.mkdir(mode=0o700)
+                    foreign = self.root / ('foreign-' + selected.replace('.', '-') + '-' + change)
+                    self.fixture.write(foreign, b'foreign retained')
+                    publication = declaration.Publication(root, self.clock)
+                    real_rename = os.rename
+                    changed = False
+                    original = None
+                    def rename(name, target, **kwargs):
+                        nonlocal changed, original
+                        real_rename(name, target, **kwargs)
+                        if name != selected or changed:
+                            return
+                        changed = True
+                        path = root / name
+                        original = path.read_bytes()
+                        info = path.stat()
+                        if change == 'replacement':
+                            path.unlink()
+                            self.fixture.write(path, original, 0o444)
+                        elif change == 'symlink':
+                            path.unlink()
+                            path.symlink_to(foreign)
+                        elif change == 'mode':
+                            path.chmod(0o400)
+                        elif change == 'time':
+                            os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1))
+                        else:
+                            path.chmod(0o600)
+                            value = (bytes([original[0] ^ 1]) + original[1:]) if change == 'bytes' else original + b'x'
+                            path.write_bytes(value)
+                            path.chmod(0o444)
+                            if change == 'bytes':
+                                # Same immutable eight fields; actual-byte proof
+                                # must still reject despite the allowed ctime move.
+                                os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    try:
+                        with patch.object(os, 'rename', side_effect=rename), self.assertRaises(ValueError):
+                            publication.publish(self.plan['document'])
+                    finally:
+                        publication.close()
+                    self.assertTrue(changed)
+                    self.assertFalse(publication.accepted)
+                    self.assertEqual(foreign.read_bytes(), b'foreign retained')
+                    if change == 'replacement':
+                        self.assertEqual((root / selected).read_bytes(), original)
+                    elif change == 'symlink':
+                        self.assertEqual(os.readlink(root / selected), str(foreign))
+                    else:
+                        self.assertFalse((root / selected).exists())
+                    if selected != 'BUILD.bazel':
+                        self.assertFalse((root / 'BUILD.bazel').exists())
+                    self.assertEqual(publication.file_fds, {})
+
+    def test_readonly_metadata_open_is_enrolled_before_fstat_fault_and_drained(self):
+        root = self.root / 'reader-enrollment-fault'
+        root.mkdir(mode=0o700)
+        publication = declaration.Publication(root, self.clock)
+        real_open, real_fstat = os.open, os.fstat
+        readers, failed = [], False
+        def opened(name, flags, *args, **kwargs):
+            fd = real_open(name, flags, *args, **kwargs)
+            if name == inputs.MANIFEST and flags & os.O_ACCMODE == os.O_RDONLY \
+                    and kwargs.get('dir_fd') == publication.stage:
+                readers.append(fd)
+            return fd
+        def fstat(fd):
+            nonlocal failed
+            if readers and fd == readers[-1] and not failed:
+                failed = True
+                self.assertEqual(publication.file_fds[inputs.MANIFEST], fd)
+                raise OSError('synthetic held-readonly enrollment fstat refusal')
+            return real_fstat(fd)
+        try:
+            with patch.object(os, 'open', side_effect=opened), \
+                    patch.object(os, 'fstat', side_effect=fstat), self.assertRaises(OSError):
+                publication.publish(self.plan['document'])
+        finally:
+            publication.close()
+        self.assertTrue(failed)
+        self.assertEqual(publication.file_fds, {})
+        self.assertEqual(list(root.iterdir()), [])
+        for fd in readers:
+            with self.assertRaises(OSError):
+                real_fstat(fd)
+
+    def test_fresh_final_and_terminal_close_reject_late_same_byte_or_content_mutation(self):
+        for boundary in ('final', 'close'):
+            for change in ('replacement', 'bytes'):
+                root = self.root / ('late-held-' + boundary + '-' + change)
+                root.mkdir(mode=0o700)
+                publication = declaration.Publication(root, self.clock)
+                publication.publish(self.plan['document'])
+                path = root / inputs.MANIFEST
+                raw = path.read_bytes()
+                if change == 'replacement':
+                    path.unlink()
+                    self.fixture.write(path, raw, 0o444)
+                else:
+                    path.chmod(0o600)
+                    path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                    path.chmod(0o444)
+                if boundary == 'final':
+                    try:
+                        with self.assertRaises(ValueError):
+                            publication.final(self.plan['document'])
+                    finally:
+                        publication.close()
+                else:
+                    with self.assertRaises(ValueError):
+                        publication.close(rollback=False)
+                    publication.cleanup_closed()
+                self.assertFalse(publication.accepted)
+                self.assertFalse((root / 'BUILD.bazel').exists())
+                if change == 'replacement':
+                    self.assertEqual(path.read_bytes(), raw)
+                else:
+                    self.assertFalse(path.exists())
+                self.assertEqual(publication.file_fds, {})
+
+    def test_first_held_metadata_close_error_detaches_and_attempts_every_owner_once(self):
+        root = self.root / 'held-file-all-close-fault'
+        root.mkdir(mode=0o700)
+        publication = declaration.Publication(root, self.clock)
+        publication.publish(self.plan['document'])
+        owners = list(publication.file_fds.values()) + [publication.aliases, publication.stage, publication.root]
+        attempted = []
+        real_close = os.close
+        def close(fd):
+            self.assertEqual(publication.file_fds, {})
+            self.assertIsNone(publication.root)
+            attempted.append(fd)
+            real_close(fd)
+            if fd == owners[0]:
+                raise OSError('actual held metadata close completed, synthetic refusal')
+        with patch.object(os, 'close', side_effect=close), self.assertRaises(OSError):
+            publication.close(rollback=False)
+        self.assertEqual(attempted, owners)
+        for fd in owners:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+        publication.cleanup_closed()
+        self.assertFalse((root / 'BUILD.bazel').exists())
+        self.assertFalse(publication.accepted)
+
+    def test_original_integer_expiry_during_same_held_post_rename_read_refuses(self):
+        root = self.root / 'held-post-rename-expiry'
+        root.mkdir(mode=0o700)
+        publication = declaration.Publication(root, self.clock)
+        real_read, real_ns = os.read, time.monotonic_ns
+        expired = False
+        def read(fd, count):
+            nonlocal expired
+            raw = real_read(fd, count)
+            if fd == publication.file_fds.get(inputs.MANIFEST) and (root / inputs.MANIFEST).exists():
+                expired = True
+            return raw
+        def ns():
+            return self.clock.until_ns if expired else real_ns()
+        try:
+            with patch.object(os, 'read', side_effect=read), \
+                    patch.object(time, 'monotonic_ns', side_effect=ns), self.assertRaises(ValueError):
+                publication.publish(self.plan['document'])
+        finally:
+            publication.close()
+        self.assertTrue(expired)
+        self.assertEqual(list(root.iterdir()), [])
+        self.assertEqual(publication.file_fds, {})
+        self.assertFalse(publication.accepted)
 
 
 if __name__ == '__main__':
