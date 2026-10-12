@@ -32,12 +32,15 @@ pub const methods = [_]Method{
     .{ .name = "account.resume", .summary = "Make a paused account eligible again." },
     .{ .name = "account.drain", .summary = "Stop new leases while accepted requests finish." },
     .{ .name = "account.forget", .summary = "Remove retained authorization and prevent automatic re-enrollment." },
+    .{ .name = "oauth.enrollment.prepare.v1", .summary = "Record distinct fresh Codex OAuth intent and encrypted PKCE custody at an exact revision; unqualified registration prevents browser/provider IO and grant activation." },
+    .{ .name = "oauth.enrollment.retire.v1", .summary = "Retire an unissued fresh OAuth transaction and erase its encrypted capsules without changing enrolled grants." },
     .{ .name = "enrollment.start", .summary = "Reconcile the selected authorized source; this method does not start provider sign-in." },
     .{ .name = "repair.start", .summary = "Reconcile an account's authorized sources and report readiness without restoring spent credentials." },
     .{ .name = "operation.cancel", .summary = "Cancel an unissued enrollment or repair job." },
     .{ .name = "integrations.status", .summary = "Inspect implemented and unproven native integration capabilities." },
     .{ .name = "integrations.discover", .summary = "Inspect bounded authenticated native owner inventory in the selected integration context; hook compatibility is experimental and native support remains false." },
     .{ .name = "integrations.nativeRequestAudit", .summary = "Read at most six retained request fences for one exact native owner attachment and thread, with opaque account handles and pending-state facts; no replay or continuity claim." },
+    .{ .name = "integrations.nativeFileCoordinationReadiness", .summary = "Refusal-only query for an explicit File coordination intent; never records consent or issues enrollment." },
     .{ .name = "integrations.install", .summary = "Install a reversible integration after proving its prerequisites." },
     .{ .name = "integrations.remove", .summary = "Restore owned settings; Codex retains custody until reachable native threads detach safely." },
     .{ .name = "integrations.attach", .summary = "Attach a compatible native Codex hook to selected or discovered loaded threads." },
@@ -193,7 +196,7 @@ pub fn expectedRevision(params: std.json.Value) !u64 {
 }
 
 pub fn isMutation(method: []const u8) bool {
-    const names = [_][]const u8{ "source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set" };
+    const names = [_][]const u8{ "oauth.enrollment.prepare.v1", "oauth.enrollment.retire.v1", "source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set" };
     for (names) |name| if (std.mem.eql(u8, method, name)) return true;
     return false;
 }
