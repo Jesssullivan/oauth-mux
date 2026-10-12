@@ -621,10 +621,89 @@ def _fresh_namespace(roots, expected, clock):
     return witnesses
 
 
+class _FreshNarParents(_ParentHandles):
+    """At most 32 cached sealed-parent FDs for one fresh NAR pass.
+
+    This is a local IO owner, not content or namespace authority. Every lookup
+    still traverses Root._parent's complete current named/before/held/after
+    checks; caching replaces directory open with dup only. Full-nine stream
+    parent/leaf checks and both complete namespace passes remain unchanged.
+    """
+    def __init__(self, root, clock):
+        need(type(root) is Root and root.clock is clock and not root.owned,
+             "fresh-parent-role")
+        root.check()
+        info = os.fstat(root.fd)
+        need(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o555,
+             "fresh-parent-sealed-root")
+        self.root, self.entries, self.closed = root, {}, False
+        self.pending = None
+        self.clock, self.deadline, self.until_ns = clock, clock.deadline, clock.until_ns
+        self.owner, self.self = threading.get_ident(), self
+
+    def parent(self, name):
+        need(self.self is self and threading.get_ident() == self.owner
+             and not self.closed and self.root.clock is self.clock
+             and self.clock.deadline == self.deadline and self.clock.until_ns == self.until_ns,
+             "fresh-parent-current-owner-clock")
+        self.clock.tick()
+        return self.root._parent(name, self)
+
+    def take(self, key, parent, name, selected):
+        if key in self.entries:
+            # Keep the cached FD enrolled on a hit. No pop/reinsertion can
+            # orphan it; bounded FIFO eviction affects IO cost, not authority.
+            fd, witness = self.entries[key]
+            need(witness == selected, "fresh-parent-handle-replacement")
+            return os.dup(fd)
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+
+    def keep(self, key, fd, selected):
+        need(self.pending is None, "fresh-parent-pending-owner")
+        if key not in self.entries:
+            if len(self.entries) == 32:
+                oldest = next(iter(self.entries))
+                prior, unused = self.entries.pop(oldest)
+                os.close(prior)
+            # Enroll the actual duplicate before dict allocation/validation.
+            # A failed insertion leaves pending owned until the all-FD drain.
+            self.pending = os.dup(fd)
+            self.entries[key] = (self.pending, selected)
+            self.pending = None
+
+    def close(self):
+        entries, self.entries = self.entries, {}
+        pending, self.pending = self.pending, None
+        self.closed = True
+        failure = None
+        for fd, unused in entries.values():
+            if fd == pending: pending = None  # insertion may succeed then raise
+            try:
+                os.close(fd)
+            except BaseException as error:
+                if failure is None: failure = error
+        if pending is not None:
+            try:
+                os.close(pending)
+            except BaseException as error:
+                if failure is None: failure = error
+        if failure is not None: raise failure
+
+    def __exit__(self, exc_type, error, traceback):
+        try:
+            self.close()
+        except BaseException as cleanup:
+            if error is not None: raise error.with_traceback(traceback) from cleanup
+            raise
+
+
 class _FreshNarFile:
     """One owned nofollow stream; SHA hashes exactly the bytes given to NAR."""
-    def __init__(self, root, name, row, witnesses, role, observed, completed, aggregate, clock):
+    def __init__(self, root, name, row, witnesses, role, observed, completed, aggregate, clock, parents=None):
         self.root, self.name, self.row, self.clock = root, name, row, clock
+        need(parents is None or (type(parents) is _FreshNarParents and parents.root is root
+             and parents.clock is clock), "fresh-stream-parent-owner")
+        self.parents = parents
         self.key, self.observed, self.completed, self.aggregate = (role, name), observed, completed, aggregate
         self.witness = witnesses[self.key]
         self.parent_key = (role, "/".join(relative(name)[:-1]))
@@ -634,7 +713,7 @@ class _FreshNarFile:
         try:
             clock.tick()
             need(self.key not in completed, "fresh-duplicate-stream")
-            self.parent, self.leaf = root.parent(name)
+            self.parent, self.leaf = root.parent(name) if parents is None else parents.parent(name)
             need(identity(os.fstat(self.parent)) == self.parent_witness, "fresh-stream-parent")
             before = os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)
             need(identity(before) == self.witness and stat.S_ISREG(before.st_mode)
@@ -654,7 +733,7 @@ class _FreshNarFile:
         need(not self.closed and identity(os.fstat(self.parent)) == self.parent_witness
              and identity(os.fstat(self.fd)) == self.witness
              and identity(os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)) == self.witness, "fresh-stream-held-name")
-        current, leaf = self.root.parent(self.name)
+        current, leaf = self.root.parent(self.name) if self.parents is None else self.parents.parent(self.name)
         try:
             need(identity(os.fstat(current)) == self.parent_witness
                  and identity(os.stat(leaf, dir_fd=current, follow_symlinks=False)) == self.witness, "fresh-stream-current-parent")
@@ -707,14 +786,17 @@ def _scan_nar(roots, expected, clock):
     witnesses = _fresh_namespace(roots, expected, clock)
     observed = {key: dict(row) for key, row in expected.items()}
     completed, aggregate, nars = set(), [0], {}
+    # One bounded cache at a time: close all its FDs before the last complete
+    # namespace observation, including on stream/hash/dup/close refusal.
     for role in sorted(roots):
-        def opener(unused, name, selected=role):
-            key = (selected, name)
-            need(key in expected and expected[key]["kind"] == "file", "fresh-stream-selected")
-            return _FreshNarFile(roots[selected], name, expected[key], witnesses, selected,
-                                 observed, completed, aggregate, clock)
-        nars[role] = nar.hash_descriptor(descriptor(role, expected, clock), opener=opener, deadline=clock.deadline)
-        roots[role].check()
+        with _FreshNarParents(roots[role], clock) as parents:
+            def opener(unused, name, selected=role):
+                key = (selected, name)
+                need(key in expected and expected[key]["kind"] == "file", "fresh-stream-selected")
+                return _FreshNarFile(roots[selected], name, expected[key], witnesses, selected,
+                                     observed, completed, aggregate, clock, parents)
+            nars[role] = nar.hash_descriptor(descriptor(role, expected, clock), opener=opener, deadline=clock.deadline)
+            roots[role].check()
     need(len(completed) == sum(row["kind"] == "file" for row in expected.values())
          and aggregate[0] == sum(row.get("size", 0) for row in expected.values()), "fresh-stream-complete")
     # Revisit EVERY earlier node after the last role's stream. A per-file exit

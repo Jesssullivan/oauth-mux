@@ -612,6 +612,170 @@ class CarrierModels(unittest.TestCase):
     def fresh_roots(self, parent, clock, stack):
         return {role: stack.enter_context(carrier.Root(parent / role, clock)) for role in ("sdk", "jdk")}
 
+    def test_fresh_nar_parent_cache_reduces_real_opens_with_identical_named_checks_and_proof(self):
+        parent, expected, unused = self.fresh_fixture("fresh-parent-golden")
+        (parent / "sdk/a").chmod(0o700)
+        for index in range(8):
+            raw = ("cached nested file " + str(index)).encode()
+            name = "a/cache" + str(index)
+            self.write(parent / "sdk" / name, raw)
+            expected[("sdk", name)] = {"kind":"file", "mode":0o444,
+                                      "size":len(raw), "sha256":carrier.sha(raw)}
+        (parent / "sdk/a").chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            real_open, real_stat = os.open, os.stat
+            # Same complete _scan_nar, disabling only the local open-to-dup
+            # optimization establishes the actual syscall/proof comparison.
+            def uncached(owner, name): return owner.root.parent(name)
+            with patch.object(carrier._FreshNarParents, "parent", uncached), \
+                    patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                before = carrier._scan_nar(roots, expected, clock)
+                before_opens, before_stats = opened.call_count, named.call_count
+            with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                after = carrier._scan_nar(roots, expected, clock)
+                self.assertLess(opened.call_count, before_opens)
+                self.assertEqual(named.call_count, before_stats)
+            self.assertEqual(after, before)
+            self.assertEqual(after[0], expected)
+            self.assertEqual(after[2], carrier.nar_origins(roots, expected, clock))
+
+    def test_fresh_nar_parent_cache_bound_exhaustion_and_failed_close_retire_all_fds(self):
+        parent, unused, unused_values = self.fresh_fixture("fresh-parent-bound")
+        (parent / "sdk").chmod(0o700)
+        for index in range(34):
+            directory = parent / "sdk" / ("d" + str(index)); directory.mkdir(mode=0o700)
+            self.write(directory / "leaf", b"bounded cache")
+            directory.chmod(0o555)
+        (parent / "sdk").chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        with carrier.Root(parent / "sdk", clock) as root:
+            # The existing creation/write owner still refuses sealed roots.
+            with self.assertRaises(ValueError): carrier._ParentHandles(root)
+            cache = carrier._FreshNarParents(root, clock)
+            for index in range(34):
+                fd, leaf = cache.parent("d" + str(index) + "/leaf")
+                self.assertEqual(leaf, "leaf"); os.close(fd)
+                self.assertLessEqual(len(cache.entries), 32)
+            self.assertEqual(len(cache.entries), 32)
+            selected = [fd for fd, unused in cache.entries.values()]
+            real_close, attempts = os.close, []
+            def refused_close(fd):
+                self.assertEqual(cache.entries, {})
+                attempts.append(fd); real_close(fd)
+                if fd == selected[0]: raise OSError("synthetic successful-close error")
+            with patch.object(carrier.os, "close", side_effect=refused_close):
+                with self.assertRaises(OSError): cache.close()
+            self.assertEqual(attempts, selected)
+            self.assertTrue(cache.closed); self.assert_descriptors_closed(selected)
+            with self.assertRaises(ValueError): cache.parent("d0/leaf")
+            # Actual dup refusal leaves the previously enrolled owner closed;
+            # no RLIMIT change or retry grants another descriptor budget.
+            retained = []
+            with self.assertRaises(OSError):
+                with carrier._FreshNarParents(root, clock) as exhausted:
+                    fd, unused = exhausted.parent("d0/leaf"); os.close(fd)
+                    retained = [fd for fd, unused in exhausted.entries.values()]
+                    with patch.object(carrier.os, "dup", side_effect=OSError("synthetic descriptor exhaustion")):
+                        exhausted.parent("d0/leaf")
+            self.assertTrue(exhausted.closed);self.assertEqual(exhausted.entries,{})
+            self.assert_descriptors_closed(retained)
+
+    def test_fresh_nar_cache_hit_and_before_after_enrollment_failure_own_every_fd(self):
+        parent, unused, unused_values = self.fresh_fixture("fresh-parent-enrollment")
+        (parent / "sdk").chmod(0o700)
+        (parent / "sdk/b").mkdir(mode=0o700)
+        self.write(parent / "sdk/b/child", b"enrollment bytes")
+        (parent / "sdk/b").chmod(0o555); (parent / "sdk").chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        class RefuseInsertion(dict):
+            phase = None
+            attempts = 0
+            def __setitem__(mapping, key, value):
+                if mapping.phase is not None:
+                    mapping.attempts += 1
+                    if mapping.phase == "after": super().__setitem__(key, value)
+                    raise MemoryError("synthetic cache insertion refusal")
+                return super().__setitem__(key, value)
+        with carrier.Root(parent / "sdk", clock) as root:
+            with carrier._FreshNarParents(root, clock) as cache:
+                fd, unused = cache.parent("a/child"); os.close(fd)
+                mapping = RefuseInsertion(cache.entries); cache.entries = mapping
+                mapping.phase = "before"
+                original_fd = cache.entries["a"][0]
+                fd, unused = cache.parent("a/child"); os.close(fd)
+                self.assertEqual(mapping.attempts, 0)
+                self.assertEqual(cache.entries["a"][0], original_fd)
+            for phase in ("before", "after"):
+                with self.subTest(phase=phase):
+                    owned, attempts, original_error = [], [], []
+                    real_close = os.close
+                    def refused_close(fd):
+                        if fd in owned:
+                            self.assertEqual(cache.entries, {})
+                            self.assertIsNone(cache.pending)
+                            attempts.append(fd)
+                        real_close(fd)
+                        if owned and fd == owned[0]:
+                            raise OSError("synthetic successful enrollment-close error")
+                    with patch.object(carrier.os, "close", side_effect=refused_close):
+                        with self.assertRaises(MemoryError) as caught:
+                            with carrier._FreshNarParents(root, clock) as cache:
+                                fd, unused = cache.parent("a/child"); os.close(fd)
+                                mapping = RefuseInsertion(cache.entries); cache.entries = mapping
+                                mapping.phase = phase
+                                try:
+                                    cache.parent("b/child")
+                                except MemoryError as error:
+                                    original_error.append(error)
+                                    self.assertIsNotNone(cache.pending)
+                                    owned[:] = list(dict.fromkeys(
+                                        [fd for fd, unused in cache.entries.values()] + [cache.pending]))
+                                    self.assertEqual(len(owned), 2)
+                                    self.assertLessEqual(len(owned), 32)
+                                    raise
+                    self.assertIs(caught.exception, original_error[0])
+                    self.assertIsInstance(caught.exception.__cause__, OSError)
+                    self.assertEqual(attempts, owned)
+                    self.assertEqual(cache.entries, {}); self.assertIsNone(cache.pending)
+                    self.assertTrue(cache.closed); self.assert_descriptors_closed(owned)
+
+    def test_fresh_nar_cached_parent_race_and_last_cache_close_mutation_refuse(self):
+        for fault in ("cached-parent", "last-close"):
+            with self.subTest(fault=fault):
+                parent, expected, unused = self.fresh_fixture("fresh-parent-race-" + fault)
+                clock = carrier.Clock(self.deadline)
+                fired, retained = [False], []
+                actual_take, actual_close = carrier._FreshNarParents.take, carrier._FreshNarParents.close
+                def take(owner, key, directory, name, selected):
+                    cached = key in owner.entries
+                    fd = actual_take(owner, key, directory, name, selected)
+                    if fault == "cached-parent" and cached and not fired[0]:
+                        fired[0] = True
+                        (parent / "sdk").chmod(0o700)
+                        (parent / "sdk/a").rename(parent / "sdk/a-aside")
+                        shutil.copytree(parent / "sdk/a-aside", parent / "sdk/a")
+                        (parent / "sdk").chmod(0o555)
+                    return fd
+                def close(owner):
+                    retained.extend(fd for fd, unused in owner.entries.values())
+                    if fault == "last-close" and owner.root.path.name == "sdk" and not fired[0]:
+                        fired[0] = True
+                        leaf = parent / "sdk/a/child"; info = leaf.stat()
+                        leaf.chmod(0o600); leaf.write_bytes(leaf.read_bytes())
+                        os.utime(leaf, ns=(info.st_atime_ns,info.st_mtime_ns)); leaf.chmod(0o444)
+                    return actual_close(owner)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarParents, "take", take), \
+                            patch.object(carrier._FreshNarParents, "close", close):
+                        with self.assertRaises(ValueError): carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(fired[0])
+                self.assert_descriptors_closed(set(retained))
+
     def test_fused_real_stream_matches_full_scan_nar_with_one_read_and_eof_per_file(self):
         parent, expected, values = self.fresh_fixture("fusion-golden")
         clock = carrier.Clock(self.deadline)
