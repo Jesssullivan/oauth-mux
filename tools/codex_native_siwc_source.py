@@ -150,8 +150,11 @@ def retain_model_controls(owner):
     return (raw_config, config), (raw_control, control)
 
 
-def produce(output, inputs, work, publication, *, sdk_session=None, query_repository=None, context=None, sdk_qualification=None):
+def produce(output, inputs, work, publication, *, sdk_session=None, query_repository=None, context=None, sdk_qualification=None, _transform=None, _report=None):
     """Called with one admitted cutoff; caller retains SDK/publication owners to final acceptance."""
+    transform_source = transform if _transform is None else _transform
+    report_source = make_report if _report is None else _report
+    source.require(callable(transform_source) and callable(report_source))
     raw_config, config = configuration()
     raw_control, control = controls()
     patch = model_patch(control)
@@ -159,7 +162,7 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
     transferred = False
     try:
         with parent_source(config, inputs, publication.parents) as (proof, captured, ancestors, before, parent_report):
-            files = transform(before, patch, control)
+            files = transform_source(before, patch, control)
             output_fd = source.write_source(output, files)
             hub = plan = tools = None
             if sdk_session is not None:
@@ -167,7 +170,7 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
                 fd = source.write_source(output / 'hub', {name: ('100644', raw) for name, raw in hub.items()})
                 try: os.fchmod(fd, 0o555)
                 finally: os.close(fd)
-            report = make_report(parent_report, files, control, config, hub=hub)
+            report = report_source(parent_report, files, control, config, hub=hub)
             if context is not None: report['producer_context'] = copy.deepcopy(context)
             if hub is not None:
                 source.require(type(sdk_qualification) is dict and set(sdk_qualification) == {
@@ -223,7 +226,14 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
         if error is not None: raise error
 
 
-def main():
+def main(*, _producer=None, _retainer=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
+    # Only pinned source-family modules supply these callables; no runtime flag
+    # or request claims source qualification. Defaults retain the original route.
+    produce_source = produce if _producer is None else _producer
+    retain_source = retain_model_controls if _retainer is None else _retainer
+    source.require(callable(produce_source) and callable(retain_source)
+        and _output in (OUTPUT, "native-siwc-catalog-source")
+        and type(_marker) is str)
     source.require(sys.argv in ([sys.argv[0]], [sys.argv[0], '--source-only']))
     source_only = len(sys.argv) == 2
     entry, until, cutoff = admission()
@@ -238,7 +248,7 @@ def main():
                 mapping = retained.add(runfiles / '_repo_mapping', maximum=1024*1024)
                 rows = [row.split(',') for row in mapping.decode().splitlines()]
                 source.require(all(len(row) == 3 for row in rows))
-                initial_config, initial_control = retain_model_controls(retained)
+                initial_config, initial_control = retain_source(retained)
                 initial_context = producer_context()
                 with Inputs(runfiles, rows) as inputs:
                     if not source_only:
@@ -262,7 +272,7 @@ def main():
                                 selected['carrier']['receipt_sha256'], entry, until, declaration_context(initial_context))
                             sdk_session.__enter__()
                             query.declared_query_tools(runfiles, rows)
-                            report = produce(output / OUTPUT, inputs, output / 'model-hub-work', published,
+                            report = produce_source(output / _output, inputs, output / 'model-hub-work', published,
                                 sdk_session=sdk_session, query_repository=query.QUERY_REPOSITORY, context=initial_context,
                                 sdk_qualification={'selector_sha256': source.sha(selected_raw), 'selection': selected,
                                     'qualified_producer': qualified, 'declaration': declaration, 'proof_inputs': proofs.record()})
@@ -284,7 +294,7 @@ def main():
                             sdk_session = None
                             retained.fence(); inputs.check(); published.roots()
                     else:
-                        produce(output / OUTPUT, inputs, output / 'unused-work', published, context=initial_context)
+                        produce_source(output / _output, inputs, output / 'unused-work', published, context=initial_context)
                         published.capture()
                         published.full()
                         source.require(configuration() == initial_config and controls() == initial_control
@@ -303,7 +313,7 @@ def main():
             published.roots()
         source.tick()
         source.require(time.monotonic_ns() < entry + 600*10**9 and time.monotonic_ns() < until)
-        print('native-siwc-source: exact five-path source composition' +
+        print(_marker +
             (' and complete HUB regeneration' if not source_only else '') + '; compilation unqualified', flush=True)
         source.tick()
         source.require(time.monotonic_ns() < entry + 600*10**9 and time.monotonic_ns() < until)

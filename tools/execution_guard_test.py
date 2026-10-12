@@ -2296,6 +2296,59 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         report=self.retire()
         self.assertEqual(report['children']['output-base'],'retained-declared-producer')
 
+    def catalog_producer(self):
+        directory=self.producer('//tools:codex_native_siwc_catalog_source_producer')
+        self.receipt['targets']=['//tools:codex_native_siwc_catalog_source_test',
+            '//tools:codex_native_siwc_catalog_source_producer']
+        self.save_receipt()
+        return directory
+
+    def test_exact_catalog_source_vector_retains_original_tree_and_hub_without_compiler_claim(self):
+        directory=self.catalog_producer()
+        source=directory/'native-siwc-catalog-source/source/codex-rs/core/src/broker_model_catalog.rs'
+        hub=directory/'native-siwc-catalog-source/hub/source/data.bzl'
+        for leaf in (source,hub):
+            leaf.parent.mkdir(parents=True,exist_ok=True);leaf.write_bytes(b'public physical output fixture')
+        identity=self.output.stat()
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(report['retained_output_contract'],['//tools:codex_native_siwc_catalog_source_producer'])
+        self.assertEqual(report['retained_physical_root'],{'device':identity.st_dev,'inode':identity.st_ino})
+        self.assertEqual(source.read_bytes(),b'public physical output fixture')
+        self.assertEqual(hub.read_bytes(),b'public physical output fixture')
+        self.assertFalse((self.run/'bazel-user-root').exists())
+        self.assertIn('fresh qualification',report['proof_semantics'])
+
+    def test_bare_catalog_producer_does_not_inherit_retention_from_product_table(self):
+        self.producer('//tools:codex_native_siwc_catalog_source_producer')
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'no-successful-current-output-contract')
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_catalog_vector_with_unrelated_target_does_not_inherit_retention(self):
+        self.catalog_producer()
+        self.receipt['targets'].append('//:docs_check');self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'no-successful-current-output-contract')
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_catalog_receipt_missing_from_exact_success_vector_retires_output(self):
+        directory=self.catalog_producer()
+        (directory/'native-siwc-catalog-source/source-receipt.json').unlink()
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'missing-or-partial-declared-products')
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_catalog_failed_workload_does_not_retain_or_create_reuse_authority(self):
+        self.catalog_producer()
+        self.receipt.update(exit=1,workload_exit=1);self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
     def test_depth_bound_refuses_before_any_tree_removal(self):
         directory=self.output
         for _ in range(self.guard.RETIREMENT_DEPTH):

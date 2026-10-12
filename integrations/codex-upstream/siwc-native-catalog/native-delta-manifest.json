@@ -1,0 +1,172 @@
+{
+  "kind": "native-siwc-catalog-fourteen-path-delta-v3",
+  "patch": {
+    "bytes": 64403,
+    "sha256": "56b84f1702a7513939ee461f3a7c39a3dbf7cb5280028778ed40cb1159176e16"
+  },
+  "paths": [
+    {
+      "after": {
+        "bytes": 23622,
+        "sha256": "08f58d07ca2013906dfcef2f301cc3f918e8fa10585e075b589b3595216df094"
+      },
+      "before": {
+        "bytes": 22878,
+        "sha256": "9aab02f8480f984ed1421293cd6294d86b044b9f3cc01dc424ac5a92d33c084c"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/app-server/src/config_manager.rs"
+    },
+    {
+      "after": {
+        "bytes": 10093,
+        "sha256": "d941f7ca2b921dd2ff32ca926728f84bebad5e3cb66db16a1ce4b1da39f02cb0"
+      },
+      "before": {
+        "bytes": 7333,
+        "sha256": "6864e407bbb3f5cda31df596443da1911fca6e62b88856e9da45dd3fc18f2026"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/app-server/src/config_manager_provider_tests.rs"
+    },
+    {
+      "after": {
+        "bytes": 2642,
+        "sha256": "eb8bfa460bca52681fa806e0ce811af9eadc497323a4557ffec0baa252437937"
+      },
+      "before": {
+        "bytes": 2505,
+        "sha256": "eca78e0bb61b964cd5c3a306ec4bce546cf7ae018510c5cadda1cf956a5a51e2"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/app-server/src/model_catalog.rs"
+    },
+    {
+      "after": {
+        "bytes": 150741,
+        "sha256": "b02ebbe1979d6eba047e79c841c7a1d29b372e2953caefe84f8b266815eb72c1"
+      },
+      "before": {
+        "bytes": 140610,
+        "sha256": "7ff880b2e45d7b3e407e6281728beda83190f005431c3f698d0d66d2aada2316"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/auth_broker.rs"
+    },
+    {
+      "after": {
+        "bytes": 13166,
+        "sha256": "846634696175a502976e4daaf2ac553c30534491d171cfde224ed3f8b080d1c0"
+      },
+      "before": null,
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/broker_model_catalog.rs"
+    },
+    {
+      "after": {
+        "bytes": 11375,
+        "sha256": "bc34300e5658753f4711533e77f87fd761302e924275534310c132ca8d06f1c0"
+      },
+      "before": null,
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/broker_model_catalog_tests.rs"
+    },
+    {
+      "after": {
+        "bytes": 133447,
+        "sha256": "d2ecbf438cb6d2ceda2894a788e11d5920340683bbfed72508178397d1a66d39"
+      },
+      "before": {
+        "bytes": 132868,
+        "sha256": "3a46b2fdc7ccc318b4a801def6fdac2e9183da2cc028193e9039c979b83d9d65"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/client.rs"
+    },
+    {
+      "after": {
+        "bytes": 9075,
+        "sha256": "a65d10fd937e5e70fc2de918e220c7bb88d1214805dbeceaa51678e54402f5a9"
+      },
+      "before": {
+        "bytes": 8849,
+        "sha256": "b682d28c086784077b3128a9cc4416e20b30f89d260b44b9816b707577d3b502"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/lib.rs"
+    },
+    {
+      "after": {
+        "bytes": 206977,
+        "sha256": "13eab36e5eacbfe008b24af0463f47e658b0b0cc58637f50281f785f334fb36d"
+      },
+      "before": {
+        "bytes": 206598,
+        "sha256": "3b4da2baa3ef1dce8523380a11b69343f1395ab187a2be3c11ec615e62d056f3"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/session/mod.rs"
+    },
+    {
+      "after": {
+        "bytes": 104610,
+        "sha256": "5fb7ec6f0ce6a6268ae34085c475f905a05cdebc5ab9594f9fee6f6cffd15bf9"
+      },
+      "before": {
+        "bytes": 104447,
+        "sha256": "57def794ace1d8ac0f54376eb6bd8204053d73f5125de851cbc0dc6230489d37"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/thread_manager.rs"
+    },
+    {
+      "after": {
+        "bytes": 35231,
+        "sha256": "b15c030e3bfb2bce07d23887a8d9df62703e27d2afb5e76139b04a43841d25c6"
+      },
+      "before": {
+        "bytes": 34937,
+        "sha256": "b4632ef588615fe4e404415fb42057a948069f8306aba366e59ed80c3fd2bd95"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/models-manager/src/manager.rs"
+    },
+    {
+      "after": {
+        "bytes": 167699,
+        "sha256": "66485983cc852128670ba62119ed8e5e7da84442ef92b970fa34f696b1dc6f75"
+      },
+      "before": {
+        "bytes": 161242,
+        "sha256": "43fd053245b65a57e10ae37cbe1fbb274c01639332abde5cb7a39d08b4390fd9"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/tui/src/app_server_session.rs"
+    },
+    {
+      "after": {
+        "bytes": 10278,
+        "sha256": "f1e6e7f453c97673370c5a5a12e6c4607cffe050953609153043643eee826112"
+      },
+      "before": {
+        "bytes": 9893,
+        "sha256": "0f1e528e36464fc57f6f1d54121f15bf349441c9b6772f8f3e0e97b360423864"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/tui/src/app_server_session/rollout_history.rs"
+    },
+    {
+      "after": {
+        "bytes": 156537,
+        "sha256": "d83aba23d4daa59b59bdce618a782c509f2c3fd15f83c88506867e24f5a13580"
+      },
+      "before": {
+        "bytes": 151569,
+        "sha256": "2df03778310bce37e22e16ea3f0f0fbac92ae6825105268200a87e64a2aa5eb4"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/tui/src/lib.rs"
+    }
+  ],
+  "schema_version": 1
+}

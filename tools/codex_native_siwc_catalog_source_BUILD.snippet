@@ -1,0 +1,10 @@
+load(":codex_native_siwc_catalog_source_targets.bzl", "codex_native_siwc_catalog_source_targets")
+# Root serial composition: add the load above ordinary targets, then append this exact call.
+codex_native_siwc_catalog_source_targets(
+    source_sources = _NATIVE_SOURCE_ACQUISITION_SOURCES,
+    sdk_sources = _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + ["codex_native_carrier_metadata.py", "codex_native_sdk_carrier.py"],
+    parent_data = _NATIVE_SOURCE_ACQUISITION_DATA + _NATIVE_SOURCE_CONTEXT_PARENT_DATA + [
+        "@omux_codex_native_source_context_refresh_inputs//:inputs",
+    ],
+    original_sdk_sources = ["codex_original_sdk_inputs.py"],
+)

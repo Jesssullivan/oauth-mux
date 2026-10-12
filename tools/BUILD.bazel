@@ -1,3 +1,4 @@
+load(":codex_native_siwc_catalog_source_targets.bzl", "codex_native_siwc_catalog_source_targets")
 load(":codex_native_acquisition_runtime_targets.bzl", "native_acquisition_runtime_targets")
 load(":codex_native_acquisition_targets.bzl", "native_acquisition_input_targets", "native_acquisition_source_closure")
 load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
@@ -1206,7 +1207,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_native_file_writer_models_reserved.py','guard_native_file_writer_source_reserved.py','guard_current_home_manager_artifact_reserved.py','guard_home_manager_bundle_reserved.py','guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_native_siwc_catalog_source_reserved.py','guard_native_file_writer_models_reserved.py','guard_native_file_writer_source_reserved.py','guard_current_home_manager_artifact_reserved.py','guard_home_manager_bundle_reserved.py','guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -3021,4 +3022,24 @@ codex_native_siwc_source_targets(
         "@omux_codex_native_source_context_refresh_inputs//:inputs",
     ],
     original_sdk_sources = ["codex_original_sdk_inputs.py"],
+)
+
+# Root serial composition: add the load above ordinary targets, then append this exact call.
+codex_native_siwc_catalog_source_targets(
+    source_sources = _NATIVE_SOURCE_ACQUISITION_SOURCES,
+    sdk_sources = _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + ["codex_native_carrier_metadata.py", "codex_native_sdk_carrier.py"],
+    parent_data = _NATIVE_SOURCE_ACQUISITION_DATA + _NATIVE_SOURCE_CONTEXT_PARENT_DATA + [
+        "@omux_codex_native_source_context_refresh_inputs//:inputs",
+    ],
+    original_sdk_sources = ["codex_original_sdk_inputs.py"],
+)
+
+# Root serial guard composition AFTER source-family BUILD composition:
+# add "guard_native_siwc_catalog_source_reserved.py" to _RESIDENT_GUARD_SOURCES
+# before every dependent source group is evaluated. Do not replace the old list.
+python_test(
+    name = "guard_native_siwc_catalog_source_reserved_test",
+    main = "guard_native_siwc_catalog_source_reserved_test.py",
+    srcs = _NATIVE_ACQUISITION_MODEL_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
 )
