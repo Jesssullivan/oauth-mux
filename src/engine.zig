@@ -11271,12 +11271,18 @@ test "queued malformed control ingress preserves committed actor custody and com
         fn call(current: *Engine, method: []const u8, params: anytype) !std.json.Parsed(std.json.Value) {
             const payload = try std.json.Stringify.valueAlloc(std.testing.allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
             defer std.testing.allocator.free(payload);
+            if (eql(method, "system.health")) {
+                var wire = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{});
+                defer wire.deinit();
+                const wire_params = control.get(wire.value, "params");
+                if (wire_params == null or wire_params.? != .null) return error.HealthBarrierParamsNotNull;
+            }
             const bytes = try current.dispatch(std.testing.allocator, payload, .control);
             defer std.testing.allocator.free(bytes);
             return std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{ .allocate = .alloc_always });
         }
         fn barrier(current: *Engine, case_index: usize) !void {
-            var reply = try call(current, "system.health", .{});
+            var reply = try call(current, "system.health", @as(?u8, null));
             defer reply.deinit();
             try Diag.check(case_index, "barrier", "health-result", control.get(reply.value, "result") != null);
             // The following healthy queue item clears its own active fields
