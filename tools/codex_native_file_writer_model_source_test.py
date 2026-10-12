@@ -224,8 +224,10 @@ class FileWriterModelSourceTests(unittest.TestCase):
     def inputs_fixture(self, root):
         repository = root / 'external/models'
         (repository / 'input').mkdir(parents=True, mode=0o700)
-        leaf = root / 'public-proof.json'
+        input_parent = root / 'authorized-input'; input_parent.mkdir(mode=0o700)
+        leaf = input_parent / 'public-proof.json'
         leaf.write_bytes(b'{"public":true}\n'); leaf.chmod(0o555)
+        input_parent.chmod(0o555)
         (repository / 'input/0').symlink_to(leaf)
         raw = source.encoded({'kind': model.INPUT_KIND, 'selection': {},
             'inputs': [{'path': str(leaf), 'alias': 'input/0'}]})
@@ -235,6 +237,23 @@ class FileWriterModelSourceTests(unittest.TestCase):
         runfiles.mkdir(); (runfiles / 'models').symlink_to(repository, target_is_directory=True)
         return runfiles, leaf, repository
 
+    def test_declared_input_parent_is_separate_from_owned_work_creation(self):
+        root = Path(tempfile.mkdtemp()); owner = None
+        try:
+            runfiles, leaf, repository = self.inputs_fixture(root)
+            self.assertNotEqual(leaf.parent, root)
+            self.assertEqual(leaf.parent.stat().st_mode & 0o7777, 0o555)
+            owner = model.Inputs(runfiles, [['_main', model.REPOSITORY, 'models']])
+            owner.read(leaf, source.sha(leaf.read_bytes()), source.DEADLINE)
+            original = model.tenth.witness(leaf.parent.stat())
+            fd = source.write_source(root / 'consumer-work', self.before); os.close(fd)
+            owner.check_all()
+            self.assertEqual(model.tenth.witness(leaf.parent.stat()), original)
+        finally:
+            if owner is not None: owner.close()
+            if (root / 'runfiles/models').is_symlink(): (root / 'runfiles/models').unlink()
+            cleanup(root)
+
     def test_real_declared_input_alias_byte_and_same_byte_identity_join(self):
         root = Path(tempfile.mkdtemp())
         owner = None
@@ -243,7 +262,8 @@ class FileWriterModelSourceTests(unittest.TestCase):
             owner = model.Inputs(runfiles, [['_main', model.REPOSITORY, 'models']])
             raw = owner.read(leaf, source.sha(leaf.read_bytes()), source.DEADLINE)
             self.assertEqual(raw, b'{"public":true}\n')
-            old = leaf.read_bytes(); leaf.unlink(); leaf.write_bytes(old); leaf.chmod(0o555)
+            old = leaf.read_bytes(); leaf.parent.chmod(0o700)
+            leaf.unlink(); leaf.write_bytes(old); leaf.chmod(0o555); leaf.parent.chmod(0o555)
             with self.assertRaises(ValueError): owner.check_all()
             fd = owner.held[str(leaf)][1]
             owner.close(); owner = None
