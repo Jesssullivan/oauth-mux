@@ -2741,12 +2741,15 @@ class OrdinaryCheckLeaseFilesystemModels(unittest.TestCase):
         with self.lease() as first:
             logs=first.output_base/'execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/execution_guard_test'
             logs.mkdir(parents=True)
-            epoch=time.time_ns()
+            epoch=1_000_000_000  # Whole-second synthetic epoch, independent of filesystem clock granularity.
             (logs/'test.log').write_bytes(b'first actual invocation log')
             (logs/'test.xml').write_bytes(b'<testsuite tests="1" failures="0"/>')
+            for name in ('test.log','test.xml'):
+                os.utime(logs/name,ns=(epoch,epoch))
             run=self.state/self.first_id;run.mkdir(mode=0o700)
             manifest=self.guard.capture_test_evidence(first.output_base,run,['//tools:execution_guard_test'],0,epoch)
             selected=next(row for row in manifest['results'][0]['files'] if row['source']=='test.log')
+            self.assertEqual(selected['state'],'copied')
             copy=run/'test-evidence'/selected['file']
             before=copy.read_bytes()
             raw,digest=self.receipt(self.first_id)
