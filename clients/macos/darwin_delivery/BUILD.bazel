@@ -1,0 +1,11 @@
+load(":defs.bzl", "dirty_selector", "experimental_channel_targets", "revision_selector")
+
+package(default_visibility = ["//visibility:public"])
+exports_files(["channel_launcher.c", "defs.bzl"])
+filegroup(name = "public_sources", srcs = glob(["*.c", "*.bzl", "*.bazel"]))
+revision_selector(name = "source_revision", build_setting_default = "")
+dirty_selector(name = "source_dirty", build_setting_default = True)
+
+# These flags declare provenance for the exact action receipt; they do not prove
+# a clean checkout. Defaults refuse accidental publication/release promotion.
+experimental_channel_targets()
