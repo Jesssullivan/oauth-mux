@@ -10,7 +10,7 @@ pub const profile = "openai_siwc_responses_v1";
 pub const Command = union(enum) {
     descriptor, pending, start: u32, status: []const u8, cancel: []const u8, remove: []const u8,
 };
-pub fn opaque(value: []const u8) bool {
+pub fn validOpaqueHandle(value: []const u8) bool {
     if (value.len != 64 or std.mem.allEqual(u8, value, '0')) return false;
     for (value) |byte| if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f')) return false;
     return true;
@@ -25,7 +25,7 @@ pub fn parse(args: []const []const u8) !Command {
         if (seconds == 0 or seconds > 3600) return error.InvalidConsent;
         return .{ .start = seconds };
     }
-    if (args.len == 2 and opaque(args[1])) {
+    if (args.len == 2 and validOpaqueHandle(args[1])) {
         if (std.mem.eql(u8, args[0], "status")) return .{ .status = args[1] };
         if (std.mem.eql(u8, args[0], "cancel")) return .{ .cancel = args[1] };
         if (std.mem.eql(u8, args[0], "remove")) return .{ .remove = args[1] };
@@ -100,7 +100,7 @@ pub fn descriptorValid(d: std.json.Value) bool {
 /// Produce only the declared public status fields. Never relay a raw result or
 /// provider error; even unexpected subject/client/authorization fields are omitted.
 pub fn redactedStatus(a: std.mem.Allocator, s: std.json.Value, transaction: []const u8) ![]u8 {
-    if ((try integer(s, "schema_version")) != 1 or !is(s, "transaction_id", transaction) or !opaque(transaction)) return error.InvalidEnrollmentReply;
+    if ((try integer(s, "schema_version")) != 1 or !is(s, "transaction_id", transaction) or !validOpaqueHandle(transaction)) return error.InvalidEnrollmentReply;
     const state = try string(s, "status");
     var known = false;
     for ([_][]const u8{ "pending", "expired", "cancelled", "unknown", "quarantined", "paired", "retired", "not_retained" }) |name| if (std.mem.eql(u8, state, name)) { known = true; };
@@ -140,7 +140,7 @@ pub fn redactedStatus(a: std.mem.Allocator, s: std.json.Value, transaction: []co
         if (control.get(s, key)) |value| {
             if (std.mem.eql(u8, key, "retirement_reason") and (paired != .bool or !paired.bool)) return error.InvalidEnrollmentReply;
             if (std.mem.eql(u8, key, "source_id") or std.mem.eql(u8, key, "account_id")) {
-                if (value != .null and (value != .string or !opaque(value.string))) return error.InvalidEnrollmentReply;
+                if (value != .null and (value != .string or !validOpaqueHandle(value.string))) return error.InvalidEnrollmentReply;
                 if (std.mem.eql(u8, key, "account_id") and value != .null and (paired != .bool or !paired.bool)) return error.InvalidEnrollmentReply;
             }
             try out.put(a, key, value);
@@ -240,7 +240,7 @@ pub fn run(io: std.Io, a: std.mem.Allocator, locations: paths.Locations, args: [
             for (rows.array.items) |row| {
                 const transaction = try string(row, "transaction_id"); const source = try string(row, "source_id");
                 const delivered = try get(row, "authorization_delivered");
-                if (!opaque(transaction) or !opaque(source) or delivered != .bool) return error.InvalidEnrollmentReply;
+                if (!validOpaqueHandle(transaction) or !validOpaqueHandle(source) or delivered != .bool) return error.InvalidEnrollmentReply;
                 try safe.append(a, .{ .transaction_id = transaction, .source_id = source, .authorization_delivered = delivered.bool });
             }
             return emit(io, a, .{ .status = "current", .pending = safe.items });
@@ -275,7 +275,7 @@ pub fn run(io: std.Io, a: std.mem.Allocator, locations: paths.Locations, args: [
             defer finish(&prepared);
             const r = result(prepared);
             const transaction = try string(r, "transaction_id"); const source = try string(r, "source_id");
-            if (!opaque(transaction) or !opaque(source) or !is(r, "phase", "prepared") or !boolean(r, "consent_recorded", true)
+            if (!validOpaqueHandle(transaction) or !validOpaqueHandle(source) or !is(r, "phase", "prepared") or !boolean(r, "consent_recorded", true)
                 or !is(r, "registration", "enrollment_policy") or !boolean(r, "authorization_available", true)
                 or !boolean(r, "provider_request_initiated", false) or !boolean(r, "grant_activated", false)
                 or try integer(r, "flow_seconds") != seconds) return error.InvalidEnrollmentReply;

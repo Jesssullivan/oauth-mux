@@ -90,7 +90,7 @@ pub fn main(init: std.process.Init) !void {
         };
     }
     if (std.mem.eql(u8, command, "operation")) {
-        if (parameters.len != 2 or !std.mem.eql(u8, parameters[0], "status") or !siwc_cli.opaque(parameters[1])) return error.InvalidArguments;
+        if (parameters.len != 2 or !std.mem.eql(u8, parameters[0], "status") or !siwc_cli.validOpaqueHandle(parameters[1])) return error.InvalidArguments;
         return controlTyped(io, allocator, locations, "operation.status", .{ .operation_id = parameters[1] });
     }
     if (std.mem.eql(u8, command, "rpc")) {
