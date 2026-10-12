@@ -543,6 +543,45 @@ Git request.
 
 ## Evidence and promotion
 
+Native build inputs have three separate obligations: **source provenance**
+identifies the exact upstream tree and ordered maintained changes; **current
+SOURCE custody** freshly verifies the complete declared input/output bytes,
+inventory, logical modes, link literals, aliases and named/held physical
+identities under the current action's original clock; **runtime evidence**
+qualifies only the exact compiled application, platform and execution epoch.
+Neither source composition nor a historical producer pass supplies current
+compiler, installed, ordinary-resume or same-process authority.
+
+The selected-N10 content-source contract admits the independently pinned retained
+N10 source only after authenticating its literal source receipt, complete
+inventory, upstream commit, ordered ten-patch provenance, build graph and
+original producer/evidence/XML joins, with fresh full-content and full-nine
+physical custody checks. It then applies the exact reviewed SIWC V4 and catalog
+changes and regenerates the complete HUB using independently qualified complete
+SDK, NAR, JDK and query-tool inputs. Source, proof, SDK and output owners remain
+held through final readbacks and terminal fences; existing clocks and resource
+caps remain binding. This is a distinct source-input family: the historical
+`SourceProofSession` contract and its refusal remain unchanged. Old ancestor
+reconstruction is not asserted to have rerun, and old receipts do not become new
+execution qualification. Declaring this contract does not establish that the new
+producer or native application has passed.
+
+Direct intake from the retained `c188ba31` execution is a tactical local source
+route. Portable delivery additionally requires digest-addressed, declared full
+SOURCE/provenance transfer with its own qualified transport/custody receipt,
+complete qualified SDK/tool transfer, and a clean second-environment build that
+does not require historical operator directories. A committed upstream plus
+ordered-change descriptor must cover the complete maintained baseline and binary
+overlays as well as later patches. Transport binds new physical custody; it
+cannot claim to recreate original source inodes or inherit runtime proof.
+
+These build-input distinctions leave all `NAC-001`–`NAC-018` acceptance gates and
+authorization, consent, permission, renewal-writer and no-accepted-replay
+invariants intact. Omux owns the native integration; ordinary native launch and
+resume retain native home/session/history authority without an Omux launch
+requirement or a vendor hook to await. Fresh compilation and exact-build
+installed, ordinary-resume and live same-process evidence remain separate gates.
+
 Selected-runtime authority and live executable attribution are separate
 requirements. The current Codex package already binds source/producer inputs,
 upstream commit and packaged executable/runtime digests. Experimental source in

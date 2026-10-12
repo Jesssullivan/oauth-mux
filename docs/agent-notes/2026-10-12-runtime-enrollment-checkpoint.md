@@ -181,3 +181,55 @@ then retry the source/HUB producer. Old paths, bytes and receipts are not
 replayed as new inputs. New guard cases and genuine regeneration remain unrun at
 this source update. Native20, ordinary accepted-history resume, live handoff,
 retained normal-vault enrollment and Darwin activation remain unproved.
+
+## Native prerequisite regeneration and cold driver checkpoint — 2026-10-12 17:43 UTC
+
+The genuine regeneration sequence completed without replaying old payloads:
+
+| Run | Source | Actual outcome |
+| --- | --- | --- |
+| SCH-1625, epoch71acc354 | fa979cef | Schedule qualification0/0; original obligations and generated siblings retained. |
+| PLAN-1647, epoch3abf3f2a | 0cdc4b48 | Restored seed-plan qualification0/0; original262277-byte result retained. |
+| REG-1708, epoch16ee0da9 | 0cdc4b48 | Reserved fixed-root query registration0/0; registration, store-paths and report retained. |
+
+Plan and registration used the identical source and graph30a6e6f9. Both reserved original supervisors closed with verified ownership, two cleanup readbacks and empty descendants. Each run retired423 user-root entries. The schedule-derived selection and subsequent query selection use actual original output paths and copied log/XML identities. The plan explicitly leaves complete-build, SDK and native-runtime qualification false.
+
+MODULE now selects seed configuration3be8efae/68948d69 and query configuration45a98e3c/30d1edcd. The old absent outputs were not recreated. PLAN-1647's immutable administrative pre-action incorrectly included two SOURCE-only clock descriptions; a durable correction records the actual unchanged seed-plan1200 envelope/private-work and cleanup contract. No execution argument, deadline, guard or proof predicate changed.
+
+CS-1715 at05ee54f6, epochdcb383d3, progressed past missing query inputs and refused missing N1/3ace and N3/95f physical source bindings. It ended outer125/workload1 as a normal nonzero workload, with verified cleanup/two readbacks/empty descendants. Source7 passed; the producer was NOT BUILT and has no successful XML. Neither source/HUB nor SDK/native qualification followed. Original evidence was copied before the remaining disposable cache was independently pruned:279850 entries,565477376 observed last-link allocated bytes. Allocation counters are not a physical-space recovery measurement.
+
+The reviewed cold driver V2 was adopted atbf2249e4, graph447702f5. NM-1728, epoch0187b38c, passed all nine declared targets:
+
+| Predicate family | Actual methods |
+| --- | --- |
+| New catalog driver | 10 |
+| New exact admission | 4 |
+| Full execution guard, including new four retirement cases | 157 |
+| File-writer source/model regressions | 38 |
+| Previous native admission | 12 |
+| SIWC source regressions | 6 |
+| Catalog source regressions | 7 |
+| Previous catalog admission | 4 |
+| Documentation | PASS |
+
+Counts overlap and are not unique native test totals. Runtime493 remains the earlier exact a2d3677b proof; production runtime files did not change in this slice. The driver keeps source:null. Its four complete normal native unit targets and35 required Rust methods remain UNRUN. No compiled native image, ordinary accepted-history resume, real handoff, retained normal-vault account count, unmodified Codex or Darwin support is established.
+
+NM-1728's original supervisor closed0/0, recorded empty descendants, and its cgroup was absent. Its standard manager-cleanup row remained ownership-unproved/stop-not-requested; this is not a reserved manager-ownership proof. Test evidence was copied before an independent R-C618 owned-filesystem qualifier cleared306716 disposable entries,772272128 observed last-link allocated bytes, with no service signals. Native/source/SDK and freshly selected schedule/plan/registration inputs remain held.
+
+A complete finite metadata audit found only N1/N3 missing among selected source/proof/control domains. C11/N5/N9/N10 declared members,188594 SDK nodes,540 JDK nodes,103 query roots and4248 generated roots were present with the stated metadata predicates. No byte/NAR or fresh SDK/custody qualification is inferred from that audit.
+
+The implementation direction is a distinct selected-N10 content-source intake: independently authenticate the full existing source inventory and genuine producer evidence, freshly prove every current source byte/link/alias/full-nine witness, apply the current exact V4/catalog changes and regenerate the full HUB with unchanged original SDK/JDK/query owners. Historical SourceProofSession stays unchanged and is not falsely claimed to have rerun its missing ancestors. Direct retained input is a tactical repair. Portable completion additionally needs digest-addressed declared source/provenance transport and complete SDK/tool transfer with clean second-environment proof. Implementation and new genuine source qualification remain pending.
+
+Durable exact receipts and review joins are under /home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes:
+
+- PLAN-1647 rawreceipt f0c8f284988e319ca954b672df2ea2f767659d726ccfcac9b69152ef74130b04; manifest455099f9f2247533421321dabcfa427e30f6f532762cc148a51f023f2286c558.
+- REG-1708 rawreceipt9b6eb41017962f3d7e7993e3cf7d7eb74e42453f31fd19a41ec10f37434127e8; manifestfeff135e4246c92c28eac1485c6cf317a00b5c789dcc0b085c8c2f32b17f8bc9.
+- CS-1715 rawreceipt1c279b13a239980e5feae312839157ab945c2435900b2fa9500c86c312e03653; manifest9e53e4d3341b9046c5c87ce70d30254d4d0c8bac033f9d7f2a4417cf279dc29f.
+- NM-1728 rawreceipt0dc0de71aec89cd979c991b6c6d7b68d484546b541daadae6f34e41d0e217a5c; manifestdeba696d924dfa52e07bfe4963d5a917da78a1de992d9a0ea634aeedd52dcda5.
+- Actual query-selection publication receipt1fe37f2b41a707d5321da9ed6021bfbe6061b9fc83ecad30dc46fcbe543c83d4.
+- V2 full source review7b4a855962fdf86c272cefd75a7551b5b2abc45b80e64b4f9346f29b3bd09da4; current composition reviewcca470c9a1b74f0d9b49942a960ce16f64b13280879f29f68533b8b9171335c9.
+- Complete dependency assessment98ef634a8748ff4e4d7f32106c5ba80b2da263dc4f999cb50ca28651750e98f7.
+- Root implementation direction760e23127a362abef3c7c498a7c34345251e4bca5a05994b144f9f69b49eae9c.
+- Factual Linear readback42f48e405056422e5f0c3b2b75be00e1fa91a0426245c23d7c3ce7540a6d128d; subsequent source/model reconciliation still requires its own readback.
+
+The original15-hour integrated objective remains active, overdue and incomplete. No clock reset, release/support promotion, achieved SLO, contractual SLA, publication, signing or merge follows this checkpoint.
