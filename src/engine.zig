@@ -9937,7 +9937,48 @@ test "locked vault startup keeps bounded diagnostics and refuses all custody wor
         defer allocator.free(reply);
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
         defer parsed.deinit();
-        try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(parsed.value, "error").?, "message"));
+        if (eql(method.name, "oauth.enrollment.pending.v1") or eql(method.name, "oauth.enrollment.descriptor.v1")) {
+            try std.testing.expect(reply.len <= control.max_message);
+            try std.testing.expect(control.get(parsed.value, "error") == null);
+            const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+            try std.testing.expectEqual(@as(i64, 1), (control.get(result, "schema_version") orelse return error.InvalidDiagnosticReply).integer);
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            if (eql(method.name, "oauth.enrollment.pending.v1")) {
+                try std.testing.expectEqualStrings("unknown", try control.string(result, "status"));
+                try std.testing.expect((control.get(result, "pending") orelse return error.InvalidDiagnosticReply) == .null);
+            } else {
+                try std.testing.expectEqualStrings(siwc_pair.request_profile, try control.string(result, "profile"));
+                try std.testing.expectEqualStrings(oauth_enrollment.oss_purpose, try control.string(result, "purpose"));
+                try std.testing.expect(!try control.boolean(result, "provider_proof", true));
+                try std.testing.expect(!try control.boolean(result, "native_support_proven", true));
+                try std.testing.expect(!try control.boolean(result, "live_handoff_proven", true));
+            }
+            continue;
+        }
+        if (eql(method.name, "oauth.enrollment.status.v1")) {
+            const failure = control.get(parsed.value, "error") orelse return error.UnexpectedRpcSuccess;
+            try std.testing.expectEqualStrings("InvalidParams", try control.string(failure, "message"));
+            const locked_transaction = std.fmt.bytesToHex(@as([32]u8, @splat(1)), .lower);
+            const status_request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 3, .method = method.name, .params = .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = locked_transaction[0..] } }, .{});
+            defer allocator.free(status_request);
+            const status_reply = try current.dispatch(allocator, status_request, .control);
+            defer allocator.free(status_reply);
+            const status_parsed = try std.json.parseFromSlice(std.json.Value, allocator, status_reply, .{});
+            defer status_parsed.deinit();
+            try std.testing.expect(status_reply.len <= control.max_message);
+            try std.testing.expect(control.get(status_parsed.value, "error") == null);
+            const result = control.get(status_parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+            try std.testing.expectEqual(@as(i64, 1), (control.get(result, "schema_version") orelse return error.InvalidDiagnosticReply).integer);
+            try std.testing.expectEqualStrings(&locked_transaction, try control.string(result, "transaction_id"));
+            try std.testing.expectEqualStrings("unknown", try control.string(result, "status"));
+            try std.testing.expectEqualStrings("custody_unavailable", try control.string(result, "reason"));
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            for ([_][]const u8{ "phase", "paired_committed", "grant_ready" }) |field| {
+                try std.testing.expect((control.get(result, field) orelse return error.InvalidDiagnosticReply) == .null);
+            }
+            continue;
+        }
+        try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(parsed.value, "error") orelse return error.UnexpectedRpcSuccess, "message"));
     }
     for ([_][]const u8{
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":[]}",
@@ -9964,6 +10005,8 @@ test "locked vault startup keeps bounded diagnostics and refuses all custody wor
     try std.testing.expectEqual(@as(usize, 0), current.state.sources.items.len);
     try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
     try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expect(current.fresh_oauth == null);
+    try std.testing.expectEqualSlices(u8, &cleared_key, &current.root_key);
     try std.testing.expectError(error.FileNotFound, directory.dir.statFile(io, "state.sqlite", .{ .follow_symlinks = false }));
 }
 
