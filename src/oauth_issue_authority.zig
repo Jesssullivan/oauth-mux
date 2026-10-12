@@ -494,7 +494,7 @@ fn fixedId(value: []const u8) ![64]u8 {
 fn decodedId(value: []const u8) ![32]u8 {
     _ = try fixedId(value);
     var out: [32]u8 = undefined;
-    if (try std.fmt.hexToBytes(&out, value) != out.len) return error.OAuthAuthorityChanged;
+    if ((try std.fmt.hexToBytes(&out, value)).len != out.len) return error.OAuthAuthorityChanged;
     return out;
 }
 fn renewalTuple(store: *storage.Store, binding: *const RenewalBinding) storage.OwnedPairRotation {
