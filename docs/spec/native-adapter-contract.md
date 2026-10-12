@@ -624,3 +624,40 @@ proof. Live provider work requires its own authorized, exact-build evaluation;
 none is performed by declaring this contract. Capability promotion must update
 source metadata and committed evidence together; website/API rendering, an
 upstream patch schema or a passing fixture cannot promote support.
+
+### Planned complete transported SDK/JDK custody (2026-10-12)
+
+The new content-source/native-driver SDK route is planned and unshipped. Its
+SDK-side inputs are the existing complete four-leaf carrier (`payload.bin`,
+`manifest.json`, `origin-receipt.json`, `receipt.json`), the five independently
+declared producer proof roles (outer receipt, test evidence, test log, test XML
+and program report), and the complete independently declared query-tool closure.
+These identify the selected origin and authenticate transport provenance; they
+do not make the original host's SDK/JDK inode identities current consumer
+authority. The new route must establish distinct, owned, freshly extracted
+complete SDK/JDK content custody under its current producer context. Historical
+routes, their physical predicates and their evidence remain unchanged.
+
+Admission and final acceptance require every packed byte, member SHA, logical
+mode, literal symlink and offset to match the authenticated complete membership.
+Validate any path rebase against exact origin provenance and membership; an
+arbitrarily rewritten manifest, sparse SDK or ambient original-host SDK/JDK read
+is not an admissible substitute. Fresh extraction must retain the full SDK/JDK
+content/NAR verification, including full final NAR readback, and newly extracted
+named/held full-nine physical witnesses before and after use. Hold the complete
+carrier, declared aliases, proof, context, namespace and output owners through
+final readbacks and fences. New physical witnesses attest the extracted objects;
+they neither recreate old host identities nor replay historical physical proof.
+Remove the original per-member SDK DATA edge only from the new route after its
+typed reader and declared transport inputs cover every required content join.
+
+The original-entry SOURCE/SDK cutoff of 600 seconds, action cap of 840 seconds,
+outer envelope of 1,200 seconds and reserved resource limits remain unchanged;
+no member or extraction phase restarts the clock. This engineering contract
+does not establish genuine budget fit, a compiled native consumer, portable
+executable external-reference closure, or a clean second-environment build.
+Full SOURCE/provenance transport and the portability gates above remain required.
+It confers no installed, ordinary native launch/resume, accepted-history or live
+same-process handoff proof. All `NAC-001`–`NAC-018`, authorization, permission,
+consent, renewal ownership and no-accepted-replay requirements continue to apply,
+with Omux owning the integration and native session/history authority preserved.
