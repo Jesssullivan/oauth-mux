@@ -11206,20 +11206,43 @@ test "fresh OAuth intent uses actual actor SQLite ciphertext custody and preserv
 test "queued malformed control ingress preserves committed actor custody and completes allocator failures" {
     const a = std.testing.allocator;
     const io = std.testing.io;
+    const Diag = struct {
+        fn check(case_index: usize, stage: []const u8, field: []const u8, accepted: bool) !void {
+            if (!accepted) {
+                std.debug.print("queued-ingress case={d} stage={s} field={s} accepted=false error=TestUnexpectedResult\n", .{ case_index, stage, field });
+                return error.TestUnexpectedResult;
+            }
+        }
+        fn failure(case_index: usize, stage: []const u8, err: anyerror) anyerror {
+            std.debug.print("queued-ingress case={d} stage={s} error={s}\n", .{ case_index, stage, @errorName(err) });
+            return err;
+        }
+    };
+    var active_case: usize = 0;
+    var stage: []const u8 = "setup";
     const Gate = struct {
         parent: std.mem.Allocator,
         blocked: std.atomic.Value(u8) = .init(0),
         rejected: std.atomic.Value(usize) = .init(0),
         actor_thread: ?std.Thread.Id = null,
+        caller_allowed: std.atomic.Value(usize) = .init(0),
 
         fn allocator(self: *@This()) std.mem.Allocator {
             return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
         }
         fn alloc(context: *anyopaque, length: usize, alignment: std.mem.Alignment, address: usize) ?[*]u8 {
             const self: *@This() = @ptrCast(@alignCast(context));
-            if (self.blocked.load(.seq_cst) != 0 and (self.actor_thread == null or self.actor_thread.? == std.Thread.getCurrentId())) {
-                _ = self.rejected.fetchAdd(1, .seq_cst);
-                return null;
+            if (self.blocked.load(.seq_cst) != 0) {
+                if (self.actor_thread != null and self.actor_thread.? == std.Thread.getCurrentId()) {
+                    // Fail one actual actor allocation, then immediately disarm.
+                    // Caller wake cannot leave independent maintenance gated.
+                    if (self.blocked.cmpxchgStrong(1, 0, .seq_cst, .seq_cst) == null) {
+                        _ = self.rejected.fetchAdd(1, .seq_cst);
+                        return null;
+                    }
+                } else {
+                    _ = self.caller_allowed.fetchAdd(1, .seq_cst);
+                }
             }
             return self.parent.rawAlloc(length, alignment, address);
         }
@@ -11235,12 +11258,12 @@ test "queued malformed control ingress preserves committed actor custody and com
         }
     };
     const SqlWitness = struct {
-        reads: usize = 0,
-        writes: usize = 0,
+        reads: std.atomic.Value(usize) = .init(0),
+        writes: std.atomic.Value(usize) = .init(0),
         fn authorize(raw: ?*anyopaque, action: c_int, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8) callconv(.c) c_int {
             const self: *@This() = @ptrCast(@alignCast(raw.?));
-            if (action == sql_api.SQLITE_READ) self.reads += 1;
-            if (action == sql_api.SQLITE_INSERT or action == sql_api.SQLITE_UPDATE or action == sql_api.SQLITE_DELETE) self.writes += 1;
+            if (action == sql_api.SQLITE_READ) _ = self.reads.fetchAdd(1, .seq_cst);
+            if (action == sql_api.SQLITE_INSERT or action == sql_api.SQLITE_UPDATE or action == sql_api.SQLITE_DELETE) _ = self.writes.fetchAdd(1, .seq_cst);
             return sql_api.SQLITE_OK;
         }
     };
@@ -11252,22 +11275,31 @@ test "queued malformed control ingress preserves committed actor custody and com
             defer std.testing.allocator.free(bytes);
             return std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{ .allocate = .alloc_always });
         }
-        fn barrier(current: *Engine) !void {
+        fn barrier(current: *Engine, case_index: usize) !void {
             var reply = try call(current, "system.health", .{});
             defer reply.deinit();
-            try std.testing.expect(control.get(reply.value, "result") != null);
-            // A following completed queue item proves prior deferred cleanup
-            // has run; no caller races finishInvocation's subsequent cleanup.
-            try std.testing.expect(current.active_until == null and current.active_peer == null);
-            try std.testing.expectEqual(@as(usize, 0), current.queue_count);
+            try Diag.check(case_index, "barrier", "health-result", control.get(reply.value, "result") != null);
+            // The following healthy queue item clears its own active fields
+            // before finishInvocation. Observe its completion under the same
+            // queue mutex; the preceding refusal's deferred cleanup is over.
+            current.mutex.lockUncancelable(current.io);
+            defer current.mutex.unlock(current.io);
+            try Diag.check(case_index, "barrier", "active-until-clear", current.active_until == null);
+            try Diag.check(case_index, "barrier", "active-peer-clear", current.active_peer == null);
+            try Diag.check(case_index, "barrier", "queue-empty", current.queue_count == 0);
         }
-        fn refusal(bytes: []const u8, message: ?[]const u8) !void {
+        fn refusal(bytes: []const u8, message: ?[]const u8, case_index: usize) !void {
             var reply = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{});
             defer reply.deinit();
-            const failure = control.get(reply.value, "error") orelse return error.ExpectedIngressRefusal;
-            try std.testing.expect(control.get(reply.value, "id").? == .null);
-            try std.testing.expectEqual(@as(i64, -32600), control.get(failure, "code").?.integer);
-            if (message) |expected| try std.testing.expectEqualStrings(expected, try control.string(failure, "message"));
+            const failure = control.get(reply.value, "error") orelse {
+                try Diag.check(case_index, "reply", "error-present", false);
+                return error.ExpectedIngressRefusal;
+            };
+            const id = control.get(reply.value, "id");
+            try Diag.check(case_index, "reply", "null-id", id != null and id.? == .null);
+            const code = control.get(failure, "code");
+            try Diag.check(case_index, "reply", "invalid-request-code", code != null and code.? == .integer and code.?.integer == -32600);
+            if (message) |expected| try Diag.check(case_index, "reply", "error-name", eql(expected, try control.string(failure, "message")));
         }
     };
     const Stable = struct {
@@ -11308,86 +11340,92 @@ test "queued malformed control ingress preserves committed actor custody and com
                 .actor_handle = current.thread.?.getHandle(),
             };
         }
-        fn check(self: *const @This(), current: *Engine, sql: *const SqlWitness) !void {
-            try std.testing.expectEqual(@as(usize, 0), sql.reads);
-            try std.testing.expectEqual(@as(usize, 0), sql.writes);
-            try std.testing.expect(!current.poisoned and !current.db.?.poisoned);
-            try std.testing.expectEqual(self.revision, current.revision);
-            try std.testing.expectEqualSlices(u8, &self.key, &current.root_key);
-            try std.testing.expectEqual(self.root_id, @intFromPtr(current.root_id.?.ptr));
-            try std.testing.expectEqual(self.sources, @intFromPtr(current.state.sources.items.ptr));
-            try std.testing.expectEqual(self.source_id, @intFromPtr(current.state.sources.items[0].id.ptr));
-            try std.testing.expectEqual(self.accounts, @intFromPtr(current.state.accounts.items.ptr));
-            try std.testing.expectEqual(self.grants, @intFromPtr(current.state.grants.items.ptr));
-            try std.testing.expectEqual(self.mutations, @intFromPtr(current.mutations.data.records.ptr));
-            try std.testing.expectEqual(self.cached_result, @intFromPtr(current.mutations.snapshot().records[0].result.ptr));
-            try std.testing.expectEqual(self.oauth_rows, @intFromPtr(current.fresh_oauth.?.records.items.ptr));
-            try std.testing.expectEqual(self.capsule, @intFromPtr(current.fresh_oauth.?.records.items[0].verifier_capsule.ptr));
-            try std.testing.expectEqual(self.database, @intFromPtr(current.db.?.db));
-            try std.testing.expectEqual(self.network, @intFromPtr(current.network.?));
-            try std.testing.expectEqual(self.supervisor, @intFromPtr(current.native_workers.?));
-            try std.testing.expectEqual(self.actor_handle, current.thread.?.getHandle());
+        fn check(self: *const @This(), current: *Engine, sql: *const SqlWitness, case_index: usize) !void {
+            current.mutex.lockUncancelable(current.io);
+            defer current.mutex.unlock(current.io);
+            try Diag.check(case_index, "custody", "sql-reads-zero", sql.reads.load(.seq_cst) == 0);
+            try Diag.check(case_index, "custody", "sql-writes-zero", sql.writes.load(.seq_cst) == 0);
+            try Diag.check(case_index, "custody", "poison-clear", !current.poisoned and !current.db.?.poisoned);
+            try Diag.check(case_index, "custody", "same-revision", self.revision == current.revision);
+            try Diag.check(case_index, "custody", "same-root-key", std.mem.eql(u8, &self.key, &current.root_key));
+            try Diag.check(case_index, "custody", "same-root-id", self.root_id == @intFromPtr(current.root_id.?.ptr));
+            try Diag.check(case_index, "custody", "same-sources", self.sources == @intFromPtr(current.state.sources.items.ptr));
+            try Diag.check(case_index, "custody", "same-source-id", self.source_id == @intFromPtr(current.state.sources.items[0].id.ptr));
+            try Diag.check(case_index, "custody", "same-accounts", self.accounts == @intFromPtr(current.state.accounts.items.ptr));
+            try Diag.check(case_index, "custody", "same-grants", self.grants == @intFromPtr(current.state.grants.items.ptr));
+            try Diag.check(case_index, "custody", "same-mutations", self.mutations == @intFromPtr(current.mutations.data.records.ptr));
+            try Diag.check(case_index, "custody", "same-cached-result", self.cached_result == @intFromPtr(current.mutations.snapshot().records[0].result.ptr));
+            try Diag.check(case_index, "custody", "same-oauth-rows", self.oauth_rows == @intFromPtr(current.fresh_oauth.?.records.items.ptr));
+            try Diag.check(case_index, "custody", "same-capsule", self.capsule == @intFromPtr(current.fresh_oauth.?.records.items[0].verifier_capsule.ptr));
+            try Diag.check(case_index, "custody", "same-database", self.database == @intFromPtr(current.db.?.db));
+            try Diag.check(case_index, "custody", "same-network", self.network == @intFromPtr(current.network.?));
+            try Diag.check(case_index, "custody", "same-supervisor", self.supervisor == @intFromPtr(current.native_workers.?));
+            try Diag.check(case_index, "custody", "same-actor-handle", self.actor_handle == current.thread.?.getHandle());
             const after = try std.json.Stringify.valueAlloc(std.testing.allocator, current.persisted(), .{});
             defer std.testing.allocator.free(after);
-            try std.testing.expectEqualSlices(u8, self.persisted_json, after);
-            try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
-            try std.testing.expectEqual(@as(usize, 0), current.native_tasks.items.len);
-            try std.testing.expectEqual(@as(usize, 0), current.native_import_tasks.items.len);
-            try std.testing.expectEqual(@as(usize, 0), current.pending_imports.items.len);
-            try std.testing.expectEqual(@as(usize, 0), current.fixture_identity_submissions);
-            try std.testing.expectEqual(@as(usize, 0), current.fixture_observation_submissions);
-            try std.testing.expectEqual(@as(u64, 1), current.network.?.next_id);
-            try std.testing.expectEqual(@as(usize, 0), current.network.?.outstanding);
-            try std.testing.expectEqual(@as(usize, 0), current.network.?.starts.count);
-            try std.testing.expectEqual(@as(usize, 0), current.network.?.results.count);
+            try Diag.check(case_index, "custody", "same-persisted-metadata", std.mem.eql(u8, self.persisted_json, after));
+            try Diag.check(case_index, "custody", "request-ledger-empty", current.requests.snapshot().records.len == 0);
+            try Diag.check(case_index, "custody", "native-tasks-empty", current.native_tasks.items.len == 0);
+            try Diag.check(case_index, "custody", "native-imports-empty", current.native_import_tasks.items.len == 0);
+            try Diag.check(case_index, "custody", "pending-imports-empty", current.pending_imports.items.len == 0);
+            try Diag.check(case_index, "custody", "identity-submissions-empty", current.fixture_identity_submissions == 0);
+            try Diag.check(case_index, "custody", "observation-submissions-empty", current.fixture_observation_submissions == 0);
+            try Diag.check(case_index, "custody", "transport-next-id", current.network.?.next_id == 1);
+            try Diag.check(case_index, "custody", "transport-outstanding-empty", current.network.?.outstanding == 0);
+            try Diag.check(case_index, "custody", "transport-starts-empty", current.network.?.starts.count == 0);
+            try Diag.check(case_index, "custody", "transport-results-empty", current.network.?.results.count == 0);
         }
     };
     var directory = std.testing.tmpDir(.{});
     defer directory.cleanup();
-    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
-    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0)) catch |err| return Diag.failure(active_case, stage, err);
+    const path = directory.dir.realPathFileAlloc(io, ".", a) catch |err| return Diag.failure(active_case, stage, err);
     defer a.free(path);
     const key: envelope.Key = @splat(0x72);
     const source_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    const database = std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0) catch |err| return Diag.failure(active_case, stage, err);
     defer a.free(database);
     {
         var state = domain.State.init(a);
         defer state.deinit();
-        _ = try state.connectSource(.{ .id = source_id, .kind = .explicit, .provider = "codex" });
-        _ = try state.enroll(.{ .account_id = "synthetic-queued-account", .source_id = source_id, .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-queued-subject", .tenant = "synthetic-queued-tenant", .verified = true } }, 1);
-        try state.pause("synthetic-queued-account", true);
-        _ = try state.addGrant(.{ .id = "synthetic-queued-external", .account_id = "synthetic-queued-account", .source_id = source_id, .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        _ = state.connectSource(.{ .id = source_id, .kind = .explicit, .provider = "codex" }) catch |err| return Diag.failure(active_case, stage, err);
+        _ = state.enroll(.{ .account_id = "synthetic-queued-account", .source_id = source_id, .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-queued-subject", .tenant = "synthetic-queued-tenant", .verified = true } }, 1) catch |err| return Diag.failure(active_case, stage, err);
+        state.pause("synthetic-queued-account", true) catch |err| return Diag.failure(active_case, stage, err);
+        _ = state.addGrant(.{ .id = "synthetic-queued-external", .account_id = "synthetic-queued-account", .source_id = source_id, .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" }) catch |err| return Diag.failure(active_case, stage, err);
         var seeded: Persisted = .{ .schema_version = 2, .state = state.snapshot() };
-        seeded.maintenance_growth_bytes = try maintenanceReservation(seeded);
-        const metadata = try std.json.Stringify.valueAlloc(a, seeded, .{});
+        seeded.maintenance_growth_bytes = maintenanceReservation(seeded) catch |err| return Diag.failure(active_case, stage, err);
+        const metadata = std.json.Stringify.valueAlloc(a, seeded, .{}) catch |err| return Diag.failure(active_case, stage, err);
         defer a.free(metadata);
-        var store = try storage.Store.openRootWithSnapshotValidator(io, a, database, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission);
+        var store = storage.Store.openRootWithSnapshotValidator(io, a, database, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission) catch |err| return Diag.failure(active_case, stage, err);
         defer store.close();
-        _ = try store.commit(0, metadata, &.{.{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "synthetic-queued-account", .grant_id = "synthetic-queued-external", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-queued-independent-payload", .renewal_owner = .external } }});
+        _ = store.commit(0, metadata, &.{.{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "synthetic-queued-account", .grant_id = "synthetic-queued-external", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-queued-independent-payload", .renewal_owner = .external } }}) catch |err| return Diag.failure(active_case, stage, err);
     }
     var actor_allocator: Gate = .{ .parent = a };
-    const current = try Engine.openWithKey(io, actor_allocator.allocator(), path, key);
+    const current = Engine.openWithKey(io, actor_allocator.allocator(), path, key) catch |err| return Diag.failure(active_case, stage, err);
     defer current.deinit();
     // The gate is atomically armed only after genuine startup; unrelated
     // transport/worker threads remain on the normal underlying allocator.
     actor_allocator.actor_thread = current.db.?.owner_thread;
     defer actor_allocator.blocked.store(0, .seq_cst);
-    var policy = try Rpc.call(current, "policy.set", .{ .operation_id = "queued-disable-warming", .expected_revision = current.revision, .warm_alternatives = false });
+    stage = "policy-setup";
+    var policy = Rpc.call(current, "policy.set", .{ .operation_id = "queued-disable-warming", .expected_revision = current.revision, .warm_alternatives = false }) catch |err| return Diag.failure(active_case, stage, err);
     defer policy.deinit();
-    try std.testing.expect(control.get(policy.value, "result") != null);
-    var prepared = try Rpc.call(current, "oauth.enrollment.prepare.v1", .{ .operation_id = "queued-fresh-intent", .expected_revision = current.revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 });
+    Diag.check(active_case, stage, "result", control.get(policy.value, "result") != null) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "oauth-setup";
+    var prepared = Rpc.call(current, "oauth.enrollment.prepare.v1", .{ .operation_id = "queued-fresh-intent", .expected_revision = current.revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }) catch |err| return Diag.failure(active_case, stage, err);
     defer prepared.deinit();
-    try std.testing.expect(control.get(prepared.value, "result") != null);
-    try std.testing.expectEqual(@as(usize, 1), current.fresh_oauth.?.records.items.len);
-    try std.testing.expectEqual(oauth_enrollment.Phase.prepared, current.fresh_oauth.?.records.items[0].phase);
-    try std.testing.expect(current.thread != null and current.db != null and current.network != null);
-    const retained = try Stable.capture(current);
+    Diag.check(active_case, stage, "result", control.get(prepared.value, "result") != null) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "one-oauth-row", current.fresh_oauth.?.records.items.len == 1) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "prepared-oauth-row", current.fresh_oauth.?.records.items[0].phase == .prepared) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "actual-owners", current.thread != null and current.db != null and current.network != null) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "capture";
+    Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    const retained = Stable.capture(current) catch |err| return Diag.failure(active_case, stage, err);
     defer a.free(retained.persisted_json);
     var witness: SqlWitness = .{};
     // Same actual SQLite authorizer fixture bracket as the existing readiness
     // actor tests. No source paths, expirations, warming or pending IO exists.
-    if (sql_api.sqlite3_set_authorizer(current.db.?.db, SqlWitness.authorize, &witness) != sql_api.SQLITE_OK) return error.AuthorizerFixtureFailed;
+    if (sql_api.sqlite3_set_authorizer(current.db.?.db, SqlWitness.authorize, &witness) != sql_api.SQLITE_OK) return Diag.failure(active_case, stage, error.AuthorizerFixtureFailed);
     defer if (sql_api.sqlite3_set_authorizer(current.db.?.db, null, null) != sql_api.SQLITE_OK) @panic("queued ingress authorizer cleanup failed");
     const invalid_frames = [_][]const u8{
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\",\"params\":{\"purpose\":\"native_file_coordination_only\",\"purpose\":\"native_file_coordination_only\"}}",
@@ -11397,30 +11435,54 @@ test "queued malformed control ingress preserves committed actor custody and com
         "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\"}",
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\",\"params\":[]}",
     };
-    for (invalid_frames) |payload| {
-        const reply = try current.dispatch(a, payload, .control);
+    for (invalid_frames, 0..) |payload, index| {
+        active_case = index + 1;
+        stage = "malformed-dispatch";
+        const reply = current.dispatch(a, payload, .control) catch |err| return Diag.failure(active_case, stage, err);
         defer a.free(reply);
-        try Rpc.refusal(reply, null);
-        try Rpc.barrier(current);
-        try retained.check(current, &witness);
+        stage = "malformed-reply";
+        Rpc.refusal(reply, null, active_case) catch |err| return Diag.failure(active_case, stage, err);
+        stage = "barrier";
+        Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+        stage = "custody";
+        retained.check(current, &witness, active_case) catch |err| return Diag.failure(active_case, stage, err);
     }
     const native_payload = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"integrations.discover\",\"params\":{\"adapter\":\"codex\"}}";
+    active_case = 7;
+    stage = "parser-oom-dispatch";
     actor_allocator.blocked.store(1, .seq_cst);
     const refused = current.dispatch(a, native_payload, .control) catch |err| {
         actor_allocator.blocked.store(0, .seq_cst);
-        return err;
+        return Diag.failure(active_case, stage, err);
     };
     actor_allocator.blocked.store(0, .seq_cst);
     defer a.free(refused);
-    try std.testing.expect(actor_allocator.rejected.load(.seq_cst) > 0);
-    try Rpc.refusal(refused, "OutOfMemory");
-    try Rpc.barrier(current);
-    try retained.check(current, &witness);
-    var caller_allocator: Gate = .{ .parent = a };
+    Diag.check(active_case, stage, "one-actor-allocation-refused", actor_allocator.rejected.load(.seq_cst) == 1) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "parser-oom-reply";
+    Rpc.refusal(refused, "OutOfMemory", active_case) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "barrier";
+    Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "custody";
+    retained.check(current, &witness, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    var caller_allocator: Gate = .{ .parent = a, .actor_thread = current.db.?.owner_thread };
+    defer caller_allocator.blocked.store(0, .seq_cst);
+    active_case = 8;
+    stage = "encoder-oom-dispatch";
     caller_allocator.blocked.store(1, .seq_cst);
-    try std.testing.expectError(error.OutOfMemory, current.dispatch(caller_allocator.allocator(), invalid_frames[1], .control));
+    // Caller diagnostic parsing genuinely allocates for the duplicate frame.
+    // Only the actor's reply allocator fails; the engine parser is healthy.
+    const encoded = current.dispatch(caller_allocator.allocator(), invalid_frames[0], .control);
     caller_allocator.blocked.store(0, .seq_cst);
-    try std.testing.expect(caller_allocator.rejected.load(.seq_cst) > 0);
-    try Rpc.barrier(current);
-    try retained.check(current, &witness);
+    if (encoded) |unexpected| {
+        a.free(unexpected);
+        Diag.check(active_case, stage, "encoder-returned-error", false) catch |err| return Diag.failure(active_case, stage, err);
+    } else |err| {
+        Diag.check(active_case, stage, "encoder-out-of-memory", err == error.OutOfMemory) catch |check_error| return Diag.failure(active_case, stage, check_error);
+    }
+    Diag.check(active_case, stage, "caller-allocation-admitted", caller_allocator.caller_allowed.load(.seq_cst) > 0) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "one-actor-encoding-allocation-refused", caller_allocator.rejected.load(.seq_cst) == 1) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "barrier";
+    Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "custody";
+    retained.check(current, &witness, active_case) catch |err| return Diag.failure(active_case, stage, err);
 }
