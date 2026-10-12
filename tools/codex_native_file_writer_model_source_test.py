@@ -2,7 +2,7 @@
 
 Parent guardian/full SDK/query child are explicit seams, never model-qualified.
 """
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import copy
 import io
 import sys
@@ -415,19 +415,26 @@ class FileWriterModelSourceTests(unittest.TestCase):
                 (runfiles / '_repo_mapping').chmod(0o444)
                 source.DEADLINE = model.query.DEADLINE = None
                 captured = io.StringIO()
-                with patch.dict(os.environ, env, clear=True), patch.object(model.sys, 'argv', ['model-source']), \
-                        patch.object(model.binding.ninth.parent, 'ROOT', controls_root), patch.object(model, 'parent_source', parent), \
-                        patch.object(model, 'regenerate', return_value=(good, {'public': 'query seam'}, {'status': 'declared-fixture'})), \
-                        patch.dict(sys.modules, {'codex_original_sdk_inputs': sdk_module}), \
-                        patch.object(metadata, 'proof_scope', scoped), patch.object(metadata, 'selection', return_value={'carrier': {'receipt_sha256': 'd'*64}}), \
-                        patch.object(metadata, 'declared_carrier', return_value=(root / 'carrier', ((carrier_alias, carrier_physical),), declaration)), \
-                        patch.object(metadata, 'declared_proofs', return_value=proof_inputs), \
-                        patch.object(metadata, 'qualify_producer', return_value={'public': 'qualification seam'}), \
-                        patch.object(metadata, 'recheck_aliases'), patch.object(model.query, 'declared_query_tools'), \
-                        patch.object(model.query, 'QUERY_REPOSITORY', root / 'query'), \
-                        patch.object(model, 'MAX_DIRECTORY_FDS', 2 if fault == 'directory-fd-bound' else 16384), \
-                        patch.object(model.MemberDirectories, 'enroll', enroll), patch.object(model.os, 'fstat', checked_fstat), \
-                        patch.object(model.os, 'close', checked_close), patch('sys.stdout', captured):
+                with ExitStack() as patch_scope:
+                    patch_scope.enter_context(patch.dict(os.environ, env, clear=True))
+                    patch_scope.enter_context(patch.object(model.sys, 'argv', ['model-source']))
+                    patch_scope.enter_context(patch.object(model.binding.ninth.parent, 'ROOT', controls_root))
+                    patch_scope.enter_context(patch.object(model, 'parent_source', parent))
+                    patch_scope.enter_context(patch.object(model, 'regenerate', return_value=(good, {'public': 'query seam'}, {'status': 'declared-fixture'})))
+                    patch_scope.enter_context(patch.dict(sys.modules, {'codex_original_sdk_inputs': sdk_module}))
+                    patch_scope.enter_context(patch.object(metadata, 'proof_scope', scoped))
+                    patch_scope.enter_context(patch.object(metadata, 'selection', return_value={'carrier': {'receipt_sha256': 'd'*64}}))
+                    patch_scope.enter_context(patch.object(metadata, 'declared_carrier', return_value=(root / 'carrier', ((carrier_alias, carrier_physical),), declaration)))
+                    patch_scope.enter_context(patch.object(metadata, 'declared_proofs', return_value=proof_inputs))
+                    patch_scope.enter_context(patch.object(metadata, 'qualify_producer', return_value={'public': 'qualification seam'}))
+                    patch_scope.enter_context(patch.object(metadata, 'recheck_aliases'))
+                    patch_scope.enter_context(patch.object(model.query, 'declared_query_tools'))
+                    patch_scope.enter_context(patch.object(model.query, 'QUERY_REPOSITORY', root / 'query'))
+                    patch_scope.enter_context(patch.object(model, 'MAX_DIRECTORY_FDS', 2 if fault == 'directory-fd-bound' else 16384))
+                    patch_scope.enter_context(patch.object(model.MemberDirectories, 'enroll', enroll))
+                    patch_scope.enter_context(patch.object(model.os, 'fstat', checked_fstat))
+                    patch_scope.enter_context(patch.object(model.os, 'close', checked_close))
+                    patch_scope.enter_context(patch('sys.stdout', captured))
                     if fault == 'none': model.main()
                     else:
                         with self.assertRaises((ValueError, OSError)): model.main()
