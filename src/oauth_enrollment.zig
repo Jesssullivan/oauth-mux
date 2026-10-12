@@ -40,8 +40,13 @@ pub const Snapshot = struct { version: u32 = 1, records: []const Record = &.{} }
 /// Private worker lifetime, never serialized, accepted from control, restored
 /// after restart, or renewed at callback. It provides no provider permission.
 pub const Attempt = struct {
-    binding: Binding, until: std.Io.Clock.Timestamp, callback_state: [32]u8,
-    pub fn deinit(self: *Attempt) void { std.crypto.secureZero(u8, &self.callback_state); self.* = undefined; }
+    binding: Binding,
+    until: std.Io.Clock.Timestamp,
+    callback_state: [32]u8,
+    pub fn deinit(self: *Attempt) void {
+        std.crypto.secureZero(u8, &self.callback_state);
+        self.* = undefined;
+    }
 };
 pub const Ledger = struct {
     records: std.ArrayList(Record) = .empty,
@@ -51,7 +56,9 @@ pub const Ledger = struct {
         self.records.deinit(a);
         self.* = .{};
     }
-    pub fn snapshot(self: *const Ledger) Snapshot { return .{ .records = self.records.items }; }
+    pub fn snapshot(self: *const Ledger) Snapshot {
+        return .{ .records = self.records.items };
+    }
     pub fn find(self: *Ledger, id: [32]u8) ?*Record {
         for (self.records.items) |*record| if (std.crypto.timing_safe.eql([32]u8, record.binding.transaction_id, id)) return record;
         return null;
@@ -140,12 +147,20 @@ pub const Ledger = struct {
     }
     pub fn invalidateUnissued(self: *Ledger, a: std.mem.Allocator) void {
         for (self.records.items) |*record| switch (record.phase) {
-            .prepared, .callback_consumed => { clearCapsules(a, record); record.phase = .retired; },
-            .exchange_issued => { clearCapsules(a, record); record.phase = .completion_unknown; },
+            .prepared, .callback_consumed => {
+                clearCapsules(a, record);
+                record.phase = .retired;
+            },
+            .exchange_issued => {
+                clearCapsules(a, record);
+                record.phase = .completion_unknown;
+            },
             .completion_unknown, .quarantined, .retired => {},
         };
     }
-    pub fn recoverAfterRestart(self: *Ledger, a: std.mem.Allocator) void { self.invalidateUnissued(a); }
+    pub fn recoverAfterRestart(self: *Ledger, a: std.mem.Allocator) void {
+        self.invalidateUnissued(a);
+    }
 };
 fn clearCapsules(a: std.mem.Allocator, record: *Record) void {
     a.free(record.verifier_capsule);
