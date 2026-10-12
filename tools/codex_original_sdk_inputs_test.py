@@ -16,6 +16,7 @@ import stat
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import codex_original_sdk_inputs as inputs
@@ -23,6 +24,22 @@ import codex_original_sdk_declaration as declaration
 import codex_native_sdk_carrier_test as fixture_module
 
 core = inputs.carrier
+
+
+def original_rule_model():
+    """Evaluate real rule decisions; Bazel remains the real Starlark parser."""
+    raw = Path(__file__).with_name('codex_original_sdk_inputs.bzl').read_text()
+    kinds = {str: 'string', int: 'int', dict: 'dict', list: 'list', bool: 'bool'}
+    def fail(message):
+        raise ValueError(message)
+    attrs = SimpleNamespace(**{name: lambda **kwargs: kwargs for name in
+                               ('string', 'label', 'label_list', 'bool')})
+    namespace = {'type': lambda value: kinds.get(type(value), type(value).__name__),
+        'fail': fail, 'attr': attrs, 'Label': lambda name: name,
+        'repository_rule': lambda **kwargs: kwargs,
+        'json': SimpleNamespace(decode=json.loads)}
+    exec(compile(raw.replace('.elems()', ''), '<real original SDK rule>', 'exec'), namespace)
+    return namespace
 
 
 class OriginalSDKInputsModels(unittest.TestCase):
@@ -963,6 +980,107 @@ class OriginalSDKInputsModels(unittest.TestCase):
         self.assertEqual(list(root.iterdir()), [])
         self.assertEqual(publication.file_fds, {})
         self.assertFalse(publication.accepted)
+
+
+    def watch_policy(self, fresh):
+        rule = original_rule_model()
+        rule['_ORIGIN'], rule['_PIN'], rule['_JDK'] = str(self.fixture.origin), self.fixture.pin, core.sdk.JDK
+        paths = [row['source_path'] for row in self.plan['document']['regular_inputs']]
+        watched = [selected for path in paths
+                   if (selected := rule['_regular_watch_path'](path, fresh)) is not None]
+        return rule, paths, watched
+
+    def test_default_watch_policy_keeps_every_regular_and_fresh_mode_keeps_full_action_data(self):
+        rule, paths, watched = self.watch_policy(False)
+        self.assertEqual(watched, paths)
+        _, fresh_paths, fresh_watched = self.watch_policy(True)
+        self.assertEqual(fresh_paths, paths)
+        self.assertIn(str(self.fixture.origin / 'receipt.json'), fresh_watched)
+        self.assertTrue(all(path in fresh_watched for path in paths if '/graph/' in path or '/registry-cache/' in path))
+        payload = str(self.fixture.origin / 'repositories/public+/tool')
+        self.assertIn(payload, paths)
+        self.assertNotIn(payload, fresh_watched)
+        # Actual publication still declares every ordered alias, not just watches.
+        build = (self.repository / 'BUILD.bazel').read_text()
+        self.assertEqual(build, declaration.build(self.plan['document']))
+        for index, record in enumerate(self.plan['document']['regular_inputs']):
+            self.assertEqual(os.readlink(self.repository / record['alias']), paths[index])
+            self.assertIn(repr(record['alias']), build)
+        with self.session() as session:
+            self.assertEqual(set(session.catalogue.aliases), {
+                key for key, row in session.expected.items() if row['kind'] == 'file'})
+            session.finish()
+        self.assertFalse(rule['codex_original_sdk_inputs']['attrs']['fresh_epoch_action_inputs']['default'])
+
+    def test_fresh_watch_scope_requires_exact_owned_epoch_root_and_foreign_paths_refuse(self):
+        rule, _, _ = self.watch_policy(True)
+        epoch = '/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/11111111-2222-3333-4444-555555555555'
+        environment = {'OMUX_NATIVE_FILE_WRITER_MODELS_MODE': inputs.MODE,
+                       'OMUX_NATIVE_FILE_WRITER_MODELS_EPOCH': epoch}
+        directory = epoch + '/output-base/external/+codex_original_sdk_inputs+omux_original_native_sdk_inputs'
+        ctx = SimpleNamespace(attr=SimpleNamespace(fresh_epoch_action_inputs=True))
+        self.assertTrue(rule['_fresh_epoch_action_mode'](ctx, environment, directory))
+        for changed_environment, changed_directory in [
+            ({**environment, 'OMUX_NATIVE_FILE_WRITER_MODELS_MODE': 'standard'}, directory),
+            ({**environment, 'OMUX_NATIVE_FILE_WRITER_MODELS_EPOCH': epoch + '/foreign'}, directory),
+            (environment, directory + '/foreign'),
+            (environment, '/foreign/output-base/external/+codex_original_sdk_inputs+omux_original_native_sdk_inputs'),
+        ]:
+            with self.subTest(environment=changed_environment, directory=changed_directory), self.assertRaises(ValueError):
+                rule['_fresh_epoch_action_mode'](ctx, changed_environment, changed_directory)
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh), self.assertRaises(ValueError):
+                rule['_regular_watch_path']('/foreign/undeclared', fresh)
+        ctx.attr.fresh_epoch_action_inputs = False
+        self.assertFalse(rule['_fresh_epoch_action_mode'](ctx, {}, '/legacy-output'))
+
+    def test_unwatched_regular_changed_bytes_still_refuse_fresh_complete_action_proof(self):
+        _, _, watched = self.watch_policy(True)
+        path = self.fixture.origin / 'repositories/public+/tool'
+        self.assertNotIn(str(path), watched)
+        self.change_file(path, b'changed selected bytes')
+        with self.assertRaises(ValueError):
+            with self.session():
+                self.fail('changed bytes cannot acquire original SDK authority')
+
+    def test_unwatched_regular_changed_after_initial_proof_refuses_mandatory_final(self):
+        _, _, watched = self.watch_policy(True)
+        path = self.fixture.origin / 'repositories/public+/tool'
+        self.assertNotIn(str(path), watched)
+        with self.assertRaises(ValueError):
+            with self.session() as session:
+                self.change_file(path, b'late changed bytes')
+                session.finish()
+
+    def test_new_or_linked_namespace_and_changed_proof_refuse_after_watch_opt_in(self):
+        self.watch_policy(True)
+        for change in ('extra', 'linked', 'context'):
+            with self.subTest(change=change):
+                original = self.manifest.read_bytes()
+                extra = self.fixture.origin / 'unexpected-watch-mode-entry'
+                try:
+                    if change == 'context':
+                        value = copy.deepcopy(self.plan['document'])
+                        value['context']['GRAPH_SHA256'] = '3'*64
+                        self.rewrite_manifest(value)
+                    else:
+                        self.fixture.origin.chmod(0o700)
+                        if change == 'extra':
+                            self.fixture.write(extra, b'unadmitted', 0o444)
+                        else:
+                            extra.symlink_to(self.root / 'external-target-not-admitted')
+                        self.fixture.origin.chmod(0o555)
+                    with self.assertRaises(ValueError):
+                        with self.session():
+                            self.fail('namespace or proof mutation cannot acquire authority')
+                finally:
+                    self.fixture.origin.chmod(0o700)
+                    if extra.is_symlink() or extra.exists():
+                        extra.unlink()
+                    self.fixture.origin.chmod(0o555)
+                    self.manifest.chmod(0o600)
+                    self.manifest.write_bytes(original)
+                    self.manifest.chmod(0o444)
 
 
 if __name__ == '__main__':
