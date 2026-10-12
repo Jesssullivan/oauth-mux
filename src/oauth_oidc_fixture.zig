@@ -73,7 +73,7 @@ pub const Signer = struct {
         self.descriptor = -1;
         if (c.rmdir(self.directory.ptr) != 0) failed = true;
         wipeFree(self.allocator, self.tool);
-        wipeFree(self.allocator, self.directory);
+        wipeFreeSentinel(self.allocator, self.directory);
         if (failed) return error.FixtureCleanupFailed;
     }
     fn path(self: *const Signer, name: []const u8) ![]u8 {
@@ -156,6 +156,23 @@ pub const Signer = struct {
 fn wipeFree(a: std.mem.Allocator, bytes: []u8) void {
     std.crypto.secureZero(u8, bytes);
     a.free(bytes);
+}
+fn wipeFreeSentinel(a: std.mem.Allocator, bytes: [:0]u8) void {
+    // The allocation includes the trailing NUL. Keep its slice type through
+    // Allocator.free; coercing to []u8 would free one byte too few.
+    std.crypto.secureZero(u8, bytes[0 .. bytes.len + 1]);
+    a.free(bytes);
+}
+
+test "sentinel retirement keeps the exact allocation extent including trailing NUL" {
+    const a = std.testing.allocator;
+    const bytes = try a.allocSentinel(u8, 224, 0);
+    errdefer a.free(bytes);
+    @memset(bytes, 0xa7);
+    try std.testing.expectEqual(@as(u8, 0), bytes[bytes.len]);
+    // The real debug allocator refuses a 224-byte free of this 225-byte
+    // allocation, as in the original signer retirement's erased-sentinel path.
+    wipeFreeSentinel(a, bytes);
 }
 
 test "ephemeral declared OpenSSL signature passes actual RS256 then signed wrong nonce refuses" {
