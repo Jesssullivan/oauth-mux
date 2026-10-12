@@ -1543,6 +1543,11 @@ class OrdinaryCheckLease(CacheLease):
 # Routine tests retire by default. A future downstream payload consumer must
 # declare its exact producer vector and leaves here before producing its inputs.
 RETAINED_OUTPUT_PRODUCTS = {
+    # Fresh singleton prerequisites retain original output roots; no copied proof.
+    '//tools:native_flake_schedule_qualification': ('native-flake-obligations.json',),
+    '//tools:native_flake_seed_plan_qualification': ('native-flake-seed-plan.json',),
+    '//tools:codex_query_registration_reserved_producer': (
+        'query-registration.json', 'registration', 'store-paths'),
     '//tools:yoga_controller_inventory_producer': (
         'yoga-controller-inputs/controller-inventory.json',
         'yoga-controller-inputs/controller-evidence.json'),

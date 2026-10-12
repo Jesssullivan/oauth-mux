@@ -145,3 +145,39 @@ Ordinary native launch/resume, same-process handoff, unmodified Codex and
 Darwin activation remain unproved. Signing and publication remain separate.
 The original integrated goal is still active, overdue and incomplete; its
 clock and existing resource/deadline limits are unchanged.
+
+
+## Native producer prerequisites — 16:19 UTC continuation
+
+The explicit catalog source/HUB family is implemented at `45748264`.
+Its seven source predicates, four admission predicates, six prior source
+predicates and twelve prior model-admission predicates passed. The complete
+147-case guard suite passed at `73d5bb39` after deterministic positive-fixture
+timestamps; production freshness and negative checks were unchanged.
+GR-1559 raw receipt is
+`3831aa977da6e83ef85489a1318325b16ecdc8a35aa04f74fb7f5500278222cd`.
+Exact two-target successful source/HUB output retention has five filesystem
+cases; bare, extra-target, missing-product and failed runs gain no new retention.
+
+CS-1603 (`3cadbff9-6ab8-4b2f-a94b-bfc9e5980def`) did not qualify the genuine
+producer. It ended outer125/workload1 with a normal nonzero workload and verified
+owned cleanup, two readbacks and empty descendants. This is not a timeout or
+Rust result. Its raw receipt is
+`c817a3bf64e0b68f1c482d3609105556fb6fa777bbf52e599461a1899d8d9f59`.
+
+The selected query registration and plan payloads were removed by this
+coordinator's R-C618 cleanup; their original receipts/logs/XML remain. Those
+downstream dependencies were missed in the hold list. The selected schedule
+obligations are also absent; their removal origin is not asserted here.
+The correction adds only three exact successful singleton output-retention
+contracts for schedule, plan and reserved query registration, with six new
+filesystem cases. It does not relax SDK, source, freshness, ownership, admission,
+clock or resource comparisons.
+
+The next ordered work is: check the changed guard; regenerate schedule and
+generated siblings; publish a new selection from actual results; run plan and
+registration on identical clean source/graph; select their new actual proofs;
+then retry the source/HUB producer. Old paths, bytes and receipts are not
+replayed as new inputs. New guard cases and genuine regeneration remain unrun at
+this source update. Native20, ordinary accepted-history resume, live handoff,
+retained normal-vault enrollment and Darwin activation remain unproved.
