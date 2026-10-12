@@ -1490,12 +1490,550 @@ def record_resident_lifecycle(receipt,admission,*,clock=time.monotonic_ns):
             'complete_supported_demand_coverage':False,'achieved_slo':False}
     receipt['resident_continuity']['lifecycle_attempt'] = observation
 
+# Finite output contracts for the six current graph/N10 producer families.
+# Routine tests retire by default. A future downstream payload consumer must
+# declare its exact producer vector and leaves here before producing its inputs.
+RETAINED_OUTPUT_PRODUCTS = {
+    '//tools:yoga_controller_inventory_producer': (
+        'yoga-controller-inputs/controller-inventory.json',
+        'yoga-controller-inputs/controller-evidence.json'),
+    '//tools:codex_owner_status_source_producer': ('owner-status-source/source-receipt.json',),
+    '//tools:codex_owner_status_persistence_source_producer': (
+        'owner-status-persistence-source/source-receipt.json',),
+    '//tools:codex_owner_status_persistence_metadata_binding_producer': (
+        'owner-status-persistence-metadata-binding.json',),
+    '//tools:codex_native_sdk_carrier_seal_producer': (
+        'sdk-private/native-sdk-carrier-producer.json',
+        'sdk-private/sdk-carrier/payload.bin', 'sdk-private/sdk-carrier/manifest.json',
+        'sdk-private/sdk-carrier/origin-receipt.json', 'sdk-private/sdk-carrier/receipt.json'),
+    '//tools:codex_native_source_file_writer_producer': (
+        'native-source-file-writer-boundary/source-receipt.json',),
+}
+RETAINED_OUTPUT_VECTORS = {('test', label): (label,) for label in RETAINED_OUTPUT_PRODUCTS}
+RETAINED_OUTPUT_VECTORS[('test', '//tools:codex_native_source_file_writer_test',
+    '//tools:codex_native_source_file_writer_producer',
+    '//tools:codex_native_source_file_writer_metadata_producer')] = (
+    '//tools:codex_native_source_file_writer_producer',)
+
+RETAINED_OUTPUT_VECTORS.update({
+    ('test', '//tools:guard_resident_owner_status_source_reserved_test',
+     '//tools:codex_owner_status_source_test', '//tools:codex_owner_status_source_producer'):
+        ('//tools:codex_owner_status_source_producer',),
+    ('test', '//tools:guard_resident_owner_status_persistence_source_reserved_test',
+     '//tools:codex_owner_status_persistence_source_test', '//tools:codex_owner_status_persistence_source_producer'):
+        ('//tools:codex_owner_status_persistence_source_producer',),
+    ('test', '//tools:guard_resident_owner_status_persistence_binding_reserved_test',
+     '//tools:codex_owner_status_persistence_binding_test', '//tools:codex_owner_status_persistence_metadata_binding_producer'):
+        ('//tools:codex_owner_status_persistence_metadata_binding_producer',),
+})
+RETIREMENT_CHILDREN = ('output-base', 'bazel-user-root')
+RETIREMENT_REPORT = 'test-evidence-retirement.json'
+RETIREMENT_DEPTH = 128
+
+
+def retirement_identity(info):
+    return info.st_dev, info.st_ino
+
+
+def retirement_mount_id(directory):
+    # A same-filesystem bind mount is also outside the owned physical run tree.
+    # Read only the fixed kernel metadata for this held FD; no process argv.
+    descriptor = os.open('/proc/self/fdinfo/' + str(directory),
+                         os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        data = os.read(descriptor, 4097)
+    finally:
+        os.close(descriptor)
+    matches = re.findall(rb'^mnt_id:\s+([0-9]{1,20})$', data, re.MULTILINE)
+    if len(data) > 4096 or len(matches) != 1:
+        raise ValueError('retirement-mount-custody-refused')
+    return int(matches[0])
+
+
+RETIREMENT_SECONDS = 60
+RETIREMENT_REPORT_RESERVE_NS = 2 * 10**9
+
+
+class RetirementDeferred(Exception):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
+class RetirementBudget:
+    """Sampled cutoff within the original invocation; never a kernel-I/O SLA."""
+    def __init__(self, entry_ns, original_deadline_ns, *, timeout_seconds=1200,
+                 clock=time.monotonic_ns, cancelled=lambda: False):
+        if (type(entry_ns) is not int or entry_ns < 0 or type(original_deadline_ns) is not int
+                or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 1200):
+            raise ValueError('retirement-original-budget-refused')
+        self.clock, self.cancelled = clock, cancelled
+        self.entry_ns = clock()
+        if type(self.entry_ns) is not int or self.entry_ns < entry_ns:
+            raise ValueError('retirement-clock-refused')
+        self.original_deadline_ns = min(original_deadline_ns, entry_ns + timeout_seconds * 10**9)
+        self.deadline_ns = min(self.original_deadline_ns, self.entry_ns + RETIREMENT_SECONDS * 10**9)
+        self.work_deadline_ns = max(self.entry_ns, self.deadline_ns - RETIREMENT_REPORT_RESERVE_NS)
+        self.cancelled_seen = False
+
+    def checkpoint(self, *, final_report=False):
+        self.cancelled_seen = self.cancelled_seen or self.cancelled() is True
+        if self.cancelled_seen and not final_report:
+            raise RetirementDeferred('cancelled')
+        now = self.clock()
+        cutoff = self.deadline_ns if final_report else self.work_deadline_ns
+        if type(now) is not int or now < self.entry_ns or now >= cutoff:
+            raise RetirementDeferred('deadline')
+
+
+class RunRetirement:
+    """Pin before dispatch; destroy only fixed children after terminal publication.
+
+    No command execution, cache traversal, symlink following or receipt mutation.
+    Iterators stream entries and recursion has a fixed depth bound. Unlink counts
+    describe removed directory entries and their observed allocated blocks, not
+    unique physical inodes or space recovered from hard links/open files.
+    """
+    def __init__(self, state, run):
+        self.run = Path(run)
+        self.ancestors = []
+        self.descriptor = None
+        self.budget = None
+        self.bindings = {}
+        state = Path(state)
+        if (not state.is_absolute() or not self.run.is_absolute() or
+                '..' in self.run.parts or self.run.parent != state or
+                str(uuid.UUID(self.run.name)) != self.run.name):
+            raise ValueError('retirement-run-selection-refused')
+        try:
+            parent = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            self.ancestors.append((parent, None, None))
+            for component in self.run.parts[1:]:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=parent)
+                self.ancestors.append((child, parent, component))
+                info = os.fstat(child)
+                if (info.st_uid not in (0, os.getuid()) or (stat.S_IMODE(info.st_mode) & 0o022
+                        and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
+                    raise ValueError('retirement-ancestor-custody-refused')
+                parent = child
+            self.descriptor = parent
+            for directory in (self.ancestors[-2][0], self.descriptor):
+                info = os.fstat(directory)
+                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                    raise ValueError('retirement-private-custody-refused')
+            self.identity = retirement_identity(os.fstat(self.descriptor))
+            self.mount_id = retirement_mount_id(self.descriptor)
+            self.recheck()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        for directory, _, _ in reversed(self.ancestors):
+            os.close(directory)
+        self.ancestors = []
+        self.descriptor = None
+
+    def checkpoint(self, *, final_report=False):
+        if self.budget is not None:
+            self.budget.checkpoint(final_report=final_report)
+
+    def recheck(self, lineage=(), *, final_report=False):
+        self.checkpoint(final_report=final_report)
+        if self.descriptor is None:
+            raise ValueError('retirement-pin-closed')
+        for child, parent, name in self.ancestors[1:]:
+            self.checkpoint(final_report=final_report)
+            held = os.fstat(child)
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISDIR(named.st_mode) or retirement_identity(held) != retirement_identity(named)
+                    or held.st_uid not in (0, os.getuid()) or (stat.S_IMODE(held.st_mode) & 0o022
+                    and not (held.st_uid == 0 and held.st_mode & stat.S_ISVTX))):
+                raise ValueError('retirement-root-replaced')
+        for directory, _, _ in self.ancestors[-2:]:
+            held = os.fstat(directory)
+            if held.st_uid != os.getuid() or stat.S_IMODE(held.st_mode) != 0o700:
+                raise ValueError('retirement-private-custody-refused')
+        for child, parent, name in lineage:
+            self.checkpoint(final_report=final_report)
+            held = os.fstat(child)
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISDIR(named.st_mode) or retirement_identity(held) != retirement_identity(named)
+                    or held.st_uid != os.getuid() or held.st_dev != self.identity[0]):
+                raise ValueError('retirement-child-replaced')
+
+    @staticmethod
+    def evidence_identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def fence_bound_evidence(self):
+        self.checkpoint()
+        self.recheck()
+        for name, expected in self.bindings.items():
+            self.checkpoint()
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                                 dir_fd=self.descriptor)
+            try:
+                held = os.fstat(descriptor)
+                named = os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
+                if self.evidence_identity(held) != expected or self.evidence_identity(named) != expected:
+                    raise ValueError('retirement-bound-evidence-changed')
+            finally:
+                os.close(descriptor)
+        self.checkpoint()
+
+    def read_regular(self, name, maximum=LIMIT):
+        self.recheck()
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=self.descriptor)
+        try:
+            before = os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1
+                    or stat.S_IMODE(before.st_mode) & 0o022 or before.st_size > maximum):
+                raise ValueError('retirement-evidence-custody-refused')
+            chunks, size = [], 0
+            while size <= maximum:
+                self.checkpoint()
+                part = os.read(descriptor, min(65536, maximum + 1 - size))
+                if not part:
+                    break
+                chunks.append(part)
+                size += len(part)
+            after = os.fstat(descriptor)
+            named = os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
+            identity = self.evidence_identity
+            if size > maximum or size != before.st_size or identity(before) != identity(after) or identity(before) != identity(named):
+                raise ValueError('retirement-evidence-replaced')
+            self.checkpoint()
+            os.fsync(descriptor)
+            self.recheck()
+            if name in ('receipt.json', 'test-evidence.json'):
+                if name in self.bindings and self.bindings[name] != identity(before):
+                    raise ValueError('retirement-bound-evidence-changed')
+                self.bindings[name] = identity(before)
+            return b''.join(chunks)
+        finally:
+            os.close(descriptor)
+
+    def publish(self, report, *, final_report=False):
+        self.recheck(final_report=final_report)
+        try:
+            previous = os.stat(RETIREMENT_REPORT, dir_fd=self.descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(previous.st_mode) or previous.st_uid != os.getuid() or previous.st_nlink != 1:
+                raise ValueError('retirement-report-custody-refused')
+        except FileNotFoundError:
+            previous = None
+        temporary = 'test-evidence-retirement.' + str(uuid.uuid4()) + '.pending'
+        self.checkpoint(final_report=final_report)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             0o600, dir_fd=self.descriptor)
+        # An incomplete pending report stays in the evidence family on failure.
+        with os.fdopen(descriptor, 'w') as output:
+            self.checkpoint(final_report=final_report)
+            output.write(json.dumps(report, sort_keys=True) + '\n')
+            output.flush()
+            self.checkpoint(final_report=final_report)
+            os.fsync(output.fileno())
+        self.recheck(final_report=final_report)
+        try:
+            current = os.stat(RETIREMENT_REPORT, dir_fd=self.descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            current = None
+        if (None if current is None else retirement_identity(current)) != (None if previous is None else retirement_identity(previous)):
+            raise ValueError('retirement-report-replaced')
+        self.checkpoint(final_report=final_report)
+        os.replace(temporary, RETIREMENT_REPORT, src_dir_fd=self.descriptor, dst_dir_fd=self.descriptor)
+        self.checkpoint(final_report=final_report)
+        os.fsync(self.descriptor)
+
+    def walk(self, directory, lineage, counts, *, remove):
+        if len(lineage) > RETIREMENT_DEPTH:
+            raise ValueError('retirement-depth-refused')
+        self.recheck(lineage)
+        if remove:
+            self.fence_bound_evidence()
+            self.checkpoint()
+            os.fchmod(directory, stat.S_IMODE(os.fstat(directory).st_mode) | 0o700)
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                self.recheck(lineage)
+                info = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
+                if info.st_uid != os.getuid() or info.st_dev != self.identity[0]:
+                    raise ValueError('retirement-foreign-entry-refused')
+                if stat.S_ISDIR(info.st_mode):
+                    child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=directory)
+                    try:
+                        if (retirement_identity(os.fstat(child)) != retirement_identity(info)
+                                or retirement_mount_id(child) != self.mount_id):
+                            raise ValueError('retirement-child-replaced')
+                        self.walk(child, lineage + ((child, directory, entry.name),), counts, remove=remove)
+                        self.recheck(lineage + ((child, directory, entry.name),))
+                    finally:
+                        os.close(child)
+                    if remove:
+                        # Recheck after closing; never remove a replacement name.
+                        self.recheck(lineage)
+                        current = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
+                        if retirement_identity(current) != retirement_identity(info):
+                            raise ValueError('retirement-child-replaced')
+                        self.fence_bound_evidence()
+                        self.checkpoint()
+                        os.rmdir(entry.name, dir_fd=directory)
+                elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                    if remove:
+                        self.recheck(lineage)
+                        current = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
+                        if (retirement_identity(current), current.st_mode, current.st_uid) != (retirement_identity(info), info.st_mode, info.st_uid):
+                            raise ValueError('retirement-child-replaced')
+                        self.fence_bound_evidence()
+                        self.checkpoint()
+                        os.unlink(entry.name, dir_fd=directory)
+                else:
+                    raise ValueError('retirement-special-entry-refused')
+                if remove:
+                    counts['removed_entries'] += 1
+                    counts['observed_allocated_blocks_512'] += info.st_blocks
+                    counts['removed_directories'] += stat.S_ISDIR(info.st_mode)
+                    counts['removed_symlinks'] += stat.S_ISLNK(info.st_mode)
+        if remove:
+            self.checkpoint()
+            os.fsync(directory)
+
+    def producer_ready(self, directory, label, manifest):
+        # The output producer's own passing action is the semantic authority;
+        # this verifies current durable evidence and required physical leaves,
+        # without copying proof, importing producer code or reopening Nix paths.
+        rows = [row for row in manifest.get('results', []) if row.get('target') == label
+                and row.get('state') == 'observed']
+        if len(rows) != 1 or not any(row.get('source') in ('test.log', 'test.xml')
+                and row.get('state') == 'copied' and row.get('bytes', 0) > 0
+                for row in rows[0].get('files', [])):
+            return False
+        configuration = rows[0].get('configuration')
+        if type(configuration) is not str or re.fullmatch(r'[A-Za-z0-9_.+-]{1,128}', configuration) is None:
+            return False
+        package, target = label[2:].split(':')
+        relative = Path('execroot/_main/bazel-out') / configuration / 'testlogs' / package / target / 'test.outputs'
+        for member in RETAINED_OUTPUT_PRODUCTS[label]:
+            self.checkpoint()
+            held = os.dup(directory)
+            try:
+                for part in (relative / member).parts[:-1]:
+                    self.checkpoint()
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=held)
+                    os.close(held)
+                    held = child
+                    info = os.fstat(held)
+                    if (info.st_uid != os.getuid() or info.st_dev != self.identity[0]
+                            or retirement_mount_id(held) != self.mount_id):
+                        return False
+                leaf = os.open(Path(member).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                               dir_fd=held)
+                try:
+                    info = os.fstat(leaf)
+                    named = os.stat(Path(member).name, dir_fd=held, follow_symlinks=False)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size <= 0
+                            or info.st_dev != self.identity[0] or retirement_identity(info) != retirement_identity(named)):
+                        return False
+                    self.checkpoint()
+                    os.fsync(leaf)
+                finally:
+                    os.close(leaf)
+                self.checkpoint()
+                os.fsync(held)
+            except FileNotFoundError:
+                return False
+            finally:
+                os.close(held)
+        return True
+
+    def snapshot(self):
+        observed = os.fstatvfs(self.descriptor)
+        return {'free_inodes': observed.f_ffree, 'available_blocks': observed.f_bavail,
+                'fragment_bytes': observed.f_frsize}
+
+    def retire(self, *, terminal_published, original_entry_ns, original_deadline_ns,
+               timeout_seconds=1200, clock=time.monotonic_ns, cancelled=lambda: False):
+        report = {'schema': 1, 'policy': 'bounded-post-terminal-fixed-owned-children-v2',
+                  'state': 'skipped', 'reason': 'terminal-unpublished', 'children': {},
+                  'removed_entries': 0, 'removed_directories': 0, 'removed_symlinks': 0,
+                  'observed_allocated_blocks_512': 0,
+                  'counter_semantics': 'this-attempt directory entries; observed blocks are not recovered space',
+                  'filesystem_semantics': 'net filesystem snapshots include unrelated activity and open-file/hardlink effects',
+                  'proof_semantics': 'retention preserves original physical output roots; copying or relocating requires fresh qualification'}
+        if terminal_published is not True:
+            return report
+        cancellation_error = None
+        self.bindings = {}
+        self.budget = RetirementBudget(original_entry_ns, original_deadline_ns,
+            timeout_seconds=timeout_seconds, clock=clock, cancelled=cancelled)
+        report['budget'] = {'maintenance_seconds_max': RETIREMENT_SECONDS,
+            'original_entry_monotonic_ns': original_entry_ns,
+            'original_deadline_monotonic_ns': self.budget.original_deadline_ns,
+            'retirement_entry_monotonic_ns': self.budget.entry_ns,
+            'work_cutoff_monotonic_ns': self.budget.work_deadline_ns,
+            'retirement_cutoff_monotonic_ns': self.budget.deadline_ns,
+            'semantics': 'sampled cutoff; blocking kernel I/O has no wall-clock guarantee'}
+        try:
+            self.checkpoint()
+            raw = self.read_regular('receipt.json')
+            receipt = json.loads(raw)
+            if type(receipt) is not dict:
+                raise ValueError('retirement-receipt-shape-refused')
+            report['receipt_sha256'] = hashlib.sha256(raw).hexdigest()
+            if receipt.get('id') != self.run.name:
+                report['reason'] = 'run-receipt-mismatch'
+                self.publish(report)
+                return report
+            manifest = None
+            if receipt.get('verb') == 'test':
+                evidence = receipt.get('test_evidence') or {}
+                evidence_raw = self.read_regular('test-evidence.json')
+                if (evidence.get('state') != 'preserved' or evidence.get('manifest') != 'test-evidence.json'
+                        or evidence.get('sha256') != hashlib.sha256(evidence_raw).hexdigest()):
+                    report['reason'] = 'evidence-unqualified'
+                    self.publish(report)
+                    return report
+                report['test_evidence_sha256'] = evidence['sha256']
+                manifest = json.loads(evidence_raw)
+                self.fence_bound_evidence()
+            try:
+                previous = json.loads(self.read_regular(RETIREMENT_REPORT, 65536))
+            except FileNotFoundError:
+                previous = None
+            if previous is not None:
+                if type(previous) is not dict:
+                    raise ValueError('retirement-report-shape-refused')
+                if previous.get('receipt_sha256') != report['receipt_sha256']:
+                    raise ValueError('retirement-receipt-binding-changed')
+                if previous.get('state') == 'complete':
+                    for name, disposition in previous.get('children', {}).items():
+                        if name not in RETIREMENT_CHILDREN:
+                            raise ValueError('retirement-report-contract-refused')
+                        if disposition in ('absent', 'retired'):
+                            try:
+                                os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            raise ValueError('retirement-completed-root-reappeared')
+                        if disposition == 'retained-declared-producer':
+                            held = os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
+                            if (not stat.S_ISDIR(held.st_mode) or held.st_uid != os.getuid()
+                                    or {'device': held.st_dev, 'inode': held.st_ino} != previous.get('retained_physical_root')):
+                                raise ValueError('retirement-retained-root-replaced')
+                    self.fence_bound_evidence()
+                    return previous
+            cleanup = receipt.get('cleanup') or {}
+            if (receipt.get('id') != self.run.name or receipt.get('descendants_empty') is not True
+                    or cleanup.get('state') != 'empty' or cleanup.get('ownership') not in ('verified', 'unproved')
+                    or cleanup.get('stop') not in ('succeeded', 'not-requested')
+                    or receipt.get('controller_failure') is not None
+                    or not isinstance(receipt.get('original_cgroup_identity'), dict)
+                    or set(receipt['original_cgroup_identity']) != {'device', 'inode'}
+                    or any(type(value) is not int or value < 0 for value in receipt['original_cgroup_identity'].values())):
+                report['reason'] = 'cleanup-unqualified'
+                self.publish(report)
+                return report
+            targets = receipt.get('targets')
+            if (not isinstance(targets, list) or not 1 <= len(targets) <= 64
+                    or any(type(label) is not str or len(label) > 512 for label in targets)):
+                raise ValueError('retirement-output-contract-refused')
+            retained = (list(RETAINED_OUTPUT_VECTORS.get((receipt.get('verb'), *targets), ()))
+                        if receipt.get('exit') == 0 and receipt.get('workload_exit') == 0 else [])
+            report['retained_output_contract'] = retained
+            report['retention_reason'] = ('successful-exact-declared-producer' if retained
+                                          else 'no-successful-current-output-contract')
+            report['filesystem_before'] = self.snapshot()
+            report.update(state='prepared', reason='qualified-terminal')
+            # Publish the receipt binding and retention decision before unlink.
+            self.publish(report)
+            for name in RETIREMENT_CHILDREN:
+                self.recheck()
+                if name == 'output-base' and receipt.get('output_base') != str(self.run / name):
+                    report['children'][name] = 'excluded-shared-or-external-output-base'
+                    continue
+                try:
+                    info = os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    report['children'][name] = 'absent'
+                    continue
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_dev != self.identity[0]):
+                    raise ValueError('retirement-root-child-refused')
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=self.descriptor)
+                try:
+                    if (retirement_identity(os.fstat(child)) != retirement_identity(info)
+                            or retirement_mount_id(child) != self.mount_id):
+                        raise ValueError('retirement-child-replaced')
+                    lineage = ((child, self.descriptor, name),)
+                    if name == 'output-base' and retained:
+                        if not all(self.producer_ready(child, label, manifest) for label in retained):
+                            retained = []
+                            report['retained_output_contract'] = []
+                            report['retention_reason'] = 'missing-or-partial-declared-products'
+                            self.publish(report)
+                        self.recheck(lineage)
+                    if name == 'output-base' and retained:
+                        self.fence_bound_evidence()
+                        report['children'][name] = 'retained-declared-producer'
+                        report['retained_physical_root'] = {'device': info.st_dev, 'inode': info.st_ino}
+                        continue
+                    self.walk(child, lineage, report, remove=False)
+                    # Both decisions stay bound to the one originally read byte set.
+                    self.fence_bound_evidence()
+                    self.walk(child, lineage, report, remove=True)
+                    self.recheck(lineage)
+                    self.fence_bound_evidence()
+                    self.checkpoint()
+                    os.rmdir(name, dir_fd=self.descriptor)
+                    report['removed_entries'] += 1
+                    report['removed_directories'] += 1
+                    report['observed_allocated_blocks_512'] += info.st_blocks
+                    report['children'][name] = 'retired'
+                    self.checkpoint()
+                    os.fsync(self.descriptor)
+                    self.publish(report)
+                finally:
+                    os.close(child)
+            report.update(state='complete', reason='qualified-terminal')
+        except RetirementDeferred as error:
+            report.update(state='partial' if report['removed_entries'] else 'deferred', reason=error.reason)
+        except KeyboardInterrupt as error:
+            cancellation_error = error
+            self.budget.cancelled_seen = True
+            report.update(state='partial' if report['removed_entries'] else 'deferred', reason='cancelled')
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError, AttributeError):
+            report.update(state='refused', reason='custody-or-qualification-refused')
+        try:
+            # Metadata-only finalization uses the reserve already subtracted from
+            # this original cutoff. Cancellation never resumes traversal/deletion.
+            self.recheck(final_report=True)
+            report['filesystem_after'] = self.snapshot()
+            if 'receipt_sha256' not in report:
+                report['report_publication'] = 'deferred-no-receipt-binding'
+            else:
+                self.publish(report, final_report=True)
+        except RetirementDeferred:
+            report['report_publication'] = 'deferred-at-original-cutoff'
+        except (OSError, ValueError):
+            # A changed root receives no writes; never expose paths or argv.
+            report['report_publication'] = 'refused'
+        if cancellation_error is not None:
+            raise cancellation_error
+        return report
+
+
 def main(argv=None):
-    with ExitStack() as admission_resources:
-        return _main(argv, admission_resources)
+    with ExitStack() as retirement_resources, ExitStack() as admission_resources:
+        return _main(argv, admission_resources, retirement_resources)
 
 
-def _main(argv, admission_resources):
+def _main(argv, admission_resources, retirement_resources):
     # Delivery's one deadline begins before parsing/tool validation/bootstrap.
     # Other profiles keep their existing deadlines and execution behavior.
     delivery_entry_monotonic_ns = time.monotonic_ns()
@@ -2094,6 +2632,8 @@ def _main(argv, admission_resources):
         identifier = args.resident_epoch if args.profile in resident_dispatch.PROFILES else yoga_admission['receipt']['proofId'] if yoga else str(uuid.uuid4())
         run = args.state_dir / identifier
         run.mkdir(mode=0o700)
+        retirement = RunRetirement(args.state_dir, run)
+        retirement_resources.callback(retirement.close)
         if yoga_installed_input is not None:
             (run / 'home').mkdir(mode=0o700)
             (run / 'tmp').mkdir(mode=0o700)
@@ -2318,8 +2858,13 @@ def _main(argv, admission_resources):
             finally:
                 if descriptor is not None:
                     os.close(descriptor)
+        cancellation_requested = False
+        retirement_active = False
         def interrupted(signum, frame):
-            raise KeyboardInterrupt
+            nonlocal cancellation_requested
+            cancellation_requested = True
+            if not retirement_active:
+                raise KeyboardInterrupt
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, interrupted)
         try:
@@ -3350,9 +3895,31 @@ def _main(argv, admission_resources):
             else:
                 print(json.dumps({'id': identifier, 'exit': final_status, 'workload_exit': result,
                                   'descendants_empty': cleanup, 'test_evidence': evidence['state'],
-                                  'controller_failure': controller_failure, 'cleanup': cleanup_summary}))
+                                  'controller_failure': controller_failure, 'cleanup': cleanup_summary}), flush=True)
+            retirement_deadline_ns = delivery_entry_deadline_ns
+            if native_sdk:
+                retirement_deadline_ns = min(retirement_deadline_ns, args.native_original_deadline_ns)
+            if yoga:
+                retirement_deadline_ns = min(retirement_deadline_ns, args.yoga_deadline_monotonic_ns)
+            primary_cancellation = isinstance(sys.exc_info()[1], KeyboardInterrupt)
+            # Defer only this maintenance phase's signal exception until the
+            # completed syscall's counters are accounted; the next checkpoint
+            # stops work and the original cancellation then propagates.
+            retirement_active = True
+            try:
+                retirement_result = retirement.retire(terminal_published=True,
+                    original_entry_ns=delivery_entry_monotonic_ns,
+                    original_deadline_ns=retirement_deadline_ns,
+                    cancelled=lambda: cancellation_requested or pids_cancellation is not None or primary_cancellation)
+            finally:
+                retirement_active = False
+            print(json.dumps({'id': identifier, 'retirement': {key: retirement_result[key]
+                for key in ('state', 'reason', 'children', 'removed_entries', 'removed_directories',
+                            'removed_symlinks', 'observed_allocated_blocks_512')}}), file=sys.stderr, flush=True)
             if pids_cancellation is not None:
                 raise pids_cancellation
+            if cancellation_requested:
+                raise KeyboardInterrupt
         return final_status
 
 

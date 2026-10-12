@@ -2037,5 +2037,455 @@ class InstalledYogaCommandTests(unittest.TestCase):
                     builder.assert_not_called()
 
 
+class RunRetirementFilesystemModels(unittest.TestCase):
+    """Real tiny trees under Bazel; no controller, cgroup or provider execution."""
+    def setUp(self):
+        import execution_guard as guard
+        self.guard = guard
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.state = Path(self.temporary.name) / 'state'
+        self.state.mkdir(mode=0o700)
+        self.run = self.state / '1ec6e1df-dad1-4974-9a4d-8172b2a5c337'
+        self.run.mkdir(mode=0o700)
+        self.output = self.run / 'output-base'
+        self.output.mkdir(mode=0o700)
+        (self.output / 'nested').mkdir()
+        (self.output / 'nested/payload').write_bytes(b'payload')
+        (self.run / 'bazel-user-root').mkdir(mode=0o700)
+        (self.run / 'bazel-user-root/cache').write_bytes(b'cache')
+        self.evidence = b'{"schema":1,"results":[]}\n'
+        self.write('test-evidence.json', self.evidence)
+        (self.run / 'test-evidence').mkdir(mode=0o700)
+        (self.run / 'test-evidence/selected.evidence').write_bytes(b'durable evidence')
+        self.write('test-evidence-other.json', b'other evidence')
+        self.write('supervisor.json', b'private supervisor metadata')
+        self.write('workload.log', b'bounded workload diagnostics')
+        self.receipt = {'id': self.run.name, 'exit': 0, 'workload_exit': 0,
+            'descendants_empty': True, 'controller_failure': None, 'verb': 'test',
+            'profile': 'standard', 'targets': ['//tools:execution_guard_test'],
+            'output_base': str(self.output),
+            'cleanup': {'state': 'empty', 'stop': 'not-requested', 'ownership': 'unproved'},
+            'original_cgroup_identity': {'device': 1, 'inode': 2},
+            'test_evidence': {'state': 'preserved', 'manifest': 'test-evidence.json',
+                              'sha256': hashlib.sha256(self.evidence).hexdigest()}}
+        self.save_receipt()
+        self.entry_ns = time.monotonic_ns()
+        self.pin = guard.RunRetirement(self.state, self.run)
+        self.addCleanup(self.pin.close)
+
+    def write(self, name, raw):
+        path = self.run / name
+        path.write_bytes(raw)
+        path.chmod(0o600)
+
+    def save_receipt(self):
+        self.write('receipt.json', (json.dumps(self.receipt, sort_keys=True) + '\n').encode())
+
+    def retire(self, **options):
+        return self.pin.retire(terminal_published=True, original_entry_ns=self.entry_ns,
+            original_deadline_ns=self.entry_ns + 1200 * 10**9, **options)
+
+    def test_finished_fixed_children_retire_after_preserving_raw_evidence(self):
+        kept = {name: (self.run/name).read_bytes() for name in
+            ('receipt.json','supervisor.json','test-evidence.json','test-evidence-other.json','workload.log')}
+        (self.run/'another-directory').mkdir()
+        report = self.retire()
+        self.assertEqual(report['state'], 'complete')
+        self.assertEqual(report['removed_entries'], 5)
+        self.assertEqual(report['removed_directories'], 3)
+        self.assertIs(type(report['observed_allocated_blocks_512']), int)
+        self.assertIn('filesystem_before',report)
+        self.assertIn('filesystem_after',report)
+        for name, raw in kept.items(): self.assertEqual((self.run/name).read_bytes(),raw)
+        self.assertEqual((self.run/'test-evidence/selected.evidence').read_bytes(),b'durable evidence')
+        self.assertTrue((self.run/'another-directory').is_dir())
+        self.assertFalse(self.output.exists())
+        self.assertFalse((self.run/'bazel-user-root').exists())
+        self.assertEqual(json.loads((self.run/self.guard.RETIREMENT_REPORT).read_bytes()),report)
+
+    def test_owned_external_symlinks_are_unlinked_without_following_targets(self):
+        outside = self.state/'shared-cache'
+        outside.mkdir(mode=0o700)
+        (outside/'keep').write_bytes(b'external payload')
+        (self.output/'nix-store-link').symlink_to(outside,target_is_directory=True)
+        (self.output/'broken-link').symlink_to(outside/'missing')
+        report = self.retire()
+        self.assertEqual(report['state'],'complete')
+        self.assertEqual(report['removed_symlinks'],2)
+        self.assertEqual((outside/'keep').read_bytes(),b'external payload')
+
+    def test_top_child_symlink_refuses_without_removing_link_or_target(self):
+        self.output.rename(self.run/'saved-output')
+        self.output.symlink_to(self.run/'saved-output',target_is_directory=True)
+        report = self.retire()
+        self.assertEqual(report['state'],'refused')
+        self.assertTrue(self.output.is_symlink())
+        self.assertEqual((self.run/'saved-output/nested/payload').read_bytes(),b'payload')
+        self.assertTrue((self.run/'bazel-user-root/cache').is_file())
+
+    def test_run_replacement_is_refused_without_touching_either_tree(self):
+        saved = self.state/'saved-run'
+        self.run.rename(saved)
+        self.run.mkdir(mode=0o700)
+        (self.run/'output-base').mkdir()
+        (self.run/'output-base/foreign').write_bytes(b'replacement')
+        report = self.retire()
+        self.assertEqual(report['state'],'refused')
+        self.assertEqual(report['report_publication'],'refused')
+        self.assertEqual((saved/'output-base/nested/payload').read_bytes(),b'payload')
+        self.assertEqual((self.run/'output-base/foreign').read_bytes(),b'replacement')
+        self.assertFalse((self.run/self.guard.RETIREMENT_REPORT).exists())
+
+    def test_no_receipt_no_terminal_and_unqualified_cleanup_never_delete(self):
+        self.assertEqual(self.pin.retire(terminal_published=False, original_entry_ns=self.entry_ns,
+            original_deadline_ns=self.entry_ns + 1200 * 10**9)['reason'],'terminal-unpublished')
+        (self.run/'receipt.json').unlink()
+        self.assertEqual(self.retire()['state'],'refused')
+        self.assertTrue(self.output.is_dir())
+        (self.run/self.guard.RETIREMENT_REPORT).unlink(missing_ok=True)
+        for changes in ({'descendants_empty':False}, {'controller_failure':{'exception':'OSError'}},
+                {'cleanup':{'state':'original-changed','stop':'succeeded','ownership':'verified'}},
+                {'cleanup':{'state':'empty','stop':'unresolved','ownership':'verified'}},
+                {'cleanup':{'state':'empty','stop':'not-requested','ownership':'refused'}},
+                {'original_cgroup_identity':None}):
+            saved=dict(self.receipt)
+            self.receipt.update(changes);self.save_receipt()
+            report=self.retire()
+            self.assertEqual(report['reason'],'cleanup-unqualified')
+            self.assertTrue(self.output.is_dir())
+            (self.run/self.guard.RETIREMENT_REPORT).unlink()
+            self.receipt=saved
+
+    def test_evidence_hash_change_blocks_deletion(self):
+        self.write('test-evidence.json',b'changed')
+        self.assertEqual(self.retire()['reason'],'evidence-unqualified')
+        self.assertTrue(self.output.is_dir())
+
+    def test_shared_output_base_is_excluded_and_its_sibling_cache_untouched(self):
+        shared=self.state/'cache-key'
+        shared.mkdir(mode=0o700)
+        (shared/'output-base').mkdir()
+        (shared/'output-base/payload').write_bytes(b'shared')
+        self.receipt['output_base']=str(shared/'output-base');self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'excluded-shared-or-external-output-base')
+        self.assertEqual((shared/'output-base/payload').read_bytes(),b'shared')
+        self.assertTrue(self.output.is_dir())
+        self.assertFalse((self.run/'bazel-user-root').exists())
+
+    def test_repeated_retirement_preserves_first_durable_counters_and_refuses_new_root(self):
+        first=self.retire()
+        self.assertEqual(self.retire(),first)
+        self.output.mkdir()
+        (self.output/'later').write_bytes(b'new data')
+        self.assertEqual(self.retire()['state'],'refused')
+        self.assertEqual((self.output/'later').read_bytes(),b'new data')
+
+    def test_partial_failure_recovery_retires_remaining_child(self):
+        actual=self.pin.walk
+        failed=False
+        def interrupted(directory,lineage,counts,*,remove):
+            nonlocal failed
+            if remove and lineage[0][2]=='bazel-user-root' and not failed:
+                failed=True
+                raise OSError('synthetic interruption')
+            return actual(directory,lineage,counts,remove=remove)
+        with patch.object(self.pin,'walk',side_effect=interrupted):
+            first=self.retire()
+        self.assertEqual(first['state'],'refused')
+        self.assertFalse(self.output.exists())
+        self.assertTrue((self.run/'bazel-user-root/cache').exists())
+        recovered=self.retire()
+        self.assertEqual(recovered['state'],'complete')
+        self.assertEqual(recovered['children']['output-base'],'absent')
+        self.assertFalse((self.run/'bazel-user-root').exists())
+
+    def test_wide_tree_streams_entries_without_listdir_and_depth_is_bounded(self):
+        for index in range(1024): (self.output/str(index)).write_bytes(b'x')
+        with patch.object(self.guard.os,'listdir',side_effect=AssertionError('unbounded inventory')):
+            report=self.retire()
+        self.assertEqual(report['state'],'complete')
+        self.assertEqual(report['removed_entries'],1029)
+
+    def producer(self, label):
+        self.receipt['targets']=[label]
+        directory=self.output/'execroot/_main/bazel-out/k8-fastbuild/testlogs'/label[2:].replace(':','/')/'test.outputs'
+        directory.mkdir(parents=True)
+        for member in self.guard.RETAINED_OUTPUT_PRODUCTS[label]:
+            path=directory/member
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(b'original declared product')
+        self.evidence=json.dumps({'schema':1,'results':[{'target':label,'configuration':'k8-fastbuild',
+            'state':'observed','files':[{'source':'test.xml','state':'copied','bytes':1}]}]}).encode()
+        self.write('test-evidence.json',self.evidence)
+        self.receipt['test_evidence']['sha256']=hashlib.sha256(self.evidence).hexdigest()
+        self.save_receipt()
+        return directory
+
+    def test_named_successful_producer_holds_original_physical_root_only(self):
+        self.producer('//tools:codex_native_sdk_carrier_seal_producer')
+        identity=self.output.stat()
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(report['retained_physical_root'],{'device':identity.st_dev,'inode':identity.st_ino})
+        self.assertEqual(report['receipt_sha256'],hashlib.sha256((self.run/'receipt.json').read_bytes()).hexdigest())
+        self.assertIn('fresh qualification',report['proof_semantics'])
+        self.assertTrue((self.output/'nested/payload').is_file())
+        self.assertFalse((self.run/'bazel-user-root').exists())
+        copied_run=self.state/'ffe63a8b-12cd-46ae-8fcd-7d03899668e0'
+        copied_run.mkdir(mode=0o700)
+        copied_output=copied_run/'output-base';copied_output.mkdir()
+        (copied_output/'copied-product').write_bytes(b'payload')
+        for name in ('receipt.json','test-evidence.json',self.guard.RETIREMENT_REPORT):
+            (copied_run/name).write_bytes((self.run/name).read_bytes());(copied_run/name).chmod(0o600)
+        copied_pin=self.guard.RunRetirement(self.state,copied_run)
+        try:
+            copied_report=copied_pin.retire(terminal_published=True, original_entry_ns=self.entry_ns,
+                original_deadline_ns=self.entry_ns + 1200 * 10**9)
+            self.assertEqual(copied_report['state'],'skipped')
+            self.assertEqual(copied_report['reason'],'run-receipt-mismatch')
+            self.assertTrue((copied_output/'copied-product').is_file())
+        finally:copied_pin.close()
+
+    def test_missing_or_partial_product_has_no_retention_authority(self):
+        directory=self.producer('//tools:codex_native_sdk_carrier_seal_producer')
+        (directory/'sdk-private/sdk-carrier/payload.bin').unlink()
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'missing-or-partial-declared-products')
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_readonly_owned_bazel_directories_can_retire(self):
+        (self.output/'nested').chmod(0o555)
+        self.output.chmod(0o555)
+        self.assertEqual(self.retire()['state'],'complete')
+        self.assertFalse(self.output.exists())
+
+    def test_original_retained_root_replacement_has_no_inherited_reference(self):
+        self.producer('//tools:codex_native_sdk_carrier_seal_producer')
+        first=self.retire()
+        self.output.rename(self.run/'retained-original')
+        self.output.mkdir()
+        (self.output/'copy').write_bytes(b'copied')
+        report=self.retire()
+        self.assertEqual(first['state'],'complete')
+        self.assertEqual(report['state'],'refused')
+        self.assertEqual((self.output/'copy').read_bytes(),b'copied')
+
+    def test_foreign_owned_entry_refuses_preflight_without_deleting_owned_entries(self):
+        actual=self.guard.os.stat
+        def foreign(name,*arguments,**keywords):
+            info=actual(name,*arguments,**keywords)
+            if name=='payload' and keywords.get('dir_fd') is not None:
+                return SimpleNamespace(st_mode=info.st_mode,st_uid=os.getuid()+1,st_dev=info.st_dev)
+            return info
+        with patch.object(self.guard.os,'stat',side_effect=foreign):
+            report=self.retire()
+        self.assertEqual(report['state'],'refused')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+        self.assertTrue((self.run/'bazel-user-root/cache').is_file())
+
+    def test_exact_reserved_file_writer_vector_holds_its_source_root(self):
+        self.producer('//tools:codex_native_source_file_writer_producer')
+        self.receipt['targets']=['//tools:codex_native_source_file_writer_test',
+            '//tools:codex_native_source_file_writer_producer',
+            '//tools:codex_native_source_file_writer_metadata_producer']
+        self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+
+    def test_depth_bound_refuses_before_any_tree_removal(self):
+        directory=self.output
+        for _ in range(self.guard.RETIREMENT_DEPTH):
+            directory=directory/'d';directory.mkdir()
+        self.assertEqual(self.retire()['state'],'refused')
+        self.assertTrue((self.output/'nested/payload').is_file())
+
+    def test_failed_producer_has_no_retention_or_reuse_authority(self):
+        self.receipt.update(targets=['//tools:codex_native_sdk_carrier_seal_producer'],exit=1,workload_exit=1)
+        self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_retirement_budget_clamps_to_original_timeout_and_sixty_seconds(self):
+        start=self.entry_ns
+        now=[start+890*10**9]
+        budget=self.guard.RetirementBudget(start,start+1200*10**9,
+            timeout_seconds=900,clock=lambda:now[0])
+        self.assertEqual(budget.deadline_ns,start+900*10**9)
+        self.assertEqual(budget.work_deadline_ns,start+898*10**9)
+        now[0]=budget.work_deadline_ns
+        with self.assertRaises(self.guard.RetirementDeferred):budget.checkpoint()
+        budget.checkpoint(final_report=True)
+        now[0]=budget.deadline_ns
+        with self.assertRaises(self.guard.RetirementDeferred):budget.checkpoint(final_report=True)
+        now[0]=start+10*10**9
+        budget=self.guard.RetirementBudget(start,start+1200*10**9,clock=lambda:now[0])
+        self.assertEqual(budget.deadline_ns,now[0]+60*10**9)
+        budget=self.guard.RetirementBudget(start,start+1200*10**9,
+            timeout_seconds=60,clock=lambda:now[0])
+        self.assertEqual(budget.deadline_ns,start+60*10**9)
+
+    def test_expired_original_deadline_defers_without_new_walk_or_publication(self):
+        receipt=(self.run/'receipt.json').read_bytes()
+        with patch.object(self.pin,'walk',side_effect=AssertionError('work past original cutoff')):
+            report=self.retire(clock=lambda:self.entry_ns+1200*10**9)
+        self.assertEqual(report['state'],'deferred')
+        self.assertEqual(report['reason'],'deadline')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual(report['report_publication'],'deferred-at-original-cutoff')
+        self.assertEqual((self.run/'receipt.json').read_bytes(),receipt)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+        self.assertFalse((self.run/self.guard.RETIREMENT_REPORT).exists())
+
+    def test_cutoff_between_preflight_and_delete_preserves_payload_and_publishes_deferral(self):
+        now=[self.entry_ns]
+        actual=self.pin.walk
+        def expire_after_preflight(directory,lineage,counts,*,remove):
+            result=actual(directory,lineage,counts,remove=remove)
+            if not remove and len(lineage)==1:
+                now[0]=self.entry_ns+58*10**9
+            return result
+        with patch.object(self.pin,'walk',side_effect=expire_after_preflight):
+            report=self.retire(clock=lambda:now[0])
+        self.assertEqual(report['state'],'deferred')
+        self.assertEqual(report['reason'],'deadline')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+        self.assertEqual(json.loads((self.run/self.guard.RETIREMENT_REPORT).read_bytes()),report)
+
+    def test_cutoff_after_one_unlink_records_actual_partial_counts_without_second_walk(self):
+        now=[self.entry_ns]
+        actual=self.guard.os.unlink
+        removed=[]
+        def expire_after_unlink(name,*args,**kwargs):
+            result=actual(name,*args,**kwargs)
+            removed.append(name)
+            now[0]=self.entry_ns+58*10**9
+            return result
+        with patch.object(self.guard.os,'unlink',side_effect=expire_after_unlink):
+            report=self.retire(clock=lambda:now[0])
+        self.assertEqual(report['state'],'partial')
+        self.assertEqual(report['reason'],'deadline')
+        self.assertEqual(report['removed_entries'],1)
+        self.assertEqual(removed,['payload'])
+        self.assertTrue(self.output.is_dir())
+        self.assertTrue((self.run/'bazel-user-root/cache').is_file())
+        self.assertEqual(json.loads((self.run/self.guard.RETIREMENT_REPORT).read_bytes()),report)
+        self.assertEqual((self.run/'test-evidence.json').read_bytes(),self.evidence)
+
+    def test_cancellation_at_entry_never_traverses_or_mutates_outputs(self):
+        with patch.object(self.pin,'walk',side_effect=AssertionError('work after cancellation')):
+            report=self.retire(cancelled=lambda:True)
+        self.assertEqual(report['state'],'deferred')
+        self.assertEqual(report['reason'],'cancelled')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+        self.assertTrue((self.run/'bazel-user-root/cache').is_file())
+
+    def test_cancellation_after_one_unlink_stops_and_records_exact_completed_mutation(self):
+        cancelled=[False]
+        actual=self.guard.os.unlink
+        calls=[]
+        def cancel_after_unlink(name,*args,**kwargs):
+            result=actual(name,*args,**kwargs)
+            calls.append(name)
+            cancelled[0]=True
+            return result
+        with patch.object(self.guard.os,'unlink',side_effect=cancel_after_unlink):
+            report=self.retire(cancelled=lambda:cancelled[0])
+        self.assertEqual(report['state'],'partial')
+        self.assertEqual(report['reason'],'cancelled')
+        self.assertEqual(report['removed_entries'],1)
+        self.assertEqual(calls,['payload'])
+        self.assertTrue((self.run/'bazel-user-root/cache').is_file())
+        self.assertEqual(json.loads((self.run/self.guard.RETIREMENT_REPORT).read_bytes()),report)
+
+    def test_keyboard_interrupt_propagates_after_metadata_only_deferral(self):
+        actual=self.pin.walk
+        error=KeyboardInterrupt()
+        def interrupt_before_delete(directory,lineage,counts,*,remove):
+            if remove:raise error
+            return actual(directory,lineage,counts,remove=remove)
+        with patch.object(self.pin,'walk',side_effect=interrupt_before_delete):
+            with self.assertRaises(KeyboardInterrupt) as caught:self.retire()
+        self.assertIs(caught.exception,error)
+        report=json.loads((self.run/self.guard.RETIREMENT_REPORT).read_bytes())
+        self.assertEqual(report['state'],'deferred')
+        self.assertEqual(report['reason'],'cancelled')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+
+    def test_test_evidence_is_read_once_for_hash_and_parsed_producer_decision(self):
+        self.producer('//tools:codex_native_sdk_carrier_seal_producer')
+        actual=self.pin.read_regular
+        reads=[]
+        def counted(name,*args,**kwargs):
+            if name in ('receipt.json','test-evidence.json'):reads.append(name)
+            return actual(name,*args,**kwargs)
+        with patch.object(self.pin,'read_regular',side_effect=counted):report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(reads,['receipt.json','test-evidence.json'])
+        self.assertEqual(report['test_evidence_sha256'],hashlib.sha256(self.evidence).hexdigest())
+
+    def test_evidence_replacement_after_hash_refuses_before_any_payload_delete(self):
+        actual=self.guard.json.loads
+        swapped=[False]
+        def replace_after_bound_hash(raw,*args,**kwargs):
+            result=actual(raw,*args,**kwargs)
+            if raw==self.evidence and not swapped[0]:
+                swapped[0]=True
+                replacement=self.run/'test-evidence-replacement.json'
+                replacement.write_bytes(b'{"schema":1,"results":[]}\n')
+                replacement.chmod(0o600)
+                replacement.replace(self.run/'test-evidence.json')
+            return result
+        with patch.object(self.guard.json,'loads',side_effect=replace_after_bound_hash):report=self.retire()
+        self.assertTrue(swapped[0])
+        self.assertEqual(report['state'],'refused')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+        self.assertTrue((self.run/'bazel-user-root/cache').is_file())
+
+    def test_receipt_or_evidence_replacement_after_preflight_refuses_at_mutation_fence(self):
+        actual=self.pin.walk
+        replaced=[False]
+        receipt_before=(self.run/'receipt.json').read_bytes()
+        def replace_after_preflight(directory,lineage,counts,*,remove):
+            result=actual(directory,lineage,counts,remove=remove)
+            if not remove and len(lineage)==1 and not replaced[0]:
+                replaced[0]=True
+                replacement=self.run/'test-evidence-replacement.json'
+                replacement.write_bytes(self.evidence);replacement.chmod(0o600)
+                replacement.replace(self.run/'test-evidence.json')
+            return result
+        with patch.object(self.pin,'walk',side_effect=replace_after_preflight):report=self.retire()
+        self.assertEqual(report['state'],'refused')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual((self.run/'receipt.json').read_bytes(),receipt_before)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+
+    def test_receipt_replacement_at_leaf_unlink_fence_refuses_deletion(self):
+        actual=self.pin.fence_bound_evidence
+        checks=[0]
+        def replace_then_fence():
+            checks[0]+=1
+            # Startup decision and post-preflight fences precede directory chmod;
+            # swap only once deletion traversal has opened its nested directory.
+            if checks[0]==5:
+                replacement=self.run/'test-evidence-replacement-receipt.json'
+                replacement.write_bytes((self.run/'receipt.json').read_bytes())
+                replacement.chmod(0o600);replacement.replace(self.run/'receipt.json')
+            return actual()
+        with patch.object(self.pin,'fence_bound_evidence',side_effect=replace_then_fence):report=self.retire()
+        self.assertEqual(report['state'],'refused')
+        self.assertEqual(report['removed_entries'],0)
+        self.assertEqual((self.output/'nested/payload').read_bytes(),b'payload')
+
+
+
 if __name__ == '__main__':
     unittest.main()
