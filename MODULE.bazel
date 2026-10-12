@@ -243,8 +243,8 @@ yoga_public_install_inputs(name="omux_yoga_public_install_inputs")
 native_flake_seed_plan = use_repo_rule("//tools:native_flake_seed_plan_repository.bzl", "native_flake_seed_plan_repository")
 native_flake_seed_plan(
     name = "omux_native_flake_seed_plan",
-    selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/4c3aa2a9-9421-411d-bd6e-74ecc5f6290c/native-flake-seed-plan-selection.json",
-    selection_sha256 = "e7c50f1a6d5392bb99e7d4b24e1a561ba61eb6ce32d39e0c5ef184d2b8386e07",
+    selection_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/3be8efae-a333-4278-bd7d-8ce5dd15b327/native-flake-seed-plan-selection.json",
+    selection_sha256 = "68948d695f2b8bdfc79b405f1a8011833064abff83dc7436ff1c9d44265dca43",
 )
 
 # No future successful plan or ready tool byte pins are invented here.
