@@ -322,6 +322,24 @@ class OriginalSDKInputsModels(unittest.TestCase):
         for record in self.plan['document']['regular_inputs']:
             self.assertIn(repr(record['alias']), raw)
         self.assertIn(repr(inputs.MANIFEST), raw)
+        # Run only the emitted Python/Starlark common subset to inspect the
+        # actual exports/group arguments. Genuine Bazel parse remains a gate.
+        calls = []
+        def package(*, default_visibility):
+            calls.append(('package', default_visibility))
+        def exports_files(files):
+            calls.append(('exports', files))
+        def filegroup(*, name, srcs):
+            calls.append(('group', name, srcs))
+        exec(raw, {'__builtins__': {}, 'package': package,
+            'exports_files': exports_files, 'filegroup': filegroup})
+        expected = [record['alias'] for record in self.plan['document']['regular_inputs']] + [inputs.MANIFEST]
+        self.assertEqual(calls[0], ('package', ['//visibility:public']))
+        self.assertEqual(calls[1], ('exports', expected))
+        self.assertEqual(calls[2], ('group', 'inputs', expected))
+        self.assertEqual(len(calls), 3)
+        self.assertIs(calls[1][1], calls[2][2])
+        self.assertTrue(all(raw.count(repr(name)) == 1 for name in expected))
         self.assertEqual(self.plan['document']['origin_receipt_sha256'], self.fixture.pin)
         self.assertEqual(self.plan['document']['jdk_root'], str(self.fixture.jdk))
 
@@ -1081,6 +1099,123 @@ class OriginalSDKInputsModels(unittest.TestCase):
                     self.manifest.chmod(0o600)
                     self.manifest.write_bytes(original)
                     self.manifest.chmod(0o444)
+
+    def restore_owned_catalogue(self):
+        # Only this test-owned declaration is recreated; original SDK/carrier,
+        # selected context and original cutoff remain unchanged between cases.
+        for path, unused_dirs, unused_files in os.walk(self.repository, followlinks=False):
+            Path(path).chmod(0o700)
+        shutil.rmtree(self.repository)
+        self.repository.mkdir(mode=0o700)
+        publisher = declaration.Publication(self.repository, self.clock)
+        try:
+            publisher.publish(self.plan['document'])
+            publisher.accepted = True
+        finally: publisher.close()
+
+    def test_catalogue_bulk_and_parent_transactions_keep_all_alias_joins_with_bounded_anchor_sweeps(self):
+        with self.session() as current:
+            catalogue = current.catalogue
+            real_check, real_leaf = inputs.Catalogue.check, inputs.Catalogue._alias_leaf
+            checks, leaves = [], []
+            def check(owner): checks.append(owner); return real_check(owner)
+            def leaf(owner, role, path): leaves.append((role, path)); return real_leaf(owner, role, path)
+            with patch.object(inputs.Catalogue, 'check', new=check), patch.object(inputs.Catalogue, '_alias_leaf', new=leaf):
+                catalogue.check_all()
+                self.assertEqual(checks, [catalogue, catalogue])
+                self.assertEqual(leaves, list(catalogue.aliases))
+                checks.clear(); leaves.clear()
+                first = next(iter(catalogue.aliases))
+                catalogue.check_alias(*first)
+                self.assertEqual(checks, [catalogue, catalogue]); self.assertEqual(leaves, [first])
+                checks.clear(); leaves.clear()
+                fd, name = current.roots['sdk'].parent('repositories/public+/tool')
+                try:
+                    self.assertEqual(name, 'tool')
+                    self.assertEqual(checks, [catalogue, catalogue])
+                    self.assertEqual(leaves, [('sdk', 'repositories/public+/tool')] * 2)
+                finally: os.close(fd)
+            self.assertEqual(current.until_ns, self.entry_ns + 600*10**9)
+            current.finish()
+
+    def test_bulk_alias_transaction_refuses_earlier_alias_manifest_or_parent_drift(self):
+        # Mutation occurs AFTER an earlier exact alias leaf has been visited;
+        # the original full-nine manifest/alias-parent postfence must refuse.
+        for fault in ('earlier-alias', 'manifest', 'alias-parent'):
+            changed = False
+            real = inputs.Catalogue._alias_leaf
+            def mutate(catalogue, role, path):
+                nonlocal changed
+                real(catalogue, role, path)
+                if not changed:
+                    changed = True
+                    if fault == 'earlier-alias':
+                        name, target, witness = catalogue.aliases[(role, path)]
+                        parent = self.repository / 'input-files'; parent.chmod(0o700)
+                        alias = parent / name; alias.unlink(); alias.symlink_to(target); parent.chmod(0o555)
+                    elif fault == 'manifest':
+                        raw = self.manifest.read_bytes(); self.manifest.chmod(0o600)
+                        self.manifest.write_bytes(raw); self.manifest.chmod(0o444)
+                    else:
+                        parent = self.repository / 'input-files'
+                        parent.rename(self.repository / 'detached-alias-parent')
+                        shutil.copytree(self.repository / 'detached-alias-parent', parent, symlinks=True)
+            with self.assertRaises(ValueError):
+                with self.session() as current:
+                    with patch.object(inputs.Catalogue, '_alias_leaf', new=mutate): current.catalogue.check_all()
+            self.assertTrue(changed); self.assertFalse(current.active)
+            self.assertIsNone(current.catalogue.fd); self.assertEqual(current.catalogue.anchor.chain, [])
+            # Each following case starts with a fresh valid fixture declaration,
+            # rather than inheriting a previously corrupted alias/manifest.
+            self.restore_owned_catalogue()
+
+    def test_parent_transaction_refuses_alias_change_during_original_parent_io_and_closes_returned_fd(self):
+        for fault in ('alias-leaf', 'alias-parent'):
+            returned, changed = [], False
+            real = core.Root.parent
+            with self.assertRaises(ValueError):
+                with self.session() as current:
+                    selected = current.roots['sdk']
+                    def parent(owner, name):
+                        nonlocal changed
+                        result = real(owner, name)
+                        if owner is selected and name == 'repositories/public+/tool' and not changed:
+                            returned.append(result[0]); changed = True
+                            parent = self.repository / 'input-files'
+                            if fault == 'alias-leaf':
+                                alias_name, target, witness = current.catalogue.aliases[('sdk', name)]
+                                parent.chmod(0o700); alias = parent / alias_name
+                                alias.unlink(); alias.symlink_to(target); parent.chmod(0o555)
+                            else:
+                                parent.rename(self.repository / 'detached-io-alias-parent')
+                                shutil.copytree(self.repository / 'detached-io-alias-parent', parent, symlinks=True)
+                        return result
+                    with patch.object(core.Root, 'parent', new=parent):
+                        current.read_regular('sdk', 'repositories/public+/tool', 4096)
+            self.assertTrue(changed); self.assertEqual(len(returned), 1)
+            for fd in returned:
+                with self.assertRaises(OSError): os.fstat(fd)
+            self.assertFalse(current.active); self.assertEqual(current.catalogue.anchor.chain, [])
+            self.restore_owned_catalogue()
+
+    def test_bulk_alias_transaction_integer_cutoff_expires_without_reset_or_fullproof_skip(self):
+        changed = False
+        real = inputs.Catalogue._alias_leaf
+        clock_patch = patch.object(core.time, 'monotonic_ns', return_value=self.entry_ns + 600*10**9)
+        try:
+            with self.assertRaises(ValueError):
+                with self.session() as current:
+                    def expire(catalogue, role, path):
+                        nonlocal changed
+                        real(catalogue, role, path)
+                        if not changed:
+                            changed = True; clock_patch.start()
+                    with patch.object(inputs.Catalogue, '_alias_leaf', new=expire): current.catalogue.check_all()
+            self.assertTrue(changed); self.assertFalse(current.active)
+            self.assertEqual(current.until_ns, self.entry_ns + 600*10**9)
+            self.assertEqual(current.clock.until_ns, self.entry_ns + 600*10**9)
+            self.assertFalse(current.finished)
+        finally: clock_patch.stop()
 
 
 if __name__ == '__main__':

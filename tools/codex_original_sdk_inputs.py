@@ -155,8 +155,11 @@ class Catalogue:
         carrier.names(self.anchor.fd, {str(i) for i in range(len(regular))}, self.clock)
         self.check_all()
 
-    def check_alias(self, role, path):
-        self.check()
+    def _alias_leaf(self, role, path):
+        # Only callers inside a same-held catalogue transaction use this leaf
+        # join. The enclosing full checks bind manifest/ancestor/alias-parent
+        # witnesses before and after all work; no proof is cached or renewed.
+        self.clock.tick()
         need((role, path) in self.aliases, 'undeclared-regular-read')
         name, target, witness = self.aliases[(role, path)]
         before = os.stat(name, dir_fd=self.anchor.fd, follow_symlinks=False)
@@ -164,13 +167,20 @@ class Catalogue:
              and os.readlink(name, dir_fd=self.anchor.fd) == target
              and carrier.identity(os.stat(name, dir_fd=self.anchor.fd, follow_symlinks=False)) == witness,
              'declared-alias-readback')
+        self.clock.tick()
+
+    def check_alias(self, role, path):
+        self.check()
+        self._alias_leaf(role, path)
         self.check()
 
     def check_all(self):
         self.check()
         carrier.names(self.anchor.fd, {name for name, _, _ in self.aliases.values()}, self.clock)
         for role, path in self.aliases:
-            self.check_alias(role, path)
+            self._alias_leaf(role, path)
+        # Full-nine alias-parent and manifest joins catch mutations after any
+        # earlier leaf. This remains a finite observation, not atomicity.
         self.check()
 
     def close(self):
@@ -189,10 +199,12 @@ class DeclaredRoot(carrier.Root):
         super().__init__(ORIGIN if role == 'sdk' else sdk.JDK, clock, origin_jdk=role == 'jdk')
 
     def parent(self, name):
-        self.catalogue.check_alias(self.role, name)
+        self.catalogue.check()
+        self.catalogue._alias_leaf(self.role, name)
         result = super().parent(name)
         try:
-            self.catalogue.check_alias(self.role, name)
+            self.catalogue._alias_leaf(self.role, name)
+            self.catalogue.check()
             return result
         except BaseException:
             os.close(result[0])

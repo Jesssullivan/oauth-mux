@@ -94,7 +94,8 @@ def catalogue(clock, stack, context):
 def build(document):
     files = [row['alias'] for row in document['regular_inputs']] + [inputs.MANIFEST]
     return '\n'.join(['package(default_visibility = ["//visibility:public"])',
-        'exports_files({})'.format(repr(files)), 'filegroup(name = "inputs", srcs = {})'.format(repr(files)), ''])
+        '_files = {}'.format(repr(files)),
+        'exports_files(_files)', 'filegroup(name = "inputs", srcs = _files)', ''])
 
 
 class Publication:
