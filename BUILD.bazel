@@ -6,6 +6,8 @@ load("//tools:rules.bzl", "python_test", "source_archive")
 load("//tools:reference_bundle.bzl", "reference_bundle")
 load("//tools:runtime_zig.bzl", "zig_binary", "zig_test")
 load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
+# Genuine Bazel load/parser prerequisite; no evaluator/producer instantiation.
+load("//:nix/darwin-hm-evaluation.bzl", "darwin_home_manager_evaluation")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -19,9 +21,10 @@ INSTALLED_RUNTIME_RECORDS = [
 # Current declared code/build inputs; excludes docs, checkpoints and artifacts.
 filegroup(
     name = "selected_runtime_source_inputs",
-    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "flake.lock", ".bazelrc", ".bazelversion", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "nix/**/*.nix", "nix/*.py"], allow_empty = True) + [
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "flake.lock", ".bazelrc", ".bazelversion", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "nix/**/*.nix", "nix/*.py", "nix/*.bzl", "nix/*.json"], allow_empty = True) + [
         "//tools:source_receipt_inputs", "//delivery:source_receipt_inputs", "//extensions:source_receipt_inputs",
         "//clients/linux:public_sources", "//clients/macos:public_sources",
+        "//clients/macos/darwin_delivery:public_sources", "//tools/darwin_artifact:public_sources",
         "//integrations/codex-upstream:source_receipt_inputs",
         "//integrations/codex-owner-runtime:source_receipt_inputs",
         "//integrations/codex-adapter-delivery:source_receipt_inputs",
@@ -45,7 +48,45 @@ exports_files([
     "nix/home_manager_evaluation_runner.py", "nix/home_manager_evaluation_runner_test.py",
     "nix/home_manager_io.py", "nix/home_manager_source_probe.py", "nix/home_manager_source_probe_test.py",
     "nix/evaluation_runner.py",
+    "nix/home-manager-darwin-candidate.nix", "nix/home-manager-darwin-candidate-evaluation.nix",
+    "nix/darwin-launchd-definition.nix", "nix/darwin-ownership-witness.nix", "nix/darwin-service-witness.nix",
+    "nix/home_manager_darwin_generation.py", "nix/home_manager_darwin_generation_test.py",
+    "nix/darwin-generated-inputs.bzl", "nix/home-manager-darwin-generated-inputs.json",
+    "nix/darwin-hm-evaluation.bzl", "nix/home_manager_darwin_evaluation.py", "nix/home_manager_darwin_evaluation_test.py",
+    "nix/consume-darwin-bazel-artifact.nix",
 ])
+
+# Isolated candidate only; no flake export or Linux gate change. The consumer
+# import is supplied by the separately reviewed Darwin artifact packet.
+filegroup(
+    name = "darwin_home_manager_candidate_sources",
+    srcs = ["nix/home-manager-darwin-candidate.nix", "nix/home-manager-darwin-candidate-evaluation.nix",
+        "nix/darwin-launchd-definition.nix", "nix/darwin-ownership-witness.nix", "nix/darwin-service-witness.nix",
+        "nix/consume-darwin-bazel-artifact.nix", "nix/darwin-generated-inputs.bzl",
+        "nix/home-manager-darwin-generated-inputs.json", "nix/home_manager_darwin_generation.py",
+        "nix/darwin-hm-evaluation.bzl", "nix/home_manager_darwin_evaluation.py", "nix/evaluation_runner.py",
+        "//tools/darwin_artifact:public_sources", "//tools:macho.py"],
+)
+python_test(
+    name = "home_manager_darwin_evaluation_test",
+    main = "nix/home_manager_darwin_evaluation_test.py",
+    srcs = ["nix/home_manager_darwin_evaluation.py", "nix/home_manager_darwin_generation.py", "nix/evaluation_runner.py"],
+)
+python_test(
+    name = "home_manager_darwin_generation_test",
+    main = "nix/home_manager_darwin_generation_test.py",
+    srcs = ["nix/home_manager_darwin_generation.py"],
+)
+python_test(
+    name = "home_manager_darwin_generated_observation",
+    main = "nix/home_manager_darwin_generation.py",
+    data = ["@omux_darwin_hm_generated//:layout.json", "@omux_darwin_hm_generated//:inputs"],
+    args = ["--layout", "$(location @omux_darwin_hm_generated//:layout.json)"],
+    env_inherit = ["OMUX_DARWIN_HM_ENTRY_NS", "OMUX_DARWIN_HM_DEADLINE_NS"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
 
 zig_test(
     name = "browser_attempt_test",
@@ -57,7 +98,9 @@ zig_test(
 # Git metadata, operator state, captured browser data or credential fixtures.
 source_archive(
     name = "public_source_archive",
-    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/agent-notes/2026-10-11-estate-review-index.json", "docs/agent-notes/2026-10-11-product-reality-reattachment-index.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + INSTALLED_RUNTIME_RECORDS + [
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "nix/*.bzl", "nix/*.json", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/agent-notes/2026-10-11-estate-review-index.json", "docs/agent-notes/2026-10-11-product-reality-reattachment-index.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + INSTALLED_RUNTIME_RECORDS + [
+        "nix/home_manager_darwin_generation.py", "nix/home_manager_darwin_generation_test.py",
+        "nix/home_manager_darwin_evaluation.py", "nix/home_manager_darwin_evaluation_test.py",
         "clients/README.md", "nix/README.md", "nix/evaluation_runner.py", "nix/evaluation_runner_test.py",
         "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
         "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
@@ -69,6 +112,7 @@ source_archive(
         "nix/home_manager_io.py", "nix/home_manager_source_probe.py", "nix/home_manager_source_probe_test.py",
         "//tools:public_sources", "//delivery:public_sources", "//extensions:public_sources",
         "//clients/linux:public_sources", "//clients/macos:public_sources",
+        "//clients/macos/darwin_delivery:public_sources", "//tools/darwin_artifact:public_sources",
         "//integrations/codex-upstream:public_sources",
         "//integrations/codex-owner-candidate:public_sources",
         "//integrations/codex-owner-runtime:public_sources",

@@ -314,6 +314,11 @@ current_hm_pair(name="omux_current_hm_pair")
 current_hm_pair_bundle = use_repo_rule("//tools:home_manager_current_pair_bundle_repository.bzl", "current_home_manager_pair_bundle_repository")
 current_hm_pair_bundle(name="omux_current_hm_pair_bundle")
 
+# Independent cold generated Darwin definition inputs. No signing/build/HM
+# activation producer edge; null must refuse before selected generation IO.
+darwin_hm_generated = use_repo_rule("//:nix/darwin-generated-inputs.bzl", "darwin_generated_inputs")
+darwin_hm_generated(name="omux_darwin_hm_generated", selection="//:nix/home-manager-darwin-generated-inputs.json")
+
 # Independent carrier metadata/SDK proof/projection declarations. No inherited
 # legacy SDK data or acquired repository is requested by these rules.
 carrier_material_inputs = use_repo_rule("//tools:codex_native_carrier_material_inputs.bzl", "codex_native_carrier_material_inputs")
