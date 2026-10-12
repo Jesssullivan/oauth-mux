@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFileInfo>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -60,7 +61,10 @@ int main(int argc, char **argv) {
         if (validateSiwcAuthorization("openai_siwc_responses_v1", invalid)) return 4;
     QTemporaryDir temporary; if (!temporary.isValid()) return 5;
     const auto socketPath = temporary.path() + "/control";
-    QLocalServer server; if (!server.listen(socketPath)) return 6;
+    QLocalServer server;
+    server.setSocketOptions(QLocalServer::UserAccessOption);
+    if (!server.listen(socketPath)) return 6;
+    if (!QFile::setPermissions(socketPath, QFile::ReadOwner | QFile::WriteOwner)) return 48;
     QJsonValue capability = true;
     QString transaction(64, '2'), source(64, '3'); const QString account(64, '4');
     qint64 revision = 9007199254740993LL, seconds = 600;

@@ -925,3 +925,15 @@ zig_test(
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
 )
+
+# Focus the real account catalog actor cases before the full runtime regression.
+zig_test(
+    name = "catalog_actor_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    zigopts = ["--test-filter", "catalog"],
+)

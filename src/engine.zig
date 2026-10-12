@@ -2008,7 +2008,12 @@ pub const Engine = struct {
     }
 
     fn startCatalogInvocation(self: *Engine, invocation: *Invocation) !bool {
-        var request = try control.parse(self.allocator, invocation.payload);
+        var request = control.parse(self.allocator, invocation.payload) catch |err| {
+            // Failed parsing admits no identity or catalog work. Finish this
+            // exact invocation without reparsing through the reply allocator.
+            self.finishInvocation(invocation, control.failure(invocation.allocator, .null, -32600, @errorName(err)));
+            return true;
+        };
         var transferred = false;
         defer if (!transferred) request.deinit();
         if (!eql(request.method, "adapter.siwcCatalog")) return false;
@@ -16139,7 +16144,10 @@ const SiwcCatalogTest = struct {
         var arena: std.heap.ArenaAllocator = .init(a);
         defer arena.deinit();
         const scratch = arena.allocator();
-        const serialized_params = try std.json.Stringify.valueAlloc(scratch, params, .{});
+        const serialized_params: []const u8 = if (comptime @TypeOf(params) == @TypeOf(.{}))
+            "{}"
+        else
+            try std.json.Stringify.valueAlloc(scratch, params, .{});
         var parsed = try std.json.parseFromSlice(std.json.Value, scratch, serialized_params, .{});
         defer parsed.deinit();
         if (parsed.value != .object) return error.InvalidFixture;

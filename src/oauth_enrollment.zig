@@ -2,8 +2,9 @@
 //! cannot authorize provider IO or activate a grant. A native client literal,
 //! new code or authenticated account identity is not registration/family proof.
 //! The actor commits every transition before any dependent effect. No callback
-//! listener or dispatcher is reconstructed from this durable ledger. Qualified
-//! production registration remains unavailable in the issue-authority module.
+//! listener or dispatcher is reconstructed from this durable ledger. Owned OSS
+//! registration is dispatched through oauth_issue_authority.OssEnrollment; this
+//! ledger alone cannot supply that authority or adopt an external refresh writer.
 const std = @import("std");
 const envelope = @import("envelope.zig");
 
@@ -254,8 +255,9 @@ pub const Ledger = struct {
         clearCapsules(a, record);
         record.phase = .completion_unknown;
     }
-    /// No qualified registration constructor/dispatcher exists yet. Keep this
-    /// exact failure separate from wrapping custody or accepted provider work.
+    /// This legacy ledger-only entry point remains unavailable. Owned OSS
+    /// issuance requires the separate registered-client dispatcher and proof;
+    /// ledger state or a native client literal cannot manufacture that authority.
     pub fn requireIssueAuthority(self: *Ledger, id: [32]u8) !void {
         const record = self.find(id) orelse return error.EnrollmentNotFound;
         if (record.phase == .exchange_issued or record.phase == .verifying or record.phase == .completion_unknown) return error.ExchangeIndeterminate;
