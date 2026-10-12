@@ -1274,6 +1274,61 @@ class GuardTest(unittest.TestCase):
                 main(options + ['--'] + arguments)
             reader.assert_not_called()
 
+    def test_site_inventory_accepts_original_epoch_output_with_exact_digest_and_suffix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            epoch = state / '72bf2f84-641d-4ca2-8aeb-4e42d279aaf7'
+            suffix = 'output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/cached_site_inventory_probe/test.outputs/inventory.json'
+            inventory = epoch / suffix
+            inventory.parent.mkdir(parents=True)
+            content = b'{"public":"current-inventory-fixture"}\n'
+            inventory.write_bytes(content)
+            digest = hashlib.sha256(content).hexdigest()
+            self.assertEqual(selected_site_inventory(inventory, digest, state), inventory)
+            for wrong in (state / 'unselected' / suffix,
+                          epoch / suffix.replace('cached_site_inventory_probe', 'other_producer'),
+                          inventory.with_name('other.json'),
+                          state / '72BF2F84-641D-4CA2-8AEB-4E42D279AAF7' / suffix):
+                with self.assertRaises(ValueError):
+                    selected_site_inventory(wrong, digest, state)
+            with self.assertRaises(ValueError):
+                selected_site_inventory(inventory, '0' * 64, state)
+            inventory.chmod(0o666)
+            with self.assertRaises(ValueError):
+                selected_site_inventory(inventory, digest, state)
+
+    def test_closed_site_coordinator_selection_rejects_other_vectors_before_tool_admission(self):
+        from execution_guard import main
+        flags = ['--site-coordinator-inputs', '/owned/site-coordinator-inputs.json',
+                 '--site-coordinator-inputs-sha256', 'a' * 64]
+        vectors = [flags + ['--', 'test', '//:docs_check'],
+                   flags + ['--', 'test', '//tools:site_coordinator_binary_qualification', '//:docs_check'],
+                   ['--profile', 'site'] + flags + ['--', 'test', '//tools:site_coordinator_binary_qualification'],
+                   ['--', 'test', '//tools:site_coordinator_binary_qualification']]
+        for vector in vectors:
+            with patch('execution_guard.immutable') as tools, self.assertRaises(ValueError):
+                main(vector)
+            tools.assert_not_called()
+
+    def test_both_selected_site_coordinator_repo_values_enter_declared_command(self):
+        import site_coordinator_selection as selected
+        path = Path('/owned/site-coordinator-inputs.json')
+        digest = 'a' * 64
+        with patch.object(selected, 'admitted', return_value=True) as admission:
+            command = bazel_command('/bazel', Path('/owned/run'),
+                ['test', '//tools:site_coordinator_binary_qualification'],
+                site_source=Path('/owned/omux.xoxd.ai'), site_coordinator_inputs=path,
+                site_coordinator_inputs_sha256=digest)
+        admission.assert_called_once_with('standard',
+            ['test', '//tools:site_coordinator_binary_qualification'], path, digest)
+        self.assertIn('--repo_env=OMUX_SITE_COORDINATOR_INPUTS=' + str(path), command)
+        self.assertIn('--repo_env=OMUX_SITE_COORDINATOR_INPUTS_SHA256=' + digest, command)
+        self.assertEqual(command[-1], '//tools:site_coordinator_binary_qualification')
+        with patch.object(selected, 'admitted', return_value=True), self.assertRaises(ValueError):
+            bazel_command('/bazel', Path('/owned/run'),
+                ['test', '//tools:site_coordinator_binary_qualification'],
+                site_coordinator_inputs=path, site_coordinator_inputs_sha256=digest)
+
     def test_reference_receipt_only_accepts_declared_stdout_producer(self):
         from execution_guard import selected_site_receipt
         with tempfile.TemporaryDirectory() as directory:
@@ -2247,6 +2302,65 @@ class RunRetirementFilesystemModels(unittest.TestCase):
             self.assertEqual(copied_report['reason'],'run-receipt-mismatch')
             self.assertTrue((copied_output/'copied-product').is_file())
         finally:copied_pin.close()
+
+    def test_site_inventory_singleton_retains_its_original_physical_output(self):
+        label='//tools:cached_site_inventory_probe'
+        directory=self.producer(label)
+        identity=self.output.stat()
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(report['retained_output_contract'],[label])
+        self.assertEqual(report['retained_physical_root'],{'device':identity.st_dev,'inode':identity.st_ino})
+        self.assertEqual((directory/'inventory.json').read_bytes(),b'original declared product')
+
+    def test_site_settings_singleton_retains_candidate_without_qualification_credit(self):
+        label='//tools:site_coordinator_settings_producer'
+        directory=self.producer(label)
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(report['retained_output_contract'],[label])
+        self.assertEqual((directory/'site-coordinator-settings/site-coordinator-settings.json').read_bytes(),b'original declared product')
+
+    def test_site_binary_singleton_retains_version_receipt_without_closure_credit(self):
+        label='//tools:site_coordinator_binary_qualification'
+        directory=self.producer(label)
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(report['retained_output_contract'],[label])
+        self.assertEqual((directory/'site-coordinator-qualification/site-coordinator-qualification.json').read_bytes(),b'original declared product')
+
+    def test_site_closure_singleton_requires_and_retains_both_original_outputs(self):
+        label='//tools:site_coordinator_closure_qualification'
+        directory=self.producer(label)
+        report=self.retire()
+        self.assertEqual(report['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(report['retained_output_contract'],[label])
+        for leaf in ('site-coordinator-closure-qualification.json','coordinator-inventory.json'):
+            self.assertEqual((directory/'site-coordinator-closure-qualification'/leaf).read_bytes(),b'original declared product')
+
+    def test_site_closure_missing_companion_inventory_has_no_retention(self):
+        directory=self.producer('//tools:site_coordinator_closure_qualification')
+        (directory/'site-coordinator-closure-qualification/coordinator-inventory.json').unlink()
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'missing-or-partial-declared-products')
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_failed_site_settings_has_no_retention(self):
+        self.producer('//tools:site_coordinator_settings_producer')
+        self.receipt['exit']=2;self.receipt['workload_exit']=2;self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'no-successful-current-output-contract')
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_site_prerequisite_combined_vector_has_no_singleton_retention(self):
+        self.producer('//tools:cached_site_inventory_probe')
+        self.receipt['targets'].append('//tools:site_coordinator_settings_producer');self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['retention_reason'],'no-successful-current-output-contract')
+        self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
 
     def test_fresh_schedule_retains_original_generated_payloads_with_obligations(self):
         label='//tools:native_flake_schedule_qualification'

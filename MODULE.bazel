@@ -116,8 +116,6 @@ yoga_selection = use_repo_rule("//tools:yoga_selection_inputs.bzl", "yoga_select
 yoga_selection(name = "omux_yoga_selection_inputs")
 cached_site(
     name = "omux_cached_site",
-    inventory_path = "/home/jess/.local/state/omux-execution-20261005/cache-bc988dbbbbc771e13245d8d338d52eed07f226e2f4dc71dcae1e46246cbbef88/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/cached_site_inventory_probe/test.outputs/inventory.json",
-    inventory_sha256 = "1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931",
     bootstrap_closure = "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
 )
 
@@ -364,6 +362,10 @@ codex_native_siwc_catalog_model_inputs(
     name = "omux_native_siwc_catalog_model_inputs",
     selection = "//integrations/codex-upstream/siwc-native-catalog-models:qualified-source.json",
 )
+
+# Closed fresh coordinator prerequisite receipts, deliberately unselected by default.
+site_coordinator_inputs = use_repo_rule("//tools:site_coordinator_inputs_repository.bzl", "site_coordinator_inputs_repository")
+site_coordinator_inputs(name = "omux_site_coordinator_inputs")
 
 # Selected retained N10 content; the action supplies fresh current byte custody.
 native_n10_content = use_repo_rule("//tools:codex_native_n10_content_inputs.bzl", "codex_native_n10_content_inputs")

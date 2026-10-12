@@ -818,7 +818,9 @@ def selected_site_inventory(path, expected_sha256, state_root, coordination_root
     suffix = ('output-base', 'execroot', '_main', 'bazel-out', 'k8-fastbuild',
               'testlogs', 'tools', 'cached_site_inventory_probe', 'test.outputs', 'inventory.json')
     if (not path.is_absolute() or not relative.parts or
-            not re.fullmatch(r'cache-(?:v2-)?[0-9a-f]{64}', relative.parts[0]) or relative.parts[1:] != suffix):
+            not (re.fullmatch(r'cache-(?:v2-)?[0-9a-f]{64}', relative.parts[0]) or
+                 re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', relative.parts[0])) or
+            relative.parts[1:] != suffix):
         raise ValueError('only the declared cached site inventory output is accepted')
     private(state_root)
     directory = os.open(state_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -833,8 +835,8 @@ def selected_site_inventory(path, expected_sha256, state_root, coordination_root
         with os.fdopen(descriptor, 'rb') as source:
             metadata = os.fstat(source.fileno())
             if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
-                    or metadata.st_size > 8 * 1024 * 1024):
-                raise ValueError('site inventory must be an owned bounded regular file')
+                    or metadata.st_mode & 0o022 or metadata.st_size > 8 * 1024 * 1024):
+                raise ValueError('site inventory must be an owned non-writable bounded regular file')
             content = source.read(8 * 1024 * 1024 + 1)
             if len(content) > 8 * 1024 * 1024 or hashlib.sha256(content).hexdigest() != expected_sha256:
                 raise ValueError('selected site inventory digest rejected')
@@ -1107,7 +1109,7 @@ def dev_stage_admission(run, graph, entry_ns, deadline_ns):
         os.fsync(output.fileno())
 
 
-def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=None, source_dirty=None, nixpkgs_source=None, output_base=None, site_source=None, site_inventory=None, site_inventory_sha256=None, site_nixpkgs_source=None, codex_pack_directory=None, profile='standard', codex_recovery_source=None, codex_pristine_directory=None, codex_recovery_delta_directory=None, codex_owner_runtime_directory=None, codex_fresh_runtime_selection=None, codex_fresh_runtime_sha256=None, codex_fresh_runtime_bytes=None):
+def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=None, source_dirty=None, nixpkgs_source=None, output_base=None, site_source=None, site_inventory=None, site_inventory_sha256=None, site_nixpkgs_source=None, codex_pack_directory=None, profile='standard', codex_recovery_source=None, codex_pristine_directory=None, codex_recovery_delta_directory=None, codex_owner_runtime_directory=None, codex_fresh_runtime_selection=None, codex_fresh_runtime_sha256=None, codex_fresh_runtime_bytes=None, site_coordinator_inputs=None, site_coordinator_inputs_sha256=None):
     format_base = ['run', '//:format', '--', 'src/main.zig', 'src/setup_collector.zig', 'src/setup_collector_tests.zig']
     sdk_export_run = profile=='standard' and arguments==['run','//tools:codex_retained_sdk_export_run']
     formatter = profile == 'standard' and (arguments == format_base or
@@ -1132,6 +1134,12 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
     cache_args = ['--repository_cache=' + str(repository_cache)] if repository_cache else []
     evaluation_args = ['--repo_env=OMUX_NIXPKGS_EVALUATION_SOURCE=' + str(nixpkgs_source)] if nixpkgs_source else []
     site_args = ['--repo_env=OMUX_SITE_SOURCE=' + str(site_source)] if site_source else []
+    import site_coordinator_selection as site_inputs
+    if site_inputs.admitted(profile, arguments, site_coordinator_inputs, site_coordinator_inputs_sha256):
+        if site_source is None:
+            raise ValueError('selected site producer requires declared site inputs')
+        site_args += ['--repo_env=' + site_inputs.VARIABLE + '=' + str(site_coordinator_inputs),
+                      '--repo_env=' + site_inputs.SHA_VARIABLE + '=' + site_coordinator_inputs_sha256]
     from guard_owner_runtime_input import VARIABLE as retained_variable, finite as retained_finite
     if codex_owner_runtime_directory is not None:
         retained_finite(profile, arguments, (nixpkgs_source, site_source, site_inventory,
@@ -1547,6 +1555,15 @@ class OrdinaryCheckLease(CacheLease):
 # Routine tests retire by default. A future downstream payload consumer must
 # declare its exact producer vector and leaves here before producing its inputs.
 RETAINED_OUTPUT_PRODUCTS = {
+    # Current site prerequisites retain original producer roots, not copied proof.
+    '//tools:cached_site_inventory_probe': ('inventory.json',),
+    '//tools:site_coordinator_settings_producer': (
+        'site-coordinator-settings/site-coordinator-settings.json',),
+    '//tools:site_coordinator_binary_qualification': (
+        'site-coordinator-qualification/site-coordinator-qualification.json',),
+    '//tools:site_coordinator_closure_qualification': (
+        'site-coordinator-closure-qualification/site-coordinator-closure-qualification.json',
+        'site-coordinator-closure-qualification/coordinator-inventory.json'),
     # Fresh singleton prerequisites retain original output roots; no copied proof.
     '//tools:native_flake_schedule_qualification': ('native-flake-obligations.json',),
     '//tools:native_flake_seed_plan_qualification': ('native-flake-seed-plan.json',),
@@ -2220,6 +2237,8 @@ def _main(argv, admission_resources, retirement_resources):
     parser.add_argument('--repository-cache', type=Path)
     parser.add_argument('--nixpkgs-source', type=Path)
     parser.add_argument('--site-source', type=Path)
+    parser.add_argument('--site-coordinator-inputs', type=Path)
+    parser.add_argument('--site-coordinator-inputs-sha256')
     parser.add_argument('--site-nixpkgs-source', type=Path)
     parser.add_argument('--site-inventory', type=Path)
     parser.add_argument('--site-inventory-sha256')
@@ -2319,6 +2338,11 @@ def _main(argv, admission_resources, retirement_resources):
             args.yoga_wrapper_request is not None or args.yoga_wrapper_request_sha256 is not None):
         raise ValueError('wrapper request is exclusive to exact companion profile')
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
+    import site_coordinator_selection as coordinator_inputs
+    if coordinator_inputs.admitted(args.profile, arguments,
+            args.site_coordinator_inputs, args.site_coordinator_inputs_sha256):
+        if args.site_source is None or args.reuse_owned_cache:
+            raise ValueError('fresh site prerequisites require declared site inputs and original epoch outputs')
     import guard_resident_dispatch as resident_dispatch
     resident_settings = resident_dispatch.select(args, arguments)
     import guard_native_seed_plan_reserved as seed_reserved
@@ -2886,7 +2910,9 @@ def _main(argv, admission_resources, retirement_resources):
                                 codex_owner_runtime_directory=args.codex_owner_runtime_directory,
                                 codex_fresh_runtime_selection=args.codex_fresh_runtime_selection,
                                 codex_fresh_runtime_sha256=args.codex_fresh_runtime_sha256,
-                                codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes)
+                                codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes,
+                                site_coordinator_inputs=args.site_coordinator_inputs,
+                                site_coordinator_inputs_sha256=args.site_coordinator_inputs_sha256)
         workload_cwd = args.site_source if site else Path.cwd()
         if dev_stage_proof:
             command = dev_stage_command(command,run,delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
@@ -3164,7 +3190,9 @@ def _main(argv, admission_resources, retirement_resources):
                                 codex_owner_runtime_directory=args.codex_owner_runtime_directory,
                                 codex_fresh_runtime_selection=args.codex_fresh_runtime_selection,
                                 codex_fresh_runtime_sha256=args.codex_fresh_runtime_sha256,
-                                codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes)
+                                codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes,
+                                site_coordinator_inputs=args.site_coordinator_inputs,
+                                site_coordinator_inputs_sha256=args.site_coordinator_inputs_sha256)
             if site and args.site_phase == 'lock':
                 site_lock_evidence['before'] = site.retain_lockfile(args.site_source, run,
                     site_snapshot['MODULE.bazel.lock'], 'before')

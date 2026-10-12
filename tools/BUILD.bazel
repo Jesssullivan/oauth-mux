@@ -406,7 +406,7 @@ python_test(
     name = "guard_site_profile_test",
     main = "guard_site_profile_test.py",
     srcs = ["guard_site_profile.py", "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"],
+            "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py", "verify_cached_nars.py"],
 )
 
 python_test(
@@ -443,18 +443,22 @@ python_test(
 python_test(
     name = "site_coordinator_qualification_test",
     main = "site_coordinator_qualification_test.py",
-    srcs = ["site_coordinator_qualification.py"],
+    srcs = ["site_coordinator_qualification.py", "site_coordinator_selection.py"],
 )
 
 # Fixed local operator proof: version flags only; no nested build or closure claim.
 python_test(
     name = "site_coordinator_binary_qualification",
     main = "site_coordinator_qualification.py",
-    data = ["@omux_nix//:closure_metadata", "@omux_nix//:all_tools",
+    srcs = ["site_coordinator_selection.py"],
+    data = ["@omux_site_coordinator_inputs//:selection.json", "@omux_site_coordinator_inputs//:selection.sha256",
+            "@omux_site_coordinator_inputs//:candidate.json", "@omux_nix//:closure_metadata", "@omux_nix//:all_tools",
             "@omux_eval_host//:native.json", "@omux_eval_host//:all_tools", "@omux_site_inputs//:site_version"],
     args = [
+        "--selection", "$(location @omux_site_coordinator_inputs//:selection.json)",
+        "--selection-sha256-file", "$(location @omux_site_coordinator_inputs//:selection.sha256)",
+        "--candidate-file", "$(location @omux_site_coordinator_inputs//:candidate.json)",
         "--site-version", "$(location @omux_site_inputs//:site_version)",
-        "--candidate-sha256", "48253bf1b32bc341baadbe77e9fc983ad898c338166009e92e9e2f0047e7e55c",
         "--native-manifest", "/nix/store/12waya019j1aiimr0j91lpdfk145xi9i-omux-bazel-closure/native.json",
         "--bootstrap-manifest", "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure/native.json",
     ],
@@ -608,25 +612,28 @@ python_test(
 python_test(
     name = "site_coordinator_closure_qualification_test",
     main = "site_coordinator_closure_qualification_test.py",
-    srcs = ["site_coordinator_closure_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py", "site_coordinator_qualification.py"],
+    srcs = ["site_coordinator_closure_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py", "site_coordinator_qualification.py", "site_coordinator_selection.py"],
 )
 python_test(
     name = "site_coordinator_closure_qualification",
     main = "site_coordinator_closure_qualification.py",
-    srcs = ["cached_nix_inventory.py", "verify_cached_nars.py", "site_coordinator_qualification.py"],
-    data = ["@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
+    srcs = ["cached_nix_inventory.py", "verify_cached_nars.py", "site_coordinator_qualification.py", "site_coordinator_selection.py"],
+    data = ["@omux_site_coordinator_inputs//:selection.json", "@omux_site_coordinator_inputs//:selection.sha256",
+            "@omux_site_coordinator_inputs//:candidate.json", "@omux_site_coordinator_inputs//:version.json", "@omux_eval_host//:executables/nix", "@omux_eval_host//:all_tools",
             "@omux_site_inputs//:site_roots", "@omux_site_inputs//:site_lock",
             "@omux_site_inputs//:site_selection", "@omux_site_inputs//:site_flake",
             "@omux_site_inputs//:site_version"],
     args = [
+        "--selection", "$(location @omux_site_coordinator_inputs//:selection.json)",
+        "--selection-sha256-file", "$(location @omux_site_coordinator_inputs//:selection.sha256)",
+        "--candidate-file", "$(location @omux_site_coordinator_inputs//:candidate.json)",
+        "--version-file", "$(location @omux_site_coordinator_inputs//:version.json)",
         "--site-flake", "$(location @omux_site_inputs//:site_flake)",
         "--site-lock", "$(location @omux_site_inputs//:site_lock)",
         "--site-roots", "$(location @omux_site_inputs//:site_roots)",
         "--site-selection", "$(location @omux_site_inputs//:site_selection)",
         "--site-version", "$(location @omux_site_inputs//:site_version)",
         "--nix", "$(location @omux_eval_host//:executables/nix)",
-        "--candidate-sha256", "48253bf1b32bc341baadbe77e9fc983ad898c338166009e92e9e2f0047e7e55c",
-        "--binary-qualification-sha256", "a1d7e2b974c6a548245b88c07a7cce921dd1fcb31758d0ee5c50511ca3780ccd",
     ],
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
@@ -1219,7 +1226,7 @@ filegroup(name='resident_sources_guard_sources',srcs=_RESIDENT_GUARD_SOURCES+_YO
 python_test(name='guard_resident_sources_profile_test',main='guard_resident_sources_profile_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py','guard_dependency_profile.py',
         'guard_site_profile.py','guard_owner_runtime_input.py','codex_owner_runtime_input.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py','//delivery:portable.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py','//delivery:portable.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES+_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 filegroup(name='resident_continuity_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,visibility=['//visibility:public'])
@@ -1227,63 +1234,63 @@ filegroup(name='resident_namespace_guard_sources',srcs=_RESIDENT_GUARD_SOURCES,v
 python_test(name='guard_native_peer_qualification_reserved_test',main='guard_native_peer_qualification_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_native_source_context_metadata_reserved_test',main='guard_resident_native_source_context_metadata_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_custody_runtime_reserved_test',main='guard_resident_custody_runtime_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_native_metadata_sdk_reserved_test',main='guard_native_metadata_sdk_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_owner_status_persistence_binding_reserved_test',main='guard_resident_owner_status_persistence_binding_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_owner_status_persistence_source_reserved_test',main='guard_resident_owner_status_persistence_source_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_owner_status_binding_reserved_test',main='guard_resident_owner_status_binding_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_owner_status_source_reserved_test',main='guard_resident_owner_status_source_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
 python_test(name='guard_resident_models_reserved_test',main='guard_resident_models_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
@@ -1291,7 +1298,7 @@ python_test(name='guard_resident_observation_test',main='guard_resident_observat
 # Preserve the full declared source union when guard groups share modules.
 _NATIVE_ACQUISITION_MODEL_SOURCES = depset(['execution_guard.py','system_mask_policy.py','guard_cache.py',
     'guard_test_evidence.py','guard_dependency_profile.py','guard_site_profile.py',
-    'site_coordinator_closure_qualification.py','site_coordinator_qualification.py','verify_cached_nars.py'
+    'site_coordinator_closure_qualification.py','site_coordinator_qualification.py','site_coordinator_selection.py','verify_cached_nars.py'
     ] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list()
 python_test(name='guard_codex_login_profile_test',main='guard_codex_login_profile_test.py',
     srcs=_NATIVE_ACQUISITION_MODEL_SOURCES)
@@ -1309,7 +1316,7 @@ python_binary(
     srcs = depset(["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
+            "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     visibility = ["//visibility:public"],
 )
 
@@ -1319,7 +1326,7 @@ python_test(
     srcs = depset(["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
+            "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
 )
 
 python_test(
@@ -2093,7 +2100,7 @@ python_test(
         "system_mask_policy.py", "guard_dependency_profile.py", "guard_site_profile.py",
         "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
         "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
-        "site_coordinator_qualification.py", "cached_nix_inventory.py"]
+        "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
 )
@@ -2207,7 +2214,7 @@ python_test(
         "system_mask_policy.py", "guard_dependency_profile.py", "guard_site_profile.py",
         "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
         "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
-        "site_coordinator_qualification.py", "cached_nix_inventory.py"]
+        "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES).to_list(),
 )
@@ -2220,7 +2227,7 @@ python_test(
         "guard_cache.py", "guard_test_evidence.py", "system_mask_policy.py", "guard_dependency_profile.py",
         "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
         "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "site_coordinator_closure_qualification.py",
-        "site_coordinator_qualification.py", "cached_nix_inventory.py"]
+        "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
 )
@@ -2256,7 +2263,7 @@ python_test(
     srcs = depset(["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
+            "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with = ["@platforms//os:linux"],
 )
 
@@ -2521,7 +2528,7 @@ python_test(
     main = "guard_resident_native_source_context_source_reserved_test.py",
     srcs = depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with = ['@platforms//os:linux'],
@@ -2555,7 +2562,7 @@ python_test(
         + ['yoga_install_inputs_stage_test.py','execution_guard.py','system_mask_policy.py',
         'guard_cache.py','guard_test_evidence.py','guard_dependency_profile.py','guard_site_profile.py',
         'guard_owner_runtime_input.py','codex_owner_runtime_input.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py']).to_list(),
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py']).to_list(),
     tags=['manual','no-remote','no-cache'],target_compatible_with=['@platforms//os:linux'],
 )
 
@@ -2592,7 +2599,7 @@ python_test(
     srcs=depset(_YOGA_WRAPPER_COMPANION_SOURCES + _YOGA_SEALED_TRANSFER_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES
         + ['yoga_wrapper_companion_test.py','execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py']).to_list(),
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py']).to_list(),
     tags=['manual','no-remote','no-cache'],target_compatible_with=['@platforms//os:linux'],
 )
 
@@ -2603,7 +2610,7 @@ python_test(
     main='guard_resident_native_source_context_refresh_source_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'],
@@ -2644,7 +2651,7 @@ python_test(
     main = "guard_resident_native_source_acquisition_source_reserved_test.py",
     srcs = depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'],
@@ -2684,7 +2691,7 @@ home_manager_bundle_selection_test(name = "home_manager_bundle_selection_test")
 python_test(name = "guard_home_manager_bundle_reserved_test", main = "guard_home_manager_bundle_reserved_test.py",
     srcs = depset(["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py",
         "guard_dependency_profile.py", "guard_site_profile.py", "site_coordinator_closure_qualification.py",
-        "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"]
+        "site_coordinator_qualification.py", "site_coordinator_selection.py", "cached_nix_inventory.py", "verify_cached_nars.py"]
         + _CODEX_PROTOCOL_HISTORY_SOURCES + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES
         + _YOGA_DELIVERY_GUARD_SOURCES + _RESIDENT_GUARD_SOURCES).to_list())
 
@@ -2693,7 +2700,7 @@ exports_files(["direct_native_tui_inputs.bzl"])
 python_test(name='guard_current_home_manager_artifact_reserved_test',main='guard_current_home_manager_artifact_reserved_test.py',
     srcs=depset(['execution_guard.py','system_mask_policy.py','guard_cache.py','guard_test_evidence.py',
         'guard_dependency_profile.py','guard_site_profile.py','site_coordinator_closure_qualification.py',
-        'site_coordinator_qualification.py','cached_nix_inventory.py','verify_cached_nars.py']
+        'site_coordinator_qualification.py','site_coordinator_selection.py','cached_nix_inventory.py','verify_cached_nars.py']
         +_CODEX_PROTOCOL_HISTORY_SOURCES+_CODEX_SDK_SOURCES+_YOGA_GUARD_SOURCES
         +_YOGA_DELIVERY_GUARD_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
     target_compatible_with=['@platforms//os:linux'])
@@ -3064,6 +3071,12 @@ python_test(
     main = "guard_native_siwc_catalog_models_reserved_test.py",
     srcs = _NATIVE_ACQUISITION_MODEL_SOURCES,
     target_compatible_with = ["@platforms//os:linux"],
+)
+
+python_test(
+    name = "site_coordinator_selection_test",
+    main = "site_coordinator_selection_test.py",
+    srcs = ["site_coordinator_selection.py", "site_coordinator_qualification.py"],
 )
 
 # Additive complete N10 content declaration and exact source/HUB cohort.

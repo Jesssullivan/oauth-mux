@@ -130,27 +130,29 @@ def _read_qualification(path, expected_sha256, source):
     report = full.decode(bounded_file(path, expected_sha256, 65536))
     if (report.get('schema_version') != 1 or report.get('status') != 'verified-site-toolchain' or
             report.get('bazel_executable') != str(BAZEL_NATIVE) or
-            report.get('binary_qualification') != str(full.VERSION_RECEIPT) or
-            report.get('binary_qualification_sha256') != full.VERSION_RECEIPT_SHA256 or
-            report.get('candidate') != str(full.CANDIDATE) or
             report.get('candidate_sha256') != full.CANDIDATE_SHA256 or
             report.get('roots') != list(full.ROOTS) or report.get('inventory') != 'coordinator-inventory.json' or
             report.get('closure_binding') != 'complete-registered-reference-closure' or
             report.get('binary_versions_verified') is not True or report.get('execution_authority') is not False or
             report.get('published') is not False or report.get('link_targets_followed') is not False):
         raise ValueError('complete independent coordinator qualification required')
-    candidate = full.selected_receipt(full.CANDIDATE, full.CANDIDATE_SHA256, full.CANDIDATE_SHA256)
-    version = full.selected_receipt(full.VERSION_RECEIPT, full.VERSION_RECEIPT_SHA256, full.VERSION_RECEIPT_SHA256)
+    from site_coordinator_selection import location, digest
+    candidate_path = location(report.get('candidate'), 'candidate')
+    version_path = location(report.get('binary_qualification'), 'version')
+    version_sha256 = digest(report.get('binary_qualification_sha256'))
+    candidate = full.decode(bounded_file(candidate_path, full.CANDIDATE_SHA256, 65536))
+    version = full.decode(bounded_file(version_path, version_sha256, 65536))
     full.validate_evidence(candidate, version,
         {name: bounded_file(Path(source) / name, digest, 1024 * 1024) for name, digest in full.INPUTS.items()},
-        bounded_file(Path(source) / '.bazelversion', full.SITE_VERSION_SHA256, 64))
+        bounded_file(Path(source) / '.bazelversion', full.SITE_VERSION_SHA256, 64),
+        candidate_origin=candidate_path)
     if (report.get('input_sha256') != full.INPUTS or
             report.get('site_bazelversion_sha256') != full.SITE_VERSION_SHA256 or
             report.get('binaries') != full.BINARIES or report.get('wrappers') != full.WRAPPERS):
         raise ValueError('qualification input/binary pins differ')
     inventory_bytes = bounded_file(Path(path).parent / report['inventory'], report.get('inventory_sha256'), 8 * 1024 * 1024)
     inventory = full.decode(inventory_bytes)
-    canonical, content, digest = full.closure_inventory(inventory.get('paths'))
+    canonical, content, digest = full.closure_inventory(inventory.get('paths'), version_sha256=version_sha256)
     if inventory != canonical or inventory_bytes != content or digest != report['inventory_sha256']:
         raise ValueError('coordinator closure inventory differs')
     nar = report.get('nar_verification', {})

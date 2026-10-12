@@ -63,6 +63,22 @@ def evidence(inputs):
 
 
 class ClosureQualificationTest(unittest.TestCase):
+    def test_fresh_version_digest_is_inside_original_inventory_and_nar_digest(self):
+        selected = 'c' * 64
+        inventory, content, digest = qualification.closure_inventory(rows(), version_sha256=selected)
+        self.assertEqual(inventory['provenance']['binaryQualificationSha256'], selected)
+        self.assertEqual(digest, hashlib.sha256(content).hexdigest())
+        _, original, original_digest = qualification.closure_inventory(rows())
+        self.assertNotEqual(content, original)
+        self.assertNotEqual(digest, original_digest)
+        _, verified, verified_digest, nar = qualification.qualify_closure(rows(), qualification.NIX,
+            verifier=nar_receipt, observer=lambda path: ('immutable', path), version_sha256=selected)
+        self.assertEqual(verified, content)
+        self.assertEqual(verified_digest, digest)
+        self.assertEqual(nar['inventorySha256'], digest)
+        for bad in [None, '', True, ['c' * 64], 'c' * 63]:
+            with self.assertRaises(ValueError):qualification.closure_inventory(rows(), version_sha256=bad)
+
     def test_exact_readonly_snapshot_and_shared_cycle_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / 'db.sqlite'
