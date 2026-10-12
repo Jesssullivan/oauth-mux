@@ -701,6 +701,18 @@ zig_test(
     data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
+# Focus the existing rotation/restart cases during renewal diagnosis.
+zig_test(
+    name = "paired_renewal_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    zigopts = ["--test-filter", "paired renewal"],
+)
+
 # Diagnose the actual queued actor fixture before the full regression gates.
 zig_test(
     name = "queued_ingress_test",
