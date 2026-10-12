@@ -90,12 +90,18 @@ class CatalogDriverTests(unittest.TestCase):
         published = Mock(active=True)
         sdk = Mock()
         with tempfile.TemporaryDirectory() as temporary, \
-                patch.object(model.content_catalog,'validate_report_method'), \
+                patch.object(model.content_catalog,'validate_report_method') as validate, \
                 patch.object(model.family.query_tools,'verify_repository',return_value={
-                    'status':'declared-fixed-query-tools-byte-qualified','inputs_rechecked':True}), \
+                    'status':'declared-fixed-query-tools-byte-qualified','inputs_rechecked':True}) as tools, \
                 patch.object(model.native,'command_from_verified_inputs') as command:
+            work = Path(temporary)/'work'
+            self.assertFalse(work.exists())
             with self.assertRaises(ValueError):
-                model.native_plan(published,sdk,report,Path(temporary)/'work',time.monotonic()+300)
+                model.native_plan(published,sdk,report,work,time.monotonic()+300)
+            self.assertFalse(work.exists())
+            validate.assert_not_called();tools.assert_not_called()
+            sdk.check.assert_not_called();sdk.mapping.assert_not_called();sdk.record.assert_not_called()
+            published.full.assert_not_called()
             command.assert_not_called()
 
     def test_actual_role_alias_same_byte_replacement_refuses_without_re_resolving_report(self):

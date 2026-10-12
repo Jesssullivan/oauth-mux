@@ -223,7 +223,11 @@ class ExtraOwners:
 def native_plan(published,sdk,report,work,cutoff):
     source.require(not work.exists() and report['kind'] in (catalog.KIND, content_catalog.KIND) and len(report['patch_sha256']) == 12
         and published.active and all(report[name] is False for name in catalog.previous.FALSE_FLAGS))
-    if report['kind'] == content_catalog.KIND: content_catalog.validate_report_method(report)
+    if report['kind'] == content_catalog.KIND:
+        # Admit the concrete owner before SDK/publication/query IO or scratch
+        # effects. The later full record/root join remains mandatory unchanged.
+        source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK)
+        content_catalog.validate_report_method(report)
     sdk.check(); published.full()
     mapping = sdk.mapping()
     tools = family.query_tools.verify_repository(family.query.QUERY_REPOSITORY,cutoff)
