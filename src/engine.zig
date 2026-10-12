@@ -307,10 +307,15 @@ const FreshOAuthPending = struct {
     jwks_id: ?u64 = null,
     response: ?*transport.OAuthResponse = null,
     authorization_delivered: bool = false,
-    fn workUntil(self: *const FreshOAuthPending) std.Io.Clock.Timestamp { return if (self.ticket) |ticket| ticket.originalUntil() else self.attempt.until; }
+    fn workUntil(self: *const FreshOAuthPending) std.Io.Clock.Timestamp {
+        return if (self.ticket) |ticket| ticket.originalUntil() else self.attempt.until;
+    }
     fn deinit(self: *FreshOAuthPending) void {
         if (self.receiver) |receiver| receiver.deinit();
-        if (self.fence) |fence| { _ = fence.invalidate(); fence.deinit(); }
+        if (self.fence) |fence| {
+            _ = fence.invalidate();
+            fence.deinit();
+        }
         if (self.ticket) |ticket| ticket.deinit();
         if (self.response) |response| response.deinit();
         self.profile.deinit();
@@ -328,7 +333,10 @@ const FreshOAuthVerifyTask = struct {
     job: native_work.Job,
     fn run(context: *anyopaque, cancelled: bool) void {
         const self: *FreshOAuthVerifyTask = @ptrCast(@alignCast(context));
-        if (cancelled) { self.failure = error.ServiceStopping; return; }
+        if (cancelled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
         self.proof = oauth_oidc.verifyOwnedResponse(self.allocator, self.ticket, self.response, self.jwks) catch |err| failed: {
             self.failure = err;
             break :failed null;
@@ -336,7 +344,9 @@ const FreshOAuthVerifyTask = struct {
     }
     fn deinit(self: *FreshOAuthVerifyTask) void {
         if (self.proof) |proof| proof.deinit();
-        self.jwks.deinit(); self.response.deinit(); self.ticket.deinit();
+        self.jwks.deinit();
+        self.response.deinit();
+        self.ticket.deinit();
         self.allocator.destroy(self);
     }
 };
@@ -1659,7 +1669,7 @@ pub const Engine = struct {
             self.active_peer = null;
             self.active_until = null;
             self.active_oauth_profile = null;
-                self.active_oss_callback_port = null;
+            self.active_oss_callback_port = null;
             if (response) |success| {
                 const queued = self.startConfiguredRuntimeInstall(item, success) catch |err| {
                     item.allocator.free(success);
@@ -4263,9 +4273,16 @@ pub const Engine = struct {
         for (self.fresh_oauth_pending.items) |*pending| {
             if (id) |selected| if (!std.meta.eql(selected, pending.attempt.binding.transaction_id)) continue;
             if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
-            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
-            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
-            if (pending.receiver) |receiver| { receiver.deinit(); pending.receiver = null; }
+            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.receiver) |receiver| {
+                receiver.deinit();
+                pending.receiver = null;
+            }
         }
     }
     fn freshOAuthCurrent(self: *Engine, pending: *const FreshOAuthPending) bool {
@@ -4310,9 +4327,16 @@ pub const Engine = struct {
     fn reconcileFreshOAuthFences(self: *Engine) void {
         for (self.fresh_oauth_pending.items) |*pending| if (!self.freshOAuthCurrent(pending)) {
             if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
-            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
-            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
-            if (pending.receiver) |receiver| { receiver.deinit(); pending.receiver = null; }
+            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.receiver) |receiver| {
+                receiver.deinit();
+                pending.receiver = null;
+            }
         };
     }
     fn freshOAuthUnknown(self: *Engine, pending: *FreshOAuthPending) !void {
@@ -4340,8 +4364,13 @@ pub const Engine = struct {
             // A failure after actual Store commit/readback is not an unissued
             // retry. Restore the Store row, retain issued uncertainty, and fence
             // custody if its disposition cannot itself commit.
-            self.restoreCommitted() catch { self.poisoned = true; return err; };
-            self.freshOAuthUnknown(pending) catch { self.poisoned = true; };
+            self.restoreCommitted() catch {
+                self.poisoned = true;
+                return err;
+            };
+            self.freshOAuthUnknown(pending) catch {
+                self.poisoned = true;
+            };
             return err;
         };
         self.revision = ticket.committedRevision();
@@ -4362,7 +4391,9 @@ pub const Engine = struct {
         while (index < self.fresh_oauth_pending.items.len) {
             const pending = &self.fresh_oauth_pending.items[index];
             if (!self.freshOAuthCurrent(pending)) {
-                if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| { self.fresh_oauth_cancel_failure = err; };
+                if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                    self.fresh_oauth_cancel_failure = err;
+                };
                 try self.freshOAuthUnknown(pending);
                 pending.deinit();
                 _ = self.fresh_oauth_pending.orderedRemove(index);
@@ -4414,7 +4445,10 @@ pub const Engine = struct {
             var completion = value;
             defer completion.deinit(self.allocator);
             var found: ?usize = null;
-            for (self.fresh_oauth_pending.items, 0..) |pending, position| if (pending.transport_id == completion.id) { found = position; break; };
+            for (self.fresh_oauth_pending.items, 0..) |pending, position| if (pending.transport_id == completion.id) {
+                found = position;
+                break;
+            };
             const position = found orelse continue;
             const pending = &self.fresh_oauth_pending.items[position];
             if (!self.freshOAuthCurrent(pending)) {
@@ -4521,7 +4555,10 @@ pub const Engine = struct {
             for (self.fresh_oauth_pending.items) |*pending| {
                 if (pending.jwks_id != completion.id) continue;
                 pending.jwks_id = null;
-                if (!self.freshOAuthCurrent(pending)) { try self.freshOAuthUnknown(pending); break; }
+                if (!self.freshOAuthCurrent(pending)) {
+                    try self.freshOAuthUnknown(pending);
+                    break;
+                }
                 switch (completion.result) {
                     .failure => try self.freshOAuthUnknown(pending),
                     .lease => |keys| self.startFreshOAuthVerification(pending, keys) catch |err| {
@@ -4544,9 +4581,12 @@ pub const Engine = struct {
         try self.fresh_oauth_verifications.ensureUnusedCapacity(self.allocator, 1);
         const task = try self.allocator.create(FreshOAuthVerifyTask);
         errdefer self.allocator.destroy(task);
-        ticket.retain(); errdefer ticket.deinit();
-        response.retain(); errdefer response.deinit();
-        keys.retain(); errdefer keys.deinit();
+        ticket.retain();
+        errdefer ticket.deinit();
+        response.retain();
+        errdefer response.deinit();
+        keys.retain();
+        errdefer keys.deinit();
         task.* = .{ .allocator = self.allocator, .ticket = ticket, .response = response, .jwks = keys, .job = .{ .lane = .continuation, .context = task, .run = FreshOAuthVerifyTask.run } };
         try self.native_workers.?.enqueue(&task.job);
         self.fresh_oauth_verifications.appendAssumeCapacity(task);
@@ -4554,8 +4594,14 @@ pub const Engine = struct {
     fn completeFreshOAuthVerification(self: *Engine, task: *FreshOAuthVerifyTask) !void {
         for (self.fresh_oauth_pending.items, 0..) |*pending, index| {
             if (!std.meta.eql(pending.attempt.binding.transaction_id, task.ticket.binding().transaction_id)) continue;
-            defer { pending.deinit(); _ = self.fresh_oauth_pending.orderedRemove(index); }
-            if (!self.freshOAuthCurrent(pending)) { try self.freshOAuthUnknown(pending); return; }
+            defer {
+                pending.deinit();
+                _ = self.fresh_oauth_pending.orderedRemove(index);
+            }
+            if (!self.freshOAuthCurrent(pending)) {
+                try self.freshOAuthUnknown(pending);
+                return;
+            }
             if (task.failure) |err| {
                 self.fresh_oauth_failure = err;
                 if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
@@ -4565,8 +4611,7 @@ pub const Engine = struct {
                 return;
             }
             self.activateFreshOAuthPair(pending, task.proof orelse return error.OIDCProofUnavailable, task.response) catch |err| switch (err) {
-                error.OwnedRefreshTokenMissing, error.SiwcDuplicateLineage, error.SiwcEnrollmentRefused, error.SiwcPairExpired,
-                error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
+                error.OwnedRefreshTokenMissing, error.SiwcDuplicateLineage, error.SiwcEnrollmentRefused, error.SiwcPairExpired, error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
                     self.fresh_oauth_failure = err;
                     try self.freshOAuthUnknown(pending);
                 },
@@ -4583,8 +4628,12 @@ pub const Engine = struct {
         while (index < ledger.records.items.len) {
             const row = ledger.records.items[index];
             var held = false;
-            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(row.binding.transaction_id, pending.attempt.binding.transaction_id)) { held = true; };
-            for (self.fresh_oauth_verifications.items) |task| if (std.meta.eql(row.binding.transaction_id, task.ticket.binding().transaction_id)) { held = true; };
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(row.binding.transaction_id, pending.attempt.binding.transaction_id)) {
+                held = true;
+            };
+            for (self.fresh_oauth_verifications.items) |task| if (std.meta.eql(row.binding.transaction_id, task.ticket.binding().transaction_id)) {
+                held = true;
+            };
             if (!held and (row.phase == .prepared or row.phase == .callback_consumed) and self.now() >= row.binding.consent_expires_at) try ledger.retire(self.allocator, row.binding.transaction_id);
             const phase = ledger.records.items[index].phase;
             const transferred = self.owned_siwc_pairs.find(row.binding.transaction_id) != null;
@@ -4666,33 +4715,52 @@ pub const Engine = struct {
         var identity_plain = try proof.copyIdentityForEncryption(a);
         defer identity_plain.deinit();
         var row: siwc_pair.Record = .{
-            .transaction_id = binding.transaction_id, .source_id = &source_id, .account_id = &account_id,
-            .access_grant_id = &access_id, .refresh_grant_id = &refresh_id,
-            .source_generation = binding.source_generation, .consent_id = binding.consent_id, .consent_generation = binding.consent_generation,
-            .lineage_id = random[32..64].*, .access_expires_at = proof.accessExpiresAt(),
-            .profile_sha256 = ticket.registrationProfileSha256(), .binding_sha256 = proof.bindingSha256(), .response_sha256 = proof.responseSha256(),
-            .activation_commitment = proof.activationCommitment(), .issued_client_commitment = proof.issuedClientCommitment(),
-            .identity_commitment = proof.identityCommitment(), .provider_subject_commitment = proof.providerSubjectCommitment(),
+            .transaction_id = binding.transaction_id,
+            .source_id = &source_id,
+            .account_id = &account_id,
+            .access_grant_id = &access_id,
+            .refresh_grant_id = &refresh_id,
+            .source_generation = binding.source_generation,
+            .consent_id = binding.consent_id,
+            .consent_generation = binding.consent_generation,
+            .lineage_id = random[32..64].*,
+            .access_expires_at = proof.accessExpiresAt(),
+            .profile_sha256 = ticket.registrationProfileSha256(),
+            .binding_sha256 = proof.bindingSha256(),
+            .response_sha256 = proof.responseSha256(),
+            .activation_commitment = proof.activationCommitment(),
+            .issued_client_commitment = proof.issuedClientCommitment(),
+            .identity_commitment = proof.identityCommitment(),
+            .provider_subject_commitment = proof.providerSubjectCommitment(),
             .refresh_token_commitment = siwc_pair.tokenCommitment(self.root_key, refresh, .refresh),
-            .access_token_commitment = siwc_pair.tokenCommitment(self.root_key, evidence.access_token, .access), .identity_capsule = &.{},
+            .access_token_commitment = siwc_pair.tokenCommitment(self.root_key, evidence.access_token, .access),
+            .identity_capsule = &.{},
         };
         row.identity_capsule = try envelope.seal(self.io, a, self.root_key, siwc_pair.identityContext(self.root_id.?, row), identity_plain.bytes);
         defer a.free(row.identity_capsule);
         const access_plain = try std.json.Stringify.valueAlloc(a, .{ .access_token = evidence.access_token }, .{});
-        defer { std.crypto.secureZero(u8, access_plain); a.free(access_plain); }
+        defer {
+            std.crypto.secureZero(u8, access_plain);
+            a.free(access_plain);
+        }
         const refresh_plain = try std.json.Stringify.valueAlloc(a, .{ .refresh_token = refresh, .client_id = ticket.issuedClientId() }, .{});
-        defer { std.crypto.secureZero(u8, refresh_plain); a.free(refresh_plain); }
+        defer {
+            std.crypto.secureZero(u8, refresh_plain);
+            a.free(refresh_plain);
+        }
         // Precheck actual absence before any domain publication. Store commit
         // still performs ownership/generation CAS, and seals all payloads before
         // beginning its journal transaction.
         if (try self.db.?.readGrantStatus(&account_id, &access_id) != null or try self.db.?.readGrantStatus(&account_id, &refresh_id) != null) return error.SiwcDuplicateLineage;
-        errdefer self.restoreCommitted() catch { self.poisoned = true; };
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
         _ = try self.state.connectSource(.{ .id = &source_id, .provider = "openai_siwc", .kind = .oauth, .authorized_at = self.now() });
         if (try self.importSourceGeneration(&source_id) != binding.source_generation) return error.EnrollmentAuthorityChanged;
         const enrolled = try self.state.enroll(.{ .account_id = &account_id, .source_id = &source_id, .identity = .{ .provider = "openai_siwc", .issuer = siwc_pair.issuer_uri, .subject = &identity, .verified = true } }, self.now());
         if (enrolled.status != .enrolled and enrolled.status != .existing) return error.SiwcEnrollmentRefused;
         if (!eql(enrolled.account_id.?, &account_id)) return error.SiwcEnrollmentRefused;
-        _ = try self.state.addGrant(.{ .id = &access_id, .account_id = &account_id, .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .omux, .purposes = &.{.request}, .audience = siwc_pair.resource_uri, .scopes = &.{"resource.invoke", "chatgpt.tokens.use.direct"}, .provider_expires_at = proof.accessExpiresAt() });
+        _ = try self.state.addGrant(.{ .id = &access_id, .account_id = &account_id, .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .omux, .purposes = &.{.request}, .audience = siwc_pair.resource_uri, .scopes = &.{ "resource.invoke", "chatgpt.tokens.use.direct" }, .provider_expires_at = proof.accessExpiresAt() });
         _ = try self.state.addGrant(.{ .id = &refresh_id, .account_id = &account_id, .source_id = &source_id, .credential_kind = .oauth_refresh, .ownership = .omux, .purposes = &.{.renewal}, .audience = siwc_pair.resource_uri, .scopes = &.{"offline_access"} });
         try self.owned_siwc_pairs.append(a, row);
         try self.fresh_oauth.?.activate(a, binding);
@@ -4771,15 +4839,30 @@ pub const Engine = struct {
         defer std.crypto.secureZero(u8, &nonce);
         _ = std.base64.url_safe_no_pad.Encoder.encode(&nonce, &bound.oidc_nonce);
         const claims = try std.json.Stringify.valueAlloc(a, .{ .iss = siwc_pair.issuer_uri, .aud = client_id, .sub = subject, .nonce = nonce[0..], .iat = self.now(), .exp = self.now() + 300 }, .{});
-        defer { std.crypto.secureZero(u8, claims); a.free(claims); }
+        defer {
+            std.crypto.secureZero(u8, claims);
+            a.free(claims);
+        }
         const jwt = try signer.sign(claims);
-        defer { std.crypto.secureZero(u8, jwt); a.free(jwt); }
+        defer {
+            std.crypto.secureZero(u8, jwt);
+            a.free(jwt);
+        }
         const access = try std.fmt.allocPrint(a, "synthetic-access-{s}", .{subject});
-        defer { std.crypto.secureZero(u8, access); a.free(access); }
+        defer {
+            std.crypto.secureZero(u8, access);
+            a.free(access);
+        }
         const refresh = try std.fmt.allocPrint(a, "synthetic-refresh-{s}", .{subject});
-        defer { std.crypto.secureZero(u8, refresh); a.free(refresh); }
+        defer {
+            std.crypto.secureZero(u8, refresh);
+            a.free(refresh);
+        }
         const body = try std.json.Stringify.valueAlloc(a, .{ .access_token = access, .refresh_token = refresh, .id_token = jwt, .token_type = "Bearer", .expires_in = 300, .scope = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" }, .{});
-        defer { std.crypto.secureZero(u8, body); a.free(body); }
+        defer {
+            std.crypto.secureZero(u8, body);
+            a.free(body);
+        }
         const keys = try signer.jwks();
         defer a.free(keys);
         try token_server.setBody(body);
@@ -4798,7 +4881,10 @@ pub const Engine = struct {
         }
         defer tokens.?.deinit(a);
         if (tokens.?.id != token_id) return error.InvalidFixtureCompletion;
-        const response = switch (tokens.?.result) { .response => |value| value, .failure => return error.InvalidFixtureCompletion };
+        const response = switch (tokens.?.result) {
+            .response => |value| value,
+            .failure => return error.InvalidFixtureCompletion,
+        };
         try std.testing.expect(token_server.wireValid() and token_server.requestCount() == 1);
         var raw = try response.copyForEncryptedCustody(a, pending.ticket.?);
         defer raw.deinit();
@@ -4814,7 +4900,10 @@ pub const Engine = struct {
         }
         defer key_completion.?.deinit(a);
         if (key_completion.?.id != key_id) return error.InvalidFixtureCompletion;
-        const lease = switch (key_completion.?.result) { .lease => |value| value, .failure => return error.InvalidFixtureCompletion };
+        const lease = switch (key_completion.?.result) {
+            .lease => |value| value,
+            .failure => return error.InvalidFixtureCompletion,
+        };
         try std.testing.expect(key_server.wireValid() and key_server.requestCount() == 1);
         const proof = try oauth_oidc.verifyOwnedResponse(a, pending.ticket.?, response, lease);
         defer proof.deinit();
@@ -4833,12 +4922,19 @@ pub const Engine = struct {
     fn freshOAuthDescriptor(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
         if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return error.InvalidParams;
         return control.success(allocator, request.id, .{
-            .schema_version = 1, .profile = siwc_pair.request_profile, .purpose = oauth_enrollment.oss_purpose,
-            .provider = "openai_siwc", .issuer = siwc_pair.issuer_uri, .audience = siwc_pair.resource_uri,
-            .enrollment_io_policy = "documented_oss_dynamic_registration_v1", .experimental = true,
+            .schema_version = 1,
+            .profile = siwc_pair.request_profile,
+            .purpose = oauth_enrollment.oss_purpose,
+            .provider = "openai_siwc",
+            .issuer = siwc_pair.issuer_uri,
+            .audience = siwc_pair.resource_uri,
+            .enrollment_io_policy = "documented_oss_dynamic_registration_v1",
+            .experimental = true,
             .implemented = builtin.os.tag == .linux or builtin.os.tag == .macos,
             .custody_available = !self.vault_locked and !self.poisoned and self.db != null,
-            .provider_proof = false, .native_support_proven = false, .live_handoff_proven = false,
+            .provider_proof = false,
+            .native_support_proven = false,
+            .live_handoff_proven = false,
             .authorization_policy = .{ .scheme = "https", .host = "auth.openai.com", .path = "/api/accounts/authorize", .initial_client_id = "dynamic_agent_client", .agent_name_hint = "omux", .redirect_scheme = "http", .redirect_host = "127.0.0.1", .redirect_path = "/auth/callback", .redirect_port = "held_nonzero_loopback", .resource = siwc_pair.resource_uri, .scopes = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", .pkce = "S256" },
             .methods = .{ .prepare = "oauth.enrollment.prepare.siwc.v1", .authorization = "oauth.enrollment.authorization.v1", .status = "oauth.enrollment.status.v1", .pending = "oauth.enrollment.pending.v1", .withdraw = "oauth.enrollment.withdraw.v1" },
             .flow = .{ .minimum_seconds = 1, .maximum_seconds = 3600, .minted_once = true, .wall_and_awake = true, .rpc_deadline_separate = true, .exchange_max_seconds = 120, .authorization_deliveries = 1, .reconnect_renews = false },
@@ -4879,8 +4975,14 @@ pub const Engine = struct {
         const id = try parseOpaqueId(try control.string(params, "transaction_id"));
         const encoded_id = std.fmt.bytesToHex(id, .lower);
         if (self.vault_locked or self.poisoned or self.db == null) return control.success(allocator, request.id, .{
-            .schema_version = 1, .transaction_id = encoded_id[0..], .status = "unknown", .phase = @as(?oauth_enrollment.Phase, null),
-            .custody_available = false, .paired_committed = @as(?bool, null), .grant_ready = @as(?bool, null), .reason = "custody_unavailable",
+            .schema_version = 1,
+            .transaction_id = encoded_id[0..],
+            .status = "unknown",
+            .phase = @as(?oauth_enrollment.Phase, null),
+            .custody_available = false,
+            .paired_committed = @as(?bool, null),
+            .grant_ready = @as(?bool, null),
+            .reason = "custody_unavailable",
         });
         var saved = try self.db.?.readSnapshot();
         defer saved.deinit();
@@ -4891,24 +4993,43 @@ pub const Engine = struct {
             var reason: ?[]const u8 = null;
             if (pair.status == .ready) {
                 const current: ?*siwc_pair.PairAuthority = siwc_pair.currentPair(&self.db.?, pair.account_id, pair.access_grant_id, pair.access_generation, self.now()) catch |err| switch (err) {
-                    error.SiwcPairUnavailable, error.SiwcPairAuthorityChanged, error.SiwcPairQuarantined, error.SiwcPairExpired => missing: { reason = @errorName(err); break :missing null; },
+                    error.SiwcPairUnavailable, error.SiwcPairAuthorityChanged, error.SiwcPairQuarantined, error.SiwcPairExpired => missing: {
+                        reason = @errorName(err);
+                        break :missing null;
+                    },
                     else => return err,
                 };
-                if (current) |authority| { authority.deinit(); ready = true; }
-                for (parsed.value.state.accounts) |account| if (eql(account.id, pair.account_id) and account.lifecycle != .active) { ready = false; reason = "account_paused_or_draining"; };
+                if (current) |authority| {
+                    authority.deinit();
+                    ready = true;
+                }
+                for (parsed.value.state.accounts) |account| if (eql(account.id, pair.account_id) and account.lifecycle != .active) {
+                    ready = false;
+                    reason = "account_paused_or_draining";
+                };
             } else reason = if (pair.status == .retired) "consent_or_source_retired" else "renewal_unavailable";
             return control.success(allocator, request.id, .{
-                .schema_version = 1, .transaction_id = encoded_id[0..], .revision = saved.revision, .status = if (pair.status == .retired) "retired" else "paired",
+                .schema_version = 1,
+                .transaction_id = encoded_id[0..],
+                .revision = saved.revision,
+                .status = if (pair.status == .retired) "retired" else "paired",
                 .phase = if (pair.status == .retired) oauth_enrollment.Phase.retired else oauth_enrollment.Phase.active,
-                .custody_available = true, .paired_committed = true, .grant_ready = ready, .reason = reason,
-                .consent_status = pair.consent_status, .retirement_reason = pair.retirement_reason,
-                .source_id = pair.source_id, .account_id = pair.account_id,
+                .custody_available = true,
+                .paired_committed = true,
+                .grant_ready = ready,
+                .reason = reason,
+                .consent_status = pair.consent_status,
+                .retirement_reason = pair.retirement_reason,
+                .source_id = pair.source_id,
+                .account_id = pair.account_id,
             });
         };
         if (parsed.value.fresh_oauth_authority) |attempts| for (attempts.records) |row| if (std.meta.eql(row.binding.transaction_id, id)) {
             if (row.provider != .openai_siwc) return error.WrongPurpose;
             var expired = self.now() >= row.binding.consent_expires_at;
-            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(pending.attempt.binding.transaction_id, id) and pending.workUntil().durationFromNow(self.io).raw.toNanoseconds() <= 0) { expired = true; };
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(pending.attempt.binding.transaction_id, id) and pending.workUntil().durationFromNow(self.io).raw.toNanoseconds() <= 0) {
+                expired = true;
+            };
             const status: []const u8 = switch (row.phase) {
                 .prepared, .callback_consumed, .exchange_issued, .verifying => if (expired) "expired" else "pending",
                 .completion_unknown, .active => "unknown",
@@ -4916,17 +5037,34 @@ pub const Engine = struct {
                 .retired => if (row.consent_status == .withdrawn) "cancelled" else if (expired) "expired" else "retired",
             };
             return control.success(allocator, request.id, .{
-                .schema_version = 1, .transaction_id = encoded_id[0..], .revision = saved.revision, .status = status, .phase = row.phase, .flow_expired = expired,
-                .custody_available = true, .paired_committed = false, .grant_ready = false, .consent_status = row.consent_status,
-                .flow_expires_at = row.binding.consent_expires_at, .flow_seconds = row.binding.flow_duration_seconds,
-                .source_id = std.fmt.bytesToHex(row.binding.source_id, .lower)[0..], .account_id = @as(?[]const u8, null),
+                .schema_version = 1,
+                .transaction_id = encoded_id[0..],
+                .revision = saved.revision,
+                .status = status,
+                .phase = row.phase,
+                .flow_expired = expired,
+                .custody_available = true,
+                .paired_committed = false,
+                .grant_ready = false,
+                .consent_status = row.consent_status,
+                .flow_expires_at = row.binding.consent_expires_at,
+                .flow_seconds = row.binding.flow_duration_seconds,
+                .source_id = std.fmt.bytesToHex(row.binding.source_id, .lower)[0..],
+                .account_id = @as(?[]const u8, null),
             });
         };
         // Reclaimed terminal records never revive; absence cannot be presented
         // as zero accounts, an active flow, success or a reusable callback.
         return control.success(allocator, request.id, .{
-            .schema_version = 1, .transaction_id = encoded_id[0..], .revision = saved.revision, .status = "not_retained", .phase = @as(?oauth_enrollment.Phase, null),
-            .custody_available = true, .paired_committed = @as(?bool, null), .grant_ready = @as(?bool, null), .reason = "terminal_or_unknown_handle",
+            .schema_version = 1,
+            .transaction_id = encoded_id[0..],
+            .revision = saved.revision,
+            .status = "not_retained",
+            .phase = @as(?oauth_enrollment.Phase, null),
+            .custody_available = true,
+            .paired_committed = @as(?bool, null),
+            .grant_ready = @as(?bool, null),
+            .reason = "terminal_or_unknown_handle",
         });
     }
 
@@ -7624,9 +7762,7 @@ pub const Engine = struct {
         if (native.status != .issued or native.expires_at <= self.now()) return error.UnsafeReplay;
         const status = control.get(params, "status") orelse return error.InvalidSiwcRejection;
         if (status != .integer or status.integer < 400 or status.integer > 599) return error.InvalidSiwcRejection;
-        const cause = try siwc_route.rejection(@intCast(status.integer), try control.optionalString(params, "error_code"),
-            try control.optionalString(params, "error_param"), try control.optionalString(params, "provider_request_id"),
-            try control.boolean(params, "pre_acceptance", false), try control.boolean(params, "response_started", true));
+        const cause = try siwc_route.rejection(@intCast(status.integer), try control.optionalString(params, "error_code"), try control.optionalString(params, "error_param"), try control.optionalString(params, "provider_request_id"), try control.boolean(params, "pre_acceptance", false), try control.boolean(params, "response_started", true));
         const intent = self.requests.intentForHandle(native.application, &native.handle) orelse return error.UnknownLease;
         if (!eql(intent.key.request_id, native.request_id) or !eql(intent.binding_id, native.binding_id)) return error.RequestMismatch;
         const attempt = self.requests.attempt(native.application, &native.handle) orelse return error.UnknownLease;
@@ -12046,9 +12182,15 @@ const SiwcActorTest = struct {
     fn call(producer: *Producer, current: *Engine, method: []const u8, params: anytype, channel: Channel) !Json {
         const a = std.testing.allocator;
         const wire = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
-        defer { std.crypto.secureZero(u8, wire); a.free(wire); }
+        defer {
+            std.crypto.secureZero(u8, wire);
+            a.free(wire);
+        }
         const reply = try producer.dispatch(current, a, wire, channel);
-        defer { std.crypto.secureZero(u8, reply); a.free(reply); }
+        defer {
+            std.crypto.secureZero(u8, reply);
+            a.free(reply);
+        }
         return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
     }
     fn result(value: *const Json) !std.json.Value {
@@ -12092,7 +12234,10 @@ const SiwcActorTest = struct {
     }
     fn acquire(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, request_id: []const u8) !Json {
         return native(producer, current, reference, "adapter.acquire", .{
-            .session_id = "synthetic-siwc-thread", .binding_id = "synthetic-route", .request_id = request_id, .request_profile = siwc_route.profile,
+            .session_id = "synthetic-siwc-thread",
+            .binding_id = "synthetic-route",
+            .request_id = request_id,
+            .request_profile = siwc_route.profile,
             .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .purpose = "request", .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens", .scope = "" }, .required = 1 },
         });
     }
@@ -12126,9 +12271,14 @@ const SiwcActorTest = struct {
     }
     fn rejectMethod(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8, method: []const u8, status: u16, code: []const u8) !Json {
         return native(producer, current, reference, method, .{
-            .lease_handle = lease[0..], .request_profile = siwc_route.profile, .status = status, .error_code = code,
-            .error_param = @as(?[]const u8, "model"), .provider_request_id = @as(?[]const u8, "req_synthetic_actor"),
-            .pre_acceptance = true, .response_started = false,
+            .lease_handle = lease[0..],
+            .request_profile = siwc_route.profile,
+            .status = status,
+            .error_code = code,
+            .error_param = @as(?[]const u8, "model"),
+            .provider_request_id = @as(?[]const u8, "req_synthetic_actor"),
+            .pre_acceptance = true,
+            .response_started = false,
         });
     }
 };
@@ -12214,7 +12364,9 @@ test "signed owned single-account SIWC actor materializes only current paired ac
     try std.testing.expect(std.meta.eql(fault_checkpoint, current.db.?.checkpoint));
     try std.testing.expect(current.requests.attempt("codex", &fault_lease).?.state == .issued);
     var native_issued = false;
-    for (current.native_leases.items) |held| if (eql(&held.handle, &fault_lease)) { native_issued = held.status == .issued; };
+    for (current.native_leases.items) |held| if (eql(&held.handle, &fault_lease)) {
+        native_issued = held.status == .issued;
+    };
     try std.testing.expect(native_issued);
     try std.testing.expectEqual(@as(usize, 1), current.state.leases.items.len);
     var fenced_cleanup = try SiwcActorTest.report(producer, current, reference, fault_lease, "abandoned");
@@ -12326,8 +12478,13 @@ test "actual native peer SIWC acquire refuses withdrawn paired source authority 
     defer std.crypto.secureZero(u8, &capability);
     const wire_ref = try fixture_mod.referenceValue(scratch, reference);
     const request = try std.json.Stringify.valueAlloc(scratch, .{ .jsonrpc = "2.0", .id = 1, .method = "adapter.acquire", .params = .{
-        .application = "codex", .capability = capability[0..], .native_ref = wire_ref,
-        .session_id = "synthetic-siwc-thread", .binding_id = "synthetic-route", .request_id = "synthetic-new-request", .request_profile = siwc_route.profile,
+        .application = "codex",
+        .capability = capability[0..],
+        .native_ref = wire_ref,
+        .session_id = "synthetic-siwc-thread",
+        .binding_id = "synthetic-route",
+        .request_id = "synthetic-new-request",
+        .request_profile = siwc_route.profile,
         .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .purpose = "request", .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens", .scope = "" }, .required = 1 },
     } }, .{});
     defer std.crypto.secureZero(u8, request);
@@ -13088,7 +13245,10 @@ const FreshOAuthActorModel = struct {
             if (flags < 0 or fresh_api.fcntl(fd, fresh_api.F_SETFL, flags | fresh_api.O_NONBLOCK) != 0) return error.FixtureSocket;
             return .{ .fd = fd, .port = fresh_api.ntohs(address.sin_port) };
         }
-        fn close(self: *Listener) void { _ = fresh_api.close(self.fd); self.fd = -1; }
+        fn close(self: *Listener) void {
+            _ = fresh_api.close(self.fd);
+            self.fd = -1;
+        }
         fn accept(self: *Listener) !c_int {
             const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
             while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
@@ -13104,7 +13264,10 @@ const FreshOAuthActorModel = struct {
         const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
         defer a.free(frame);
         const bytes = try engine.dispatch(a, frame, channel);
-        defer { std.crypto.secureZero(u8, bytes); a.free(bytes); }
+        defer {
+            std.crypto.secureZero(u8, bytes);
+            a.free(bytes);
+        }
         return std.json.parseFromSlice(std.json.Value, a, bytes, .{ .allocate = .alloc_always });
     }
     fn observe(engine: *Engine, id: []const u8) !std.json.Parsed(std.json.Value) {
@@ -13115,7 +13278,10 @@ const FreshOAuthActorModel = struct {
         const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
         while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
             const result = try observe(engine, id);
-            const row = control.get(result.value, "result") orelse { result.deinit(); return error.FixtureRefused; };
+            const row = control.get(result.value, "result") orelse {
+                result.deinit();
+                return error.FixtureRefused;
+            };
             if (eql(try control.string(row, "phase"), phase) and control.get(row, "pending").?.integer == pending) return result;
             result.deinit();
             try io.sleep(.fromMilliseconds(5), .awake);
@@ -13156,7 +13322,10 @@ const FreshOAuthActorModel = struct {
         if (fresh_api.connect(fd, @ptrCast(&address), @sizeOf(fresh_api.struct_sockaddr_in)) != 0) return error.FixtureSocket;
         const query = if (denied) "error=access_denied" else "code=synthetic-actor-owned-code&client_id=synthetic-actor-issued-client&scope=openid+chatgpt.tokens.use.direct";
         const frame = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&{s} HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{ state, query, port });
-        defer { std.crypto.secureZero(u8, frame); a.free(frame); }
+        defer {
+            std.crypto.secureZero(u8, frame);
+            a.free(frame);
+        }
         if (fresh_api.send(fd, frame.ptr, frame.len, if (@hasDecl(fresh_api, "MSG_NOSIGNAL")) fresh_api.MSG_NOSIGNAL else 0) != frame.len) return error.FixtureSocket;
         return fd;
     }
@@ -13255,7 +13424,8 @@ test "queued owned callback commits ciphertext then issues once and quarantines 
     try std.testing.expect(control.get(control.get(quarantined.value, "result").?, "response_bytes").?.integer > 48);
     try std.testing.expectEqual(@as(i64, 1), control.get(control.get(quarantined.value, "result").?, "grants").?.integer);
     try std.testing.expectError(error.EnrollmentNotFound, current.?.preparedFreshOAuthAuthorization(a, id_bytes, try M.revision(current.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(2) })));
-    current.?.deinit(); current = null;
+    current.?.deinit();
+    current = null;
     const file = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
     defer a.free(file);
     var store = try storage.Store.openRootWithSnapshotValidator(io, a, file, instance.Selection.default.vaultRoot(), M.key, validatePersistedAdmission);
@@ -13348,7 +13518,8 @@ test "actual queued consent withdrawal and denial close callbacks while issued f
             defer if (unexpected >= 0) _ = fresh_api.close(unexpected);
             try std.testing.expect(unexpected < 0 and std.posix.errno(unexpected) == .AGAIN);
         }
-        engine.?.deinit(); engine = null;
+        engine.?.deinit();
+        engine = null;
         engine = try Engine.openWithKey(io, a, path, M.key);
         const restarted = try M.observe(engine.?, id);
         defer restarted.deinit();
@@ -13401,11 +13572,11 @@ test "documented OSS enrollment producer persists stable own host and private no
         if (host) |prior| try std.testing.expectEqualSlices(u8, &prior, &decoded.value) else host = decoded.value;
         try std.testing.expectEqualStrings("prepared", try control.string(row, "phase"));
         try std.testing.expectEqual(@as(i64, 0), control.get(row, "grants").?.integer);
-        engine.?.deinit(); engine = null;
+        engine.?.deinit();
+        engine = null;
         engine = try Engine.openWithKey(io, a, path, M.key);
     }
 }
-
 
 test "actual actor SQLite enrollment cycles reclaim settled rows without replay and cap sixteen active intents" {
     const M = FreshOAuthActorModel;
@@ -13454,7 +13625,8 @@ test "actual actor SQLite enrollment cycles reclaim settled rows without replay 
     const refused = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "active-seventeenth", .expected_revision = try M.revision(current.?), .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
     defer refused.deinit();
     try std.testing.expectEqualStrings("EnrollmentCapacity", try control.string(control.get(refused.value, "error").?, "message"));
-    current.?.deinit(); current = null;
+    current.?.deinit();
+    current = null;
     const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
     defer a.free(filename);
     var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
@@ -13492,7 +13664,8 @@ test "same actor Store signed OSS exchange activates a paired writer and retains
     defer a.free(access_id);
     const refresh_id = try a.dupe(u8, try control.string(result, "refresh_grant_id"));
     defer a.free(refresh_id);
-    current.?.deinit(); current = null;
+    current.?.deinit();
+    current = null;
     const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
     defer a.free(filename);
     var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
@@ -13518,7 +13691,6 @@ test "same actor Store signed OSS exchange activates a paired writer and retains
     try std.testing.expect(rotation.may_issue);
     try std.testing.expectError(error.SiwcPairQuarantined, siwc_pair.currentPair(&store, account, access_id, 1, std.Io.Clock.real.now(io).toSeconds()));
 }
-
 
 test "ordinary SIWC flow survives prompt delay past control RPC and queries never renew or redeliver authorization" {
     const M = FreshOAuthActorModel;
@@ -13572,7 +13744,6 @@ test "ordinary SIWC flow survives prompt delay past control RPC and queries neve
     try std.testing.expectEqualStrings("cancelled", try control.string(control.get(cancelled.value, "result").?, "status"));
 }
 
-
 test "expired ordinary owned flow refuses receipt and control-only status is truthful without loaded custody" {
     const M = FreshOAuthActorModel;
     const a = std.testing.allocator;
@@ -13603,7 +13774,10 @@ test "expired ordinary owned flow refuses receipt and control-only status is tru
     try std.testing.expectEqual(@as(usize, 0), control.get(control.get(pending.value, "result").?, "pending").?.array.items.len);
 
     var unavailable: Engine = .{ .allocator = a, .io = io, .state_dir = try a.dupe(u8, path), .state = domain.State.init(a), .observers = observer.Coordinator.init(a), .requests = request_authority.Ledger.init(a, 4096), .mutations = try mutation_authority.Ledger.init(a, 4096), .admission = snapshot_admission.Ledger.init(a), .native_owners = native_owner.Ledger.init(a), .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }), .vault_locked = true, .startup_vault_failure = error.Locked };
-    defer { unavailable.release(); a.free(unavailable.state_dir); }
+    defer {
+        unavailable.release();
+        a.free(unavailable.state_dir);
+    }
     const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.status.v1", .params = .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id } }, .{});
     defer a.free(frame);
     const reply = try unavailable.lockedRequest(a, frame, .control);
@@ -13615,7 +13789,6 @@ test "expired ordinary owned flow refuses receipt and control-only status is tru
     try std.testing.expect(control.get(unknown, "paired_committed").? == .null and control.get(unknown, "grant_ready").? == .null);
     try std.testing.expect(unavailable.db == null and unavailable.network == null and unavailable.fresh_oauth == null);
 }
-
 
 test "paired status distinguishes settled consent withdrawal source disconnection and account forget" {
     const M = FreshOAuthActorModel;
@@ -13690,7 +13863,8 @@ test "paired status distinguishes settled consent withdrawal source disconnectio
             try std.testing.expectEqualStrings("withdrawn", try control.string(control.get(after.value, "result").?, "consent_status"));
             try std.testing.expectEqualStrings("withdrawn", try control.string(control.get(after.value, "result").?, "retirement_reason"));
         }
-        current.?.deinit(); current = null;
+        current.?.deinit();
+        current = null;
         const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
         defer a.free(filename);
         var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);

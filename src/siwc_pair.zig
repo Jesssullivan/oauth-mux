@@ -52,7 +52,9 @@ pub const Registry = struct {
         self.records.deinit(a);
         self.* = .{};
     }
-    pub fn snapshot(self: *const Registry) Snapshot { return .{ .records = self.records.items }; }
+    pub fn snapshot(self: *const Registry) Snapshot {
+        return .{ .records = self.records.items };
+    }
     pub fn fromSnapshot(a: std.mem.Allocator, saved: Snapshot) !Registry {
         try validate(saved);
         var result: Registry = .{};
@@ -103,9 +105,15 @@ fn copyRecord(a: std.mem.Allocator, input: Record) !Record {
     return out;
 }
 fn freeRecord(a: std.mem.Allocator, row: Record) void {
-    a.free(row.source_id); a.free(row.account_id); a.free(row.access_grant_id); a.free(row.refresh_grant_id); a.free(row.identity_capsule);
+    a.free(row.source_id);
+    a.free(row.account_id);
+    a.free(row.access_grant_id);
+    a.free(row.refresh_grant_id);
+    a.free(row.identity_capsule);
 }
-fn same(a: [32]u8, b: [32]u8) bool { return std.crypto.timing_safe.eql([32]u8, a, b); }
+fn same(a: [32]u8, b: [32]u8) bool {
+    return std.crypto.timing_safe.eql([32]u8, a, b);
+}
 pub fn validate(saved: Snapshot) !void {
     if (saved.version != 1 or saved.records.len > maximum_pairs) return error.InvalidSiwcPair;
     for (saved.records, 0..) |row, index| {
@@ -135,22 +143,54 @@ pub fn tokenCommitment(key: envelope.Key, token: []const u8, kind: enum { access
 }
 const Data = struct { allocator: std.mem.Allocator, row: Record };
 pub const PairAuthority = opaque {
-    pub fn deinit(self: *PairAuthority) void { const d = data(self); freeRecord(d.allocator, d.row); d.allocator.destroy(d); }
-    pub fn issuer(_: *const PairAuthority) []const u8 { return issuer_uri; }
-    pub fn audience(_: *const PairAuthority) []const u8 { return resource_uri; }
-    pub fn profile(_: *const PairAuthority) []const u8 { return request_profile; }
-    pub fn authMode(_: *const PairAuthority) []const u8 { return auth_mode; }
-    pub fn expiresAt(self: *const PairAuthority) i64 { return view(self).row.access_expires_at; }
-    pub fn familyGeneration(self: *const PairAuthority) u64 { return view(self).row.family_generation; }
-    pub fn refreshGrantId(self: *const PairAuthority) []const u8 { return view(self).row.refresh_grant_id; }
-    pub fn refreshGeneration(self: *const PairAuthority) u64 { return view(self).row.refresh_generation; }
-    pub fn writerRegistryGeneration(self: *const PairAuthority) u64 { return view(self).row.writer_generation; }
-    pub fn sourceGeneration(self: *const PairAuthority) u64 { return view(self).row.source_generation; }
-    pub fn consentGeneration(self: *const PairAuthority) u64 { return view(self).row.consent_generation; }
-    pub fn activationCommitment(self: *const PairAuthority) [32]u8 { return view(self).row.activation_commitment; }
+    pub fn deinit(self: *PairAuthority) void {
+        const d = data(self);
+        freeRecord(d.allocator, d.row);
+        d.allocator.destroy(d);
+    }
+    pub fn issuer(_: *const PairAuthority) []const u8 {
+        return issuer_uri;
+    }
+    pub fn audience(_: *const PairAuthority) []const u8 {
+        return resource_uri;
+    }
+    pub fn profile(_: *const PairAuthority) []const u8 {
+        return request_profile;
+    }
+    pub fn authMode(_: *const PairAuthority) []const u8 {
+        return auth_mode;
+    }
+    pub fn expiresAt(self: *const PairAuthority) i64 {
+        return view(self).row.access_expires_at;
+    }
+    pub fn familyGeneration(self: *const PairAuthority) u64 {
+        return view(self).row.family_generation;
+    }
+    pub fn refreshGrantId(self: *const PairAuthority) []const u8 {
+        return view(self).row.refresh_grant_id;
+    }
+    pub fn refreshGeneration(self: *const PairAuthority) u64 {
+        return view(self).row.refresh_generation;
+    }
+    pub fn writerRegistryGeneration(self: *const PairAuthority) u64 {
+        return view(self).row.writer_generation;
+    }
+    pub fn sourceGeneration(self: *const PairAuthority) u64 {
+        return view(self).row.source_generation;
+    }
+    pub fn consentGeneration(self: *const PairAuthority) u64 {
+        return view(self).row.consent_generation;
+    }
+    pub fn activationCommitment(self: *const PairAuthority) [32]u8 {
+        return view(self).row.activation_commitment;
+    }
 };
-fn data(self: *PairAuthority) *Data { return @ptrCast(@alignCast(self)); }
-fn view(self: *const PairAuthority) *const Data { return @ptrCast(@alignCast(self)); }
+fn data(self: *PairAuthority) *Data {
+    return @ptrCast(@alignCast(self));
+}
+fn view(self: *const PairAuthority) *const Data {
+    return @ptrCast(@alignCast(self));
+}
 const Retained = struct {
     schema_version: u32,
     state: domain.Snapshot,
@@ -171,7 +211,7 @@ pub fn currentPair(store: *storage.Store, account_id: []const u8, access_grant_i
     if (parsed.value.schema_version != 2) return error.SiwcPairUnavailable;
     const registry = parsed.value.owned_siwc_pairs orelse return error.SiwcPairUnavailable;
     try validate(registry);
-        const records = if (parsed.value.fresh_oauth_authority) |saved_attempts| saved_attempts.records else &.{};
+    const records = if (parsed.value.fresh_oauth_authority) |saved_attempts| saved_attempts.records else &.{};
     for (registry.records) |row| {
         if (!std.mem.eql(u8, row.account_id, account_id) or !std.mem.eql(u8, row.access_grant_id, access_grant_id)) continue;
         if (row.status != .ready or row.consent_status != .recorded) return error.SiwcPairQuarantined;
@@ -189,12 +229,16 @@ pub fn currentPair(store: *storage.Store, account_id: []const u8, access_grant_i
             source = true;
         };
         var source_generation = false;
-        for (parsed.value.import_source_authority) |item| if (std.mem.eql(u8, item.source_id, row.source_id) and item.generation == row.source_generation) { source_generation = true; };
+        for (parsed.value.import_source_authority) |item| if (std.mem.eql(u8, item.source_id, row.source_id) and item.generation == row.source_generation) {
+            source_generation = true;
+        };
         var account = false;
         for (parsed.value.state.accounts) |item| if (std.mem.eql(u8, item.id, row.account_id)) {
             const expected = std.fmt.bytesToHex(row.identity_commitment, .lower);
             if (!item.identity.verified or !std.mem.eql(u8, item.identity.provider, "openai_siwc") or !std.mem.eql(u8, item.identity.issuer, issuer_uri) or item.identity.tenant.len != 0 or !std.mem.eql(u8, item.identity.subject, &expected)) return error.SiwcPairAuthorityChanged;
-            for (item.source_ids) |id| if (std.mem.eql(u8, id, row.source_id)) { account = true; };
+            for (item.source_ids) |id| if (std.mem.eql(u8, id, row.source_id)) {
+                account = true;
+            };
         };
         var access = false;
         var refresh = false;
@@ -205,15 +249,22 @@ pub fn currentPair(store: *storage.Store, account_id: []const u8, access_grant_i
                 var request = false;
                 var invoke = false;
                 var direct = false;
-                for (grant.purposes) |purpose| if (purpose == .request) { request = true; };
-                for (grant.scopes) |scope| { if (std.mem.eql(u8, scope, "resource.invoke")) invoke = true; if (std.mem.eql(u8, scope, "chatgpt.tokens.use.direct")) direct = true; }
+                for (grant.purposes) |purpose| if (purpose == .request) {
+                    request = true;
+                };
+                for (grant.scopes) |scope| {
+                    if (std.mem.eql(u8, scope, "resource.invoke")) invoke = true;
+                    if (std.mem.eql(u8, scope, "chatgpt.tokens.use.direct")) direct = true;
+                }
                 if (!request or !invoke or !direct) return error.SiwcPairAuthorityChanged;
                 access = true;
             }
             if (std.mem.eql(u8, grant.id, row.refresh_grant_id)) {
                 if (grant.credential_kind != .oauth_refresh or grant.ownership != .omux or grant.status != .ready or grant.generation != row.refresh_generation or !std.mem.eql(u8, grant.audience, resource_uri)) return error.SiwcPairAuthorityChanged;
                 var renewal = false;
-                for (grant.purposes) |purpose| if (purpose == .renewal) { renewal = true; };
+                for (grant.purposes) |purpose| if (purpose == .renewal) {
+                    renewal = true;
+                };
                 if (!renewal) return error.SiwcPairAuthorityChanged;
                 refresh = true;
             }
@@ -255,15 +306,24 @@ pub fn identityContext(key_id: []const u8, row: Record) envelope.Context {
 fn frame(hash: *std.crypto.hash.sha2.Sha256, bytes: []const u8) void {
     var length: [8]u8 = undefined;
     std.mem.writeInt(u64, &length, @intCast(bytes.len), .big);
-    hash.update(&length); hash.update(bytes);
+    hash.update(&length);
+    hash.update(bytes);
 }
 fn clientCommitment(client: []const u8) [32]u8 {
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
-    frame(&hash, "omux-siwc-issued-client-v1"); frame(&hash, client);
-    var result: [32]u8 = undefined; hash.final(&result); return result;
+    frame(&hash, "omux-siwc-issued-client-v1");
+    frame(&hash, client);
+    var result: [32]u8 = undefined;
+    hash.final(&result);
+    return result;
 }
 fn registrationIdentity(client: []const u8, subject: []const u8) [32]u8 {
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
-    frame(&hash, "omux-siwc-identity-v1"); frame(&hash, issuer_uri); frame(&hash, client); frame(&hash, subject);
-    var result: [32]u8 = undefined; hash.final(&result); return result;
+    frame(&hash, "omux-siwc-identity-v1");
+    frame(&hash, issuer_uri);
+    frame(&hash, client);
+    frame(&hash, subject);
+    var result: [32]u8 = undefined;
+    hash.final(&result);
+    return result;
 }

@@ -75,8 +75,14 @@ fn document(a: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(std.json.V
     var escaped = false;
     for (bytes) |byte| {
         if (quoted) {
-            if (escaped) { escaped = false; continue; }
-            if (byte == '\\') { escaped = true; continue; }
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (byte == '\\') {
+                escaped = true;
+                continue;
+            }
             if (byte == '"') quoted = false;
         } else if (byte == '"') {
             quoted = true;
@@ -152,7 +158,10 @@ fn selectKey(value: std.json.Value, kid: []const u8) !Key {
     while (names.next()) |entry| {
         const name = entry.key_ptr.*;
         var accepted = false;
-        for ([_][]const u8{ "kid", "kty", "n", "e", "alg", "use", "key_ops", "x5c", "x5t", "x5t#S256" }) |allowed| if (std.mem.eql(u8, name, allowed)) { accepted = true; break; };
+        for ([_][]const u8{ "kid", "kty", "n", "e", "alg", "use", "key_ops", "x5c", "x5t", "x5t#S256" }) |allowed| if (std.mem.eql(u8, name, allowed)) {
+            accepted = true;
+            break;
+        };
         if (!accepted) return error.UnsupportedSigningKey;
     }
     var result: Key = undefined;
@@ -258,7 +267,7 @@ test "RFC 7515 A2 public RS256 vector verifies using actual pinned RSA, tamper r
     try std.testing.expectError(error.InvalidOidcSignature, verifyRsa(vector_input, raw, changed_key));
     signature[0] ^= 1;
     try std.testing.expectError(error.InvalidOidcSignature, verifyRsa(vector_input, raw, key));
-    try std.testing.expectError(error.InvalidOidcSignature, verifyRsa(vector_input, raw[0..raw.len - 1], key));
+    try std.testing.expectError(error.InvalidOidcSignature, verifyRsa(vector_input, raw[0 .. raw.len - 1], key));
 }
 test "canonical JOSE base64 refuses alternate bits padding whitespace and oversized decode" {
     var storage: [32]u8 = undefined;

@@ -39,16 +39,24 @@ pub const VerifiedProfile = opaque {
         std.crypto.secureZero(u8, std.mem.asBytes(data));
         a.destroy(data);
     }
-    pub fn identityCommitment(self: *const VerifiedProfile) [32]u8 { return view(self).identity_sha256; }
+    pub fn identityCommitment(self: *const VerifiedProfile) [32]u8 {
+        return view(self).identity_sha256;
+    }
     /// Signed provider subject association, separate from registration. The
     /// official OSS claims do not disclose a workspace or independent quota
     /// bucket: adding a client registration must never multiply capacity.
     pub fn providerSubjectCommitment(self: *const VerifiedProfile) [32]u8 {
         return providerSubjectDigest(view(self).subject);
     }
-    pub fn accessExpiresAt(self: *const VerifiedProfile) i64 { return view(self).access_expires_at; }
-    pub fn responseSha256(self: *const VerifiedProfile) [32]u8 { return view(self).response_sha256; }
-    pub fn bindingSha256(self: *const VerifiedProfile) [32]u8 { return view(self).binding_sha256; }
+    pub fn accessExpiresAt(self: *const VerifiedProfile) i64 {
+        return view(self).access_expires_at;
+    }
+    pub fn responseSha256(self: *const VerifiedProfile) [32]u8 {
+        return view(self).response_sha256;
+    }
+    pub fn bindingSha256(self: *const VerifiedProfile) [32]u8 {
+        return view(self).binding_sha256;
+    }
     /// Registration authority commitment, not a provider quota-bucket identity.
     pub fn issuedClientCommitment(self: *const VerifiedProfile) [32]u8 {
         var hash = Hash.init(.{});
@@ -68,8 +76,7 @@ pub const VerifiedProfile = opaque {
         framed(&hash, resource);
         framed(&hash, "RS256");
         framed(&hash, data.client);
-        for ([_][32]u8{ data.binding_sha256, data.profile_sha256, data.nonce_sha256,
-            data.response_sha256, data.pair_sha256, data.identity_sha256, data.jwks.sha256() }) |digest| hash.update(&digest);
+        for ([_][32]u8{ data.binding_sha256, data.profile_sha256, data.nonce_sha256, data.response_sha256, data.pair_sha256, data.identity_sha256, data.jwks.sha256() }) |digest| hash.update(&digest);
         var number: [8]u8 = undefined;
         for ([_]i64{ data.received_at, data.id_expires_at, data.access_expires_at, data.jwks.receivedUnix() }) |value| {
             std.mem.writeInt(i64, &number, value, .big);
@@ -89,8 +96,7 @@ pub const VerifiedProfile = opaque {
         const data = view(self);
         try checkTimes(data.deadline, data.received_at, data.id_expires_at, data.access_expires_at);
         try data.jwks.recheck(data.deadline);
-        const bytes = try std.json.Stringify.valueAlloc(a, .{ .schema_version = @as(u32, 1), .issuer = crypto.issuer,
-            .client_id = data.client, .subject = data.subject }, .{});
+        const bytes = try std.json.Stringify.valueAlloc(a, .{ .schema_version = @as(u32, 1), .issuer = crypto.issuer, .client_id = data.client, .subject = data.subject }, .{});
         errdefer wipeFree(a, bytes);
         if (bytes.len > 4096) return error.OidcIdentityTooLarge;
         try checkTimes(data.deadline, data.received_at, data.id_expires_at, data.access_expires_at);
@@ -125,10 +131,19 @@ pub const VerifiedProfile = opaque {
         try response.recheck(ticket);
     }
 };
-fn view(self: *const VerifiedProfile) *const ProofData { return @ptrCast(@alignCast(self)); }
-fn mutable(self: *VerifiedProfile) *ProofData { return @ptrCast(@alignCast(self)); }
-fn wipeFree(a: std.mem.Allocator, bytes: []u8) void { std.crypto.secureZero(u8, bytes); a.free(bytes); }
-fn same(a: [32]u8, b: [32]u8) bool { return std.crypto.timing_safe.eql([32]u8, a, b); }
+fn view(self: *const VerifiedProfile) *const ProofData {
+    return @ptrCast(@alignCast(self));
+}
+fn mutable(self: *VerifiedProfile) *ProofData {
+    return @ptrCast(@alignCast(self));
+}
+fn wipeFree(a: std.mem.Allocator, bytes: []u8) void {
+    std.crypto.secureZero(u8, bytes);
+    a.free(bytes);
+}
+fn same(a: [32]u8, b: [32]u8) bool {
+    return std.crypto.timing_safe.eql([32]u8, a, b);
+}
 fn checkAccessHash(expected: ?[16]u8, access: []const u8) !void {
     // When supplied, this claim is inside the already verified ID signature.
     // Otherwise the actual matching OAuth response remains the pair authority.
@@ -176,16 +191,15 @@ pub fn verifyOwnedResponse(a: std.mem.Allocator, ticket: *const issue.IssuedTick
     const subject = try a.dupe(u8, claims.subject);
     errdefer wipeFree(a, subject);
     const data = try a.create(ProofData);
-    errdefer { std.crypto.secureZero(u8, std.mem.asBytes(data)); a.destroy(data); }
+    errdefer {
+        std.crypto.secureZero(u8, std.mem.asBytes(data));
+        a.destroy(data);
+    }
     const subject_hash = identityDigest(client, subject);
     // Retain the authentic same-attempt keys through final paired actor commit.
     jwks.retain();
     errdefer jwks.deinit();
-    data.* = .{ .allocator = a, .client = client, .subject = subject, .binding_sha256 = binding,
-        .profile_sha256 = ticket.registrationProfileSha256(), .nonce_sha256 = ticket.nonceDigest(),
-        .response_sha256 = evidence.response_sha256, .pair_sha256 = pair, .identity_sha256 = subject_hash,
-        .received_at = received, .id_expires_at = claims.expires_at, .access_expires_at = expires,
-        .deadline = deadline, .jwks = jwks };
+    data.* = .{ .allocator = a, .client = client, .subject = subject, .binding_sha256 = binding, .profile_sha256 = ticket.registrationProfileSha256(), .nonce_sha256 = ticket.nonceDigest(), .response_sha256 = evidence.response_sha256, .pair_sha256 = pair, .identity_sha256 = subject_hash, .received_at = received, .id_expires_at = claims.expires_at, .access_expires_at = expires, .deadline = deadline, .jwks = jwks };
     const proof: *VerifiedProfile = @ptrCast(data);
     try proof.recheck(ticket, response);
     // Last original-clock/fence/key check after every allocation and readback.
@@ -284,7 +298,10 @@ fn scopes(value: []const u8) !void {
         if (part.len == 0 or count == seen.len) return error.OidcScopeInvalid;
         for (seen[0..count]) |prior| if (std.mem.eql(u8, prior, part)) return error.OidcScopeInvalid;
         var known = false;
-        for ([_][]const u8{ "openid", "profile", "email", "offline_access", "resource.invoke", "chatgpt.tokens.use.direct" }) |allowed| if (std.mem.eql(u8, part, allowed)) { known = true; break; };
+        for ([_][]const u8{ "openid", "profile", "email", "offline_access", "resource.invoke", "chatgpt.tokens.use.direct" }) |allowed| if (std.mem.eql(u8, part, allowed)) {
+            known = true;
+            break;
+        };
         if (!known) return error.OidcScopeInvalid;
         seen[count] = part;
         count += 1;
@@ -300,7 +317,7 @@ test "returned direct scope relation refuses callback-only missing duplicate and
     try scopes("openid offline_access resource.invoke chatgpt.tokens.use.direct");
     try scopes("chatgpt.tokens.use.direct email offline_access openid profile resource.invoke");
     for ([_][]const u8{
-        "openid profile email offline_access", "resource.invoke chatgpt.tokens.use.direct",
+        "openid profile email offline_access",              "resource.invoke chatgpt.tokens.use.direct",
         "openid resource.invoke chatgpt.tokens.use.direct", "openid offline_access resource.invoke",
     }) |bad| try std.testing.expectError(error.OidcScopeMissing, scopes(bad));
     for ([_][]const u8{

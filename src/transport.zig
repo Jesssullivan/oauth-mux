@@ -2331,7 +2331,6 @@ test "original awake deadline expires after observed real curl request without r
     try std.testing.expect(delayed.authorization_seen.load(.acquire));
 }
 
-
 test "resource requests cannot borrow OAuth token endpoint authority" {
     var resource: Request = .{ .endpoint = .codex_oauth_token, .account_id = "fixture-account", .grant_id = "fixture-grant" };
     try std.testing.expectError(error.UndeclaredEndpoint, resource.validate());
@@ -2475,7 +2474,6 @@ test "unread resource completions preserve OAuth admission budget and consume re
     try std.testing.expectError(error.OAuthDispatchRefused, issued.fence.checkBeforeDispatch());
 }
 
-
 test "issued original awake cutoff expires after real OAuth POST without renewing work" {
     const a = std.testing.allocator;
     var server = try Fixture.listen(.oauth_hold);
@@ -2507,7 +2505,6 @@ test "issued original awake cutoff expires after real OAuth POST without renewin
     defer retained.deinit();
     try std.testing.expectEqual(issued.issued_revision, retained.revision);
 }
-
 
 test "owned OAuth completion survives curl shutdown and keeps response isolated" {
     const a = std.testing.allocator;
@@ -2648,7 +2645,6 @@ test "generic code ticket cannot borrow owned OSS key fetch authority or replay 
     try std.testing.expectEqual(@as(usize, 0), outstanding);
     try std.testing.expect(client.pollJwks() == null and client.pollOAuth() == null and client.poll() == null);
 }
-
 
 test "actual Store OSS issued client drives Form exchange and same attempt key provenance" {
     const a = std.testing.allocator;

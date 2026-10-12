@@ -37,7 +37,9 @@ pub const Binding = struct {
     registration_profile_sha256: ?[32]u8 = null,
     redirect_uri: [256]u8 = @splat(0),
     redirect_uri_len: usize = 0,
-    pub fn redirect(self: *const Binding) []const u8 { return self.redirect_uri[0..self.redirect_uri_len]; }
+    pub fn redirect(self: *const Binding) []const u8 {
+        return self.redirect_uri[0..self.redirect_uri_len];
+    }
 };
 pub const Record = struct {
     binding: Binding,
@@ -60,8 +62,15 @@ pub const Snapshot = struct { version: u32 = 1, records: []const Record = &.{} }
 /// Private worker lifetime, never serialized, accepted from control, restored
 /// after restart, or renewed at callback. It provides no provider permission.
 pub const Attempt = struct {
-    binding: Binding, until: std.Io.Clock.Timestamp, callback_state: [32]u8, oidc_nonce: [32]u8 = @splat(0),
-    pub fn deinit(self: *Attempt) void { std.crypto.secureZero(u8, &self.callback_state); std.crypto.secureZero(u8, &self.oidc_nonce); self.* = undefined; }
+    binding: Binding,
+    until: std.Io.Clock.Timestamp,
+    callback_state: [32]u8,
+    oidc_nonce: [32]u8 = @splat(0),
+    pub fn deinit(self: *Attempt) void {
+        std.crypto.secureZero(u8, &self.callback_state);
+        std.crypto.secureZero(u8, &self.oidc_nonce);
+        self.* = undefined;
+    }
 };
 pub const Ledger = struct {
     records: std.ArrayList(Record) = .empty,
@@ -222,7 +231,10 @@ pub const Ledger = struct {
     pub fn consumeOwnedCallback(self: *Ledger, io: std.Io, a: std.mem.Allocator, key: ?envelope.Key, key_id: []const u8, attempt: Attempt, current: Binding, now: i64, state: []const u8, code: []const u8, client_id: []const u8) !void {
         if (code.len == 0 or code.len > max_code_bytes or !validIssuedClient(client_id) or std.mem.allEqual(u8, &current.oidc_nonce_digest, 0)) return error.InvalidCallback;
         const encoded = try std.json.Stringify.valueAlloc(a, .{ .code = code, .client_id = client_id }, .{});
-        defer { std.crypto.secureZero(u8, encoded); a.free(encoded); }
+        defer {
+            std.crypto.secureZero(u8, encoded);
+            a.free(encoded);
+        }
         // Reuse exact state/single-use authority checks before replacing the
         // temporary legacy capsule with the purpose-separated client bundle.
         try self.consumeCallback(io, a, key, key_id, attempt, current, now, state, code);
@@ -284,7 +296,10 @@ pub const Ledger = struct {
                 clearCapsules(a, record);
                 record.phase = .completion_unknown;
             },
-            .verifying => { clearCapsules(a, record); record.phase = .quarantined; },
+            .verifying => {
+                clearCapsules(a, record);
+                record.phase = .quarantined;
+            },
             .active, .completion_unknown, .quarantined, .retired => {},
         };
     }
@@ -320,9 +335,19 @@ pub const Ledger = struct {
 };
 pub const Capsule = enum { verifier, callback, response, nonce };
 pub fn openCapsule(a: std.mem.Allocator, key: envelope.Key, key_id: []const u8, record: Record, kind: Capsule) !envelope.Secret {
-    const ad = try capsuleContext(a, key_id, record.binding, record.aad_version, switch (kind) { .verifier => "fresh_oauth_pkce_verifier", .callback => if (record.callback_format == .issued_client_bundle) "fresh_oauth_issued_client_callback_v1" else "fresh_oauth_callback_code", .response => "fresh_oauth_unverified_response_v1", .nonce => "fresh_oauth_oidc_nonce_v1" });
+    const ad = try capsuleContext(a, key_id, record.binding, record.aad_version, switch (kind) {
+        .verifier => "fresh_oauth_pkce_verifier",
+        .callback => if (record.callback_format == .issued_client_bundle) "fresh_oauth_issued_client_callback_v1" else "fresh_oauth_callback_code",
+        .response => "fresh_oauth_unverified_response_v1",
+        .nonce => "fresh_oauth_oidc_nonce_v1",
+    });
     defer a.free(ad.scope);
-    return envelope.open(a, key, ad, switch (kind) { .verifier => record.verifier_capsule, .callback => record.callback_capsule, .response => record.response_capsule, .nonce => record.nonce_capsule });
+    return envelope.open(a, key, ad, switch (kind) {
+        .verifier => record.verifier_capsule,
+        .callback => record.callback_capsule,
+        .response => record.response_capsule,
+        .nonce => record.nonce_capsule,
+    });
 }
 fn clearCapsules(a: std.mem.Allocator, record: *Record) void {
     a.free(record.verifier_capsule);
@@ -545,7 +570,6 @@ test "owned nonce and callback client have separate ciphertext and withdrawal ad
     try std.testing.expectEqual(@as(usize, 0), ledger.records.items[0].callback_capsule.len);
     try validate(ledger.snapshot());
 }
-
 
 test "owned human flow is minted once independently of short control RPC and caps one exchange budget" {
     const a = std.testing.allocator;

@@ -29,8 +29,15 @@ pub const Signer = struct {
                 return error.InvalidFixtureTmpdir;
         }
         const directory = try std.fmt.allocPrintSentinel(a, "{s}/omux-oidc-key-XXXXXX", .{root}, 0);
-        if (c.mkdtemp(directory.ptr) == null) { a.free(directory); return error.FixtureDirectoryFailed; }
-        const owned_tool = a.dupe(u8, tool) catch |err| { _ = c.rmdir(directory.ptr); a.free(directory); return err; };
+        if (c.mkdtemp(directory.ptr) == null) {
+            a.free(directory);
+            return error.FixtureDirectoryFailed;
+        }
+        const owned_tool = a.dupe(u8, tool) catch |err| {
+            _ = c.rmdir(directory.ptr);
+            a.free(directory);
+            return err;
+        };
         var self: Signer = .{ .allocator = a, .io = io, .until = until, .tool = owned_tool, .directory = directory };
         errdefer self.cleanupOwned() catch @panic("synthetic signer initialization cleanup failed");
         self.descriptor = c.open(directory.ptr, c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW | c.O_CLOEXEC);
@@ -46,8 +53,7 @@ pub const Signer = struct {
         }
         const key_path = try self.path("key.pem");
         defer a.free(key_path);
-        const output = try self.run(&.{ self.tool, "genpkey", "-quiet", "-algorithm", "RSA",
-            "-pkeyopt", "rsa_keygen_bits:2048", "-pkeyopt", "rsa_keygen_pubexp:65537", "-out", key_path }, 1);
+        const output = try self.run(&.{ self.tool, "genpkey", "-quiet", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-pkeyopt", "rsa_keygen_pubexp:65537", "-out", key_path }, 1);
         defer wipeFree(a, output);
         if (output.len != 0 or c.fchmodat(self.descriptor, "key.pem", 0o400, 0) != 0) return error.FixtureKeyFailed;
         try self.check();
@@ -83,9 +89,7 @@ pub const Signer = struct {
         defer env.deinit();
         try env.put("OPENSSL_CONF", "/dev/null");
         // Fixed wrapper owns executable selection; no PATH/provider/config lookup.
-        const result = try std.process.run(self.allocator, self.io, .{ .argv = argv,
-            .environ_map = &env, .stdout_limit = .limited(stdout_limit), .stderr_limit = .limited(4096),
-            .timeout = .{ .deadline = self.until } });
+        const result = try std.process.run(self.allocator, self.io, .{ .argv = argv, .environ_map = &env, .stdout_limit = .limited(stdout_limit), .stderr_limit = .limited(4096), .timeout = .{ .deadline = self.until } });
         defer wipeFree(self.allocator, result.stderr);
         errdefer wipeFree(self.allocator, result.stdout);
         if (result.term != .exited or result.term.exited != 0) return error.FixtureToolFailed;
@@ -121,7 +125,10 @@ pub const Signer = struct {
         var written: usize = 0;
         while (written < input.len) {
             const n = c.write(fd, input[written..].ptr, input.len - written);
-            if (n <= 0) { _ = c.close(fd); return error.FixtureFileFailed; }
+            if (n <= 0) {
+                _ = c.close(fd);
+                return error.FixtureFileFailed;
+            }
             written += @intCast(n);
         }
         if (c.close(fd) != 0) return error.FixtureCloseFailed;
@@ -131,8 +138,7 @@ pub const Signer = struct {
         defer self.allocator.free(input_path);
         const signature_path = try self.path("signature.bin");
         defer self.allocator.free(signature_path);
-        const output = try self.run(&.{ self.tool, "dgst", "-sha256", "-sign", key_path,
-            "-sigopt", "rsa_padding_mode:pkcs1", "-out", signature_path, input_path }, 1);
+        const output = try self.run(&.{ self.tool, "dgst", "-sha256", "-sign", key_path, "-sigopt", "rsa_padding_mode:pkcs1", "-out", signature_path, input_path }, 1);
         defer wipeFree(self.allocator, output);
         if (output.len != 0) return error.FixtureToolFailed;
         const sig_fd = c.openat(self.descriptor, "signature.bin", c.O_RDONLY | c.O_NOFOLLOW | c.O_CLOEXEC);

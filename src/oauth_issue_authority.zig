@@ -24,8 +24,12 @@ const ProfileData = struct { allocator: std.mem.Allocator, view: ProfileView, re
 /// Purpose-limited enrollment authority, not authenticated identity or ready
 /// request/renewal authority. The native Codex client remains unavailable.
 pub const EnrollmentProfile = opaque {
-    pub fn view(self: *const EnrollmentProfile) ProfileView { return profileData(self).view; }
-    pub fn retain(self: *EnrollmentProfile) void { _ = profileDataMut(self).references.fetchAdd(1, .monotonic); }
+    pub fn view(self: *const EnrollmentProfile) ProfileView {
+        return profileData(self).view;
+    }
+    pub fn retain(self: *EnrollmentProfile) void {
+        _ = profileDataMut(self).references.fetchAdd(1, .monotonic);
+    }
     pub fn deinit(self: *EnrollmentProfile) void {
         const data = profileDataMut(self);
         if (data.references.fetchSub(1, .acq_rel) != 1) return;
@@ -84,7 +88,10 @@ pub fn authorizationUrl(io: std.Io, a: std.mem.Allocator, profile: *EnrollmentPr
     _ = std.base64.url_safe_no_pad.Encoder.encode(&nonce, &attempt.oidc_nonce);
     const host = std.fmt.bytesToHex(profile.view().host_id, .lower);
     var output: std.ArrayList(u8) = .empty;
-    errdefer { std.crypto.secureZero(u8, output.items); output.deinit(a); }
+    errdefer {
+        std.crypto.secureZero(u8, output.items);
+        output.deinit(a);
+    }
     if (profile.view().endpoint == .omux_oss_token) {
         try output.appendSlice(a, "https://auth.openai.com/api/accounts/authorize?");
     } else if (profile.view().endpoint == .fixture_token) {
@@ -100,8 +107,10 @@ pub fn authorizationUrl(io: std.Io, a: std.mem.Allocator, profile: *EnrollmentPr
         .{ .key = "response_type", .value = "code" },
         .{ .key = "redirect_uri", .value = profile.view().exact_redirect_uri },
         .{ .key = "scope", .value = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" },
-        .{ .key = "state", .value = &state }, .{ .key = "nonce", .value = &nonce },
-        .{ .key = "code_challenge_method", .value = "S256" }, .{ .key = "code_challenge", .value = &challenge },
+        .{ .key = "state", .value = &state },
+        .{ .key = "nonce", .value = &nonce },
+        .{ .key = "code_challenge_method", .value = "S256" },
+        .{ .key = "code_challenge", .value = &challenge },
     }, 0..) |pair, index| {
         if (index != 0) try output.append(a, '&');
         try output.appendSlice(a, pair.key);
@@ -121,8 +130,12 @@ fn appendEncoded(a: std.mem.Allocator, output: *std.ArrayList(u8), value: []cons
         if (std.ascii.isAlphanumeric(byte) or std.mem.indexOfScalar(u8, "-._~", byte) != null) try output.append(a, byte) else try output.appendSlice(a, &.{ '%', hex[byte >> 4], hex[byte & 15] });
     }
 }
-fn profileData(self: *const EnrollmentProfile) *const ProfileData { return @ptrCast(@alignCast(self)); }
-fn profileDataMut(self: *EnrollmentProfile) *ProfileData { return @ptrCast(@alignCast(self)); }
+fn profileData(self: *const EnrollmentProfile) *const ProfileData {
+    return @ptrCast(@alignCast(self));
+}
+fn profileDataMut(self: *EnrollmentProfile) *ProfileData {
+    return @ptrCast(@alignCast(self));
+}
 
 const FencePhase = enum(u8) { pending, dispatching, cancelled };
 const FenceData = struct {
@@ -135,7 +148,9 @@ const FenceData = struct {
 };
 pub const Cancellation = enum { prevented_before_dispatch, issued_or_racing };
 pub const DispatchFence = opaque {
-    pub fn retain(self: *DispatchFence) void { _ = fenceData(self).references.fetchAdd(1, .monotonic); }
+    pub fn retain(self: *DispatchFence) void {
+        _ = fenceData(self).references.fetchAdd(1, .monotonic);
+    }
     pub fn deinit(self: *DispatchFence) void {
         const data = fenceData(self);
         if (data.references.fetchSub(1, .acq_rel) == 1) data.allocator.destroy(data);
@@ -161,7 +176,9 @@ pub const DispatchFence = opaque {
         return if (fenceData(self).phase.swap(.cancelled, .acq_rel) == .pending) .prevented_before_dispatch else .issued_or_racing;
     }
 };
-fn fenceData(self: *DispatchFence) *FenceData { return @ptrCast(@alignCast(self)); }
+fn fenceData(self: *DispatchFence) *FenceData {
+    return @ptrCast(@alignCast(self));
+}
 
 pub const DispatchMaterial = struct {
     grant: token.Grant,
@@ -176,7 +193,11 @@ pub const DispatchMaterial = struct {
     fence: *DispatchFence,
     pub fn deinit(self: *DispatchMaterial, a: std.mem.Allocator) void {
         switch (self.grant) {
-            .code => |code| { wipeFree(a, code.code); wipeFree(a, code.verifier); a.free(code.redirect_uri); },
+            .code => |code| {
+                wipeFree(a, code.code);
+                wipeFree(a, code.verifier);
+                a.free(code.redirect_uri);
+            },
             .refresh => |refresh| wipeFree(a, refresh),
         }
         a.free(self.client_id);
@@ -221,22 +242,44 @@ pub const IssuedTicket = opaque {
         data.profile.deinit();
         data.allocator.destroy(data);
     }
-    pub fn retain(self: *IssuedTicket) void { _ = ticketData(self).references.fetchAdd(1, .monotonic); }
+    pub fn retain(self: *IssuedTicket) void {
+        _ = ticketData(self).references.fetchAdd(1, .monotonic);
+    }
     pub fn retainFence(self: *IssuedTicket) *DispatchFence {
         const result = ticketData(self).material.fence;
         result.retain();
         return result;
     }
-    pub fn committedRevision(self: *const IssuedTicket) u64 { return ticketDataConst(self).committed_revision; }
-    pub fn binding(self: *const IssuedTicket) enrollment.Binding { return ticketDataConst(self).binding; }
-    pub fn registrationProfileSha256(self: *const IssuedTicket) [32]u8 { return ticketDataConst(self).profile.view().sha256; }
-    pub fn modelRoutes(self: *const IssuedTicket) ?ModelRoutes { return if (builtin.is_test) ticketDataConst(self).model_routes else null; }
-    pub fn matchesDispatchFence(self: *const IssuedTicket, fence: *const DispatchFence) bool { return ticketDataConst(self).material.fence == fence; }
-    pub fn issuedClientId(self: *const IssuedTicket) []const u8 { return ticketDataConst(self).material.client_id; }
-    pub fn nonceDigest(self: *const IssuedTicket) [32]u8 { return ticketDataConst(self).binding.oidc_nonce_digest; }
-    pub fn clockIo(self: *const IssuedTicket) std.Io { return ticketDataConst(self).material.io; }
-    pub fn originalUntil(self: *const IssuedTicket) std.Io.Clock.Timestamp { return ticketDataConst(self).material.until; }
-    pub fn checkBeforeVerification(self: *const IssuedTicket) !void { try ticketDataConst(self).material.fence.checkBeforeCompletion(); }
+    pub fn committedRevision(self: *const IssuedTicket) u64 {
+        return ticketDataConst(self).committed_revision;
+    }
+    pub fn binding(self: *const IssuedTicket) enrollment.Binding {
+        return ticketDataConst(self).binding;
+    }
+    pub fn registrationProfileSha256(self: *const IssuedTicket) [32]u8 {
+        return ticketDataConst(self).profile.view().sha256;
+    }
+    pub fn modelRoutes(self: *const IssuedTicket) ?ModelRoutes {
+        return if (builtin.is_test) ticketDataConst(self).model_routes else null;
+    }
+    pub fn matchesDispatchFence(self: *const IssuedTicket, fence: *const DispatchFence) bool {
+        return ticketDataConst(self).material.fence == fence;
+    }
+    pub fn issuedClientId(self: *const IssuedTicket) []const u8 {
+        return ticketDataConst(self).material.client_id;
+    }
+    pub fn nonceDigest(self: *const IssuedTicket) [32]u8 {
+        return ticketDataConst(self).binding.oidc_nonce_digest;
+    }
+    pub fn clockIo(self: *const IssuedTicket) std.Io {
+        return ticketDataConst(self).material.io;
+    }
+    pub fn originalUntil(self: *const IssuedTicket) std.Io.Clock.Timestamp {
+        return ticketDataConst(self).material.until;
+    }
+    pub fn checkBeforeVerification(self: *const IssuedTicket) !void {
+        try ticketDataConst(self).material.fence.checkBeforeCompletion();
+    }
     pub fn requireOwnedOssEnrollment(self: *const IssuedTicket) !void {
         const data = ticketDataConst(self);
         if (data.profile.view().endpoint != .omux_oss_token or data.profile.view().resource == null or !std.mem.eql(u8, data.profile.view().resource.?, "https://api.openai.com/v1") or data.material.encoding != .form) return error.OAuthAuthorityChanged;
@@ -250,9 +293,16 @@ pub const IssuedTicket = opaque {
         return result;
     }
 };
-fn ticketData(self: *IssuedTicket) *TicketData { return @ptrCast(@alignCast(self)); }
-fn ticketDataConst(self: *const IssuedTicket) *const TicketData { return @ptrCast(@alignCast(self)); }
-fn wipeFree(a: std.mem.Allocator, bytes: []const u8) void { std.crypto.secureZero(u8, @constCast(bytes)); a.free(bytes); }
+fn ticketData(self: *IssuedTicket) *TicketData {
+    return @ptrCast(@alignCast(self));
+}
+fn ticketDataConst(self: *const IssuedTicket) *const TicketData {
+    return @ptrCast(@alignCast(self));
+}
+fn wipeFree(a: std.mem.Allocator, bytes: []const u8) void {
+    std.crypto.secureZero(u8, @constCast(bytes));
+    a.free(bytes);
+}
 fn deadline(io: std.Io, until: std.Io.Clock.Timestamp) !void {
     if (until.clock != .awake) return error.OAuthDeadline;
     const remaining = until.durationFromNow(io).raw.toNanoseconds();
@@ -335,7 +385,10 @@ pub fn issueCode(io: std.Io, a: std.mem.Allocator, store: *storage.Store, key: ?
     if (nonce.bytes.len != 43 or !std.crypto.timing_safe.eql([32]u8, nonce_hash, binding.oidc_nonce_digest)) return error.InvalidOAuthCapsule;
     const bundle = try std.json.parseFromSlice(struct { code: []const u8, client_id: []const u8 }, a, callback.bytes, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
     defer bundle.deinit();
-    defer { std.crypto.secureZero(u8, @constCast(bundle.value.code)); std.crypto.secureZero(u8, @constCast(bundle.value.client_id)); }
+    defer {
+        std.crypto.secureZero(u8, @constCast(bundle.value.code));
+        std.crypto.secureZero(u8, @constCast(bundle.value.client_id));
+    }
     if (verifier.bytes.len < 43 or verifier.bytes.len > 128 or bundle.value.code.len == 0 or bundle.value.code.len > enrollment.max_code_bytes or !enrollment.validIssuedClient(bundle.value.client_id)) return error.InvalidOAuthCapsule;
     const fence = try a.create(FenceData);
     fence.* = .{ .allocator = a, .io = io, .until = until, .consent_expires_at = binding.consent_expires_at };
@@ -529,7 +582,9 @@ pub const testing = struct {
             const fence = ticket.retainFence();
             return .{ .model_nonce = model_nonce, .allocator = a, .directory = directory, .path = path, .store = store, .ledger = ledger, .profile = registered, .ticket = ticket, .fence = fence, .issued_revision = ticket.committedRevision(), .binding = prepared.binding };
         }
-        pub fn invalidate(self: *CodeFixture) Cancellation { return self.fence.invalidate(); }
+        pub fn invalidate(self: *CodeFixture) Cancellation {
+            return self.fence.invalidate();
+        }
         pub fn deinit(self: *CodeFixture) void {
             _ = self.invalidate();
             self.fence.deinit();

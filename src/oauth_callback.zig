@@ -16,7 +16,12 @@ pub const Captured = struct {
     code: envelope.Secret,
     client_id: envelope.Secret,
     denied: bool = false,
-    pub fn deinit(self: *Captured) void { self.code.deinit(); self.client_id.deinit(); std.crypto.secureZero(u8, &self.state); self.* = undefined; }
+    pub fn deinit(self: *Captured) void {
+        self.code.deinit();
+        self.client_id.deinit();
+        std.crypto.secureZero(u8, &self.state);
+        self.* = undefined;
+    }
 };
 const Data = struct {
     allocator: std.mem.Allocator,
@@ -35,7 +40,9 @@ const Data = struct {
 pub const Acknowledgment = enum { recorded, refused };
 const ReservationData = struct { allocator: std.mem.Allocator, io: std.Io, until: std.Io.Clock.Timestamp, fd: c_int, port: u16 };
 pub const ListenerReservation = opaque {
-    pub fn port(self: *ListenerReservation) u16 { return reserved(self).port; }
+    pub fn port(self: *ListenerReservation) u16 {
+        return reserved(self).port;
+    }
     pub fn deinit(self: *ListenerReservation) void {
         const data = reserved(self);
         if (data.fd >= 0) _ = c.close(data.fd);
@@ -50,7 +57,10 @@ pub const ListenerReservation = opaque {
         if (c.getsockname(data.fd, @ptrCast(&actual), &length) != 0 or length != @sizeOf(c.struct_sockaddr_in) or actual.sin_family != c.AF_INET or actual.sin_addr.s_addr != c.htonl(0x7f000001) or c.ntohs(actual.sin_port) != data.port) return error.CallbackAuthorityChanged;
         const owner = try data.allocator.create(Data);
         owner.* = .{ .allocator = data.allocator, .io = data.io, .profile = profile, .attempt = attempt, .listener = data.fd, .host_len = 0 };
-        errdefer { owner.attempt.deinit(); data.allocator.destroy(owner); }
+        errdefer {
+            owner.attempt.deinit();
+            data.allocator.destroy(owner);
+        }
         const host = try std.fmt.allocPrint(data.allocator, "127.0.0.1:{d}", .{data.port});
         defer data.allocator.free(host);
         owner.* = .{ .allocator = data.allocator, .io = data.io, .profile = profile, .attempt = attempt, .listener = data.fd, .host_len = host.len };
@@ -61,7 +71,9 @@ pub const ListenerReservation = opaque {
         return @ptrCast(owner);
     }
 };
-fn reserved(self: *ListenerReservation) *ReservationData { return @ptrCast(@alignCast(self)); }
+fn reserved(self: *ListenerReservation) *ReservationData {
+    return @ptrCast(@alignCast(self));
+}
 /// Called only after actor-owned explicit SIWC consent, wrapping-key and
 /// capacity admission. Kernel-selected loopback port remains continuously held
 /// until take(); no free-port probing, name substitution or fallback is used.
@@ -97,25 +109,40 @@ pub const Receiver = opaque {
             var peer_address = std.mem.zeroes(c.struct_sockaddr_in);
             var length: c.socklen_t = @sizeOf(c.struct_sockaddr_in);
             const fd = c.accept(data.listener, @ptrCast(&peer_address), &length);
-            if (fd < 0) return switch (std.posix.errno(fd)) { .AGAIN, .INTR => null, else => error.CallbackSocket };
+            if (fd < 0) return switch (std.posix.errno(fd)) {
+                .AGAIN, .INTR => null,
+                else => error.CallbackSocket,
+            };
             errdefer _ = c.close(fd);
             if (length != @sizeOf(c.struct_sockaddr_in) or peer_address.sin_family != c.AF_INET or peer_address.sin_addr.s_addr != c.htonl(0x7f000001)) return error.CallbackPeer;
             try nonblocking(fd);
             data.peer = fd;
         }
         const received = c.recv(data.peer, data.frame[data.length..].ptr, data.frame.len - data.length, 0);
-        if (received < 0) return switch (std.posix.errno(received)) { .AGAIN, .INTR => null, else => error.CallbackSocket };
-        if (received == 0) { refuse(data); return null; }
+        if (received < 0) return switch (std.posix.errno(received)) {
+            .AGAIN, .INTR => null,
+            else => error.CallbackSocket,
+        };
+        if (received == 0) {
+            refuse(data);
+            return null;
+        }
         data.length += @intCast(received);
         const end = std.mem.indexOf(u8, data.frame[0..data.length], "\r\n\r\n") orelse {
             if (data.length == data.frame.len) refuse(data);
             return null;
         };
         try check(data);
-        if (end + 4 != data.length) { refuse(data); return null; }
+        if (end + 4 != data.length) {
+            refuse(data);
+            return null;
+        }
         var captured = decode(data) catch |err| switch (err) {
             error.OutOfMemory => return err,
-            else => { refuse(data); return null; },
+            else => {
+                refuse(data);
+                return null;
+            },
         };
         errdefer captured.deinit();
         try check(data);
@@ -145,7 +172,9 @@ pub const Receiver = opaque {
         data.allocator.destroy(data);
     }
 };
-fn get(self: *Receiver) *Data { return @ptrCast(@alignCast(self)); }
+fn get(self: *Receiver) *Data {
+    return @ptrCast(@alignCast(self));
+}
 /// No native-home fallback, arbitrary URL, wildcard binding or port retry.
 /// A missing/unqualified profile refuses BEFORE allocating/opening a socket.
 pub fn open(io: std.Io, a: std.mem.Allocator, profile: ?*authority.EnrollmentProfile, attempt: enrollment.Attempt) !*Receiver {
@@ -282,7 +311,10 @@ fn decode(data: *Data) !Captured {
     defer std.crypto.secureZero(u8, &code);
     const count = try decodeQuery(encoded_code, &code, false);
     const owned_code = try data.allocator.dupe(u8, code[0..count]);
-    errdefer { std.crypto.secureZero(u8, owned_code); data.allocator.free(owned_code); }
+    errdefer {
+        std.crypto.secureZero(u8, owned_code);
+        data.allocator.free(owned_code);
+    }
     return .{ .binding = data.attempt.binding, .state = decoded_state, .code = .{ .allocator = data.allocator, .bytes = owned_code }, .client_id = .{ .allocator = data.allocator, .bytes = try data.allocator.dupe(u8, client[0..client_len]) } };
 }
 fn decodeQuery(encoded_code: []const u8, code: []u8, allow_space: bool) !usize {
@@ -309,7 +341,12 @@ fn decodeQuery(encoded_code: []const u8, code: []u8, allow_space: bool) !usize {
 }
 
 fn hex(byte: u8) !u8 {
-    return switch (byte) { '0'...'9' => byte - '0', 'a'...'f' => byte - 'a' + 10, 'A'...'F' => byte - 'A' + 10, else => error.InvalidCallbackFrame };
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => error.InvalidCallbackFrame,
+    };
 }
 
 const Model = struct {
@@ -409,13 +446,13 @@ test "wrong host duplicate state and expired consent cannot yield a callback" {
     defer model.deinit();
     const foreign = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&code=synthetic&client_id=synthetic-issued-client HTTP/1.1\r\nHost: foreign.invalid\r\n\r\n", .{model.state});
     defer wipe(a, foreign);
-    const duplicate = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&state={s}&code=synthetic&client_id=synthetic-issued-client HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{model.state, model.state, model.port});
+    const duplicate = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&state={s}&code=synthetic&client_id=synthetic-issued-client HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{ model.state, model.state, model.port });
     defer wipe(a, duplicate);
     var wrong_state = model.state;
     wrong_state[0] = if (wrong_state[0] == 'A') 'B' else 'A';
-    const wrong = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&code=synthetic&client_id=synthetic-issued-client HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{wrong_state, model.port});
+    const wrong = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&code=synthetic&client_id=synthetic-issued-client HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{ wrong_state, model.port });
     defer wipe(a, wrong);
-    const missing_client = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&code=synthetic HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{model.state, model.port});
+    const missing_client = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&code=synthetic HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{ model.state, model.port });
     defer wipe(a, missing_client);
     const requests = [_][]const u8{ foreign, duplicate, wrong, missing_client };
     for (requests) |request| {
@@ -434,4 +471,7 @@ test "wrong host duplicate state and expired consent cannot yield a callback" {
     try std.testing.expectEqual(enrollment.Phase.prepared, model.ledger.records.items[0].phase);
     try std.testing.expectEqual(@as(usize, 0), model.ledger.records.items[0].callback_capsule.len);
 }
-fn wipe(a: std.mem.Allocator, bytes: []u8) void { std.crypto.secureZero(u8, bytes); a.free(bytes); }
+fn wipe(a: std.mem.Allocator, bytes: []u8) void {
+    std.crypto.secureZero(u8, bytes);
+    a.free(bytes);
+}

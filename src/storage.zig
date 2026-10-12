@@ -2243,7 +2243,6 @@ test "database records the exact vault root and rejects identity fallback" {
     try std.testing.expectEqualStrings("custom-root", secret.bytes);
 }
 
-
 test "sealed commit checks original deadline before SQL and before irreversible recovery publication" {
     const a = std.testing.allocator;
     const io = std.testing.io;
