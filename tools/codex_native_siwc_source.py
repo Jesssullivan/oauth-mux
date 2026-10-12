@@ -265,10 +265,8 @@ def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_fac
                             for alias, physical in aliases: retained.add_alias(alias, physical)
                             proofs = metadata.declared_proofs(runfiles, rows, selected, cutoff)
                             retained.add(proofs.aliases[0][0], proofs.sha256, 65536)
-                            for role, row in proofs.document['proofs'].items():
-                                alias = next(alias for alias, physical in proofs.aliases if str(physical) == row['path'])
-                                raw = retained.add(alias, row['sha256'])
-                                if role == 'test_xml': material.declared_xml_success(raw)
+                            captured_proofs = retained.carrier_proofs(selected, proofs, cutoff)
+                            material.declared_xml_success(captured_proofs['test_xml'])
                             retained.add(Path(declaration['selection_path']), declaration['selection_sha256'], 8192)
                             qualified = metadata.qualify_producer(selected, cutoff, proofs)
                             manifest_alias, manifest = original_sdk.declared_manifest(runfiles, rows)

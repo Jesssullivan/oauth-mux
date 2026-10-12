@@ -370,5 +370,125 @@ class N10ContentIntakeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 intake._authenticate_provenance(owner, selected, family.parent_guard.PROFILE, family.parent_guard.ARGUMENTS[1:])
 
+    @contextmanager
+    def carrier_fixture(self, *, report_mode=0o555, fault=None):
+        import codex_native_carrier_metadata as metadata
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            epoch = root / '12345678-1234-1234-1234-123456789abc'; epoch.mkdir()
+            evidence = epoch / 'test-evidence'; evidence.mkdir()
+            bodies = {'test_log': b'public carrier log fixture',
+                'test_xml': b'<testsuite tests="1" failures="0" errors="0" skipped="0"/>'}
+            entries, roles = [], {}
+            for role, original in (('test_log', 'test.log'), ('test_xml', 'test.xml')):
+                raw = bodies[role]; digest = source.sha(raw)
+                leaf = evidence / (digest + '.evidence'); leaf.write_bytes(raw); leaf.chmod(0o600)
+                roles[role] = {'path': str(leaf), 'sha256': digest, 'alias': metadata.PROOF_ALIASES[role]}
+                entries.append({'source': original, 'state': 'copied', 'file': leaf.name, 'sha256': digest, 'bytes': len(raw)})
+            index = epoch / 'test-evidence.json'
+            index_raw = source.encoded({'schema': 1, 'targets': [metadata.SEAL_TARGET],
+                'results': [{'target': metadata.SEAL_TARGET, 'state': 'observed', 'files': entries}]})
+            index.write_bytes(index_raw); index.chmod(0o600)
+            outer = epoch / 'receipt.json'; outer_raw = source.encoded({'test_evidence': {'sha256': source.sha(index_raw)}})
+            outer.write_bytes(outer_raw); outer.chmod(0o600)
+            report = epoch / 'output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_sdk_carrier_seal_producer/test.outputs/sdk-private/native-sdk-carrier-producer.json'
+            report.parent.mkdir(parents=True)
+            report_raw = b'{"public":"program report fixture"}'; report.write_bytes(report_raw); report.chmod(report_mode)
+            for role, path in (('outer_receipt', outer), ('test_evidence', index), ('program_report', report)):
+                roles[role] = {'path': str(path), 'sha256': source.sha(path.read_bytes()), 'alias': metadata.PROOF_ALIASES[role]}
+            selected = {'qualification': {'producer': {'receipt': str(outer), 'sha256': source.sha(outer_raw)},
+                'report': {'path': str(report), 'sha256': source.sha(report_raw)}}}
+            if fault == 'wrongrole': roles['outer_receipt'] = {**roles['outer_receipt'], 'path': roles['test_log']['path']}
+            elif fault == 'source-role': selected['qualification']['report']['path'] = str(epoch / 'source.rs')
+            repository = root / 'external' / metadata.PROOF_REPOSITORY
+            (repository / 'proof').mkdir(parents=True)
+            for row in roles.values(): (repository / row['alias']).symlink_to(row['path'])
+            doc = repository / 'proof-inputs.json'; doc.write_bytes(source.encoded({'kind': metadata.PROOF_KIND, 'proofs': roles})); doc.chmod(0o644)
+            runfiles = root / 'runfiles'; runfiles.mkdir()
+            (runfiles / metadata.PROOF_REPOSITORY).symlink_to(repository)
+            if fault == 'badpin': outer.chmod(0o600); outer.write_bytes(b'public changed outer')
+            # This uses actual declaration decoding/role paths/alias joins. The
+            # original producer policy/status is deliberately NOT qualified.
+            yield metadata, root, epoch, runfiles, repository, selected, roles
+
+    def test_actual_carrier_proof_roles_accept_only_current_pinned_owner600_and_readonly_bytes(self):
+        for mode in (0o555, 0o600):
+            with self.carrier_fixture(report_mode=mode) as (metadata, root, epoch, runfiles, repository, selected, roles):
+                token = metadata._SCOPE.set(source.DEADLINE)
+                fds = []
+                try:
+                    proofs = metadata.declared_proofs(runfiles, [['_main', metadata.PROOF_REPOSITORY, metadata.PROOF_REPOSITORY]], selected, source.DEADLINE)
+                    with family.HeldControls() as owner:
+                        owner.add(proofs.aliases[0][0], proofs.sha256, 65536)
+                        actual = owner.carrier_proofs(selected, proofs, source.DEADLINE)
+                        self.assertEqual(set(actual), set(metadata.PROOF_ALIASES))
+                        for role, raw in actual.items(): self.assertEqual(source.sha(raw), roles[role]['sha256'])
+                        self.assertEqual(len(owner.held), 6)
+                        owner.full(); proofs.recheck(source.DEADLINE)
+                        fds = [fd for parent, fd, anchor, parent_anchor in owner.held.values()]
+                    for fd in fds:
+                        with self.assertRaises(OSError): os.fstat(fd)
+                finally: metadata._SCOPE.reset(token)
+
+    def test_actual_carrier_proof_role_bad_pin_foreign_uid_writable_or_scope_refuses(self):
+        for fault in ('badpin', 'foreignuid', 'writable', 'cached-writable', 'wrongrole', 'source-role', 'foreign-cutoff'):
+            with self.carrier_fixture(fault=fault) as (metadata, root, epoch, runfiles, repository, selected, roles):
+                token = metadata._SCOPE.set(source.DEADLINE)
+                try:
+                    if fault in ('wrongrole', 'source-role'):
+                        with self.assertRaises(ValueError):
+                            metadata.declared_proofs(runfiles, [['_main', metadata.PROOF_REPOSITORY, metadata.PROOF_REPOSITORY]], selected, source.DEADLINE)
+                        continue
+                    proofs = metadata.declared_proofs(runfiles, [['_main', metadata.PROOF_REPOSITORY, metadata.PROOF_REPOSITORY]], selected, source.DEADLINE)
+                    with family.HeldControls() as owner, ExitStack() as patches:
+                        owner.add(proofs.aliases[0][0], proofs.sha256, 65536)
+                        if fault == 'writable': (epoch / 'receipt.json').chmod(0o644)
+                        elif fault == 'cached-writable':
+                            path = Path(roles['program_report']['path']); path.chmod(0o644)
+                            owner.add(repository / roles['program_report']['alias'], roles['program_report']['sha256'])
+                        elif fault == 'foreignuid':
+                            original_stat = os.stat
+                            def foreign(name, *args, **kwargs):
+                                row = original_stat(name, *args, **kwargs)
+                                if name == 'receipt.json' and kwargs.get('dir_fd') is not None:
+                                    return SimpleNamespace(st_mode=row.st_mode, st_uid=row.st_uid+1, st_nlink=row.st_nlink, st_size=row.st_size)
+                                return row
+                            patches.enter_context(patch.object(family.os, 'stat', side_effect=foreign))
+                        with self.assertRaises(ValueError):
+                            owner.carrier_proofs(selected, proofs, source.DEADLINE+1 if fault == 'foreign-cutoff' else source.DEADLINE)
+                finally: metadata._SCOPE.reset(token)
+
+    def test_actual_carrier_proof_final_alias_leaf_or_parent_drift_refuses_held_owner(self):
+        for fault in ('alias', 'leaf-replace', 'parent-replace'):
+            with self.carrier_fixture() as (metadata, root, epoch, runfiles, repository, selected, roles):
+                token = metadata._SCOPE.set(source.DEADLINE)
+                try:
+                    proofs = metadata.declared_proofs(runfiles, [['_main', metadata.PROOF_REPOSITORY, metadata.PROOF_REPOSITORY]], selected, source.DEADLINE)
+                    with family.HeldControls() as owner:
+                        owner.add(proofs.aliases[0][0], proofs.sha256, 65536)
+                        owner.carrier_proofs(selected, proofs, source.DEADLINE)
+                        if fault == 'alias':
+                            alias = repository / metadata.PROOF_ALIASES['outer_receipt']
+                            alias.unlink(); alias.symlink_to(epoch / 'receipt.json')
+                        elif fault == 'leaf-replace':
+                            leaf = epoch / 'receipt.json'; replacement = epoch / 'replacement'
+                            replacement.write_bytes(leaf.read_bytes()); replacement.chmod(0o600); replacement.replace(leaf)
+                        else:
+                            directory = epoch / 'test-evidence'; directory.rename(epoch / 'old-evidence'); directory.mkdir()
+                            for original in (epoch / 'old-evidence').iterdir():
+                                leaf = directory / original.name; leaf.write_bytes(original.read_bytes()); leaf.chmod(0o600)
+                        with self.assertRaises(ValueError): owner.fence()
+                finally: metadata._SCOPE.reset(token)
+
+    def test_default_control_and_source_owner600_remain_refused_after_carrier_role_addition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            leaf = Path(temporary) / 'ordinary-control'; leaf.write_bytes(b'public ordinary control'); leaf.chmod(0o600)
+            with family.HeldControls() as owner:
+                with self.assertRaises(ValueError): owner.add(leaf, source.sha(leaf.read_bytes()))
+        with self.fixture() as (root, bundle, runfiles, selected, report, files), ExitStack() as stack:
+            inputs, captured = self.owners(stack, runfiles, selected)
+            (bundle / 'source/a').chmod(0o600)
+            with self.assertRaises(ValueError): intake.capture_files(report, inputs, captured)
+
 
 if __name__ == '__main__': unittest.main()

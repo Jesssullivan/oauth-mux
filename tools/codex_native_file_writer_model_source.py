@@ -327,6 +327,84 @@ class HeldControls:
         self.fence()
         return raw
 
+
+    def carrier_proofs(self, selected, proofs, deadline):
+        """Retain only five declared carrier provenance roles, never grants."""
+        import codex_native_carrier_metadata as metadata
+        source.require(deadline == source.DEADLINE and metadata._SCOPE.get() == deadline
+            and type(proofs) is metadata.ProofInputs and type(selected) is dict)
+        proofs.recheck(deadline)
+        document = proofs.document
+        source.require(type(document) is dict and set(document) == {'kind', 'proofs'}
+            and document['kind'] == metadata.PROOF_KIND and type(document['proofs']) is dict
+            and set(document['proofs']) == set(metadata.PROOF_ALIASES)
+            and str(proofs.path) in self.held
+            and source.sha(self.raws[str(proofs.path)]) == proofs.sha256
+            and decode(self.raws[str(proofs.path)]) == document)
+        rows = document['proofs']
+        producer, report = selected['qualification']['producer'], selected['qualification']['report']
+        outer_path = protocol.path(producer['receipt'])
+        protocol.pin(producer['sha256']); protocol.pin(report['sha256'])
+        source.require(outer_path.name == 'receipt.json' and protocol.UUID.fullmatch(outer_path.parent.name) is not None
+            and len({row['path'] for row in rows.values()}) == 5)
+        captured = {}
+        def capture(role, path, pin):
+            # All paths/pins are derived below from independent selection or
+            # pinned outer/index bytes, before any owner0600 read is admitted.
+            row = rows[role]
+            source.require(type(row) is dict and set(row) == {'path', 'sha256', 'alias'}
+                and row['path'] == str(path) and row['sha256'] == pin
+                and row['alias'] == metadata.PROOF_ALIASES[role])
+            protocol.pin(pin)
+            aliases = [alias for alias, physical in proofs.aliases if physical == path]
+            source.require(len(aliases) == 1 and str(aliases[0]).endswith('/' + metadata.PROOF_ALIASES[role]))
+            proofs.join(role, path, pin, deadline)
+            if str(path) not in self.held:
+                source.require(len(self.held) < 32)
+                parent = source.directory(path.parent); self.stack.callback(os.close, parent)
+                before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                source.require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+                    and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) in (0o444, 0o555, 0o600)
+                    and 0 < before.st_size <= 64*1024*1024)
+                fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent)
+                self.stack.callback(os.close, fd)
+                anchor = tenth.witness(before)
+                source.require(tenth.witness(os.fstat(fd)) == anchor)
+                raw, unused = source.read(parent, path.name, 64*1024*1024)
+                source.require(source.sha(raw) == pin and tenth.witness(os.fstat(fd)) == anchor
+                    == tenth.witness(os.stat(path.name, dir_fd=parent, follow_symlinks=False)))
+                self.held[str(path)] = (parent, fd, anchor, tenth.witness(os.fstat(parent)))
+                self.raws[str(path)] = raw
+            original = self.held[str(path)][2]
+            source.require(original[2] == os.getuid() and original[5] == 1
+                and stat.S_ISREG(original[4]) and stat.S_IMODE(original[4]) in (0o444, 0o555, 0o600))
+            captured[role] = self.add(aliases[0], pin)
+            proofs.join(role, path, pin, deadline)
+        capture('outer_receipt', outer_path, producer['sha256'])
+        outer = decode(captured['outer_receipt'])
+        index_pin = outer['test_evidence']['sha256']; protocol.pin(index_pin)
+        capture('test_evidence', outer_path.parent / 'test-evidence.json', index_pin)
+        index = decode(captured['test_evidence'])
+        source.require(index['schema'] == 1 and index['targets'] == [metadata.SEAL_TARGET]
+            and type(index['results']) is list and len(index['results']) == 1
+            and index['results'][0]['target'] == metadata.SEAL_TARGET
+            and index['results'][0]['state'] == 'observed')
+        for role, original in (('test_log', 'test.log'), ('test_xml', 'test.xml')):
+            entries = [row for row in index['results'][0]['files'] if row['source'] == original]
+            source.require(len(entries) == 1 and entries[0]['state'] == 'copied'
+                and re.fullmatch(r'[0-9a-f]{64}[.]evidence', entries[0]['file']) is not None)
+            row = entries[0]
+            capture(role, outer_path.parent / 'test-evidence' / row['file'], row['sha256'])
+            source.require(type(row['bytes']) is int and row['bytes'] == len(captured[role]))
+        report_path = protocol.path(report['path'])
+        prefix = str(outer_path.parent / 'output-base/execroot/_main/bazel-out') + '/'
+        suffix = '/testlogs/tools/' + metadata.SEAL_TARGET.split(':')[1] + '/test.outputs/sdk-private/native-sdk-carrier-producer.json'
+        source.require(str(report_path).startswith(prefix) and str(report_path).endswith(suffix)
+            and re.fullmatch(r'[A-Za-z0-9_.-]+', str(report_path)[len(prefix):-len(suffix)]) is not None)
+        capture('program_report', report_path, report['sha256'])
+        proofs.recheck(deadline); self.fence(); source.tick()
+        return captured
+
     def add_alias(self, alias, physical):
         """Retain declared transport aliases without capturing full payload bytes."""
         source.tick()

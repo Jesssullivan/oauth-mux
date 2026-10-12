@@ -1,5 +1,7 @@
 """Exact native delta regressions plus content-intake ownership/API models."""
 import copy
+import io
+import errno
 from contextlib import ExitStack, contextmanager
 import os
 from pathlib import Path
@@ -91,6 +93,77 @@ class ContentSourceTests(regression.CatalogSourceTests):
         self.assertEqual({path.name for path, digest, maximum in captures},
             {'native-n10-content-input.json', 'native-acquisition-inputs.json', 'native-acquisition-n9-binding.json'})
         self.assertEqual(captures[-1][1], content.binding.N9_WITNESS_SHA)
+
+    def test_actual_entrypoint_redacts_sensitive_exception_fields_and_keeps_exit_one(self):
+        canary = 'TEST-ONLY-sensitive-diagnostic-canary'
+        class SensitiveValueError(ValueError):
+            def __str__(self): raise AssertionError('exception text accessed')
+            def __repr__(self): raise AssertionError('exception repr accessed')
+        class SensitiveOSError(OSError):
+            def __getattribute__(self, name):
+                if name in ('args', 'errno', 'filename', 'filename2', 'strerror'):
+                    raise AssertionError('exception payload attribute accessed')
+                return super().__getattribute__(name)
+            def __str__(self): raise AssertionError('OS exception text accessed')
+            def __repr__(self): raise AssertionError('OS exception repr accessed')
+        failures = ((SensitiveValueError(canary), 'ValueError', 0), (KeyError(canary), 'KeyError', 0),
+            (TypeError(canary), 'TypeError', 0), (UnicodeError(canary), 'UnicodeError', 0),
+            (IndexError(canary), 'IndexError', 0),
+            (SensitiveOSError(errno.EACCES, canary, canary), 'OSError', errno.EACCES),
+            (OSError(65534, canary, canary), 'OSError', 0))
+        for error, category, number in failures:
+            error.account_payload = error.token_payload = canary
+            error.__cause__ = ValueError(canary); error.__context__ = OSError(canary)
+            def fail(): raise error
+            stderr, stdout = io.StringIO(), io.StringIO()
+            with patch.object(content, 'main', fail), patch('sys.stderr', stderr), patch('sys.stdout', stdout):
+                with self.assertRaises(SystemExit) as caught: content.entrypoint()
+            self.assertEqual(caught.exception.code, 1)
+            diagnostic = stderr.getvalue()
+            self.assertNotIn(canary, diagnostic)
+            self.assertNotIn('SensitiveValueError', diagnostic)
+            self.assertIn('; class=' + category + '; errno=' + str(number) + '; locus=', diagnostic)
+            self.assertLessEqual(len(diagnostic.encode()), content.MAX_DIAGNOSTIC_BYTES)
+            self.assertEqual(stdout.getvalue(), '')
+
+    def test_actual_trusted_refusal_locus_is_closed_module_role_and_bounded_line(self):
+        try: content.source.require(False)
+        except ValueError as error: diagnostic = content.refusal_diagnostic(error)
+        locus = diagnostic.split('; locus=', 1)[1].split('; truncated=', 1)[0].split(',')
+        self.assertEqual(locus[0], 'unknown:0')
+        self.assertTrue(any(row.startswith('source-io:') and int(row.split(':')[1]) > 0 for row in locus))
+        for row in locus:
+            self.assertLessEqual(int(row.split(':')[1]), content.MAX_SOURCE_LINE)
+        self.assertNotIn('require', diagnostic)
+        self.assertNotIn('.py', diagnostic)
+
+    def test_unknown_sensitive_traceback_frames_are_bounded_and_never_named(self):
+        canary = 'TEST-ONLY-sensitive-traceback-canary'
+        namespace = {'payload': canary, '__name__': canary, 'secret_environment': canary}
+        # Real unknown traceback frames carry a sensitive filename/name/global.
+        # No fake provider/source success or project parser is involved.
+        exec(compile('def secret_frame(depth):\n    if depth: return secret_frame(depth - 1)\n    raise ValueError(payload)\n',
+            canary, 'exec'), namespace)
+        try: namespace['secret_frame'](80)
+        except ValueError as error: diagnostic = content.refusal_diagnostic(error)
+        rows = diagnostic.split('; locus=', 1)[1].split('; truncated=', 1)[0].split(',')
+        self.assertEqual(rows, ['unknown:0'] * content.MAX_TRACE_ROWS)
+        self.assertTrue(diagnostic.endswith('; truncated=1'))
+        self.assertLessEqual(len(diagnostic.encode()), content.MAX_DIAGNOSTIC_BYTES)
+        self.assertNotIn(canary, diagnostic); self.assertNotIn('secret_frame', diagnostic)
+        self.assertNotIn('secret_environment', diagnostic)
+
+    def test_diagnostic_io_refusal_keeps_original_exit_and_unhandled_failures_propagate(self):
+        class RefusingWriter:
+            def write(self, unused): raise OSError('TEST-ONLY-diagnostic-write-canary')
+        with patch.object(content, 'main', side_effect=ValueError('TEST-ONLY-original-canary')), \
+                patch('sys.stderr', RefusingWriter()):
+            with self.assertRaises(SystemExit) as caught: content.entrypoint()
+        self.assertEqual(caught.exception.code, 1)
+        failure = RuntimeError('TEST-ONLY-unhandled-canary')
+        with patch.object(content, 'main', side_effect=failure), patch('sys.stderr', io.StringIO()) as stderr:
+            with self.assertRaises(RuntimeError) as caught: content.entrypoint()
+        self.assertIs(caught.exception, failure); self.assertEqual(stderr.getvalue(), '')
 
     def test_actual_nested_controller_reaches_intake_child_and_final_fences_on_original_clock(self):
         # Actual wrapper -> previous.main -> actual Inputs/intake/Publication.
@@ -185,6 +258,10 @@ class ContentSourceTests(regression.CatalogSourceTests):
                         patches.enter_context(patch.object(metadata, 'selection', return_value={'carrier': {'receipt_sha256': 'd'*64}}))
                         patches.enter_context(patch.object(metadata, 'declared_carrier', return_value=(root / 'carrier', (), declaration)))
                         patches.enter_context(patch.object(metadata, 'declared_proofs', return_value=proofs))
+                        # Carrier-role authentication is a separate actual IO
+                        # model; this SDK/guardian fixture is an explicit seam.
+                        patches.enter_context(patch.object(family.HeldControls, 'carrier_proofs',
+                            return_value={'test_xml': b'<testsuite tests="1" failures="0" errors="0" skipped="0"/>'}))
                         patches.enter_context(patch.object(metadata, 'qualify_producer', return_value={'public': 'qualified seam'}))
                         patches.enter_context(patch.object(metadata, 'recheck_aliases'))
                         patches.enter_context(patch.object(family.query, 'declared_query_tools'))
@@ -192,7 +269,16 @@ class ContentSourceTests(regression.CatalogSourceTests):
                         admitted = (entry, until, cutoff, source.encoded(family.producer_context()))
                         if fault == 'none': content.main(_child=child, _extra=Extra(), _retainer=retain, _admitted=admitted)
                         else:
-                            with self.assertRaises(ValueError): content.main(_child=child, _extra=Extra(), _retainer=retain, _admitted=admitted)
+                            try:
+                                content.main(_child=child, _extra=Extra(), _retainer=retain, _admitted=admitted)
+                            except ValueError as failure:
+                                diagnostic = content.refusal_diagnostic(failure)
+                            else:
+                                self.fail('actual nested controller did not refuse')
+                            self.assertIn('content-controller:', diagnostic)
+                            self.assertIn('siwc-controller:', diagnostic)
+                            self.assertNotIn('public child refusal seam', diagnostic)
+                            self.assertLessEqual(len(diagnostic.encode()), content.MAX_DIAGNOSTIC_BYTES)
                         clock('driver-post-return')
                     self.assertIn('intake', phases); self.assertIn('child', phases); self.assertIn('sdk-close', phases)
                     if fault == 'none': self.assertIn('extra-short', phases); self.assertIn('sdk-finish', phases)

@@ -71,8 +71,64 @@ def main(*, _child=None, _extra=None, _retainer=None, _admitted=None):
         _marker='native-siwc-catalog-content-source: selected N10 bytes plus exact V4/catalog composition; old ancestors not reexecuted')
 
 
-if __name__ == '__main__':
+REFUSAL_ERRORS = (ValueError, OSError, KeyError, TypeError, UnicodeError, IndexError)
+MAX_TRACE_SCAN = 32
+MAX_TRACE_ROWS = 8
+MAX_SOURCE_LINE = 65535
+MAX_DIAGNOSTIC_BYTES = 512
+ALLOWED_ERRNOS = frozenset((1, 2, 5, 9, 12, 13, 17, 20, 21, 22, 24, 28, 30, 40, 110))
+
+
+def refusal_diagnostic(error):
+    # Module dictionary identity supplies closed roles. Never inspect traceback
+    # filenames/function names, frame locals, namespace contents or exception text.
+    roles = (('content-controller', sys.modules[__name__]), ('content-inputs', intake),
+        ('catalog-transform', catalog), ('siwc-controller', previous),
+        ('file-writer-custody', parent), ('n10-custody', tenth),
+        ('binding-custody', binding), ('source-io', source),
+        ('carrier-metadata', sys.modules.get('codex_native_carrier_metadata')),
+        ('sdk-inputs', sys.modules.get('codex_original_sdk_inputs')),
+        ('query', parent.query), ('query-tools', parent.query_tools),
+        ('material', parent.material), ('sdk-carrier', parent.carrier),
+        ('protocol', parent.protocol), ('parent-guard', parent.parent_guard))
+    category = 'unknown'
+    for kind, value in ((UnicodeError, 'UnicodeError'), (ValueError, 'ValueError'),
+            (OSError, 'OSError'), (KeyError, 'KeyError'), (TypeError, 'TypeError'), (IndexError, 'IndexError')):
+        if isinstance(error, kind): category = value; break
+    number = 0
+    if isinstance(error, OSError):
+        # The built-in descriptor bypasses subclass attribute hooks. Only this
+        # closed numeric errno set is allowed; filenames/strerror are untouched.
+        raw = OSError.errno.__get__(error)
+        if type(raw) is int and raw in ALLOWED_ERRNOS: number = raw
+    rows, scanned, omitted = [], 0, False
+    trace = BaseException.__traceback__.__get__(error)
+    while trace is not None and scanned < MAX_TRACE_SCAN:
+        role, line = 'unknown', 0
+        for name, module in roles:
+            if module is not None and trace.tb_frame.f_globals is vars(module):
+                role = name
+                if type(trace.tb_lineno) is int and 0 < trace.tb_lineno <= MAX_SOURCE_LINE:
+                    line = trace.tb_lineno
+                break
+        if len(rows) == MAX_TRACE_ROWS: rows.pop(0); omitted = True
+        rows.append(role + ':' + str(line))
+        scanned += 1
+        trace = trace.tb_next
+    if trace is not None: omitted = True
+    if not rows: rows.append('unknown:0')
+    return ('native SIWC catalog content source refused; class=' + category +
+        '; errno=' + str(number) + '; locus=' + ','.join(rows) +
+        '; truncated=' + ('1' if omitted else '0'))
+
+
+def entrypoint():
     try: main()
-    except (ValueError, OSError, KeyError, TypeError, UnicodeError, IndexError):
-        print('native SIWC catalog content source refused', file=sys.stderr)
-        raise SystemExit(1) from None
+    except REFUSAL_ERRORS as error:
+        try: print(refusal_diagnostic(error), file=sys.stderr)
+        finally:
+            # Advisory diagnostic failure cannot replace the original exit code.
+            raise SystemExit(1) from None
+
+
+if __name__ == '__main__': entrypoint()
