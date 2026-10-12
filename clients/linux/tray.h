@@ -2,6 +2,7 @@
 
 #include "omux_client.h"
 #include "codex_account_acquisition.h"
+#include "siwc_enrollment.h"
 #include <QDialog>
 #include <QJsonArray>
 #include <QLabel>
@@ -40,6 +41,7 @@ private:
     void closeEvent(QCloseEvent *event) override;
     OmuxClient client_;
     std::unique_ptr<CodexAccountAcquisition> acquisition_;
+    std::unique_ptr<SiwcEnrollment> siwc_;
     QPushButton *sourceSignIn_;
     QSystemTrayIcon tray_;
     QLabel *connection_;

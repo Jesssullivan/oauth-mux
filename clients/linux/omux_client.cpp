@@ -15,7 +15,7 @@
 namespace {
 bool mutationMethod(const QString &method, const QJsonObject &params = {}) {
     if (method == "setup.refresh") return params.contains("operation_id") || params.contains("expected_revision");
-    static const QStringList names {"source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set"};
+    static const QStringList names {"oauth.enrollment.prepare.siwc.v1", "oauth.enrollment.withdraw.v1", "source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set"};
     return names.contains(method);
 }
 bool validOperationID(const QString &id) {
@@ -95,6 +95,8 @@ OmuxClient::OmuxClient(QString socketPath, QObject *parent)
                     && result.value("capabilities").toObject().value("custody_reopen").toBool();
                 accountReadiness_ = result.value("capabilities").toObject().value("account_scoped_readiness_v2").isBool()
                     && result.value("capabilities").toObject().value("account_scoped_readiness_v2").toBool();
+                siwcEnrollment_ = result.value("capabilities").toObject().value("owned_siwc_enrollment_v1").isBool()
+                    && result.value("capabilities").toObject().value("owned_siwc_enrollment_v1").toBool();
                 ready_ = true;
                 publishConnection(true, "Connected");
                 reconcileOperations();
@@ -179,6 +181,7 @@ void OmuxClient::disconnectWithReason(const QString &reason) {
     ready_ = false;
     custodyReopen_ = false;
     accountReadiness_ = false;
+    siwcEnrollment_ = false;
     enrollmentGeneration_ = false;
     connecting_ = false;
     buffer_.clear();
@@ -232,7 +235,8 @@ void OmuxClient::send(const QString &method, const QJsonObject &params, Reply re
     const QByteArray frame = QJsonDocument(envelope).toJson(QJsonDocument::Compact) + '\n';
     if (frame.size() > maximumFrame) { reply({}, "Request is too large."); return; }
     const bool nativeOperation = method.startsWith("integrations.") && method != "integrations.status";
-    pending_.insert(id, {std::move(reply), clock_.elapsed() + (nativeOperation ? 20000 : 10000), params.value("operation_id").toString(), mutationMethod(method, params)});
+    const bool ownedEnrollment = method.startsWith("oauth.enrollment.");
+    pending_.insert(id, {std::move(reply), clock_.elapsed() + (ownedEnrollment ? 15000 : nativeOperation ? 20000 : 10000), params.value("operation_id").toString(), mutationMethod(method, params)});
     if (socket_.write(frame) != frame.size())
         disconnectWithReason("Could not send the service request.");
 }

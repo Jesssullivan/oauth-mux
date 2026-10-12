@@ -197,6 +197,19 @@ ZIG_NATIVE_LINKOPTS = ["-lc"] + NIX_ZIG_LINKOPTS
 ZIG_RUNTIME_DATA = ["@omux_nix//:runtime_libraries"]
 ZIG_SOURCES = glob(["src/**/*.zig"])
 
+zig_test(
+    name = "siwc_cli_test",
+    # daemon -> Engine imports the complete owned OAuth signer fixtures.
+    timeout = "long",
+    main = "src/siwc_cli.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 zig_test(name = "native_deployment_arguments_test", main = "src/native_deployment_arguments.zig")
 
 zig_test(

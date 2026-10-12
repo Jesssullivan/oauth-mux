@@ -11,6 +11,7 @@ const setup_verification = @import("setup_verification.zig");
 const enrollment_wait = @import("enrollment_wait.zig");
 const instance = @import("instance.zig");
 const git = @import("integrations/git.zig");
+const siwc_cli = @import("siwc_cli.zig");
 
 pub fn main(init: std.process.Init) !void {
     var threaded: std.Io.Threaded = .init(init.gpa, .{
@@ -80,6 +81,17 @@ pub fn main(init: std.process.Init) !void {
         if (parameters.len == 1 and !std.mem.eql(u8, parameters[0], "--wait")) return enroll(io, allocator, locations, parameters[0], false);
         if (parameters.len == 2 and std.mem.eql(u8, parameters[0], "--wait") and !std.mem.eql(u8, parameters[1], "--wait")) return enroll(io, allocator, locations, parameters[1], true);
         return error.SourceRequired;
+    }
+    if (std.mem.eql(u8, command, "sign-in")) {
+        return siwc_cli.run(io, allocator, locations, parameters, init.environ_map.get("OMUX_INSTALL_PREFIX")) catch |err| {
+            if (err == error.EnrollmentCustodyUnavailable) try output(io,
+                "Credential custody unavailable. Restore normal OS-vault access; unlock through its normal UI if requested, then use Setup Resume after vault unlock. Existing encrypted data is preserved; no key regeneration or plaintext fallback. The OS chooses the required authentication factor.\n");
+            return err;
+        };
+    }
+    if (std.mem.eql(u8, command, "operation")) {
+        if (parameters.len != 2 or !std.mem.eql(u8, parameters[0], "status") or !siwc_cli.opaque(parameters[1])) return error.InvalidArguments;
+        return controlTyped(io, allocator, locations, "operation.status", .{ .operation_id = parameters[1] });
     }
     if (std.mem.eql(u8, command, "rpc")) {
         // Parameters may contain grants or browser capsules. They travel only
@@ -160,6 +172,9 @@ fn newOperationId(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn control(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, method: []const u8, params: std.json.Value) !void {
+    // This response contains one-use private state/nonce, unlike ordinary
+    // control metadata. The typed browser command consumes it over a pipe.
+    if (std.mem.eql(u8, method, "oauth.enrollment.authorization.v1")) return error.AuthorizationRequiresSignInCommand;
     const hello_payload = try request(allocator, "system.handshake", .{ .protocol_version = control_schema.protocol_version, .client = "omux-cli" });
     const hello_bytes = try daemon.exchange(io, allocator, locations.control, hello_payload);
     const hello = try std.json.parseFromSlice(std.json.Value, allocator, hello_bytes, .{});

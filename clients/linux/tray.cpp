@@ -386,6 +386,7 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     accounts_->setObjectName("accounts");
     tabs->addTab(page(accounts_, &actions), "Accounts");
     button(actions, "Account details", this, [this] { showDetails(accounts_); })->setObjectName("accountDetails");
+    button(actions, "Add account…", this, [this] { siwc_->open(); })->setObjectName("siwcAddAccount");
     mutationButton(actions, "Repair", [this] { accountAction("repair.start"); });
     mutationButton(actions, "Pause", [this] { accountAction("account.pause"); });
     mutationButton(actions, "Resume", [this] { accountAction("account.resume"); });
@@ -395,17 +396,17 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
 
     sources_ = makeTable({"Source", "Provider", "Kind", "State", "ID"});
     auto *sourcePage = page(sources_, &actions);
-    sourceNotice_ = new QLabel("Connect an existing source, or sign in to a new Codex account using the separately qualified acquisition component.");
+    sourceNotice_ = new QLabel("Add account starts daemon-owned Sign in with ChatGPT. Existing native/file sources are separate experimental external-authority imports.");
     sourceNotice_->setWordWrap(true);
     static_cast<QVBoxLayout *>(sourcePage->layout())->insertWidget(1, sourceNotice_);
-    sourceAcquisitionNotice_ = new QLabel("New-account sign-in needs a separately qualified acquisition component and available OS credential custody.");
+    sourceAcquisitionNotice_ = new QLabel("Experimental native-profile acquisition retains external renewal ownership. Use Accounts → Add account for daemon-owned sign-in.");
     sourceAcquisitionNotice_->setObjectName("codexAccountAcquisitionStatus");
     sourceAcquisitionNotice_->setWordWrap(true);
     sourceAcquisitionNotice_->setTextFormat(Qt::PlainText);
     static_cast<QVBoxLayout *>(sourcePage->layout())->insertWidget(2,sourceAcquisitionNotice_);
     tabs->addTab(sourcePage, "Sources");
     mutationButton(actions, "Connect source…", [this] { connectSource(); });
-    sourceSignIn_ = mutationButton(actions, "Sign in to a Codex account…", [this] {
+    sourceSignIn_ = mutationButton(actions, "Experimental native-profile sign-in…", [this] {
         acquisition_->start(custodyAvailable_);
     });
     sourceSignIn_->setObjectName("codexAccountSignIn");
@@ -524,6 +525,7 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
     client_.onConnection = [this](bool connected, const QString &message) {
         const bool changed = connected_ != connected;
         connected_ = connected;
+        if (siwc_) siwc_->connectionChanged(connected);
         connection_->setText(message);
         tray_.setToolTip(connected ? "Omux: connected" : "Omux: service unavailable");
         if (!connected) {
@@ -548,10 +550,13 @@ OmuxTray::OmuxTray(QString socketPath, bool startConnections, bool explicitSocke
         }
     };
     acquisition_ = std::make_unique<CodexAccountAcquisition>(client_,this);
+    siwc_ = std::make_unique<SiwcEnrollment>(client_, this);
+    siwc_->onCommitted = [this] { refresh(); refreshReadiness(); };
     acquisition_->onStatus = [this](const QString &message) { sourceAcquisitionNotice_->setText(message); };
     acquisition_->onChanged = [this] { updateMutationControls(); refresh(); };
     acquisition_->onSourceConnected = [this](const QString &id) { acquisitionSourceSelection_=id; };
     client_.onEvent = [this](const QJsonObject &event) {
+        if (siwc_->operationEvent(event)) { updateMutationControls(); refresh(); return; }
         if (acquisition_->operationEvent(event)) { updateMutationControls(); refresh(); return; }
         const auto status = event.value("operation_status").toString();
         if (event.value("operation_kind").toString() == "setup_verification") {
@@ -1063,6 +1068,7 @@ void OmuxTray::applySnapshot(const QJsonObject &snapshot) {
     invalidateAccountDemand(custodyAvailable_ ? "Account metadata revision changed; refresh and reopen the demand form."
         : "Custody unavailable; current account demand authority is Unknown.", custodyAvailable_);
     acquisition_->observe(snapshot);
+    siwc_->observe(snapshot);
     updateMutationControls();
     connection_->setText(custodyAvailable_ ? "Connected" : "Connected; credential custody unavailable");
     accountLabels_.clear();
@@ -1197,7 +1203,7 @@ QString OmuxTray::sourceReconcileIssue(bool forEnrollment) const {
     if (status != "connected" && status != "detached") return "This source's state is unavailable. Refresh before requesting reconciliation.";
     if (forEnrollment && status != "connected") return "Enrollment requires a connected source. Reconcile can recheck this detached source's authorized file.";
     const auto kind = source.value("kind").toString();
-    if (kind != "native_store" && kind != "explicit") return "Browser and OAuth source acquisition are unavailable. This source cannot enroll accounts here.";
+    if (kind != "native_store" && kind != "explicit") return "This existing-source Reconcile / Enroll action cannot acquire this source kind. Use Add account for daemon-owned SIWC sign-in; its owned OAuth flow uses separate status and cancellation controls.";
     const auto provider = source.value("provider").toString();
     if (provider != "codex" && provider != "github") return "This source's provider requires an acquisition adapter before accounts can be enrolled.";
     return {};
@@ -1241,7 +1247,7 @@ void OmuxTray::connectSource() {
     form->addRow("Source type", &kind); form->addRow("Provider", &provider);
     form->addRow("Name", &label);
     form->addRow("Native source file", &sourcePath);
-    auto *notice = new QLabel("Connect authorizes an existing native source; it does not sign in or verify an account. Browser and OAuth source acquisition are unavailable. Account enrollment requires source reconciliation and identity verification.");
+    auto *notice = new QLabel("Connect authorizes an existing native source; it does not sign in or verify an account. Browser and OAuth acquisition are unavailable in this experimental native-source dialog. Use Add account for the separate daemon-owned SIWC journey. This source requires reconciliation and identity verification.");
     notice->setWordWrap(true); form->addRow(notice);
     auto *pathNotice = new QLabel("GitHub requires an explicit source file. Leaving the Codex path blank authorizes the daemon's native Codex source. The controls do not read or search source files.");
     pathNotice->setWordWrap(true); form->addRow(pathNotice);
