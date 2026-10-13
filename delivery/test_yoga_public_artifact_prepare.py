@@ -374,6 +374,106 @@ class PreparationModels(unittest.TestCase):
         self.assertEqual(diagnostic.getvalue(),'toolbar-public-preparation-refused\n')
         self.assertEqual(output.getvalue(),'');self.assertFalse((self.output/'yoga-public-toolbar').exists())
 
+    def actual_public_space_fixture(self):
+        # Exact BA1520 public row5902. Only this bounded synthetic fixture is
+        # constructed; actual declaration/manifest evidence remains untouched.
+        row={'key':'+cached_site_repository+omux_cached_site/closure/2ahpi3w4gh6l039bs3ai7isv7ga4n0y6-openal-soft-1.24.3/share/openal/hrtf/Default HRTF.mhr',
+            'executionPath':'external/+cached_site_repository+omux_cached_site/closure/2ahpi3w4gh6l039bs3ai7isv7ga4n0y6-openal-soft-1.24.3/share/openal/hrtf/Default HRTF.mhr',
+            'inRunner':True}
+        declared=copy.deepcopy(self.declared);declared['files'].append(row)
+        declared['files'].sort(key=lambda value:value['key'])
+        self.declaration.chmod(0o600)
+        try:self.declaration.write_bytes(model.canonical(declared))
+        finally:self.declaration.chmod(0o555)
+        physical=self.base/'execroot/_main'/row['executionPath'];physical.parent.mkdir(parents=True)
+        content=b'bounded public filename fixture with ASCII space, never executed'
+        physical.write_bytes(content);physical.chmod(0o555)
+        for root in (self.controls,self.runner):
+            alias=root/row['key'];alias.parent.mkdir(parents=True);alias.symlink_to(physical)
+        original=self.paths['runner_manifest'].read_text().splitlines()
+        record=' '+row['key'].replace(' ',r'\s')+' '+str(physical)
+        pairs=[(line.partition(' ')[0],line) for line in original]+[(row['key'],record)]
+        manifest=('\n'.join(line for key,line in sorted(pairs))+'\n').encode('ascii')
+        self.mutate_fixture('runner_manifest',manifest)
+        return row,physical,content,record,manifest
+
+    def test_actual_public_space_row_complete_prepare_preserves_filename_fd_digest_and_manifest_binding(self):
+        row,physical,content,record,manifest=self.actual_public_space_fixture()
+        value,files=model.declaration(self.declaration.read_bytes(),self.context)
+        self.assertEqual(files[row['key']],row);self.assertIn(row,value['files'])
+        self.assertIn(r'\s',record);self.assertIn('Default HRTF.mhr',record)
+        result=self.prepare();product=self.output/'yoga-public-toolbar'
+        inventory=model.decode((product/'runfiles-inventory.json').read_bytes())
+        bound=next(value for value in inventory['files'] if value['key']==row['key'])
+        self.assertEqual(bound['physical'],str(physical));self.assertEqual(bound['bytes'],len(content))
+        self.assertEqual(bound['sha256'],hashlib.sha256(content).hexdigest())
+        self.assertEqual(bound['witness'],list(model.witness(physical.lstat())))
+        self.assertEqual((self.runner/row['key']).name,'Default HRTF.mhr')
+        self.assertEqual(self.paths['runner_manifest'].read_bytes(),manifest)
+        self.assertEqual(result['inventorySha256'],hashlib.sha256((product/'runfiles-inventory.json').read_bytes()).hexdigest())
+        self.assertTrue(all(result[name] is False for name in model.FALSE))
+        self.assertTrue(result['freshConsumerQualificationRequired'])
+
+    def test_declaration_space_support_keeps_control_nonascii_backslash_absolute_and_traversal_refusals(self):
+        invalid=(None,'','a'*4097,'/absolute/name','a/../name','a/./name','a//name',
+            'a\\name','a\tname','a\nname','a\rname','a\x00name','a\x1fname','a\x7fname','a\u00a0name','a\u00e9name')
+        for field in ('key','executionPath'):
+            for name in invalid:
+                declared=copy.deepcopy(self.declared);declared['files'][0][field]=name
+                with self.subTest(field=field,name=name),self.assertRaises(ValueError):
+                    model.declaration(model.canonical(declared),self.context)
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
+    def test_complete_prepare_refuses_malformed_noncanonical_duplicate_traversing_and_substituted_records(self):
+        row,physical,content,record,manifest=self.actual_public_space_fixture()
+        wire=row['key'].replace(' ',r'\s')
+        self.assertEqual(model.manifest_unescape(r'Default\bsHRTF.mhr',key=True),r'Default\sHRTF.mhr')
+        other=physical.with_name('different declared filename.mhr');other.write_bytes(content);other.chmod(0o555)
+        invalid=(
+            record.replace(r'\s',r'\q',1),  # Unknown escape.
+            ' '+wire+'\\ '+str(physical),  # Truncated key escape.
+            ' '+wire+' '+str(physical).replace(' ',r'\s'),  # Target does not escape spaces.
+            ' _main/ordinary '+str(physical),  # Unnecessary escaped marker.
+            ' '+wire, ' '+wire+' ', '  '+wire+' '+str(physical),  # Missing fields/extra separator.
+            r' ../space\sname '+str(physical),
+            r' _main/bad\nname '+str(physical),
+            r' _main/bad\bname '+str(physical),
+            record.replace(r'\s',r'\bs',1),  # Decode once, never \b then \s.
+            ' '+wire+' '+str(physical.parent)+'/../'+physical.name,
+            ' '+wire+' '+str(physical)+'\r',
+            ' '+wire+' '+str(physical).replace('Default HRTF',r'Default\nHRTF'),
+            ' '+wire+' '+str(other))  # Valid syntax, wrong actual File binding.
+        for malformed in invalid:
+            raw=manifest.replace((record+'\n').encode('ascii'),(malformed+'\n').encode('ascii'),1)
+            self.mutate_fixture('runner_manifest',raw)
+            with self.subTest(record=malformed),self.assertRaises(ValueError):self.prepare()
+            self.assertFalse((self.output/'yoga-public-toolbar').exists())
+        for raw in (manifest.replace((record+'\n').encode('ascii'),((record+'\n')*2).encode('ascii'),1),
+                manifest.rstrip(b'\n'),b'\n'+manifest,manifest+b'_main/late /relative\n'):
+            self.mutate_fixture('runner_manifest',raw)
+            with self.subTest(raw_bytes=len(raw)),self.assertRaises(ValueError):self.prepare()
+            self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
+    def test_actual_manifest_decode_keeps_original_cutoff_and_drains_all_held_input_descriptors(self):
+        self.actual_public_space_fixture();actual_decode=model.manifest_unescape;actual_open=os.open;actual_close=os.close
+        decoded=False;opened=[];closed=[]
+        def decode(value,*,key):
+            nonlocal decoded
+            result=actual_decode(value,key=key)
+            if key and not decoded:self.now=self.deadline-30*10**9;decoded=True
+            return result
+        def open_fd(*args,**kwargs):
+            fd=actual_open(*args,**kwargs);opened.append(fd);return fd
+        def close_fd(fd):closed.append(fd);actual_close(fd)
+        with patch.object(model,'manifest_unescape',side_effect=decode),patch.object(model.os,'open',side_effect=open_fd),\
+                patch.object(model.os,'close',side_effect=close_fd):
+            with self.assertRaises(ValueError):self.prepare()
+        self.assertTrue(decoded);self.assertGreater(len(opened),3)
+        self.assertEqual(closed,list(reversed(opened)));self.assertEqual(len(closed),len(set(closed)))
+        for fd in opened:
+            with self.assertRaises(OSError):os.fstat(fd)
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
 
 if __name__=='__main__':
     ZIP=Path(sys.argv.pop(1)).read_bytes()

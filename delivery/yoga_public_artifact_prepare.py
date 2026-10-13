@@ -83,7 +83,7 @@ def relative(value):
     require(type(value) is str and 0 < len(value) <= 4096
         and not value.startswith('/') and str(PurePosixPath(value)) == value
         and not {'.', '..'}.intersection(value.split('/'))
-        and all(33 <= ord(char) <= 126 and char != '\\' for char in value))
+        and all(32 <= ord(char) <= 126 and char != '\\' for char in value))
     return value
 
 
@@ -375,6 +375,54 @@ def publish(product, values, clock):
             require(anchor==witness(product.lstat()));clock.tick()
 
 
+def manifest_unescape(value, *, key):
+    """One pass over Bazel's field-specific escapes; never recursively decode."""
+    decoded=[]; position=0
+    escapes={'n':'\n', 'b':'\\'}
+    if key: escapes['s']=' '
+    while position < len(value):
+        char=value[position]
+        if char == '\\':
+            require(position+1 < len(value) and value[position+1] in escapes)
+            decoded.append(escapes[value[position+1]]); position+=2
+        else:
+            decoded.append(char); position+=1
+    return ''.join(decoded)
+
+
+def runfiles_manifest(raw, clock):
+    """Canonical Bazel SOURCE_SYMLINKS records, joined to declared files later.
+
+    Keys escape spaces/newlines/backslashes; targets escape only newlines and
+    backslashes. Target spaces stay literal. No new path alphabet or root is
+    authorized by decoding; each decoded field keeps the existing lexical fence.
+    """
+    require(type(raw) is bytes and 0 < len(raw) <= MAX_METADATA and raw.endswith(b'\n'))
+    result={}; previous=None
+    for line in raw.decode('ascii')[:-1].split('\n'):
+        clock.tick(); require(0 < len(line) <= 16386)
+        escaped=line.startswith(' ')
+        key_wire,separator,target_wire=(line[1:] if escaped else line).partition(' ')
+        require(separator == ' ' and key_wire and target_wire)
+        key=manifest_unescape(key_wire,key=True) if escaped else key_wire
+        physical=manifest_unescape(target_wire,key=False) if escaped else target_wire
+        relative(key)
+        require(physical.startswith('/') and len(physical) <= 4096)
+        relative(physical[1:])
+        needs_escaping=' ' in key or '\n' in key or '\n' in physical
+        if needs_escaping:
+            canonical_key=key.replace('\\',r'\b').replace(' ',r'\s').replace('\n',r'\n')
+            canonical_target=physical.replace('\\',r'\b').replace('\n',r'\n')
+            canonical_line=' '+canonical_key+' '+canonical_target
+        else:
+            canonical_line=key+' '+physical
+        require(line == canonical_line and key not in result
+            and (previous is None or previous < key) and len(result) < MAX_FILES+1)
+        result[key]=physical; previous=key
+    clock.tick()
+    return result
+
+
 def prepare(declaration_path, environment):
     fields = {'EPOCH','ENTRY_NS','DEADLINE_NS','SOURCE_COMMIT','GRAPH_SHA256','SOURCE_ROOT'}
     require({key[len(VARIABLE):] for key in environment if key.startswith(VARIABLE)} == fields)
@@ -420,14 +468,7 @@ def prepare(declaration_path, environment):
         require(runfiles.is_relative_to(base) and runfiles.resolve(strict=True) == runfiles
             and stat.S_ISDIR(runfiles.lstat().st_mode))
         inputs.root_facts[str(runfiles)] = witness(runfiles.lstat())
-        manifest = {}
-        for line in data['runner_manifest'].decode('utf-8').splitlines():
-            # Escaped-space manifest records are deliberately unsupported. No
-            # generic path decoder or caller-provided alias is accepted.
-            key, separator, physical = line.partition(' ')
-            require(separator == ' ' and key not in manifest and key
-                and physical.startswith('/') and not any(char.isspace() for char in physical))
-            manifest[key] = physical
+        manifest = runfiles_manifest(data['runner_manifest'],clock)
         expected_keys = {key for key,row in files.items() if row['inRunner']}
         require(set(manifest) - {'_repo_mapping'} == expected_keys)
         if '_repo_mapping' in manifest:
