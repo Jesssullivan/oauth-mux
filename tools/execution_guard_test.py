@@ -3597,5 +3597,49 @@ class ToolbarPreparationSchedulingModels(unittest.TestCase):
                     guard.toolbar_prepare_selected('standard','system',['test',guard.TOOLBAR_PREP_LABEL],reuse,dirty)
 
 
+
+class Runtime009SeedOwnedWorkerReentryModels(unittest.TestCase):
+    def test_actual_main_preserves_owned_full_bazel_worker_and_coordinator_refusals(self):
+        import sys
+        import execution_guard as guard
+        import codex_owner_runtime_seed as seed
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TEST_TMPDIR')) as selected:
+            root = Path(selected).resolve()
+            root.chmod(0o700)
+            run = root / '12345678-1234-4234-8234-123456789abc'
+            run.mkdir(mode=0o700)
+            child = root / 'synthetic-bazel'
+            entry = time.monotonic_ns()
+            deadline = entry + 1200 * 10**9
+            command = guard.bazel_command(str(child), run, seed.ARGUMENTS,
+                source_commit='a' * 40, source_dirty='false')
+            command = seed.augment(command, run, entry, deadline, 'a' * 40, 'b' * 64, root)
+            self.assertEqual(command[0], str(child))
+            self.assertEqual(command[-2:], seed.ARGUMENTS[-2:])
+            self.assertGreater(len(command), len(seed.ARGUMENTS))
+            # Real declared locked-Python child accepts the actual builder argv;
+            # no worker/Popen mock, nested Bazel, service or provider is invoked.
+            child.write_text('#!' + sys.executable + '\nimport sys\n'
+                + 'if sys.argv[1:] != ' + repr(command[1:]) + ': raise SystemExit(7)\n'
+                + 'sys.stdout.write("OMUX_SYNTHETIC_SEED_WORKER_OK\\n")\n')
+            child.chmod(0o700)
+            (run / 'go').write_bytes(b'synthetic already-admitted worker gate')
+            with patch.dict(os.environ, {'OMUX_EXECUTION_GUARD': str(root / 'foreign')}):
+                with self.assertRaisesRegex(ValueError, 'worker ownership marker missing'):
+                    guard.main(['--worker', str(run), '--', *command])
+            self.assertFalse((run / 'workload.log').exists())
+            with patch.dict(os.environ, {'OMUX_EXECUTION_GUARD': str(run)}):
+                self.assertEqual(guard.main(['--worker', str(run), '--', *command]), 0)
+            self.assertEqual((run / 'workload.log').read_bytes(), b'OMUX_SYNTHETIC_SEED_WORKER_OK\n')
+            self.assertEqual(stat.S_IMODE((run / 'workload.log').stat().st_mode), 0o600)
+            for arguments in (['test', seed.LABEL],
+                    seed.ARGUMENTS + ['//:docs_check'], command):
+                with self.subTest(coordinator_arguments=arguments):
+                    with self.assertRaisesRegex(ValueError, 'runtime-seed-selection'):
+                        guard.main(['--manager', 'system', '--source-commit', 'a' * 40,
+                                    '--source-dirty', 'false', '--', *arguments])
+            self.assertEqual((run / 'workload.log').read_bytes(), b'OMUX_SYNTHETIC_SEED_WORKER_OK\n')
+
+
 if __name__ == '__main__':
     unittest.main()

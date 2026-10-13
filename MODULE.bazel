@@ -151,6 +151,10 @@ yoga_delivery_inputs(name = "omux_yoga_delivery_inputs")
 retained_runtime = use_repo_rule("//tools:codex_owner_runtime_repository.bzl", "codex_owner_runtime_repository")
 retained_runtime(name = "omux_codex_owner_runtime")
 
+# Fixed PUBLIC bootstrap role; the existing retained-consumer rule is unchanged.
+runtime_seed = use_repo_rule("//tools:codex_owner_runtime_seed_repository.bzl", "codex_owner_runtime_seed_repository")
+runtime_seed(name = "omux_codex_owner_runtime_seed")
+
 codex_cached_inputs = use_repo_rule("//tools:codex_cached_inputs.bzl", "codex_cached_inputs")
 codex_cached_inputs(name = "omux_codex_pack_inputs")
 

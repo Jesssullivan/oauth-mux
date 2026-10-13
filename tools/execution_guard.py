@@ -1147,6 +1147,11 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             raise ValueError('selected site producer requires declared site inputs')
         site_args += ['--repo_env=' + site_inputs.VARIABLE + '=' + str(site_coordinator_inputs),
                       '--repo_env=' + site_inputs.SHA_VARIABLE + '=' + site_coordinator_inputs_sha256]
+    if '//tools:codex_owner_runtime_input_seed' in arguments:
+        import codex_owner_runtime_seed as runtime_seed
+        runtime_seed.selected(profile, arguments)
+        if codex_owner_runtime_directory is not None or output_base is not None:
+            raise ValueError('runtime-seed-consumer-or-cache-input-refused')
     from guard_owner_runtime_input import VARIABLE as retained_variable, finite as retained_finite
     if codex_owner_runtime_directory is not None:
         retained_finite(profile, arguments, (nixpkgs_source, site_source, site_inventory,
@@ -1781,7 +1786,15 @@ RETAINED_OUTPUT_PRODUCTS = {
     '//tools:codex_native_source_file_writer_producer': (
         'native-source-file-writer-boundary/source-receipt.json',),
 }
+# Only the complete model+seed cohort retains the unchanged writer's artifacts.
+RETAINED_OUTPUT_PRODUCTS['//tools:codex_owner_runtime_input_seed'] = (
+    'codex-owner-runtime-input-receipt.json',
+    '0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad/codex-owner-runtime.tar.gz',)
 RETAINED_OUTPUT_VECTORS = {('test', label): (label,) for label in RETAINED_OUTPUT_PRODUCTS}
+# A bare seed is deliberately not a retained-output contract.
+RETAINED_OUTPUT_VECTORS.pop(('test', '//tools:codex_owner_runtime_input_seed'))
+RETAINED_OUTPUT_VECTORS[('test', '//tools:codex_owner_runtime_seed_test',
+    '//tools:codex_owner_runtime_input_seed')] = ('//tools:codex_owner_runtime_input_seed',)
 RETAINED_OUTPUT_VECTORS[('test', '//tools:codex_native_source_file_writer_test',
     '//tools:codex_native_source_file_writer_producer',
     '//tools:codex_native_source_file_writer_metadata_producer')] = (
@@ -1808,7 +1821,11 @@ RETAINED_OUTPUT_PRODUCTS['//tools:codex_native_siwc_catalog_models_producer'] = 
     'native-siwc-catalog-source/source-receipt.json')
 # Disposal-only alternatives; the action still owns typed source authentication.
 # Both namespaces present is mixed/partial output, never a third contract.
-RETAINED_OUTPUT_ALTERNATIVES = {'//tools:codex_native_siwc_catalog_models_producer': (
+RETAINED_OUTPUT_ALTERNATIVES = {
+    '//tools:codex_owner_runtime_input_seed': ((
+        'codex-owner-runtime-input-receipt.json',
+        '0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad/codex-owner-runtime.tar.gz'),),
+    '//tools:codex_native_siwc_catalog_models_producer': (
     RETAINED_OUTPUT_PRODUCTS['//tools:codex_native_siwc_catalog_models_producer'],
     ('native-siwc-catalog-models/models-receipt.json',
      'native-siwc-catalog-content-source/source-receipt.json'),
@@ -1887,6 +1904,38 @@ class RetirementBudget:
         cutoff = self.deadline_ns if final_report else self.work_deadline_ns
         if type(now) is not int or now < self.entry_ns or now >= cutoff:
             raise RetirementDeferred('deadline')
+
+
+class RetirementResources(ExitStack):
+    def __exit__(self, error_type, primary, traceback):
+        # ExitStack.close virtually calls self.__exit__; drain the base method
+        # directly so this override never recursively calls itself.
+        if primary is None:
+            ExitStack.__exit__(self, None, None, None)
+        else:
+            try:
+                ExitStack.__exit__(self, None, None, None)
+            except BaseException:
+                try:
+                    primary.add_note('retirement-product-cleanup-refused')
+                except BaseException:
+                    # Keep the original failure even if diagnostic allocation fails.
+                    pass
+        return False
+
+
+def retirement_owned_fd(owner, acquire):
+    # Preallocate/register an empty, idempotent slot before open/dup. Even an
+    # insertion-then-raise callback registration has no unowned live descriptor.
+    slot = [None]
+    def close():
+        fd = slot[0]
+        slot[0] = None
+        if fd is not None:
+            os.close(fd)
+    owner.callback(close)
+    slot[0] = acquire()
+    return slot[0]
 
 
 class RunRetirement:
@@ -2167,22 +2216,21 @@ class RunRetirement:
             return False
         package, target = label[2:].split(':')
         relative = Path('execroot/_main/bazel-out') / configuration / 'testlogs' / package / target / 'test.outputs'
-        with ExitStack() as variants_owner:
+        with RetirementResources() as variants_owner:
             members = RETAINED_OUTPUT_PRODUCTS[label]
             variants = RETAINED_OUTPUT_ALTERNATIVES.get(label)
             if variants is not None:
                 # Hold every newly opened descriptor before metadata I/O. This
                 # bounded fixed producer path stays held through leaf fsync and
                 # the final exact namespace/held/named fence; never rebase it.
-                held = os.dup(directory)
-                variants_owner.callback(os.close, held)
+                held = retirement_owned_fd(variants_owner, lambda: os.dup(directory))
                 lineage = []
                 for part in relative.parts:
                     self.checkpoint()
                     named = os.stat(part, dir_fd=held, follow_symlinks=False)
-                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                    dir_fd=held)
-                    variants_owner.callback(os.close, child)
+                    child = retirement_owned_fd(variants_owner, lambda: os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=held))
                     info = os.fstat(child)
                     if (not stat.S_ISDIR(named.st_mode) or info.st_uid != os.getuid()
                             or info.st_dev != self.identity[0] or retirement_mount_id(child) != self.mount_id
@@ -2206,48 +2254,44 @@ class RunRetirement:
                 product_witnesses = []
             for member in members:
                 self.checkpoint()
-                held = os.dup(directory)
                 try:
-                    for part in (relative / member).parts[:-1]:
-                        self.checkpoint()
-                        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                        dir_fd=held)
-                        os.close(held)
-                        held = child
-                        info = os.fstat(held)
-                        if (info.st_uid != os.getuid() or info.st_dev != self.identity[0]
-                                or retirement_mount_id(held) != self.mount_id):
-                            return False
-                    if variants is not None:
-                        product_parent = os.dup(held)
-                        variants_owner.callback(os.close, product_parent)
-                        product_parent_anchor = self.evidence_identity(os.fstat(product_parent))
-                    leaf = os.open(Path(member).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                                   dir_fd=held)
-                    try:
+                    with RetirementResources() as member_owner:
+                        held = retirement_owned_fd(member_owner, lambda: os.dup(directory))
+                        for part in (relative / member).parts[:-1]:
+                            self.checkpoint()
+                            child = retirement_owned_fd(member_owner, lambda: os.open(
+                                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=held))
+                            held = child
+                            info = os.fstat(held)
+                            if (info.st_uid != os.getuid() or info.st_dev != self.identity[0]
+                                    or retirement_mount_id(held) != self.mount_id):
+                                return False
+                        if variants is not None:
+                            product_parent = retirement_owned_fd(variants_owner, lambda: os.dup(held))
+                            product_parent_anchor = self.evidence_identity(os.fstat(product_parent))
+                        leaf = retirement_owned_fd(member_owner, lambda: os.open(
+                            Path(member).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                            dir_fd=held))
                         info = os.fstat(leaf)
                         named = os.stat(Path(member).name, dir_fd=held, follow_symlinks=False)
                         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size <= 0
                                 or info.st_dev != self.identity[0] or retirement_identity(info) != retirement_identity(named)):
                             return False
                         if variants is not None:
-                            product_leaf = os.dup(leaf)
-                            variants_owner.callback(os.close, product_leaf)
+                            product_leaf = retirement_owned_fd(variants_owner, lambda: os.dup(leaf))
                             product_leaf_anchor = self.evidence_identity(info)
                             if self.evidence_identity(os.fstat(product_leaf)) != product_leaf_anchor:
                                 return False
-                            product_witnesses.append((product_parent, product_leaf, Path(member).parts[0], Path(member).name,
+                            product_witnesses.append((product_parent, product_leaf,
+                                                      None if len(Path(member).parts) == 1 else Path(member).parts[0], Path(member).name,
                                                       product_parent_anchor, product_leaf_anchor))
                         self.checkpoint()
                         os.fsync(leaf)
-                    finally:
-                        os.close(leaf)
-                    self.checkpoint()
-                    os.fsync(held)
+                        self.checkpoint()
+                        os.fsync(held)
                 except FileNotFoundError:
                     return False
-                finally:
-                    os.close(held)
             if variants is not None:
                 for child, parent, name, expected in lineage:
                     self.checkpoint()
@@ -2269,7 +2313,11 @@ class RunRetirement:
                 for parent, leaf, parent_name, name, parent_anchor, leaf_anchor in product_witnesses:
                     self.checkpoint()
                     try:
-                        named_parent = os.stat(parent_name, dir_fd=variant_directory, follow_symlinks=False)
+                        # A top-level receipt belongs to the held outputs root;
+                        # that root has the same full held/named lineage fence.
+                        named_parent = (os.stat(lineage[-1][2], dir_fd=lineage[-1][1],
+                                                follow_symlinks=False) if parent_name is None else
+                            os.stat(parent_name, dir_fd=variant_directory, follow_symlinks=False))
                         named = os.stat(name, dir_fd=parent, follow_symlinks=False)
                     except FileNotFoundError: return False
                     if (self.evidence_identity(named_parent) != parent_anchor
@@ -2702,6 +2750,10 @@ def _main(argv, admission_resources, retirement_resources):
     toolbar_prepare_inventory_request(args,toolbar_preparation)
     toolbar_inventory_before = None
     toolbar_inventory_after = None
+    runtime_seed_selected = '//tools:codex_owner_runtime_input_seed' in arguments
+    if runtime_seed_selected:
+        import codex_owner_runtime_seed as runtime_seed
+        runtime_seed.request(args, arguments)
     ordinary_check_reuse = ordinary_check_reuse_selected(args, arguments)
     home_manager_owned = home_manager_owned_request(args,arguments,
         delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
@@ -2815,6 +2867,9 @@ def _main(argv, admission_resources, retirement_resources):
     delivery_summary = None
     delivery_verified_after = None
     delivery_runtime_seconds = None
+    public_runtime_seed = None
+    public_runtime_seed_verified_after = None
+    public_runtime_seed_after = None
     owner_input = None
     owner_input_verified_after = None
     owner_input_after = None
@@ -3027,6 +3082,9 @@ def _main(argv, admission_resources, retirement_resources):
                                  args.coordination_dir, args.initialize_state_dir,
                                  arguments=seed_reserved.ARGUMENTS if args.profile == 'yoga-wrapper-companion-reserved' else arguments)
     DIAGNOSTIC_STAGE = 'operatorinputs'
+    if runtime_seed_selected:
+        public_runtime_seed = runtime_seed.admit_owned(admission_resources, Path.cwd(),
+            delivery_entry_monotonic_ns, delivery_entry_deadline_ns)
     if args.codex_owner_runtime_directory is not None:
         from guard_owner_runtime_input import Admission as RetainedAdmission
         owner_input = RetainedAdmission(args.codex_owner_runtime_directory,
@@ -3376,6 +3434,10 @@ def _main(argv, admission_resources, retirement_resources):
                     delivery_entry_monotonic_ns,delivery_entry_deadline_ns,graph_sha256=graph_sha256,
                     repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source,
                     source_commit=args.source_commit,source_dirty=args.source_dirty)
+            if public_runtime_seed is not None:
+                public_runtime_seed.recheck()
+                command = runtime_seed.augment(command, run, delivery_entry_monotonic_ns,
+                    delivery_entry_deadline_ns, args.source_commit, graph_sha256, Path.cwd())
             if native_sdk and (graph_sha256, graph_inputs) != native_controller_graph:
                 raise ValueError('native controller graph changed before dispatch')
             if seed_reservation is not None:
@@ -3611,6 +3673,9 @@ def _main(argv, admission_resources, retirement_resources):
                 if args.profile in ('yoga-install-inputs','yoga-sealed-workspace-stage'):
                     settings.update(MemoryMax=str(delivery_settings.PROOF_MEMORY),
                         TasksMax=str(delivery_settings.PROOF_TASKS),CPUQuota='190%')
+            elif public_runtime_seed is not None:
+                delivery_runtime_seconds = public_runtime_seed.runtime_seconds()
+                settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
             elif owner_input is not None:
                 delivery_runtime_seconds = owner_input.runtime_seconds()
                 settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
@@ -3792,6 +3857,8 @@ def _main(argv, admission_resources, retirement_resources):
                 deadline = delivery_monitor_deadline(delivery_entry_deadline_ns, delivery_settings)
             elif native_sdk:
                 deadline = args.native_deadline - 120
+            elif public_runtime_seed is not None:
+                deadline = public_runtime_seed.deadline_ns / 10**9
             elif home_manager_owned or reservation_selected or dev_stage_proof or resident_input is not None or owner_input is not None or live_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
@@ -4060,6 +4127,13 @@ def _main(argv, admission_resources, retirement_resources):
                 except (OSError, ValueError):
                     evidence_ok = False
                     evidence = {'state': 'preservation-failed'}
+            if public_runtime_seed is not None:
+                try:
+                    public_runtime_seed_after = runtime_seed.finish(public_runtime_seed,
+                        lambda: graph_digest(Path.cwd()), (graph_sha256, graph_inputs))
+                    public_runtime_seed_verified_after = True
+                except (OSError, ValueError):
+                    public_runtime_seed_verified_after = False
             if owner_input is not None:
                 try:
                     owner_input_after = owner_input.recheck()
@@ -4173,7 +4247,7 @@ def _main(argv, admission_resources, retirement_resources):
                                 content_delivery_unit = None
                     try: seed_reservation.close()
                     except OSError: seed_verified_after = False
-            final_status = result if fresh_input_verified_after is not False and cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and yoga_installed_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
+            final_status = result if fresh_input_verified_after is not False and cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and public_runtime_seed_verified_after is not False and owner_input_verified_after is not False and yoga_installed_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
             if dev_stage_proof:
                 try:
                     dev_stage_budget(delivery_entry_monotonic_ns,delivery_entry_deadline_ns,reserve_ns=0)
@@ -4283,6 +4357,10 @@ def _main(argv, admission_resources, retirement_resources):
                            'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
                            'native_support':False,'provider_evaluation':False
                        } if fresh_input else None,
+                       'codex_owner_runtime_seed': {'before': public_runtime_seed.facts(),
+                           'after': public_runtime_seed_after,
+                           'verified_after_cleanup': public_runtime_seed_verified_after,
+                           'consumer_admitted': False, 'native_support': False} if public_runtime_seed else None,
                        'codex_owner_runtime_input': {'before': owner_input.facts(), 'after': owner_input_after,
                            'verified_after_cleanup': owner_input_verified_after,
                            'original_deadline_monotonic_ns': delivery_entry_deadline_ns,
@@ -4546,7 +4624,7 @@ def _main(argv, admission_resources, retirement_resources):
                                 raise ValueError('content-dependency-final-graph-changed')
                             lease.fence()
                             lease.complete(True,hashlib.sha256((run/'receipt.json').read_bytes()).hexdigest())
-                    elif cleanup and (evidence_ok or native_cache is not None) and (native_cache is None or native_cache.may_complete(cleanup, native_verified_after)) and native_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and owner_input_verified_after is not False:
+                    elif cleanup and (evidence_ok or native_cache is not None) and (native_cache is None or native_cache.may_complete(cleanup, native_verified_after)) and native_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and public_runtime_seed_verified_after is not False and owner_input_verified_after is not False:
                         lease.complete(True, hashlib.sha256((run / 'receipt.json').read_bytes()).hexdigest())
                 finally:
                     lease.close()
