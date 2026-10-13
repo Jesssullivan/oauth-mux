@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 import codex_native_siwc_catalog_source as catalog
 import codex_native_siwc_catalog_content_source as content_catalog
+import codex_native_siwc_content_delivery_inputs as delivery
 import codex_native_file_writer_models as shared
 import codex_native_profile as native
 import guard_native_siwc_catalog_source_reserved as source_guard
@@ -29,6 +30,8 @@ SOURCE_ROUTES = {
         'codex_native_siwc_catalog_source_producer', 'native-siwc-catalog-source'),
     'qualified-catalog-content-source-hub-uncompiled': (content_catalog, content_source_guard,
         'codex_native_siwc_catalog_content_source_producer', 'native-siwc-catalog-content-source'),
+    delivery.STATUS: (content_catalog, content_source_guard,
+        'codex_native_siwc_catalog_content_source_producer', 'native-siwc-catalog-content-source'),
 }
 
 SEMANTIC_FIELDS = ('kind','status','commit','qualified_parent','native_controls_sha256',
@@ -39,12 +42,14 @@ SEMANTIC_FIELDS = ('kind','status','commit','qualified_parent','native_controls_
 
 def selection(raw):
     value = family.decode(raw)
+    if type(value) is dict and value.get('kind') == delivery.SELECTION_KIND:
+        return delivery.selection(value,catalog.CONTROL_SHA)
     source.require(type(value) is dict and set(value) == {'schema_version','kind','status','catalog_controls_sha256','source'}
         and type(value['schema_version']) is int and value['schema_version'] == 1
         and value['kind'] == 'omux-native-siwc-catalog-model-selection-v1'
         and value['catalog_controls_sha256'] == catalog.CONTROL_SHA)
     # Cold declaration is honest data, never a provisional success constructor.
-    source.require(value['status'] in SOURCE_ROUTES and type(value['source']) is dict)
+    source.require(value['status'] in SOURCE_ROUTES and value['status'] != delivery.STATUS and type(value['source']) is dict)
     row = value['source']
     source.require(set(row) == {'root','receipt_sha256','receipt_bytes','inventory_sha256','producer'}
         and type(row['receipt_bytes']) is int and 0 < row['receipt_bytes'] <= source.MAX_METADATA)
@@ -136,14 +141,17 @@ class ExtraOwners:
         # The main owner already bounded/held this exact repo mapping.
         rows = [row.split(',') for row in self.mapping_raw.decode().splitlines()]
         source.require(all(len(row) == 3 for row in rows))
-        if self.source_family is content_catalog:
+        if self.selected['status'] == delivery.STATUS:
+            self.inputs = self.stack.enter_context(delivery.RetainedInputs(runfiles,rows))
+        elif self.source_family is content_catalog:
             self.inputs = self.stack.enter_context(content_catalog.intake.ModelProofInputs(runfiles, rows))
             source.require(self.inputs.selection == self.row)
             self.inputs.admit_content_provenance(self.row)
         else:
             self.inputs = self.stack.enter_context(family.Inputs(runfiles,rows,_repository=REPOSITORY,_kind=INPUT_KIND))
         source.require(self.inputs.selection == self.row)
-        self.source_outer, required = family.guardian(self.row,self.inputs,_guard=self.source_guard)
+        self.source_outer, required = (delivery.guardian(self.row,self.inputs) if self.selected['status'] == delivery.STATUS
+            else family.guardian(self.row,self.inputs,_guard=self.source_guard))
         old_report = self.inputs.read_json(Path(self.row['root'])/'source-receipt.json',self.row['receipt_sha256'],source.DEADLINE)
         expected_status = ('verified-siwc-catalog-source-uncompiled' if self.source_family is catalog
             else content_catalog.STATUS)
@@ -163,6 +171,8 @@ class ExtraOwners:
         hub = published.hub
         source.require(type(hub) is dict and old_report['generated_hub'] == {
             name:{'sha256':source.sha(raw),'bytes':len(raw)} for name,raw in sorted(hub.items())})
+        if self.selected['status'] == delivery.STATUS:
+            delivery.validate_members(self.inputs.publication,old_report,published.files,hub,self.captured.raw)
         source.verify_written(Path(self.row['root'])/'hub/source',{name:('100644',raw) for name,raw in hub.items()})
         members.update({'hub/source/'+name:('100644',raw) for name,raw in hub.items()})
         members['source-receipt.json'] = ('100644',self.captured.raw)
@@ -182,7 +192,8 @@ class ExtraOwners:
         source.require(self.captured is not None and self.inputs is not None)
         self.captured.recheck()
         source.verify_written(self.captured.root/'hub/source',self.hub)
-        source.require(family.guardian(self.row,self.inputs,_guard=self.source_guard)[0] == self.source_outer)
+        source.require((delivery.guardian(self.row,self.inputs) if self.selected['status'] == delivery.STATUS
+            else family.guardian(self.row,self.inputs,_guard=self.source_guard))[0] == self.source_outer)
         self.inputs.check_all(); self.evidence.full()
 
     def evidence_full(self):
@@ -326,6 +337,11 @@ def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
             'producer_context':report['producer_context'],'original_entry_monotonic_ns':entry,
             'original_outer_deadline_monotonic_ns':until,'original_proof_deadline_monotonic_ns':entry+600*10**9,
             'selected_catalog_source':extra.row,'selected_source_outer_sha256':extra.row['producer']['sha256'],
+            **({'selected_source_delivery':{'kind':delivery.PUBLICATION_KIND,
+                'transport_receipt':extra.row['transport_receipt'],'source_phase_receipt':extra.row['source_phase_receipt'],
+                'authority':'current-retained-content-and-historical-source-phase-only',
+                'original_action_sdk_custody_inherited':False,'source_qualification_extended':False}}
+                if extra.selected['status'] == delivery.STATUS else {}),
             'source':{'receipt_path':str(published.path/'source-receipt.json'),'receipt_sha256':source.sha(published.raw),
                 'inventory_sha256':report['inventory_sha256'],'patch_sha256':report['patch_sha256'],'graph_files':report['graph_files']},
             'generated_hub':report['generated_hub'],

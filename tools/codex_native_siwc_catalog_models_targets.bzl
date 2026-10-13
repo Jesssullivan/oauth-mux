@@ -8,7 +8,7 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
         src for src in native_acquisition_source_closure(source_sources, sdk_sources)
         if str(src) not in ("//delivery:portable.py", "codex_native_acquisition_bridge_material.py")
     ] + ["codex_native_source_file_writer.py", "guard_native_file_writer_source_reserved.py",
-        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "guard_native_siwc_catalog_source_reserved.py", "guard_native_siwc_catalog_content_source_reserved.py", "codex_native_n10_source_intake.py", "codex_native_siwc_catalog_content_source.py", "codex_transported_sdk_inputs.py"]).to_list()
+        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "codex_native_siwc_content_delivery_inputs.py", "guard_native_siwc_catalog_source_reserved.py", "guard_native_siwc_catalog_content_source_reserved.py", "codex_native_n10_source_intake.py", "codex_native_siwc_catalog_content_source.py", "codex_transported_sdk_inputs.py"]).to_list()
     controls = [
         "//integrations/codex-upstream/siwc-native:inputs",
         "//integrations/codex-upstream/siwc-native-catalog:inputs",
@@ -44,5 +44,16 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
             "//integrations/codex-upstream/siwc-native-catalog:BUILD.bazel",
             "//integrations/codex-upstream/siwc-native:BUILD.bazel",
             "codex_native_siwc_catalog_models_targets.bzl", "codex_native_siwc_catalog_content_source_targets.bzl", "codex_native_siwc_catalog_model_inputs.bzl", "codex_native_siwc_catalog_models_BUILD.snippet", "codex_native_siwc_catalog_models_MODULE.snippet"],
+        target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    )
+
+    python_test(
+        name = "codex_native_siwc_content_delivery_inputs_test",
+        main = "codex_native_siwc_content_delivery_inputs_test.py",
+        srcs = depset(sources + original_sdk_sources).to_list(),
+        data = depset(controls + catalog_content_controls()).to_list() + [
+            "codex_native_siwc_catalog_models_targets.bzl",
+            "codex_native_siwc_catalog_model_inputs.bzl",
+        ],
         target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     )

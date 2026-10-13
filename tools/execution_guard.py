@@ -1639,6 +1639,7 @@ RETAINED_OUTPUT_VECTORS.update({
         ('//tools:codex_owner_status_persistence_metadata_binding_producer',),
 })
 RETIREMENT_CHILDREN = ('output-base', 'bazel-user-root')
+CONTENT_DELIVERY_RETIREMENT_CHILDREN = ('delivery-output-base','delivery-user-root')
 RETIREMENT_REPORT = 'test-evidence-retirement.json'
 RETIREMENT_DEPTH = 128
 
@@ -1712,6 +1713,7 @@ class RunRetirement:
         self.descriptor = None
         self.budget = None
         self.bindings = {}
+        self.delivery_binding = None
         state = Path(state)
         if (not state.is_absolute() or not self.run.is_absolute() or
                 '..' in self.run.parts or self.run.parent != state or
@@ -1794,6 +1796,52 @@ class RunRetirement:
                     raise ValueError('retirement-bound-evidence-changed')
             finally:
                 os.close(descriptor)
+        if self.delivery_binding is not None:
+            self.delivery_evidence()
+        self.checkpoint()
+
+    def delivery_evidence(self,expected=None):
+        """Fixed nofollow nested manifest; preserve it throughout retirement."""
+        self.recheck(); parent=descriptor=None
+        try:
+            parent=os.open('delivery-evidence',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.descriptor)
+            parent_anchor=self.evidence_identity(os.fstat(parent))
+            if (parent_anchor[3] != os.getuid() or stat.S_IMODE(parent_anchor[2]) != 0o700
+                    or parent_anchor != self.evidence_identity(os.stat('delivery-evidence',dir_fd=self.descriptor,follow_symlinks=False))):
+                raise ValueError('retirement-delivery-evidence-parent-refused')
+            descriptor=os.open('test-evidence.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
+            anchor=self.evidence_identity(os.fstat(descriptor))
+            if (not stat.S_ISREG(anchor[2]) or anchor[3] != os.getuid() or anchor[5] != 1
+                    or stat.S_IMODE(anchor[2]) != 0o600 or not 0 < anchor[6] <= LIMIT):
+                raise ValueError('retirement-delivery-evidence-refused')
+            chunks=[]; count=0
+            while True:
+                self.checkpoint(); block=os.read(descriptor,65536)
+                if not block: break
+                count+=len(block)
+                if count>anchor[6]: raise ValueError('retirement-delivery-evidence-size-refused')
+                chunks.append(block)
+            if (count != anchor[6] or anchor != self.evidence_identity(os.fstat(descriptor))
+                    or anchor != self.evidence_identity(os.stat('test-evidence.json',dir_fd=parent,follow_symlinks=False))
+                    or parent_anchor != self.evidence_identity(os.fstat(parent))
+                    or parent_anchor != self.evidence_identity(os.stat('delivery-evidence',dir_fd=self.descriptor,follow_symlinks=False))):
+                raise ValueError('retirement-delivery-evidence-changed')
+            value=(parent_anchor,anchor)
+            if self.delivery_binding is not None and self.delivery_binding != value:
+                raise ValueError('retirement-delivery-evidence-changed')
+            if expected is not None and hashlib.sha256(b''.join(chunks)).hexdigest() != expected:
+                raise ValueError('retirement-delivery-evidence-pin-refused')
+            self.delivery_binding=value
+        finally:
+            primary=sys.exc_info()[1]; failure=None
+            for owned in (descriptor,parent):
+                if owned is not None:
+                    try: os.close(owned)
+                    except BaseException as error:
+                        if failure is None: failure=error
+            if failure is not None:
+                if primary is not None: raise primary from failure
+                raise failure
         self.checkpoint()
 
     def read_regular(self, name, maximum=LIMIT):
@@ -2060,6 +2108,7 @@ class RunRetirement:
             return report
         cancellation_error = None
         self.bindings = {}
+        self.delivery_binding = None
         self.budget = RetirementBudget(original_entry_ns, original_deadline_ns,
             timeout_seconds=timeout_seconds, clock=clock, cancelled=cancelled)
         report['budget'] = {'maintenance_seconds_max': RETIREMENT_SECONDS,
@@ -2092,6 +2141,24 @@ class RunRetirement:
                 report['test_evidence_sha256'] = evidence['sha256']
                 manifest = json.loads(evidence_raw)
                 self.fence_bound_evidence()
+            selected_children=RETIREMENT_CHILDREN
+            delivery=receipt.get('native_siwc_content_delivery')
+            if receipt.get('profile') == 'native-siwc-catalog-content-source-reserved':
+                import guard_native_siwc_content_delivery as content_transport
+                if (type(delivery) is dict and delivery.get('started') is True
+                        and delivery.get('phase') == 'complete' and delivery.get('exit') == 0
+                        and delivery.get('workload_exit') == 0 and content_transport.owned_empty(delivery)
+                        and receipt.get('exit') == 0 and receipt.get('descendants_empty') is True
+                        and type(receipt.get('native_siwc_content_publication')) is dict
+                        and delivery.get('test_evidence',{}).get('state') == 'preserved'
+                        and delivery['test_evidence'].get('manifest') == 'delivery-evidence/test-evidence.json'):
+                    self.delivery_evidence(delivery['test_evidence']['sha256'])
+                    selected_children += CONTENT_DELIVERY_RETIREMENT_CHILDREN
+                    report['delivery_retirement']={'state':'admitted-fixed-operational-roots',
+                        'roots':list(CONTENT_DELIVERY_RETIREMENT_CHILDREN)}
+                else:
+                    report['delivery_retirement']={'state':'deferred-unqualified-delivery',
+                        'roots':list(CONTENT_DELIVERY_RETIREMENT_CHILDREN)}
             try:
                 previous = json.loads(self.read_regular(RETIREMENT_REPORT, 65536))
             except FileNotFoundError:
@@ -2103,7 +2170,7 @@ class RunRetirement:
                     raise ValueError('retirement-receipt-binding-changed')
                 if previous.get('state') == 'complete':
                     for name, disposition in previous.get('children', {}).items():
-                        if name not in RETIREMENT_CHILDREN:
+                        if name not in selected_children:
                             raise ValueError('retirement-report-contract-refused')
                         if disposition in ('absent', 'retired'):
                             try:
@@ -2142,7 +2209,7 @@ class RunRetirement:
             report.update(state='prepared', reason='qualified-terminal')
             # Publish the receipt binding and retention decision before unlink.
             self.publish(report)
-            for name in RETIREMENT_CHILDREN:
+            for name in selected_children:
                 self.recheck()
                 if name == 'output-base' and receipt.get('output_base') != str(self.run / name):
                     report['children'][name] = 'excluded-shared-or-external-output-base'
@@ -3052,6 +3119,10 @@ def _main(argv, admission_resources, retirement_resources):
         cache_profile = native_cache.facts() if native_cache is not None else None
         graph_sha256 = None
         graph_inputs = []
+        content_delivery_unit = None
+        content_checkpoint = content_publication = content_delivery = None
+        content_dependency_verified = False
+        content_delivery_failure = False
         supervisor_pid = os.getpid()
         supervisor_stat = Path('/proc/self/stat').read_text()
         supervisor_start_ticks = supervisor_stat[supervisor_stat.rindex(')') + 2:].split()[19]
@@ -3070,7 +3141,8 @@ def _main(argv, admission_resources, retirement_resources):
                 if authenticate:
                     if args.manager != 'system' or parts[0] not in (runner, control):
                         raise ValueError('privileged transport is limited to declared controllers')
-                    if parts[0] == control and parts != [control, '--system', 'stop', unit]:
+                    if parts[0] == control and parts not in ([control,'--system','stop',unit],
+                            *([[control,'--system','stop',content_delivery_unit]] if content_delivery_unit is not None else [])):
                         raise ValueError('privileged controller operation rejected')
                     descriptor = become_descriptor(args.become_file)
                     parts = [sudo, '-S', '-p', '', '--'] + parts
@@ -3191,10 +3263,19 @@ def _main(argv, admission_resources, retirement_resources):
                     # fixed policy. Bazel invalidates declared inputs/actions;
                     # each epoch still captures its own graph and test evidence.
                     cache_profile['ordinary_check_scope'] = ORDINARY_CHECK_SCOPE
+                if args.profile == 'native-siwc-catalog-content-source-reserved':
+                    cache_profile['native_content_dependency_scope'] = seed_reserved.DEPENDENCY_SCOPE
+                    cache_profile['fixed_cohort'] = seed_reserved.ARGUMENTS
+                    # No UUID, entry, deadline or six per-run values in the key.
+                    # Exact fresh values still enter every repository/test action.
                 cache_key = stable_fingerprint(workload_cwd if site else Path.cwd(), cache_inputs, os.getuid(), os.getgid(),
                                                args.manager, cache_profile)
-                lease = (OrdinaryCheckLease(args.state_dir, cache_key, identifier, Path.cwd())
-                         if ordinary_check_reuse else CacheLease(args.state_dir, cache_key, identifier, policy_version=2))
+                lease = (seed_reserved.ContentDependencyLease(args.state_dir,cache_key,identifier,
+                            checkout=Path.cwd().resolve(strict=True),source_commit=args.source_commit,
+                            graph_sha256=graph_sha256,entry=delivery_entry_monotonic_ns,deadline=delivery_entry_deadline_ns)
+                         if args.profile == 'native-siwc-catalog-content-source-reserved' else
+                         OrdinaryCheckLease(args.state_dir,cache_key,identifier,Path.cwd()) if ordinary_check_reuse else
+                         CacheLease(args.state_dir,cache_key,identifier,policy_version=2))
                 resources.callback(lease.close)
                 lease.__enter__()
                 if sdk:
@@ -3204,6 +3285,12 @@ def _main(argv, admission_resources, retirement_resources):
                                            args.site_phase, arguments, site_bindings, run, source=args.site_source)
                     if args.repository_cache:
                         command.insert(command.index(arguments[0]) + 1, '--repository_cache=' + str(args.repository_cache))
+                elif args.profile == 'native-siwc-catalog-content-source-reserved':
+                    command = seed_reserved.command(bazel_command,bazel,run,arguments,args.profile,
+                        delivery_entry_monotonic_ns,delivery_entry_deadline_ns,graph_sha256=graph_sha256,
+                        source_commit=args.source_commit,source_dirty=args.source_dirty,
+                        repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source,
+                        dependency_lease=lease)
                 else:
                     command = bazel_command(bazel, run, arguments, args.repository_cache,
                                         args.source_commit, args.source_dirty, args.nixpkgs_source,
@@ -3815,6 +3902,59 @@ def _main(argv, admission_resources, retirement_resources):
                         import guard_native_seed_plan_reserved as reservation_diagnostic
                         seed_failure = reservation_diagnostic.diagnostic_projection(error)
                 finally:
+                    if args.profile == 'native-siwc-catalog-content-source-reserved' and lease is not None:
+                        try:
+                            import guard_native_siwc_content_delivery as content_transport
+                            # No overlap: the SOURCE worker was cleaned and released
+                            # above; now freeze its dependency-base namespace.
+                            if (cleanup is True and cleanup_summary.get('state') == 'empty'
+                                    and cleanup_summary.get('ownership') == 'verified'
+                                    and cleanup_summary.get('readback_attempts',0) >= 2
+                                    and evidence_ok and pids_cancellation is None
+                                    and graph_digest(Path.cwd()) == (graph_sha256,graph_inputs)):
+                                lease.prepare_capture()
+                                seed_reservation.observe(cleanup=True)
+                                content_dependency_verified = True
+                                if result == 0 and seed_verified_after is True:
+                                    content_delivery_unit = seed_reserved.delivery_identity(run)[1]
+                                    source_phase = {'id':identifier,'profile':args.profile,'targets':arguments[1:],
+                                        'source_commit':args.source_commit,'graph_sha256':graph_sha256,
+                                        'exit':0,'workload_exit':result,'epoch_start_ns':epoch_start_ns,
+                                        'command':command,'limits':reservation_helper.properties(PROPERTIES),
+                                        'worker':{'unit':unit,'invocation':proof_worker.invocation,
+                                            'pid':original_pid,'start_ticks':original_ticks,'cgroup':str(cgroup),
+                                            'kernel_bounds':dict(proof_worker.bounds)},
+                                        'cleanup':cleanup_summary,'descendants_empty':cleanup,'test_evidence':evidence,
+                                        'native_siwc_catalog_content_source_reservation':seed_reserved.projection(
+                                            delivery_entry_monotonic_ns,delivery_entry_deadline_ns,True,seed_after)}
+                                    content_checkpoint,content_publication,content_delivery = content_transport.execute_delivery(
+                                        sys.modules[__name__],call=call,run=run,lease=lease,source=source_phase,
+                                        resident=seed_reservation,entry=delivery_entry_monotonic_ns,
+                                        until=delivery_entry_deadline_ns,bazel=bazel,python=python,runner=runner,control=control,
+                                        environment=environment,isolation=isolation,
+                                        repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
+                                    final_resident=seed_reservation.complete(0,True,True,
+                                        graph_digest(Path.cwd())==(graph_sha256,graph_inputs))
+                                    seed_reserved.resident_continuity(seed_after,final_resident)
+                                    seed_after=final_resident
+                                elif result == 0:
+                                    content_dependency_verified = False
+                            elif result == 0:
+                                content_dependency_verified = False
+                        except (OSError,ValueError,KeyError,TypeError,UnicodeError) as error:
+                            if isinstance(error,content_transport.DeliveryRefused):
+                                content_checkpoint=error.checkpoint
+                                content_delivery=error.observation
+                                # SOURCE cleanup alone cannot prove a started
+                                # delivery worker empty. Keep its identity in
+                                # the actual outer association on refusal.
+                                cleanup=content_transport.aggregate_empty(cleanup,content_delivery)
+                            content_delivery_failure = True
+                            content_dependency_verified = False
+                            seed_verified_after = False
+                        finally:
+                            if content_delivery is not None and content_transport.owned_empty(content_delivery):
+                                content_delivery_unit = None
                     try: seed_reservation.close()
                     except OSError: seed_verified_after = False
             final_status = result if fresh_input_verified_after is not False and cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and yoga_installed_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
@@ -3830,6 +3970,8 @@ def _main(argv, admission_resources, retirement_resources):
             if resident_verified_after is False or seed_verified_after is False:
                 final_status = 125
             if pids_cancellation is not None:
+                final_status = 125
+            if content_delivery_failure:
                 final_status = 125
             receipt = {'id': identifier, 'unit': unit, 'exit': final_status,
                        'workload_exit': result, 'epoch_start_ns': epoch_start_ns,
@@ -4094,6 +4236,21 @@ def _main(argv, admission_resources, retirement_resources):
                         'verified_after_cleanup':seed_verified_after,'resident':seed_after,
                         'seed_qualification':False,'seed_qualification_requires_matching_outer_success':True,
                         'native_runtime_qualified':False,'complete_build_seed_qualified':False}
+            if args.profile == 'native-siwc-catalog-content-source-reserved' and lease is not None:
+                receipt.update(source_phase_receipt=content_checkpoint,
+                    native_siwc_content_publication=content_publication,
+                    native_siwc_content_delivery=content_delivery)
+                if content_dependency_verified and (result != 0 or final_status == 0):
+                    try:
+                        # Re-observe actual immutable/control graph after all
+                        # phase evidence and resource checks, before adoption.
+                        if graph_digest(Path.cwd()) != (graph_sha256,graph_inputs):
+                            raise ValueError('content-dependency-graph-changed')
+                        lease.fence()
+                        receipt['native_siwc_content_dependency_disposition']=lease.disposition(receipt)
+                    except (OSError,ValueError,KeyError,TypeError):
+                        content_dependency_verified=False
+                        if result == 0: final_status=receipt['exit']=125
             record_resident_lifecycle(receipt,resident_input)
             if dev_stage_proof:
                 receipt['development_stage'] = {'scope':DEV_STAGE_SCOPE,'stage_child':'dev-stage-complete',
@@ -4139,7 +4296,13 @@ def _main(argv, admission_resources, retirement_resources):
                     os.close(directory)
             if lease is not None:
                 try:
-                    if cleanup and (evidence_ok or native_cache is not None) and (native_cache is None or native_cache.may_complete(cleanup, native_verified_after)) and native_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and owner_input_verified_after is not False:
+                    if args.profile == 'native-siwc-catalog-content-source-reserved':
+                        if content_dependency_verified and (result != 0 or final_status == 0):
+                            if graph_digest(Path.cwd()) != (graph_sha256,graph_inputs):
+                                raise ValueError('content-dependency-final-graph-changed')
+                            lease.fence()
+                            lease.complete(True,hashlib.sha256((run/'receipt.json').read_bytes()).hexdigest())
+                    elif cleanup and (evidence_ok or native_cache is not None) and (native_cache is None or native_cache.may_complete(cleanup, native_verified_after)) and native_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and owner_input_verified_after is not False:
                         lease.complete(True, hashlib.sha256((run / 'receipt.json').read_bytes()).hexdigest())
                 finally:
                     lease.close()

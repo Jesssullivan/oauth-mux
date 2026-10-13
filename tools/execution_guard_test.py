@@ -2214,6 +2214,56 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         return self.pin.retire(terminal_published=True, original_entry_ns=self.entry_ns,
             original_deadline_ns=self.entry_ns + 1200 * 10**9, **options)
 
+    def delivered_roots(self):
+        for name in self.guard.CONTENT_DELIVERY_RETIREMENT_CHILDREN:
+            (self.run/name).mkdir(mode=0o700)
+            (self.run/name/'disposable').write_bytes(b'owned transient bytes')
+        evidence=self.run/'delivery-evidence'; evidence.mkdir(mode=0o700)
+        (evidence/'test-evidence.json').write_bytes(b'{"schema":1}\n')
+        (evidence/'test-evidence.json').chmod(0o600)
+        (evidence/'workload.log').write_bytes(b'bounded delivery evidence')
+        retained=self.run/'native-content-retained'; retained.mkdir(mode=0o700)
+        (retained/'payload').write_bytes(b'durable SOURCE/HUB')
+        self.write('source-phase-receipt.json',b'original SOURCE0 checkpoint')
+        self.write('native-content-delivery-request.json',b'pinned request')
+        (self.run/'unknown-output').mkdir(mode=0o700)
+        (self.run/'unknown-output/keep').write_bytes(b'unknown scope')
+        self.receipt.update(profile='native-siwc-catalog-content-source-reserved',
+            native_siwc_content_publication={'kind':'transport'},native_siwc_content_delivery={
+                'started':True,'phase':'complete','exit':0,'workload_exit':0,
+                'cleanup':{'state':'empty','ownership':'verified','readback_attempts':2},
+                'test_evidence':{'state':'preserved','manifest':'delivery-evidence/test-evidence.json',
+                    'sha256':hashlib.sha256((evidence/'test-evidence.json').read_bytes()).hexdigest()}})
+        self.save_receipt()
+
+    def test_fixed_delivery_transient_roots_retire_without_retained_payload_or_evidence(self):
+        self.delivered_roots()
+        preserved={path:path.read_bytes() for path in (self.run/'source-phase-receipt.json',
+            self.run/'native-content-delivery-request.json',self.run/'delivery-evidence/test-evidence.json',
+            self.run/'delivery-evidence/workload.log',self.run/'native-content-retained/payload',
+            self.run/'unknown-output/keep')}
+        result=self.retire()
+        self.assertEqual(result['state'],'complete')
+        for name in self.guard.CONTENT_DELIVERY_RETIREMENT_CHILDREN:
+            self.assertEqual(result['children'][name],'retired'); self.assertFalse((self.run/name).exists())
+        for path,raw in preserved.items(): self.assertEqual(path.read_bytes(),raw)
+        self.assertEqual(self.retire(),result)
+
+    def test_unproved_delivery_defers_new_roots_even_when_source_empty_is_true(self):
+        self.delivered_roots()
+        self.receipt['native_siwc_content_delivery']['cleanup']['ownership']='unproved'
+        self.save_receipt(); result=self.retire()
+        self.assertEqual(result['delivery_retirement']['state'],'deferred-unqualified-delivery')
+        for name in self.guard.CONTENT_DELIVERY_RETIREMENT_CHILDREN:
+            self.assertEqual((self.run/name/'disposable').read_bytes(),b'owned transient bytes')
+
+    def test_delivery_evidence_mutation_refuses_before_any_phase2_disposal(self):
+        self.delivered_roots()
+        (self.run/'delivery-evidence/test-evidence.json').write_bytes(b'{"changed":true}')
+        result=self.retire(); self.assertEqual(result['state'],'refused')
+        for name in self.guard.CONTENT_DELIVERY_RETIREMENT_CHILDREN: self.assertTrue((self.run/name).is_dir())
+        self.assertEqual((self.run/'native-content-retained/payload').read_bytes(),b'durable SOURCE/HUB')
+
     def test_finished_fixed_children_retire_after_preserving_raw_evidence(self):
         kept = {name: (self.run/name).read_bytes() for name in
             ('receipt.json','supervisor.json','test-evidence.json','test-evidence-other.json','workload.log')}
