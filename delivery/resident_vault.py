@@ -101,7 +101,11 @@ def observe(observer,until):
         if row is not None:
             require(vault.process(row["pid"])=={key:item for key,item in row.items() if key!="owner"})
     return value
-def retain(value):
+def retain(value, metadata_output=None):
+    if metadata_output is not None:
+        require(type(metadata_output) is vault.MetadataOutput)
+        metadata_output.publish(value)
+        return
     marker=os.environ.get("OMUX_EXECUTION_GUARD","")
     require(re.fullmatch(r"/(?:srv/fast-local/jess/state/codex/omux-integrated-execution-20261005|home/jess/.local/state/omux-execution-20261005)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",marker) is not None)
     run=resident.open_directory(Path(marker),private=True)

@@ -5,6 +5,9 @@ Live acceptance still requires bounded declared stress actions: exceed 512 tasks
 empty descendants. These tests do not perform those workloads or call systemd.
 """
 import tempfile
+import contextlib
+import sys
+import shlex
 import io
 import stat
 import hashlib
@@ -3702,6 +3705,78 @@ class RetainedOrdinaryNativeSchedulingModels(unittest.TestCase):
                 guard.bazel_command('/declared/bazel',run,arguments,codex_owner_runtime_directory=retained,**options)
         with self.assertRaises(ValueError):
             guard.bazel_command('/declared/bazel',run,arguments+['--jobs=1'])
+
+
+
+class MetadataWorkerTerminalModels(unittest.TestCase):
+    @contextlib.contextmanager
+    def channel(self):
+        import execution_guard as guard
+        import guard_resident_vault_profile as vault
+        with tempfile.TemporaryDirectory() as temporary:
+            run=Path(temporary)/"11111111-2222-3333-4444-555555555555";run.mkdir(mode=0o700)
+            with patch.object(vault.resident,"open_directory",side_effect=lambda path,private=False:
+                    os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)):
+                owner=vault.MetadataOutput(run,time.monotonic_ns()+120*10**9)
+                try:
+                    owner.bind("a"*40,"b"*64,"c"*64,"d"*64)
+                    environment={**owner.environment(),"OMUX_EXECUTION_GUARD":str(run),
+                        vault.DEADLINE_VARIABLE:str(owner.deadline_ns)}
+                    row={"uid":os.getuid(),"pid":101,"start_ticks":7}
+                    observation={"schema":"omux-existing-vault-metadata-v2","broker":row,
+                        "manager":dict(row,pid=102,owner=":1.2"),"secret_service":dict(row,pid=103,owner=":1.3"),
+                        "provider":"standard-secret-service","default_collection":"/collection/existing",
+                        "default_exists":True,"locked":False,"items_read":False,"secrets_read":False,"provider_invocation":False}
+                    payload={"schema":"omux-resident-standard-vault-action-v1","purpose":"observe-standard-vault",
+                        "observation":observation,"unlock_dispatched":False,"client_status":"not-dispatched",
+                        "unlock_effect_scope":"not-dispatched","unchanged_service_owner":True,"unchanged_default_collection":True}
+                    payload.update({key:False for key in ("factor_material_access","provider_invocation","omux_datastore_access",
+                        "omux_wrapping_key_regeneration","resident_key_readiness_proven","resident_custody_proven",
+                        "normal_os_unlock_passed","native_support")})
+                    producer=vault.MetadataOutput.consume(environment)
+                    try:producer.publish(payload);terminal=producer.terminal_frame()
+                    finally:producer.close()
+                    frame=(vault.TERMINAL_PREFIX+vault.output_wire(terminal).encode("ascii")+b"\n").decode("ascii")
+                    admission=SimpleNamespace(manifest="/private/input.json",environment=lambda:
+                        {key:value for key,value in environment.items() if key!="OMUX_EXECUTION_GUARD"})
+                    command=guard.resident_enrollment_command("/declared/bazel",run,["run",vault.STANDARD_LABEL],admission,
+                        source_commit="a"*40,source_dirty="false")
+                    (run/"go").write_bytes(b"go")
+                    yield guard,vault,owner,environment,run,command,frame,terminal,payload
+                finally:owner.close()
+
+    def test_actual_worker_private_pipe_accepts_one_creator_and_parent_holds_both_files(self):
+        with self.channel() as (guard,vault,owner,environment,run,command,frame,terminal,payload):
+            actual_popen=guard.subprocess.Popen
+            def child(parts,**options):
+                self.assertEqual(parts,command)
+                return actual_popen([sys.executable,"-I","-B","-c",
+                    "import sys;print('public build diagnostic');sys.stdout.write(sys.argv[1]);sys.stdout.flush()",frame],**options)
+            with patch.dict(guard.os.environ,environment,clear=True),patch.object(guard.subprocess,"Popen",side_effect=child):
+                self.assertEqual(guard.worker(run,command),0)
+            owner.pin_ack();owner.verify_output()
+            self.assertIsNotNone(owner.output_fd);self.assertIsNotNone(owner.ack_fd)
+            self.assertEqual(owner.output_snapshot[0],tuple(terminal["leaf"]))
+            self.assertEqual(owner.output_snapshot[1],vault.MetadataOutput.metadata_bytes(payload))
+
+    def test_actual_private_pipe_nonzero_child_never_produces_accepted_ack(self):
+        with self.channel() as (guard,vault,_,environment,run,command,frame,_,_):
+            actual_popen=guard.subprocess.Popen
+            with patch.dict(guard.os.environ,environment,clear=True),patch.object(guard.subprocess,"Popen",side_effect=lambda parts,**options:
+                    actual_popen([sys.executable,"-I","-B","-c","import sys;print(sys.argv[1]);sys.exit(7)",frame],**options)):
+                with self.assertRaises(ValueError):guard.worker(run,command)
+            self.assertFalse((run/vault.ACK_NAME).exists())
+
+    def test_canonical_context_matches_actual_properties_split_and_same_command_tuple(self):
+        with self.channel() as (guard,_,owner,_,run,command,_,_,_):
+            environment=owner.environment()
+            rendered="Environment="+shlex.join([key+"="+value for key,value in environment.items()])+"\n"
+            actual=guard.properties(rendered)
+            self.assertTrue({key+"="+value for key,value in environment.items()}.issubset(
+                set(actual["Environment"].split())))
+            for key,value in environment.items():
+                self.assertEqual(command.count("--run_env="+key+"="+value),1)
+                self.assertEqual(shlex.quote(key+"="+value),key+"="+value)
 
 
 if __name__ == '__main__':

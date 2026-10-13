@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import resident_vault as common
 vault=common.vault
 resident=common.resident
@@ -87,26 +88,54 @@ def main(argv=None):
     PHASE="deadline";until=deadline(os.environ)
     PHASE="private-input";selected=vault.standard_schema(private_manifest())
     require(selected["purpose"]=={"observe":"observe-standard-vault","unlock":"unlock-standard-vault"}[action])
-    PHASE="before-observation";before=observe(observer,until)
-    if action=="unlock":
-        PHASE="unlock";status=unlock(before,selected,client,until)
-        PHASE="after-observation";after=observe(observer,until)
-        PHASE="observation-stability";compare_after(before,after)
-    else:
-        PHASE="after-observation";after=observe(observer,until)
-        PHASE="observation-stability";require(before==after);status="not-dispatched"
-    output={"schema":"omux-resident-standard-vault-action-v1","purpose":selected["purpose"],
-        "observation":after,"unlock_dispatched":action=="unlock","client_status":status,
-        "unlock_effect_scope":"helper-connection-verified/resident-readiness-unproved" if action=="unlock" else "not-dispatched",
-        "unchanged_service_owner":True,"unchanged_default_collection":True,"factor_material_access":False,
-        "provider_invocation":False,"omux_datastore_access":False,"omux_wrapping_key_regeneration":False,
-        "resident_key_readiness_proven":False,"resident_custody_proven":False,"normal_os_unlock_passed":action=="unlock","native_support":False}
-    PHASE="metadata-output";retain(output)
-    print(json.dumps({"status":"standard-vault-metadata-observed" if action=="observe" else "standard-os-unlock-client-observed",
-        "provider":after["provider"],"default_exists":after["default_exists"],"locked":after["locked"],
-        "unlock_effect_scope":output["unlock_effect_scope"],"resident_key_readiness_proven":False,
-        "provider_invocation":False},sort_keys=True))
-    return 0
+    owner = vault.MetadataOutput.consume(os.environ) if action == "observe" else None
+    original_owner=owner
+    try:
+        PHASE="before-observation";before=observe(observer,until)
+        if action=="unlock":
+            PHASE="unlock";status=unlock(before,selected,client,until)
+            PHASE="after-observation";after=observe(observer,until)
+            PHASE="observation-stability";compare_after(before,after)
+        else:
+            PHASE="after-observation";after=observe(observer,until)
+            PHASE="observation-stability";require(before==after);status="not-dispatched"
+        output={"schema":"omux-resident-standard-vault-action-v1","purpose":selected["purpose"],
+            "observation":after,"unlock_dispatched":action=="unlock","client_status":status,
+            "unlock_effect_scope":"helper-connection-verified/resident-readiness-unproved" if action=="unlock" else "not-dispatched",
+            "unchanged_service_owner":True,"unchanged_default_collection":True,"factor_material_access":False,
+            "provider_invocation":False,"omux_datastore_access":False,"omux_wrapping_key_regeneration":False,
+            "resident_key_readiness_proven":False,"resident_custody_proven":False,"normal_os_unlock_passed":action=="unlock","native_support":False}
+        PHASE="metadata-output"
+        if owner is None:retain(output)
+        else:
+            retain(output,owner)
+            closing, owner = owner, None
+            closing.close()
+        summary=json.dumps({"status":"standard-vault-metadata-observed" if action=="observe" else "standard-os-unlock-client-observed",
+            "provider":after["provider"],"default_exists":after["default_exists"],"locked":after["locked"],
+            "unlock_effect_scope":output["unlock_effect_scope"],"resident_key_readiness_proven":False,
+            "provider_invocation":False},sort_keys=True)
+        if original_owner is None:print(summary)
+        else:
+            require(time.monotonic_ns()<until)
+            original_owner.verify_closed()
+            sys.stdout.write(summary+"\n");sys.stdout.flush()
+            require(time.monotonic_ns()<until)
+            original_owner.verify_closed()
+            terminal=vault.TERMINAL_PREFIX.decode("ascii")+vault.output_wire(original_owner.terminal_frame())+"\n"
+            sys.stdout.write(terminal);sys.stdout.flush()
+            require(time.monotonic_ns()<until)
+            original_owner.verify_closed()
+        return 0
+    except BaseException:
+        if original_owner is not None:original_owner.abort()
+        if owner is not None:
+            closing, owner = owner, None
+            try:closing.close()
+            except BaseException:pass  # Preserve the first refusal; never retry.
+        raise
+    finally:
+        if owner is not None:owner.close()
 if __name__=="__main__":
     try:sys.exit(main())
     except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:

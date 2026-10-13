@@ -1,5 +1,6 @@
 """Typed existing-vault namespace; original enrollment admission remains separate."""
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -183,6 +184,436 @@ def socket_witness(path,deadline_ns):
 def generation_target(value,uid):
     require(type(value) is str and re.fullmatch(r"/run/user/"+str(uid)+r"/secrets[.]d/[1-9][0-9]{0,18}",value))
     return resident.canonical(value)
+
+# Only the standard metadata operation receives this guardian-origin output
+# capability. It is not a request selector or authority for unlock/enrollment.
+OUTPUT_VARIABLE = "OMUX_RESIDENT_METADATA_OUTPUT"
+OUTPUT_SHA_VARIABLE = "OMUX_RESIDENT_METADATA_OUTPUT_SHA256"
+OUTPUT_LIMIT = 16384
+TERMINAL_PREFIX = b"OMUX_STANDARD_VAULT_METADATA_TERMINAL "
+ACK_NAME = "resident-vault-publication.json"
+OUTPUT_FIELDS = frozenset(("schema", "run", "epoch", "identity", "deadline_ns",
+    "profile", "manager", "target", "purpose", "source_commit", "source_graph_sha256",
+    "closure_sha256", "bootstrap_sha256"))
+
+
+def output_wire(value):
+    raw=json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("ascii")
+    require(0<len(raw)<=4096)
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+def output_unwire(value):
+    require(type(value) is str and re.fullmatch(r"[A-Za-z0-9_-]{1,5462}",value))
+    raw=base64.b64decode(value+"="*(-len(value)%4),altchars=b"-_",validate=True)
+    require(0<len(raw)<=4096 and base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")==value)
+    return json.loads(raw,object_pairs_hook=resident.unique)
+
+class MetadataOutput:
+    def __init__(self, run, deadline_ns, descriptor=None):
+        self.fd = None
+        self.context = None
+        self.output_fd = None
+        self.ack_fd = None
+        self.output_snapshot = None
+        self.ack_snapshot = None
+        self.created = None
+        self.created_ack = None
+        self.failed = False
+        self.run = resident.canonical(str(run))
+        require(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", self.run.name))
+        self.deadline_ns = deadline_ns
+        try:
+            self.fd = os.dup(descriptor) if descriptor is not None else resident.open_directory(self.run, private=True)
+            info = os.fstat(self.fd)
+            require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                and stat.S_IMODE(info.st_mode) == 0o700)
+            self.witness = resident.stable(info)
+            self.check()
+        except BaseException:
+            try:
+                self.close()
+            except BaseException:
+                pass  # Detached once; preserve the original admission failure.
+            raise
+
+    def check(self, reserve_ns=0):
+        require(type(self.deadline_ns) is int
+            and 0 < self.deadline_ns - time.monotonic_ns() - reserve_ns <= 1200 * 10**9
+            and self.fd is not None and resident.stable(os.fstat(self.fd)) == self.witness)
+        named_directory(self.run, self.witness, private=True)
+
+    def bind(self, source_commit, graph_sha256, closure_sha256, bootstrap_sha256):
+        require(self.context is None and type(source_commit) is str
+            and re.fullmatch(r"[0-9a-f]{40}", source_commit))
+        for digest in (graph_sha256, closure_sha256, bootstrap_sha256):
+            require(type(digest) is str and re.fullmatch(r"[0-9a-f]{64}", digest))
+        self.check()
+        self.context = {"schema": "omux-standard-vault-metadata-output-v1",
+            "run": str(self.run), "epoch": self.run.name, "identity": list(self.witness),
+            "deadline_ns": self.deadline_ns, "profile": "resident-enrollment",
+            "manager": "system", "target": STANDARD_LABEL, "purpose": "observe-standard-vault",
+            "source_commit": source_commit, "source_graph_sha256": graph_sha256,
+            "closure_sha256": closure_sha256, "bootstrap_sha256": bootstrap_sha256}
+
+    def environment(self):
+        self.check()
+        require(self.context is not None)
+        raw = output_wire(self.context)
+        return {OUTPUT_VARIABLE: raw, OUTPUT_SHA_VARIABLE: hashlib.sha256(raw.encode("ascii")).hexdigest()}
+
+    @classmethod
+    def consume(cls, environment):
+        raw = environment.get(OUTPUT_VARIABLE, "")
+        require(type(raw) is str and 0 < len(raw.encode("ascii")) <= 5462
+            and hashlib.sha256(raw.encode("ascii")).hexdigest() == environment.get(OUTPUT_SHA_VARIABLE))
+        value = output_unwire(raw)
+        require(type(value) is dict and set(value) == OUTPUT_FIELDS
+            and value["schema"] == "omux-standard-vault-metadata-output-v1"
+            and value["profile"] == "resident-enrollment" and value["manager"] == "system"
+            and value["target"] == STANDARD_LABEL and value["purpose"] == "observe-standard-vault"
+            and value["run"] == environment.get("OMUX_EXECUTION_GUARD")
+            and str(value["deadline_ns"]) == environment.get(DEADLINE_VARIABLE)
+            and type(value["identity"]) is list and len(value["identity"]) == 5
+            and all(type(part) is int for part in value["identity"]))
+        owner = cls(value["run"], value["deadline_ns"])
+        try:
+            require(owner.run.name == value["epoch"] and list(owner.witness) == value["identity"])
+            owner.bind(value["source_commit"], value["source_graph_sha256"],
+                value["closure_sha256"], value["bootstrap_sha256"])
+            require(owner.context == value)
+            owner.check(30 * 10**9)
+            return owner
+        except BaseException:
+            try:
+                owner.close()
+            except BaseException:
+                pass  # Preserve failed admission, never retry an owned FD.
+            raise
+
+    @staticmethod
+    def metadata_bytes(value):
+        require(type(value) is dict and set(value) == {
+            "schema", "purpose", "observation", "unlock_dispatched", "client_status",
+            "unlock_effect_scope", "unchanged_service_owner", "unchanged_default_collection",
+            "factor_material_access", "provider_invocation", "omux_datastore_access",
+            "omux_wrapping_key_regeneration", "resident_key_readiness_proven",
+            "resident_custody_proven", "normal_os_unlock_passed", "native_support"}
+            and value["client_status"] == "not-dispatched" and value["unlock_effect_scope"] == "not-dispatched"
+            and value["unchanged_service_owner"] is True and value["unchanged_default_collection"] is True
+            and value.get("schema") == "omux-resident-standard-vault-action-v1"
+            and value.get("purpose") == "observe-standard-vault"
+            and all(value.get(name) is False for name in ("unlock_dispatched",
+                "factor_material_access", "provider_invocation", "omux_datastore_access",
+                "omux_wrapping_key_regeneration", "resident_key_readiness_proven",
+                "resident_custody_proven", "normal_os_unlock_passed", "native_support")))
+        standard_observation(value["observation"])
+        raw = (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
+        require(0 < len(raw) <= OUTPUT_LIMIT)
+        return raw
+
+    def publish(self, value):
+        require(self.context is not None)
+        raw=self.metadata_bytes(value)
+        self.check(30 * 10**9)
+        descriptor = None
+        created = None
+        try:
+            descriptor = os.open("resident-vault-metadata.json",
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=self.fd)
+            created = os.fstat(descriptor)
+            self.created=(created.st_dev,created.st_ino)
+            require(stat.S_ISREG(created.st_mode) and created.st_uid == os.getuid()
+                and created.st_nlink == 1 and stat.S_IMODE(created.st_mode) == 0o600)
+            offset = 0
+            while offset < len(raw):
+                self.check(30 * 10**9)
+                written = os.write(descriptor, raw[offset:])
+                require(written > 0)
+                offset += written
+            os.fsync(descriptor)
+            authenticated = os.fstat(descriptor)
+            require(resident.stable(authenticated) == resident.stable(created)
+                and authenticated.st_nlink == 1 and authenticated.st_size == len(raw))
+            require(os.pread(descriptor, OUTPUT_LIMIT + 1, 0) == raw)
+            final = os.fstat(descriptor)
+            require(identity(final) == identity(authenticated) ==
+                identity(os.stat("resident-vault-metadata.json", dir_fd=self.fd, follow_symlinks=False)))
+            self.check(30 * 10**9)
+            # Original writer survives the last directory publication I/O.
+            os.fsync(self.fd)
+            require(identity(os.fstat(descriptor))==identity(authenticated)
+                and os.pread(descriptor,OUTPUT_LIMIT+1,0)==raw)
+            self.check(30*10**9)
+            require(identity(os.fstat(descriptor))==identity(authenticated)==
+                identity(os.stat("resident-vault-metadata.json",dir_fd=self.fd,follow_symlinks=False)))
+            self.output_snapshot=(identity(authenticated),raw)
+            closing,descriptor=descriptor,None
+            os.close(closing)
+            self.pin_output(self.terminal_frame())
+            self.verify_output(30*10**9)
+        except BaseException:
+            self.failed=True
+            try:
+                if created is not None:
+                    named = os.stat("resident-vault-metadata.json", dir_fd=self.fd, follow_symlinks=False)
+                    if (named.st_dev, named.st_ino) == (created.st_dev, created.st_ino):
+                        os.unlink("resident-vault-metadata.json", dir_fd=self.fd)
+            except BaseException:
+                pass  # Preserve the original failure; no cleanup success is claimed.
+            finally:
+                if descriptor is not None:
+                    closing, descriptor = descriptor, None
+                    try:
+                        os.close(closing)
+                    except BaseException:
+                        pass  # Detached once; never retry an ambiguously closed FD.
+            raise
+
+
+    def terminal_frame(self):
+        require(self.output_snapshot is not None and self.context is not None)
+        return {"schema":"omux-standard-vault-metadata-terminal-v1","epoch":self.run.name,
+            "context_sha256":hashlib.sha256(output_wire(self.context).encode("ascii")).hexdigest(),
+            "leaf":list(self.output_snapshot[0]),
+            "bytes_sha256":hashlib.sha256(self.output_snapshot[1]).hexdigest()}
+
+    def validate_terminal(self,value):
+        require(type(value) is dict and set(value)==
+            {"schema","epoch","context_sha256","leaf","bytes_sha256"}
+            and value["schema"]=="omux-standard-vault-metadata-terminal-v1"
+            and value["epoch"]==self.run.name
+            and value["context_sha256"]==self.environment()[OUTPUT_SHA_VARIABLE]
+            and type(value["leaf"]) is list and len(value["leaf"])==9
+            and all(type(part) is int for part in value["leaf"])
+            and type(value["bytes_sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}",value["bytes_sha256"]))
+
+    def pin_output(self,terminal,reserve_ns=30*10**9):
+        self.validate_terminal(terminal)
+        require(self.output_fd is None)
+        self.check(reserve_ns)
+        self.output_fd=os.open("resident-vault-metadata.json",
+            os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.fd)
+        before=os.fstat(self.output_fd)
+        require(identity(before)==tuple(terminal["leaf"]) and stat.S_ISREG(before.st_mode)
+            and before.st_uid==os.getuid() and stat.S_IMODE(before.st_mode)==0o600
+            and before.st_nlink==1 and 0<before.st_size<=OUTPUT_LIMIT)
+        raw=os.pread(self.output_fd,OUTPUT_LIMIT+1,0)
+        require(len(raw)==before.st_size and hashlib.sha256(raw).hexdigest()==terminal["bytes_sha256"]
+            and self.metadata_bytes(json.loads(raw,object_pairs_hook=resident.unique))==raw)
+        self.output_snapshot=(identity(before),raw)
+        self.created=(before.st_dev,before.st_ino)
+        self.verify_output(reserve_ns)
+
+    def verify_output(self,reserve_ns=0):
+        require(self.output_fd is not None and self.output_snapshot is not None)
+        witness,raw=self.output_snapshot
+        self.check(reserve_ns)
+        require(identity(os.fstat(self.output_fd))==witness and os.pread(self.output_fd,OUTPUT_LIMIT+1,0)==raw
+            and identity(os.fstat(self.output_fd))==witness==
+                identity(os.stat("resident-vault-metadata.json",dir_fd=self.fd,follow_symlinks=False)))
+        if self.ack_fd is not None:
+            expected,encoded=self.ack_snapshot
+            require(identity(os.fstat(self.ack_fd))==expected and os.pread(self.ack_fd,5463,0)==encoded
+                and identity(os.fstat(self.ack_fd))==expected==
+                    identity(os.stat(ACK_NAME,dir_fd=self.fd,follow_symlinks=False)))
+        self.check(reserve_ns)
+        # Rejoin both original leaves after the LAST root ancestry I/O.
+        require(identity(os.fstat(self.output_fd))==witness and os.pread(self.output_fd,OUTPUT_LIMIT+1,0)==raw
+            and identity(os.fstat(self.output_fd))==witness==
+                identity(os.stat("resident-vault-metadata.json",dir_fd=self.fd,follow_symlinks=False)))
+        if self.ack_fd is not None:
+            require(identity(os.fstat(self.ack_fd))==expected and os.pread(self.ack_fd,5463,0)==encoded
+                and identity(os.fstat(self.ack_fd))==expected==
+                    identity(os.stat(ACK_NAME,dir_fd=self.fd,follow_symlinks=False)))
+        # Final physical-only fence follows ALL body reads, including ACK.
+        require(identity(os.fstat(self.output_fd))==witness==
+            identity(os.stat("resident-vault-metadata.json",dir_fd=self.fd,follow_symlinks=False)))
+        if self.ack_fd is not None:
+            require(identity(os.fstat(self.ack_fd))==expected==
+                identity(os.stat(ACK_NAME,dir_fd=self.fd,follow_symlinks=False)))
+        # No further named-root I/O follows this original-cutoff sample.
+        require(0<self.deadline_ns-time.monotonic_ns()-reserve_ns<=1200*10**9)
+
+    def verify_closed(self):
+        require(self.fd is None and self.output_fd is None and self.output_snapshot is not None)
+        verifier=MetadataOutput(self.run,self.deadline_ns)
+        try:
+            require(verifier.witness==self.witness)
+            verifier.bind(self.context["source_commit"],self.context["source_graph_sha256"],
+                self.context["closure_sha256"],self.context["bootstrap_sha256"])
+            verifier.pin_output(self.terminal_frame())
+            verifier.verify_output(30*10**9)
+        except BaseException:
+            verifier.failed=True
+            try:verifier.close()
+            except BaseException:pass  # Keep the first leaf/cutoff refusal.
+            raise
+        else:verifier.close()
+        require(time.monotonic_ns()<self.deadline_ns-30*10**9)
+
+    def retain_ack(self,terminal):
+        self.validate_terminal(terminal)
+        self.verify_output(30*10**9)
+        raw=(output_wire(terminal)+"\n").encode("ascii")
+        require(len(raw)<=5462)
+        descriptor=None
+        created=None
+        try:
+            descriptor=os.open(ACK_NAME,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=self.fd)
+            created=os.fstat(descriptor)
+            self.created_ack=(created.st_dev,created.st_ino)
+            require(stat.S_ISREG(created.st_mode) and created.st_uid==os.getuid()
+                and stat.S_IMODE(created.st_mode)==0o600 and created.st_nlink==1)
+            offset=0
+            while offset<len(raw):
+                self.check(30*10**9)
+                written=os.write(descriptor,raw[offset:]);require(written>0);offset+=written
+            os.fsync(descriptor)
+            expected=identity(os.fstat(descriptor))
+            require(resident.stable(os.fstat(descriptor))==resident.stable(created)
+                and os.fstat(descriptor).st_nlink==1 and os.fstat(descriptor).st_size==len(raw))
+            os.fsync(self.fd)
+            require(identity(os.fstat(descriptor))==expected and os.pread(descriptor,5463,0)==raw
+                and identity(os.fstat(descriptor))==expected==
+                    identity(os.stat(ACK_NAME,dir_fd=self.fd,follow_symlinks=False)))
+            self.verify_output(30*10**9)
+            closing,descriptor=descriptor,None;os.close(closing)
+            self.check(30*10**9)
+            require(identity(os.stat(ACK_NAME,dir_fd=self.fd,follow_symlinks=False))==expected)
+            self.ack_fd=os.open(ACK_NAME,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.fd)
+            self.ack_snapshot=(expected,raw)
+            self.verify_output(30*10**9)
+        except BaseException:
+            self.abort()
+            raise
+        finally:
+            if descriptor is not None:
+                closing,descriptor=descriptor,None
+                try:os.close(closing)
+                except BaseException:
+                    if not self.failed:
+                        self.abort()
+                        raise
+
+    def pin_ack(self):
+        require(self.ack_fd is None and self.output_fd is None)
+        self.check()
+        self.ack_fd=os.open(ACK_NAME,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.fd)
+        before=os.fstat(self.ack_fd)
+        require(stat.S_ISREG(before.st_mode) and before.st_uid==os.getuid()
+            and stat.S_IMODE(before.st_mode)==0o600 and before.st_nlink==1 and 0<before.st_size<=5462)
+        raw=os.pread(self.ack_fd,5463,0)
+        require(len(raw)==before.st_size and raw.endswith(b"\n"))
+        terminal=output_unwire(raw[:-1].decode("ascii"))
+        require((output_wire(terminal)+"\n").encode("ascii")==raw)
+        self.ack_snapshot=(identity(before),raw)
+        self.pin_output(terminal,reserve_ns=0)
+        self.verify_output()
+
+    def abort(self):
+        # Cleanup reduces authority and may use the existing reserve; never
+        # adopt a replacement root or unlink another creator's inode.
+        self.failed=True
+        if self.created is None and self.created_ack is None:return
+        owned=None
+        try:
+            owned=resident.open_directory(self.run,private=True)
+            require(resident.stable(os.fstat(owned))==self.witness)
+            for name,created in (("resident-vault-metadata.json",self.created),(ACK_NAME,self.created_ack)):
+                if created is not None:
+                    try:
+                        named=os.stat(name,dir_fd=owned,follow_symlinks=False)
+                        if (named.st_dev,named.st_ino)==created:os.unlink(name,dir_fd=owned)
+                    except FileNotFoundError:pass
+        except BaseException:pass  # No cleanup success claim; preserve first refusal.
+        finally:
+            if owned is not None:
+                closing,owned=owned,None
+                try:os.close(closing)
+                except BaseException:pass
+
+    def close(self):
+        failure=None
+        for field in ("ack_fd","output_fd"):
+            closing=getattr(self,field,None);setattr(self,field,None)
+            if closing is not None:
+                try:os.close(closing)
+                except BaseException as error:
+                    if failure is None:failure=error
+        if self.fd is not None and self.output_snapshot is not None and not self.failed:
+            try:
+                self.check()
+                require(identity(os.stat("resident-vault-metadata.json",dir_fd=self.fd,follow_symlinks=False))
+                    ==self.output_snapshot[0])
+                if self.ack_snapshot is not None:
+                    require(identity(os.stat(ACK_NAME,dir_fd=self.fd,follow_symlinks=False))==self.ack_snapshot[0])
+            except BaseException as error:
+                if failure is None:failure=error
+        closing,self.fd=self.fd,None
+        if closing is not None:
+            try:os.close(closing)
+            except BaseException as error:
+                if failure is None:failure=error
+        if failure is not None:
+            self.abort()
+            raise failure
+
+class MetadataTerminalReceiver:
+    """Only the guardian's exact metadata worker consumes this private pipe."""
+    def __init__(self,environment):
+        # Create every parser/owner slot before acquiring an integer-owned FD.
+        self.owner=None
+        self.pending=b""
+        self.skip=False
+        self.terminal=None
+        owner=None
+        try:
+            owner=MetadataOutput.consume(environment)
+            self.owner=owner
+        except BaseException:
+            # A failed transfer (even after assignment) retains its local owner.
+            if owner is not None:
+                try:owner.close()
+                except BaseException:pass  # Detached once; keep the first cause.
+            raise
+
+    def feed(self,data):
+        require(type(data) is bytes and len(data)<=65536)
+        self.owner.check(30*10**9)
+        segments=data.split(b"\n")
+        for index,part in enumerate(segments):
+            complete=index<len(segments)-1
+            if not self.skip:
+                self.pending+=part
+                if self.pending.startswith(TERMINAL_PREFIX):
+                    require(len(self.pending)<=8192)
+                elif not TERMINAL_PREFIX.startswith(self.pending):
+                    self.skip=True;self.pending=b""
+                if complete and not self.skip and self.pending:
+                    require(self.pending.startswith(TERMINAL_PREFIX) and self.terminal is None)
+                    value=output_unwire(self.pending[len(TERMINAL_PREFIX):].decode("ascii"))
+                    self.owner.validate_terminal(value)
+                    self.terminal=value
+            if complete:self.pending=b"";self.skip=False
+
+    def finish(self,status):
+        require(type(status) is int and status==0 and self.terminal is not None
+            and (self.skip or not self.pending))
+        self.owner.check(30*10**9)
+        self.owner.pin_output(self.terminal)
+        self.owner.retain_ack(self.terminal)
+        self.owner.verify_output(30*10**9)
+
+    def close(self):
+        closing,self.owner=self.owner,None
+        if closing is not None:
+            try:
+                closing.close()
+                require(time.monotonic_ns()<closing.deadline_ns-30*10**9)
+            except BaseException:
+                closing.abort()
+                raise
+
 class Admission:
     def __init__(self,manifest,home,deadline_ns,label=None):
         self.deadline_ns=deadline_ns;self.held=[];self.created=[];self.parents=[];self.links=[];self.leaf=None
@@ -303,7 +734,8 @@ class Admission:
         info=os.fstat(self.directory)
         return {VARIABLE:DESTINATION+"/input.json",DEADLINE_VARIABLE:str(self.deadline_ns),
             "OMUX_RESIDENT_NAMESPACE_ID":str(info.st_dev)+":"+str(info.st_ino),
-            "DBUS_SESSION_BUS_ADDRESS":"unix:path="+DESTINATION+"/bus","XDG_RUNTIME_DIR":DESTINATION}
+            "DBUS_SESSION_BUS_ADDRESS":"unix:path="+DESTINATION+"/bus","XDG_RUNTIME_DIR":DESTINATION,
+            **getattr(self, "metadata_output_environment", {})}
     def runtime_seconds(self):
         remaining=(self.deadline_ns-time.monotonic_ns())//10**9-30
         require(0<remaining<=1200);return int(remaining)

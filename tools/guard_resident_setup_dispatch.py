@@ -58,6 +58,7 @@ class Admission:
     def __init__(self, selected, args, home, systemctl, deadline):
         self.inner = None
         self.run = None
+        self.metadata_output = None
         self.systemctl = systemctl
         self.vault = selected.selected is vault
         path = args.resident_vault_manifest if self.vault else args.resident_enrollment_manifest
@@ -75,12 +76,20 @@ class Admission:
     def facts(self):
         return self.inner.facts
 
-    def bind_run(self, run):
+    def bind_run(self, run, descriptor=None):
         enrollment.require(self.run is None and isinstance(run, Path))
         info = run.stat(follow_symlinks=False)
         enrollment.require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
             and info.st_uid == os.getuid())
         self.run = run
+        if self.vault and self.inner.selected["purpose"] == "observe-standard-vault":
+            enrollment.require(descriptor is not None)
+            self.metadata_output = vault.MetadataOutput(run, self.inner.deadline_ns, descriptor)
+
+    def bind_metadata_output(self, source_commit, graph_sha256, closure_sha256, bootstrap_sha256):
+        enrollment.require(self.metadata_output is not None)
+        self.metadata_output.bind(source_commit, graph_sha256, closure_sha256, bootstrap_sha256)
+        self.inner.metadata_output_environment = self.metadata_output.environment()
 
     def environment(self):
         return self.inner.environment()
@@ -95,6 +104,9 @@ class Admission:
         return self.inner.verify_bindings(actual, run)
 
     def recheck(self):
+        if getattr(self, "metadata_output", None) is not None:
+            self.metadata_output.check()
+            if self.metadata_output.output_fd is not None:self.metadata_output.verify_output()
         return self.inner.recheck()
 
     def runtime_seconds(self):
@@ -111,18 +123,30 @@ class Admission:
         if inactive:
             enrollment.require(type(status) is int and status == 0 and cleaned is True
                 and type(graph_sha256) is str and re.fullmatch(r"[0-9a-f]{64}",graph_sha256))
-        self.inner.recheck()
+        if getattr(self,"metadata_output",None) is not None:
+            enrollment.require(type(status) is int and status==0 and cleaned is True
+                and graph_sha256==self.metadata_output.context["source_graph_sha256"])
+            self.metadata_output.pin_ack()
+        self.recheck()
         result = self.inner.service_observation(self.systemctl)
         if inactive or preparing:
             enrollment.require(type(graph_sha256) is str and re.fullmatch(r"[0-9a-f]{64}",graph_sha256))
             result = {**result,"action_epoch":epoch,"source_graph_sha256":graph_sha256,
                 "verified_after_cleanup":True}
+        if getattr(self,"metadata_output",None) is not None:self.metadata_output.verify_output()
         return result
 
     def close(self):
-        if self.inner is not None:
-            self.inner.close()
-            self.inner = None
+        failure = None
+        for field in ("metadata_output", "inner"):
+            closing = getattr(self, field, None)
+            setattr(self, field, None)
+            if closing is not None:
+                try:
+                    closing.close()
+                except BaseException as error:
+                    if failure is None:failure = error
+        if failure is not None:raise failure
 
 def admit(settings, args, home, systemctl, deadline, arguments):
     # Normalized arguments are explicit; argparse's remainder may start with --.

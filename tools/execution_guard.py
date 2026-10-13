@@ -1297,6 +1297,61 @@ def yoga_delivery_command(bazel, run, arguments, deadline_ns, prior=None, *, sou
     command[-1:-1] = options
     return command, values
 
+
+def metadata_worker(run,command):
+    """Typed terminal receiver for the sole admitted local metadata RUN."""
+    import guard_resident_vault_profile as vault
+    vault.require(command[-1]==vault.STANDARD_LABEL and command.count("run")==1)
+    for key in (vault.OUTPUT_VARIABLE,vault.OUTPUT_SHA_VARIABLE):
+        vault.require(command.count("--run_env="+key+"="+os.environ.get(key,""))==1)
+    receiver=vault.MetadataTerminalReceiver(os.environ)
+    process=None
+    pipe=None
+    descriptor=None
+    try:
+        vault.require(receiver.owner.run==run)
+        descriptor=os.open(run/"workload.log",os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        output=os.fdopen(descriptor,"wb")
+        descriptor=None  # The stream now owns the FD.
+        with output:
+            process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            pipe=process.stdout
+            total=0
+            while True:
+                data=pipe.read1(65536)
+                if not data:break
+                total+=len(data)
+                vault.require(total<=LIMIT)
+                receiver.feed(data)
+                output.write(data);output.flush()
+            status=process.wait()
+            closing,pipe=pipe,None;closing.close()
+        receiver.finish(status)
+        return status
+    except BaseException:
+        receiver.owner.abort()
+        if process is not None:
+            try:
+                if process.poll() is None:process.kill()
+            except BaseException:pass  # Attempt the other owned cleanup steps.
+            try:
+                process.wait(timeout=max(0,(receiver.owner.deadline_ns-time.monotonic_ns())/10**9))
+            except BaseException:pass
+        if pipe is not None:
+            closing,pipe=pipe,None
+            try:closing.close()
+            except BaseException:pass
+        if descriptor is not None:
+            closing,descriptor=descriptor,None
+            try:os.close(closing)
+            except BaseException:pass
+        try:receiver.close()
+        except BaseException:pass
+        receiver=None
+        raise  # Preserve the first refusal; cleanup never authorizes success.
+    finally:
+        if receiver is not None:receiver.close()
+
 def worker(run, command):
     if os.environ.get('OMUX_EXECUTION_GUARD') != str(run):
         raise ValueError('worker ownership marker missing')
@@ -1305,6 +1360,8 @@ def worker(run, command):
         if time.monotonic() >= deadline:
             return 125
         time.sleep(0.05)
+    if command and command[-1]=="//delivery:resident_standard_vault_metadata" and os.environ.get("OMUX_RESIDENT_METADATA_OUTPUT"):
+        return metadata_worker(run,command)
     descriptor = os.open(run / 'workload.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'wb') as output:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -3196,7 +3253,10 @@ def _main(argv, admission_resources, retirement_resources):
             (run / 'tmp').mkdir(mode=0o700)
             environment.update(HOME=str(run / 'home'),TMPDIR=str(run / 'tmp'))
         if resident_input is not None:
-            resident_input.bind_run(run)
+            if args.profile == resident_dispatch.SETUP_PROFILE and resident_input.vault and resident_input.inner.selected["purpose"] == "observe-standard-vault":
+                resident_input.bind_run(run, descriptor=retirement.descriptor)
+            else:
+                resident_input.bind_run(run)
             environment.update(resident_input.environment())
         if yoga:
             import yoga_operator_launch as yoga_launch
@@ -3434,6 +3494,12 @@ def _main(argv, admission_resources, retirement_resources):
             signal.signal(sig, interrupted)
         try:
             graph_sha256, graph_inputs = graph_digest(Path.cwd())
+            if resident_input is not None and args.profile == resident_dispatch.SETUP_PROFILE and resident_input.metadata_output is not None:
+                resident_input.bind_metadata_output(args.source_commit, graph_sha256, closure_digest, bootstrap_digest)
+                environment.update(resident_input.environment())
+                command = resident_enrollment_command(bazel,run,arguments,resident_input.inner,
+                    source_commit=args.source_commit,source_dirty=args.source_dirty,
+                    repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
             if args.profile in ('native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved'):
                 command = seed_reserved.command(bazel_command,bazel,run,arguments,args.profile,
                     delivery_entry_monotonic_ns,delivery_entry_deadline_ns,graph_sha256=graph_sha256,
@@ -4179,6 +4245,8 @@ def _main(argv, admission_resources, retirement_resources):
                         cleanup is True and cleanup_summary.get('state')=='empty' and pids_cancellation is None,
                         identifier,args.resident_producer_sha256,graph_sha256)
                     resident_verified_after = graph_digest(Path.cwd()) == (graph_sha256,graph_inputs)
+                    if getattr(resident_input,"metadata_output",None) is not None:
+                        resident_input.metadata_output.verify_output()
                 except (OSError,ValueError,KeyError,TypeError,IndexError):
                     resident_verified_after = False
             if seed_reservation is not None:
