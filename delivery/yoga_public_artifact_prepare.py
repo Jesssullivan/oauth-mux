@@ -198,10 +198,18 @@ class Inputs:
                         and not information.st_mode & 0o022))
                 self.root_facts[value] = witness(information)
 
-    def read(self, logical, actual, expected, *, content=False, maximum=MAX_FILE):
+    def read(self, logical, actual, expected, *, aliases=(), content=False, maximum=MAX_FILE):
         self.clock.tick(); require(logical not in self.rows)
-        physical = self.resolve(actual)
-        require(physical == self.resolve(expected))
+        require(type(aliases) is tuple and len(aliases) <= 1)
+        # One bounded join per read, never a cross-file resolution cache. Equal
+        # lexical names designate one input; every distinct alias still traverses
+        # the unchanged resolver and retains its complete symlink witnesses.
+        bindings = {}
+        for candidate in (expected, actual) + aliases:
+            path = Path(candidate)
+            if path not in bindings: bindings[path] = self.resolve(path)
+        physical = bindings[Path(actual)]
+        require(all(selected == physical for selected in bindings.values()))
         parent = physical.parent
         require(parent.resolve(strict=True) == parent)
         owners = Owned(); primary = None
@@ -496,8 +504,9 @@ def prepare(declaration_path, environment):
             maximum = pack.MAX_BYTES if role == 'bundle' else 4*1024**2 if role == 'extension' else MAX_FILE if executable_data or role is None else 16*1024**2
             selected = (runfiles if row['inRunner'] else controls)/key
             expected = execroot/row['executionPath']
-            if row['inRunner']: require(inputs.resolve(manifest[key]) == inputs.resolve(expected))
-            raw = inputs.read(key,selected,expected,content=role is not None and not executable_data,maximum=maximum)
+            aliases = (manifest[key],) if row['inRunner'] else ()
+            raw = inputs.read(key,selected,expected,aliases=aliases,
+                content=role is not None and not executable_data,maximum=maximum)
             if role is not None: data[role] = raw
         metadata = tuple_metadata(data, value)
         require(all(inputs.rows[key]['bytes']>0 for key in value['roles'].values()))

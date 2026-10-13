@@ -623,6 +623,105 @@ class PreparationModels(unittest.TestCase):
         # outer receipt can accept the product, never mere file existence.
         self.assertTrue((self.output/'yoga-public-toolbar/artifact.json').exists())
 
+
+    def test_one_read_joins_same_lexical_manifest_name_and_keeps_real_byte_witnesses(self):
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        target=self.paths['observer'];alias=self.runner/self.roles['observer']
+        real=owner.resolve;walks=[]
+        def resolve(path):
+            walks.append(Path(path));return real(path)
+        try:
+            with patch.object(owner,'resolve',side_effect=resolve):
+                raw=owner.read('joined-observer',alias,target,aliases=(str(target),),content=True)
+            self.assertEqual(raw,self.data['observer'])
+            self.assertEqual(walks,[target,alias])
+            row=owner.rows['joined-observer']
+            self.assertEqual(row['sha256'],hashlib.sha256(raw).hexdigest())
+            self.assertEqual(row['witness'],list(model.witness(target.lstat())))
+            self.assertEqual(owner.links[str(alias)][1],str(target))
+            owner.recheck()
+        finally:owner.close()
+
+    def test_join_is_not_a_cross_file_cache_and_replaced_same_bytes_alias_refuses(self):
+        target=self.paths['observer'];alias=self.runner/self.roles['observer']
+        other=self.physical/'same-bytes-next-observer'
+        other.write_bytes(self.data['observer']);other.chmod(0o555)
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        real_read=os.read;reads=[]
+        try:
+            self.assertEqual(owner.read('first-observer',alias,target,aliases=(str(target),),content=True),
+                self.data['observer'])
+            alias.unlink();alias.symlink_to(other)
+            def read(fd,count):
+                reads.append(fd);return real_read(fd,count)
+            with patch.object(model.os,'read',side_effect=read):
+                with self.assertRaises(ValueError):
+                    owner.read('second-observer',alias,target,aliases=(str(target),),content=True)
+            self.assertEqual(reads,[])
+            self.assertNotIn('second-observer',owner.rows)
+        finally:owner.close(ValueError('synthetic already-refused alias'))
+
+    def test_join_does_not_hide_expected_name_replacement_during_real_fd_read(self):
+        target=self.paths['observer'];alias=self.runner/self.roles['observer']
+        other=self.physical/'replacement-observer';other.write_bytes(self.data['observer']);other.chmod(0o555)
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        real_open=os.open;real_close=os.close;real_read=os.read
+        opened=[];closed=[];changed=False;inode=target.stat().st_ino
+        def opening(*args,**kwargs):
+            fd=real_open(*args,**kwargs);opened.append(fd);return fd
+        def closing(fd):
+            closed.append(fd);return real_close(fd)
+        def read(fd,count):
+            nonlocal changed
+            raw=real_read(fd,count)
+            if raw and not changed and os.fstat(fd).st_ino==inode:
+                other.replace(target);changed=True
+            return raw
+        try:
+            with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
+                    patch.object(model.os,'read',side_effect=read):
+                with self.assertRaises(ValueError):
+                    owner.read('replaced-observer',alias,target,aliases=(str(target),),content=True)
+                owner.close(ValueError('synthetic already-refused replacement'))
+            self.assertTrue(changed)
+            self.assertEqual(closed,list(reversed(opened)))
+            self.assertNotIn('replaced-observer',owner.rows)
+            for fd in opened:
+                with self.assertRaises(OSError):os.fstat(fd)
+        finally:owner.close(ValueError('synthetic refusal cleanup'))
+
+    def test_join_expiry_after_last_distinct_alias_walk_keeps_original_cutoff_and_fd_cleanup(self):
+        target=self.paths['observer'];alias=self.runner/self.roles['observer']
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        real_resolve=owner.resolve;real_open=os.open;real_close=os.close;real_read=os.read
+        opened=[];closed=[];reads=[];expired=False
+        def resolve(path):
+            nonlocal expired
+            physical=real_resolve(path)
+            if Path(path)==alias:
+                self.now=self.deadline-30*10**9;expired=True
+            return physical
+        def opening(*args,**kwargs):
+            fd=real_open(*args,**kwargs);opened.append(fd);return fd
+        def closing(fd):
+            closed.append(fd);return real_close(fd)
+        def read(fd,count):
+            reads.append(fd);return real_read(fd,count)
+        try:
+            with patch.object(owner,'resolve',side_effect=resolve),\
+                    patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
+                    patch.object(model.os,'read',side_effect=read):
+                with self.assertRaises(ValueError):
+                    owner.read('late-observer',alias,target,aliases=(str(target),),content=True)
+                owner.close(ValueError('synthetic original-cutoff refusal'))
+            self.assertTrue(expired)
+            self.assertEqual(reads,[])
+            self.assertEqual(closed,list(reversed(opened)))
+            self.assertNotIn('late-observer',owner.rows)
+            for fd in opened:
+                with self.assertRaises(OSError):os.fstat(fd)
+        finally:owner.close(ValueError('synthetic refusal cleanup'))
+
 if __name__=='__main__':
     ZIP=Path(sys.argv.pop(1)).read_bytes()
     RULE=Path(sys.argv.pop(1)).read_bytes()
