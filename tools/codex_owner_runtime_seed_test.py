@@ -123,9 +123,16 @@ class SeedTests(unittest.TestCase):
         replacement = self.root / "replacement"
         replacement.write_bytes(self.source.read_bytes())
         replacement.chmod(0o644)
+        backup = self.source.with_name(self.source.name + ".displaced")
+        self.source.rename(backup)
         replacement.replace(self.source)
-        with self.assertRaisesRegex(ValueError, "input-changed"):
-            self.copy(admission)
+        self.assertEqual(os.fstat(admission.source.fd).st_nlink, 1)
+        self.assertEqual(backup.stat().st_ino, os.fstat(admission.source.fd).st_ino)
+        self.assertNotEqual(self.source.stat().st_ino, backup.stat().st_ino)
+        with patch.object(runtime, "copy_retained", wraps=runtime.copy_retained) as writer:
+            with self.assertRaisesRegex(ValueError, "input-changed"):
+                self.copy(admission)
+            writer.assert_not_called()
         self.assertEqual(list(self.outputs.iterdir()), [])
 
     def test_equal_content_replaced_source_parent_is_refused_by_real_ancestor_fence(self):
@@ -166,9 +173,16 @@ class SeedTests(unittest.TestCase):
         admission = self.admission()
         replacement = self.root / "replacement"
         replacement.write_bytes(self.manifest.read_bytes())
+        backup = self.manifest.with_name(self.manifest.name + ".displaced")
+        self.manifest.rename(backup)
         replacement.replace(self.manifest)
-        with self.assertRaisesRegex(ValueError, "input-changed"):
-            self.copy(admission)
+        self.assertEqual(os.fstat(admission.manifest.fd).st_nlink, 1)
+        self.assertEqual(backup.stat().st_ino, os.fstat(admission.manifest.fd).st_ino)
+        self.assertNotEqual(self.manifest.stat().st_ino, backup.stat().st_ino)
+        with patch.object(runtime, "copy_retained", wraps=runtime.copy_retained) as writer:
+            with self.assertRaisesRegex(ValueError, "input-changed"):
+                self.copy(admission)
+            writer.assert_not_called()
         self.assertEqual(list(self.outputs.iterdir()), [])
 
     def test_exclusive_output_does_not_overwrite_previous_bytes(self):
@@ -341,7 +355,14 @@ class SeedTests(unittest.TestCase):
                     replacement = self.root / "replacement"
                     replacement.write_bytes(selected.read_bytes())
                     replacement.chmod(selected.stat().st_mode & 0o777)
+                    backup = selected.with_name(selected.name + ".displaced")
+                    selected.rename(backup)
                     replacement.replace(selected)
+                    held = (admission.source if selected == self.source else
+                            admission.manifest if selected == self.manifest else admission.receipt)
+                    self.assertEqual(os.fstat(held.fd).st_nlink, 1)
+                    self.assertEqual(backup.stat().st_ino, os.fstat(held.fd).st_ino)
+                    self.assertNotEqual(selected.stat().st_ino, backup.stat().st_ino)
                     return expected
                 with self.assertRaisesRegex(ValueError, "input-changed"):
                     subject.finish(admission, graph, expected)
