@@ -760,10 +760,17 @@ def await_startup(read, timeout=10, clock=time.monotonic, pause=time.sleep):
 def selected_site_source(path, repository=None):
     repository = Path.cwd().resolve() if repository is None else Path(repository).resolve()
     expected = repository.parent / 'omux.xoxd.ai'
+    owned = repository.parent / 'omux-site-owned-v9'
     selected = Path(path)
-    if (not selected.is_absolute() or '..' in selected.parts or selected != expected or
+    if (not selected.is_absolute() or '..' in selected.parts or selected not in (expected, owned) or
             selected.resolve(strict=True) != selected or any(char.isspace() for char in str(selected))):
-        raise ValueError('site source must be the exact declared sibling repository')
+        raise ValueError('site source must be an exact declared sibling repository')
+    if selected == owned:
+        # This explicit independent checkout retains the existing custody and
+        # locked version predicate; later complete qualification is unchanged.
+        from guard_site_profile import source_binding
+        from site_coordinator_qualification import SITE_VERSION_SHA256
+        source_binding(selected, SITE_VERSION_SHA256)
     directory = os.open(selected, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     digests = {}
     try:

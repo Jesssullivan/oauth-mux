@@ -1605,6 +1605,70 @@ class GuardTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 selected_site_source(site, repository)
 
+    def test_owned_site_selection_is_exact_and_cache_identity_stays_per_checkout(self):
+        from guard_cache import stable_fingerprint
+        from site_coordinator_qualification import SITE_VERSION_SHA256
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            repository = root / 'resident-continuity'
+            repository.mkdir()
+            site = root / 'omux-site-owned-v9'
+            site.mkdir()
+            (site / '.git').mkdir()
+            (site / 'tools').mkdir()
+            (site / '.bazelversion').write_bytes(b'9.0.1\n')
+            for relative in ('flake.nix', 'flake.lock', 'tools/offline-site-roots.json', 'tools/tool-selection.nix'):
+                (site / relative).write_text('public fixture')
+                (site / relative).chmod(0o644)
+            # Reuse the existing custody fixture's bounded version-reader seam:
+            # temp roots may have a world-writable ancestor. The selector and
+            # private-parent/Git/public-input filesystem checks here are real.
+            with patch('guard_site_profile.bounded_file', return_value=b'9.0.1\n') as version:
+                selected, digests = selected_site_source(site, repository)
+                version.assert_called_once_with(site / '.bazelversion', SITE_VERSION_SHA256, 64)
+            self.assertEqual(selected, site)
+            self.assertEqual(set(digests), {'flake.nix', 'flake.lock', 'tools/offline-site-roots.json', 'tools/tool-selection.nix'})
+            other = root / 'other-site'
+            other.mkdir()
+            with self.assertRaises(ValueError): selected_site_source(other, repository)
+            alias = root / 'omux.xoxd.ai'
+            alias.symlink_to(site, target_is_directory=True)
+            with self.assertRaises(ValueError): selected_site_source(alias, repository)
+            with self.assertRaises(ValueError): selected_site_source(site / '..' / site.name, repository)
+            alias.unlink(); alias.mkdir()
+            inputs = {'bazel': '/nix/store/public-bazel'}
+            self.assertNotEqual(stable_fingerprint(site, inputs, os.getuid(), os.getgid(), 'system', {}),
+                stable_fingerprint(alias, inputs, os.getuid(), os.getgid(), 'system', {}))
+
+    def test_owned_site_selection_keeps_private_git_version_and_public_leaf_refusals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); root.chmod(0o700)
+            repository = root / 'resident-continuity'; repository.mkdir()
+            site = root / 'omux-site-owned-v9'; site.mkdir()
+            git = site / '.git'; git.mkdir()
+            (site / 'tools').mkdir()
+            for relative in ('flake.nix', 'flake.lock', 'tools/offline-site-roots.json', 'tools/tool-selection.nix'):
+                (site / relative).write_text('public fixture'); (site / relative).chmod(0o644)
+            with patch('guard_site_profile.bounded_file', return_value=b'9.0.1\n'):
+                root.chmod(0o755)
+                with self.assertRaises(ValueError): selected_site_source(site, repository)
+                root.chmod(0o700)
+                git.rmdir(); git.write_text('gitdir: /foreign/shared')
+                with self.assertRaises(ValueError): selected_site_source(site, repository)
+                git.unlink(); git.mkdir(); (git / 'commondir').write_text('/foreign/shared')
+                with self.assertRaises(ValueError): selected_site_source(site, repository)
+                (git / 'commondir').unlink(); (git / 'objects/info').mkdir(parents=True)
+                (git / 'objects/info/alternates').write_text('/foreign/shared')
+                with self.assertRaises(ValueError): selected_site_source(site, repository)
+                (git / 'objects/info/alternates').unlink()
+                leaf = site / 'flake.lock'; leaf.chmod(0o600)
+                with self.assertRaises(ValueError): selected_site_source(site, repository)
+                leaf.unlink(); leaf.symlink_to(site / 'flake.nix')
+                with self.assertRaises(OSError): selected_site_source(site, repository)
+            with patch('guard_site_profile.bounded_file', return_value=b'8.4.2\n'):
+                with self.assertRaises(ValueError): selected_site_source(site, repository)
+
     def test_become_descriptor_predicates_without_payload(self):
         valid = dict(st_mode=stat.S_IFREG | 0o400, st_uid=1000, st_nlink=1, st_size=32)
         validate_become_metadata(SimpleNamespace(**valid), 1000)
