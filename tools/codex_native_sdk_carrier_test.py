@@ -2000,18 +2000,168 @@ class CarrierModels(unittest.TestCase):
 
 
     def extraction_phases(self, raw):
-        rows = []
-        for line in raw.splitlines():
-            match = re.fullmatch(r"sdk-carrier-extract: ([a-z-]+) elapsed_ns=([0-9]+) copied_files=([0-9]+) copied_bytes=([0-9]+) created_directories=([0-9]+)", line)
-            self.assertIsNotNone(match, "only redacted static phase and bounded numeric counters")
-            rows.append((match[1], *(int(value) for value in match.groups()[1:])))
-        self.assertLessEqual(len(rows), 7)
-        self.assertEqual([row[1] for row in rows], sorted(row[1] for row in rows))
-        for _, _, files, size, directories in rows:
-            self.assertLessEqual(files, carrier.MAX_ENTRIES)
-            self.assertLessEqual(size, carrier.MAX_BYTES)
-            self.assertLessEqual(directories, carrier.MAX_ENTRIES)
+        rows, budget_count, nar_count, nar_position, nar_passes, extract_position = [], 0, 0, 0, 0, -1
+        nar_elapsed = 0
+        extract_names = ("initial-start", "initial-bound", "directories-start", "directories-ready", "directories-refused",
+            "copy-complete", "copy-refused", "links-start", "links-complete", "seal-start", "seal-complete",
+            "final-proof-start", "inventory-check-start", "inventory-check-complete",
+            "carrier-readback-start", "carrier-readback-complete", "content-readback-start", "content-readback-complete",
+            "publication-start", "publication-complete", "published-content-start", "published-content-complete",
+            "final-proof-complete")
+        nar_names = ("namespace-start", "namespace-complete", "jdk-nar-start", "jdk-nar-complete",
+            "sdk-nar-start", "sdk-nar-complete", "final-namespace-start", "final-namespace-complete")
+        lines = raw.splitlines()
+        # This helper observes one extract plus at most one fresh revalidation.
+        # Every line is validated; selecting extraction rows is not a log filter.
+        self.assertLessEqual(len(lines),23+1+2*8)
+        for line in lines:
+            self.assertLessEqual(len(line),256)
+            match = re.fullmatch(r"sdk-carrier-extract: ([a-z-]+) elapsed_ns=([0-9]+) copied_files=([0-9]+) copied_bytes=([0-9]+) created_directories=([0-9]+)",line)
+            if match is not None:
+                self.assertTrue(match[1] in extract_names,"closed extraction phase")
+                position = extract_names.index(match[1]);self.assertGreater(position,extract_position)
+                extract_position = position
+                row = (match[1],*(int(value) for value in match.groups()[1:]))
+                self.assertLessEqual(row[1],1200*10**9)
+                self.assertLessEqual(row[2],carrier.MAX_ENTRIES)
+                self.assertLessEqual(row[3],carrier.MAX_BYTES)
+                self.assertLessEqual(row[4],carrier.MAX_ENTRIES)
+                rows.append(row)
+                continue
+            budget = re.fullmatch(r"sdk-carrier-budget: extraction-entry remaining_ns=([0-9]+)",line)
+            if budget is not None:
+                budget_count += 1;self.assertLessEqual(budget_count,1)
+                self.assertLessEqual(int(budget[1]),1200*10**9)
+                continue
+            nar = re.fullmatch(r"sdk-carrier-nar: ([a-z-]+) elapsed_ns=([0-9]+) remaining_ns=([0-9]+)",line)
+            self.assertIsNotNone(nar,"only closed redacted extraction/budget/NAR observations")
+            self.assertEqual(nar[1],nar_names[nar_position])
+            if nar_position == 0:
+                nar_passes += 1;self.assertLessEqual(nar_passes,2);nar_elapsed = 0
+            self.assertGreaterEqual(int(nar[2]),nar_elapsed);nar_elapsed = int(nar[2])
+            self.assertLessEqual(nar_elapsed,1200*10**9)
+            self.assertLessEqual(int(nar[3]),1200*10**9)
+            nar_position = (nar_position+1)%len(nar_names)
+            nar_count += 1;self.assertLessEqual(nar_count,16)
+        self.assertLessEqual(len(rows),23)
+        self.assertEqual([row[1] for row in rows],sorted(row[1] for row in rows))
         return rows
+
+    def test_phase_observation_helper_refuses_unknown_family_phase_order_and_numeric_bounds(self):
+        extract = "sdk-carrier-extract: initial-start elapsed_ns=0 copied_files=0 copied_bytes=0 created_directories=0"
+        budget = "sdk-carrier-budget: extraction-entry remaining_ns=1"
+        for fault in ("unexpected raw diagnostic",extract.replace("initial-start","unknown-phase"),
+                budget.replace("remaining_ns=1","remaining_ns="+str(1200*10**9+1)),budget+"\n"+budget,
+                "sdk-carrier-nar: sdk-nar-start elapsed_ns=0 remaining_ns=1",
+                "sdk-carrier-nar: namespace-start elapsed_ns=0 remaining_ns=-1",
+                "\n".join([extract]*24)):
+            with self.subTest(fault=fault):
+                with self.assertRaises(AssertionError):self.extraction_phases(fault)
+        rows = self.extraction_phases(extract+"\n"+budget+"\n"+
+            "sdk-carrier-nar: namespace-start elapsed_ns=0 remaining_ns=1")
+        self.assertEqual(rows,[("initial-start",0,0,0,0)])
+
+    def test_extract_original_body_trace_survives_held_expiry_and_cleanup_failure(self):
+        root, unused, pin = self.seal("first-body-cause")
+        output = self.root / "first-body-output"
+        held = carrier.HeldCarrier(root,pin,self.deadline)
+        class Original(ValueError):
+            def with_traceback(self,unused): raise AssertionError("dynamic traceback method accessed")
+        original = Original("unlogged original operation fixture")
+        now, fired, rechecks, owners = [time.monotonic()], [False], [], []
+        actual_seal, actual_close, actual_check = carrier.Output.seal_directory, carrier.Output.close, held.check
+        def refuse(directory,name):
+            actual_seal(directory,name)
+            fired[0] = True; now[0] = self.deadline
+            raise original
+        def close(directory):
+            owners.extend(fd for unused,fd,unused_witness in directory.root.chain)
+            actual_close(directory)
+            raise OSError("unlogged cleanup fixture")
+        def check():
+            if fired[0]: rechecks.append(True)
+            return actual_check()
+        emitted, observed, trace_codes, held_fds = io.StringIO(), [], [], []
+        with redirect_stderr(emitted), patch.object(carrier.time,"monotonic",side_effect=lambda:now[0]), \
+                patch.object(carrier.Output,"seal_directory",refuse), patch.object(carrier.Output,"close",close), \
+                patch.object(held,"check",side_effect=check):
+            try:
+                with held:
+                    held_fds = [fd for unused,fd,unused_witness in held._root.chain]+[fd for unused,fd,unused_witness in held._held]
+                    carrier.extract(root,pin,output,self.deadline,_held_carrier=held)
+            except ValueError as error:
+                observed.append(error)
+                trace = BaseException.__traceback__.__get__(error)
+                while trace is not None:
+                    trace_codes.append(trace.tb_frame.f_code);trace = trace.tb_next
+                self.assertIsInstance(error.__cause__,ValueError)
+            else: self.fail("original extraction failure was suppressed")
+        self.assertEqual(observed,[original]);self.assertIn(refuse.__code__,trace_codes)
+        self.assertTrue(fired[0]);self.assertTrue(rechecks)
+        self.assertFalse(held._active);self.assertEqual(held._held,())
+        self.assert_descriptors_closed(set(owners+held_fds))
+        self.assertFalse((output/"extraction-receipt.json").exists())
+        phases = [row[0] for row in self.extraction_phases(emitted.getvalue())]
+        self.assertIn("seal-start",phases);self.assertNotIn("seal-complete",phases)
+        self.assertNotIn("final-proof-start",phases)
+        self.assertNotIn(str(original),emitted.getvalue());self.assertNotIn("unlogged cleanup",emitted.getvalue())
+
+    def test_proof_scope_normal_exit_check_is_mandatory_and_failure_cannot_be_suppressed(self):
+        root, unused, pin = self.seal("normal-proof-exit")
+        held = carrier.HeldCarrier(root,pin,self.deadline)
+        actual_check, checks, now = held.check, [], [time.monotonic()]
+        def check(): checks.append(True);return actual_check()
+        with patch.object(carrier.time,"monotonic",side_effect=lambda:now[0]):
+            held.__enter__()
+            try:
+                with self.assertRaises(ValueError):
+                    with carrier._ProofExitStack() as stack:
+                        stack.callback(check)
+                        now[0] = self.deadline
+                self.assertEqual(checks,[True])
+                self.assertEqual(held._clock.deadline,self.deadline)
+            finally: held.close()
+        self.assertFalse(held._active)
+        path = self.root/"scope-owned-fd";self.write(path,b"public owned FD")
+        fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        original, attempts = ValueError("unsuppressible body fixture"), []
+        def close(): attempts.append(fd);os.close(fd)
+        with self.assertRaises(ValueError) as caught:
+            with carrier._ProofExitStack() as stack:
+                stack.callback(close)
+                stack.push(lambda *unused: True)
+                raise original
+        self.assertIs(caught.exception,original);self.assertEqual(attempts,[fd])
+        self.assert_descriptors_closed((fd,))
+
+    def test_real_scoped_phase_observations_are_closed_numeric_and_keep_original_budget(self):
+        root, unused, pin = self.seal("phase-budget")
+        entry = time.monotonic_ns();until = entry+600*10**9;deadline = until/10**9
+        held = carrier.HeldCarrier(root,pin,deadline);held._clock.until_ns = held._until_ns = until
+        emitted = io.StringIO();before = until-time.monotonic_ns()
+        with redirect_stderr(emitted),held:
+            result = carrier.extract(root,pin,self.root/"phase-output",deadline,_held_carrier=held)
+            self.assertEqual(held._clock.until_ns,until);self.assertEqual(held._clock.deadline,deadline)
+            held.full_final()
+            carrier.revalidate_extraction(root,pin,self.root/"phase-output",deadline,
+                pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(result)),_held_carrier=held)
+        raw = emitted.getvalue()
+        budget = [re.fullmatch(r"sdk-carrier-budget: extraction-entry remaining_ns=([0-9]+)",line)
+                  for line in raw.splitlines() if line.startswith("sdk-carrier-budget:")]
+        self.assertEqual(len(budget),1);self.assertIsNotNone(budget[0])
+        self.assertGreaterEqual(int(budget[0][1]),0);self.assertLessEqual(int(budget[0][1]),before)
+        expected = ["namespace-start","namespace-complete","jdk-nar-start","jdk-nar-complete",
+                    "sdk-nar-start","sdk-nar-complete","final-namespace-start","final-namespace-complete"]
+        rows = [re.fullmatch(r"sdk-carrier-nar: ([a-z-]+) elapsed_ns=([0-9]+) remaining_ns=([0-9]+)",line)
+                for line in raw.splitlines() if line.startswith("sdk-carrier-nar:")]
+        self.assertEqual(len(rows),16);self.assertTrue(all(row is not None for row in rows))
+        self.assertEqual([row[1] for row in rows],expected*2)
+        for row in rows:
+            self.assertLessEqual(int(row[3]),before)
+            self.assertLessEqual(len(row[0]),256)
+        self.assertLessEqual(len(self.extraction_phases(raw)),23)
+        for forbidden in (str(root),str(self.root/"phase-output"),pin,self.context["epoch"],self.context["source_commit"]):
+            self.assertNotIn(forbidden,raw)
 
     def test_extract_bound_report_same_owner_full_proofs_and_redacted_phase_order(self):
         root, original, pin = self.seal()
@@ -2040,7 +2190,10 @@ class CarrierModels(unittest.TestCase):
         self.assertEqual((output / "sdk/receipt.json").read_bytes(), self.original)
         phases = self.extraction_phases(emitted.getvalue())
         self.assertEqual([row[0] for row in phases], ["initial-start", "initial-bound", "directories-start", "directories-ready",
-            "copy-complete", "final-proof-start", "final-proof-complete"])
+            "copy-complete", "links-start", "links-complete", "seal-start", "seal-complete", "final-proof-start",
+            "inventory-check-start", "inventory-check-complete", "carrier-readback-start", "carrier-readback-complete",
+            "content-readback-start", "content-readback-complete", "publication-start", "publication-complete",
+            "published-content-start", "published-content-complete", "final-proof-complete"])
         manifest = json.loads((root / "manifest.json").read_bytes())
         count = sum(entry["kind"] == "file" for entry in manifest["entries"])
         self.assertTrue(all(row[2:4] == (0, 0) for row in phases[:4]))

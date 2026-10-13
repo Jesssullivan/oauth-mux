@@ -783,12 +783,24 @@ class _FreshNarFile:
 
 def _scan_nar(roots, expected, clock):
     """Fresh byte/NAR equivalence only; no later full scan is replaced."""
+    started_ns, events = time.monotonic_ns(), 0
+    phases = ("namespace-start", "namespace-complete", "jdk-nar-start", "jdk-nar-complete",
+              "sdk-nar-start", "sdk-nar-complete", "final-namespace-start", "final-namespace-complete")
+    def progress(phase):
+        nonlocal events
+        need(phase in phases and events < len(phases), "fresh-nar-diagnostic-bound")
+        events += 1
+        print("sdk-carrier-nar: " + phase + " elapsed_ns=" + str(max(0,time.monotonic_ns()-started_ns))
+              + " remaining_ns=" + str(_remaining_original_ns(clock)), file=sys.stderr, flush=True)
+    progress("namespace-start")
     witnesses = _fresh_namespace(roots, expected, clock)
+    progress("namespace-complete")
     observed = {key: dict(row) for key, row in expected.items()}
     completed, aggregate, nars = set(), [0], {}
     # One bounded cache at a time: close all its FDs before the last complete
     # namespace observation, including on stream/hash/dup/close refusal.
     for role in sorted(roots):
+        progress("jdk-nar-start" if role == "jdk" else "sdk-nar-start")
         with _FreshNarParents(roots[role], clock) as parents:
             def opener(unused, name, selected=role):
                 key = (selected, name)
@@ -797,11 +809,14 @@ def _scan_nar(roots, expected, clock):
                                      observed, completed, aggregate, clock, parents)
             nars[role] = nar.hash_descriptor(descriptor(role, expected, clock), opener=opener, deadline=clock.deadline)
             roots[role].check()
+        progress("jdk-nar-complete" if role == "jdk" else "sdk-nar-complete")
     need(len(completed) == sum(row["kind"] == "file" for row in expected.values())
          and aggregate[0] == sum(row.get("size", 0) for row in expected.values()), "fresh-stream-complete")
     # Revisit EVERY earlier node after the last role's stream. A per-file exit
     # check alone cannot detect mutation while a later file is being read.
+    progress("final-namespace-start")
     need(_fresh_namespace(roots, expected, clock) == witnesses, "fresh-namespace-final")
+    progress("final-namespace-complete")
     for root in roots.values():
         root.check()
     clock.tick()
@@ -1364,6 +1379,25 @@ def _carrier_binding(held, root, pin, clock):
     return held._binding()
 
 
+class _ProofExitStack(ExitStack):
+    """Run every proof/close callback; cleanup cannot replace the body cause."""
+    def __exit__(self, exc_type, error, traceback):
+        try:
+            result = super().__exit__(exc_type, error, traceback)
+        except BaseException as cleanup:
+            if error is not None: raise BaseException.with_traceback(error, traceback) from cleanup
+            raise
+        # Proof scopes never turn a body failure into a successful result, even
+        # if a future callback accidentally claims suppression.
+        return False if error is not None else result
+
+
+def _remaining_original_ns(clock):
+    # Public diagnostic only. No Clock field is changed and no budget renewed.
+    until = clock.until_ns if clock.until_ns is not None else int(clock.deadline * 10**9)
+    return max(0, min(1200 * 10**9, until - time.monotonic_ns()))
+
+
 def revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
                          absolute_deadline, *, pinned_extraction_receipt_sha256=None, _held_carrier=None):
     return _revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted_dir,
@@ -1398,7 +1432,7 @@ def _revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted
                   or pinned_extraction_receipt_sha256 == _held_carrier._extracted[1]),
              "held-carrier-registered-extraction")
         _held_carrier.check()
-    with ExitStack() as stack:
+    with _ProofExitStack() as stack:
         carrier = stack.enter_context(Root(carrier_dir, clock)) if _held_carrier is None else _held_carrier._owner
         if _held_carrier is not None:
             stack.callback(_held_carrier.check)
@@ -1822,14 +1856,26 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
         need(_held_carrier._extracted is None and not _held_carrier._final, "held-carrier-one-extraction")
     # Diagnostic time and counters never participate in a proof allowance.
     started_ns, copied_files, copied_bytes, created_directories = time.monotonic_ns(), 0, 0, 0
+    phases = ("initial-start", "initial-bound", "directories-start", "directories-ready", "directories-refused",
+              "copy-complete", "copy-refused", "links-start", "links-complete", "seal-start", "seal-complete",
+              "final-proof-start", "inventory-check-start", "inventory-check-complete",
+              "carrier-readback-start", "carrier-readback-complete", "content-readback-start", "content-readback-complete",
+              "publication-start", "publication-complete", "published-content-start", "published-content-complete",
+              "final-proof-complete")
+    events = 0
     def progress(phase):
+        nonlocal events
+        need(phase in phases and events < len(phases), "extraction-diagnostic-bound")
+        events += 1
         print("sdk-carrier-extract: " + phase
               + " elapsed_ns=" + str(max(0, time.monotonic_ns() - started_ns))
               + " copied_files=" + str(copied_files) + " copied_bytes=" + str(copied_bytes)
               + " created_directories=" + str(created_directories),
               file=sys.stderr, flush=True)
     progress("initial-start")
-    with ExitStack() as stack:
+    print("sdk-carrier-budget: extraction-entry remaining_ns=" + str(_remaining_original_ns(clock)),
+          file=sys.stderr, flush=True)
+    with _ProofExitStack() as stack:
         carrier = stack.enter_context(Root(carrier_dir, clock)) if _held_carrier is None else _held_carrier._owner
         if _held_carrier is not None:
             stack.callback(_held_carrier.check)
@@ -1880,6 +1926,7 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
                 copy_complete = True
             finally:
                 progress("copy-complete" if copy_complete else "copy-refused")
+            progress("links-start")
             # Literal targets remain inert, including the original absolute JDK.
             for (role, path), row in rows.items():
                 if row["kind"] == "symlink":
@@ -1894,12 +1941,15 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
                     finally:
                         os.close(fd)
             need(identity(os.fstat(payload)) == witness, "payload-extraction-race")
+            progress("links-complete")
         finally:
             os.close(payload)
+        progress("seal-start")
         for role, path in sorted(rows, key=lambda key: (-len(relative(key[1], empty=True)), key)):
             if rows[(role, path)]["kind"] == "directory":
                 clock.tick()
                 output.seal_directory(role + ("/" + path if path else ""))
+        progress("seal-complete")
         progress("final-proof-start")
         fresh = {role: stack.enter_context(Root(output.path / role, clock)) for role in ("sdk", "jdk")}
         if _held_carrier is None:
@@ -1907,6 +1957,7 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
             fresh_nars = None
         else:
             observed, witnesses, fresh_nars = _scan_nar(fresh, rows, clock)
+        progress("inventory-check-start")
         for (role, path), value in witnesses.items():
             clock.tick()
             name = role + ("/" + path if path else "")
@@ -1918,12 +1969,18 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
             need(observed == rows and nar_origins(fresh, rows, clock) == manifest["nars"], "extracted-full-proof")
         else:
             need(observed == rows and fresh_nars == manifest["nars"], "extracted-full-proof")
+        progress("inventory-check-complete")
         # Default calls fully reauthenticate; scoped calls keep this fence
         # provisional until the owner's mandatory full_final and fresh proof.
         # Neither path reads the old SDK/JDK.
+        progress("carrier-readback-start")
         need(_carrier_binding(_held_carrier, carrier, pinned_carrier_receipt_sha256, clock)[0] == report, "carrier-final-proof")
+        progress("carrier-readback-complete")
+        progress("content-readback-start")
         after, after_witnesses = scan(fresh, rows, clock)
         need(after == observed and after_witnesses == witnesses, "extracted-final-custody")
+        progress("content-readback-complete")
+        progress("publication-start")
         receipt = {"kind": EXTRACTED if _scratch_scope is None else SCRATCH_EXTRACTED, "carrier_receipt_sha256": digest(pinned_carrier_receipt_sha256),
                    "producer_context": report["producer_context"],
                    "origin_receipt_sha256": report["origin"]["receipt_sha256"],
@@ -1942,6 +1999,8 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
         output.finish()
         need(read(output.root, "extraction-receipt.json", 65536, sha(encoded(receipt))) == encoded(receipt),
              "published-extraction-receipt")
+        progress("publication-complete")
+        progress("published-content-start")
         # The owned output parent has deliberately changed700→555. Reopen and
         # join its final namespace while preserving all fresh member identities.
         with ExitStack() as final_stack:
@@ -1949,6 +2008,7 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
                            for role in ("sdk", "jdk")}
             final_rows, final_witnesses = scan(final_roots, rows, clock)
             need(final_rows == observed and final_witnesses == witnesses, "publication-extracted-custody")
+        progress("published-content-complete")
         output.root.check()
         carrier.check()
         if _held_carrier is not None:

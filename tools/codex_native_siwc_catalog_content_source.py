@@ -73,7 +73,7 @@ def main(*, _child=None, _extra=None, _retainer=None, _admitted=None):
         _marker='native-siwc-catalog-content-source: selected N10 bytes plus exact V4/catalog composition; old ancestors not reexecuted')
 
 
-REFUSAL_ERRORS = (ValueError, OSError, KeyError, TypeError, UnicodeError, IndexError)
+REFUSAL_ERRORS = (ValueError, OSError, KeyError, TypeError, UnicodeError, IndexError, MemoryError)
 MAX_TRACE_SCAN = 32
 MAX_TRACE_ROWS = 8
 MAX_SOURCE_LINE = 65535
@@ -96,7 +96,8 @@ def refusal_diagnostic(error):
         ('protocol', parent.protocol), ('parent-guard', parent.parent_guard))
     category = 'unknown'
     for kind, value in ((UnicodeError, 'UnicodeError'), (ValueError, 'ValueError'),
-            (OSError, 'OSError'), (KeyError, 'KeyError'), (TypeError, 'TypeError'), (IndexError, 'IndexError')):
+            (OSError, 'OSError'), (KeyError, 'KeyError'), (TypeError, 'TypeError'), (IndexError, 'IndexError'),
+            (MemoryError, 'MemoryError')):
         if isinstance(error, kind): category = value; break
     number = 0
     if isinstance(error, OSError):

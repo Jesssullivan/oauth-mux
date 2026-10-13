@@ -130,6 +130,45 @@ class ContentSourceTests(regression.CatalogSourceTests):
             self.assertLessEqual(len(diagnostic.encode()), content.MAX_DIAGNOSTIC_BYTES)
             self.assertEqual(stdout.getvalue(), '')
 
+    def test_actual_memory_first_cause_uses_live_trace_and_closed_redacted_exit(self):
+        canary = "TEST-ONLY-memory-diagnostic-canary"
+        class SensitiveMemoryError(MemoryError):
+            def __str__(self): raise AssertionError("memory exception text accessed")
+            def __repr__(self): raise AssertionError("memory exception repr accessed")
+            def with_traceback(self,unused): raise AssertionError("dynamic traceback method accessed")
+            def __getattribute__(self,name):
+                if name in ("args","__traceback__","account_payload","token_payload"):
+                    raise AssertionError("memory payload attribute accessed")
+                return super().__getattribute__(name)
+        first, cleanup = SensitiveMemoryError(canary), OSError(canary)
+        first.account_payload = first.token_payload = canary
+        observed, diagnostics, attempts = [], [], []
+        def fail_cleanup(): attempts.append(True);raise cleanup
+        def fail():
+            try:
+                with content.parent.carrier._ProofExitStack() as stack:
+                    stack.callback(fail_cleanup)
+                    raise first
+            except MemoryError as error:
+                observed.append(error)
+                # Actual traceback is still alive here; unittest.assertRaises
+                # would remove it on context exit. No fake frame is supplied.
+                diagnostics.append(content.refusal_diagnostic(error))
+                self.assertIs(error.__cause__,cleanup)
+                raise
+        stderr, stdout = io.StringIO(), io.StringIO()
+        with patch.object(content,"main",fail), patch("sys.stderr",stderr), patch("sys.stdout",stdout):
+            with self.assertRaises(SystemExit) as caught: content.entrypoint()
+        self.assertEqual(caught.exception.code,1);self.assertEqual(observed,[first]);self.assertEqual(attempts,[True])
+        self.assertIn(MemoryError,content.REFUSAL_ERRORS)
+        for diagnostic in diagnostics+[stderr.getvalue()]:
+            self.assertIn("; class=MemoryError; errno=0; locus=",diagnostic)
+            self.assertIn("sdk-carrier:",diagnostic)
+            self.assertLessEqual(len(diagnostic.encode()),content.MAX_DIAGNOSTIC_BYTES)
+            for forbidden in (canary,"SensitiveMemoryError","fail_cleanup",".py"):
+                self.assertNotIn(forbidden,diagnostic)
+        self.assertEqual(stdout.getvalue(),"")
+
     def test_actual_trusted_refusal_locus_is_closed_module_role_and_bounded_line(self):
         try: content.source.require(False)
         except ValueError as error: diagnostic = content.refusal_diagnostic(error)
