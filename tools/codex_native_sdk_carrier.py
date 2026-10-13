@@ -733,6 +733,21 @@ class _FreshNarParents(_ParentHandles):
             raise
 
 
+def _fresh_prefix_identity(info):
+    # One immutable full-nine value for one actual stat result. No physical
+    # observation is reused across before/held/after regions or stream checks.
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _fresh_prefix_matches(observed, selected):
+    # Keep the live selected first-five anchor, including its exact extent.
+    # Avoid creating a partial identity list/slice for the same stat result.
+    return (type(selected) is list and len(selected) == 5 and observed[0] == selected[0]
+            and observed[1] == selected[1] and observed[2] == selected[2]
+            and observed[3] == selected[3] and observed[4] == selected[4])
+
+
 class _FreshNarPath:
     """Borrow one current prefix chain; own no extra FD or physical authority."""
     def __init__(self, owner, name, records):
@@ -767,14 +782,16 @@ class _FreshNarPath:
                  "fresh-path-enrolled-prefix")
             child, selected = entry
             before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            before_identity = _fresh_prefix_identity(before)
             need(stat.S_ISDIR(before.st_mode) and before.st_uid in (0, os.getuid())
-                 and not before.st_mode & 0o022 and identity(before, True) == selected
+                 and not before.st_mode & 0o022 and _fresh_prefix_matches(before_identity, selected)
                  and key in root.named and root.named[key] == selected,
                  "fresh-path-current-prefix")
             held = os.fstat(child)
             after = os.stat(component, dir_fd=parent, follow_symlinks=False)
-            need(identity(before, True) == identity(held, True) == identity(after, True) == selected
-                 and tuple(identity(before)) == tuple(identity(held)) == tuple(identity(after)) == snapshot,
+            held_identity, after_identity = _fresh_prefix_identity(held), _fresh_prefix_identity(after)
+            need(_fresh_prefix_matches(held_identity, selected) and _fresh_prefix_matches(after_identity, selected)
+                 and before_identity == held_identity == after_identity == snapshot,
                  "fresh-path-prefix-before-held-after")
             parent = child
         self.clock.tick()

@@ -667,6 +667,138 @@ class CarrierModels(unittest.TestCase):
     def drain_stream(self, stream):
         while stream.read(65536):pass
 
+    def test_fresh_prefix_identity_matches_actual_full_nine_and_live_first_five(self):
+        parent, expected, name = self.retained_prefix_fixture("fresh-prefix-identity", 2)
+        fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
+                  "st_size", "st_mtime_ns", "st_ctime_ns")
+        for relative in ("sdk", "sdk/p00", "sdk/" + name, "sdk/inert"):
+            info = os.stat(parent / relative, follow_symlinks=False)
+            reads = {}
+            class ObservedStat:
+                def __getattr__(self, field):
+                    reads[field] = reads.get(field, 0) + 1
+                    return getattr(info, field)
+            observed = carrier._fresh_prefix_identity(ObservedStat())
+            self.assertEqual(observed, tuple(carrier.identity(info)))
+            self.assertEqual(reads, {field: 1 for field in fields})
+            selected = carrier.identity(info, True)
+            self.assertTrue(carrier._fresh_prefix_matches(observed, selected))
+            for index in range(5):
+                changed = list(selected); changed[index] += 1
+                self.assertFalse(carrier._fresh_prefix_matches(observed, changed))
+            self.assertFalse(carrier._fresh_prefix_matches(observed, tuple(selected)))
+            self.assertFalse(carrier._fresh_prefix_matches(observed, selected[:-1]))
+            self.assertFalse(carrier._fresh_prefix_matches(observed, selected + [0]))
+            # First-five remains distinct from the mandatory full-nine join.
+            for index in range(5, 9):
+                changed = list(observed); changed[index] += 1
+                self.assertTrue(carrier._fresh_prefix_matches(tuple(changed), selected))
+                self.assertNotEqual(tuple(changed), observed)
+
+    def test_fresh_prefix_conversion_keeps_complete_nar_and_all_current_observations(self):
+        parent, expected, unused = self.retained_prefix_fixture("fresh-prefix-nar", 6)
+        clock = carrier.Clock(self.deadline)
+        actual_identity = carrier._fresh_prefix_identity
+        actual_matches = carrier._fresh_prefix_matches
+        actual_check = carrier.Root.check
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            results, counts, conversions = [], [], []
+            # Independent existing identity() supplies the equivalent reference
+            # representation. It never supplies cached bytes or stat results.
+            for optimized in (False, True):
+                seen, converted = [0], [0]
+                def checked(root): seen[0] += 1; return actual_check(root)
+                def identity(info):
+                    converted[0] += 1
+                    return actual_identity(info) if optimized else tuple(carrier.identity(info))
+                def matches(observed, selected):
+                    return actual_matches(observed, selected) if optimized else list(observed[:5]) == selected
+                with patch.object(carrier, "_fresh_prefix_identity", identity), \
+                        patch.object(carrier, "_fresh_prefix_matches", matches), \
+                        patch.object(carrier.os, "stat", wraps=os.stat) as named, \
+                        patch.object(carrier.os, "fstat", wraps=os.fstat) as held, \
+                        patch.object(carrier.Root, "check", checked):
+                    results.append(carrier._scan_nar(roots, expected, clock))
+                    counts.append((named.call_count, held.call_count, seen[0]))
+                    conversions.append(converted[0])
+            self.assertEqual(results[0], results[1]); self.assertEqual(results[1][0], expected)
+            self.assertEqual(results[1][2], carrier.nar_origins(roots, expected, clock))
+            self.assertEqual(counts[0], counts[1]); self.assertEqual(conversions[0], conversions[1])
+            self.assertGreater(conversions[1], 0); self.assertEqual(conversions[1] % 3, 0)
+
+    def test_fresh_prefix_real_full_nine_mutation_in_each_observation_region_refuses(self):
+        for region in ("before", "held", "after"):
+            with self.subTest(region=region):
+                parent, expected, name = self.retained_prefix_fixture("fresh-prefix-race-" + region, 3)
+                clock = carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with carrier._FreshNarParents(roots["sdk"], clock) as cache:
+                        stream, witnesses = self.retained_stream(roots, expected, clock, cache, name)
+                        target_fd = stream.path.records[0][2][0]
+                        target = parent / "sdk/p00"
+                        prior = os.fstat(target_fd); named_calls, armed = [0], [True]
+                        real_stat, real_fstat = os.stat, os.fstat
+                        owned = [stream.fd, stream.parent] + [fd for fd, unused in cache.entries.values()]
+                        def mutate():
+                            armed[0] = False
+                            # Owner may set times on its sealed directory. The
+                            # stable five stay equal; full-nine must refuse.
+                            os.utime(target, ns=(prior.st_atime_ns, prior.st_mtime_ns + 1), follow_symlinks=False)
+                        def named(component, *args, **kwargs):
+                            if component == "p00" and kwargs.get("dir_fd") == roots["sdk"].fd:
+                                named_calls[0] += 1
+                                if armed[0] and ((region == "before" and named_calls[0] == 1)
+                                        or (region == "after" and named_calls[0] == 2)): mutate()
+                            return real_stat(component, *args, **kwargs)
+                        def held(fd):
+                            if armed[0] and region == "held" and fd == target_fd: mutate()
+                            return real_fstat(fd)
+                        with patch.object(carrier.os, "stat", named), patch.object(carrier.os, "fstat", held):
+                            with self.assertRaises(ValueError):
+                                with stream: self.drain_stream(stream)
+                        self.assertFalse(armed[0]); self.assertTrue(stream.closed)
+                        self.assertEqual(stream.completed, set()); self.assertEqual(stream.observed, {})
+                        self.assertIsNone(cache.active_path); self.assertIsNone(stream.fd); self.assertIsNone(stream.parent)
+                        after = real_fstat(target_fd)
+                        self.assertEqual(carrier.identity(after, True), carrier.identity(prior, True))
+                        self.assertNotEqual(carrier.identity(after), carrier.identity(prior))
+                    self.assert_descriptors_closed(owned)
+
+    def test_fresh_prefix_identity_allocation_failure_keeps_first_cause_and_drains_actual_fds(self):
+        for conversion in (1, 2, 3):
+            with self.subTest(conversion=conversion):
+                parent, expected, name = self.retained_prefix_fixture("fresh-prefix-allocation-" + str(conversion), 2)
+                clock = carrier.Clock(self.deadline)
+                first = MemoryError("synthetic immutable identity allocation")
+                cleanup = OSError("synthetic first successful-close refusal")
+                actual_identity, close = carrier._fresh_prefix_identity, os.close
+                observed, owned, attempts = [0], [], []
+                def identity(info):
+                    observed[0] += 1
+                    actual = actual_identity(info)
+                    if observed[0] == conversion: raise first
+                    return actual
+                def drain(fd):
+                    if fd in owned: attempts.append(fd)
+                    close(fd)
+                    if owned and fd == owned[0]: raise cleanup
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with self.assertRaises(MemoryError) as caught:
+                        with patch.object(carrier.os, "close", drain):
+                            with carrier._FreshNarParents(roots["sdk"], clock) as cache:
+                                stream, unused = self.retained_stream(roots, expected, clock, cache, name)
+                                owned[:] = [stream.fd, stream.parent] + [fd for fd, unused in cache.entries.values()]
+                                with patch.object(carrier, "_fresh_prefix_identity", identity):
+                                    with stream: self.drain_stream(stream)
+                    self.assertIs(caught.exception, first); self.assertIs(caught.exception.__cause__, cleanup)
+                    self.assertEqual(observed[0], conversion); self.assertEqual(attempts, owned)
+                    self.assertEqual(cache.entries, {}); self.assertIsNone(cache.pending); self.assertIsNone(cache.active_path)
+                    self.assertTrue(stream.closed); self.assertIsNone(stream.fd); self.assertIsNone(stream.parent)
+                    self.assert_descriptors_closed(owned)
+
     def test_retained_prefix_complete_nar_preserves_checks_and_reduces_real_dup_close(self):
         parent, expected, unused = self.retained_prefix_fixture("retained-comparison", 6)
         clock = carrier.Clock(self.deadline)
