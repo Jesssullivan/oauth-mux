@@ -1561,7 +1561,44 @@ class OrdinaryCheckLease(CacheLease):
 # Finite output contracts for the six current graph/N10 producer families.
 # Routine tests retire by default. A future downstream payload consumer must
 # declare its exact producer vector and leaves here before producing its inputs.
+TOOLBAR_PREP_LABEL = '//delivery:yoga_public_artifact_prepare_producer'
+TOOLBAR_PREP_VARIABLE = 'OMUX_YOGA_PUBLIC_PREP_'
+
+
+def toolbar_prepare_selected(profile, manager, arguments, reuse=False, dirty='false'):
+    requested = TOOLBAR_PREP_LABEL in arguments
+    if not requested:
+        return False
+    if (profile != 'standard' or manager != 'system'
+            or arguments != ['test', TOOLBAR_PREP_LABEL] or reuse is not False or dirty != 'false'):
+        raise ValueError('toolbar-preparation-exact-fresh-singleton-required')
+    return True
+
+
+def toolbar_prepare_command(command, run, entry_ns, deadline_ns, source, graph, source_root):
+    if (type(entry_ns) is not int or type(deadline_ns) is not int
+            or deadline_ns-entry_ns != 1200*10**9
+            or not entry_ns <= time.monotonic_ns() < deadline_ns-30*10**9
+            or type(source) is not str or re.fullmatch('[0-9a-f]{40}',source) is None
+            or type(graph) is not str or re.fullmatch('[0-9a-f]{64}',graph) is None
+            or not isinstance(run,Path) or not run.is_absolute()
+            or str(uuid.UUID(run.name)) != run.name
+            or not isinstance(source_root,Path)
+            or source_root.resolve(strict=True) != source_root
+            or command[-1:] != [TOOLBAR_PREP_LABEL] or command.count('test') != 1
+            or {part for part in command if part.startswith('//')} != {TOOLBAR_PREP_LABEL}
+            or any(TOOLBAR_PREP_VARIABLE in part for part in command)):
+        raise ValueError('toolbar-preparation-context-refused')
+    values={'EPOCH':str(run),'ENTRY_NS':str(entry_ns),'DEADLINE_NS':str(deadline_ns),
+        'SOURCE_COMMIT':source,'GRAPH_SHA256':graph,'SOURCE_ROOT':str(source_root)}
+    result=list(command)
+    result[result.index('test')+1:result.index('test')+1]=[
+        '--test_env='+TOOLBAR_PREP_VARIABLE+key+'='+value for key,value in sorted(values.items())]
+    return result
+
+
 RETAINED_OUTPUT_PRODUCTS = {
+    TOOLBAR_PREP_LABEL: ('yoga-public-toolbar/artifact.json','yoga-public-toolbar/runfiles-inventory.json'),
     # Current site prerequisites retain original producer roots, not copied proof.
     '//tools:cached_site_inventory_probe': ('inventory.json',),
     '//tools:site_coordinator_settings_producer': (
@@ -2426,6 +2463,8 @@ def _main(argv, admission_resources, retirement_resources):
         raise ValueError('wrapper request is exclusive to exact companion profile')
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
     site_development_artifact_request(args, arguments)
+    toolbar_preparation = toolbar_prepare_selected(args.profile,args.manager,arguments,
+        args.reuse_owned_cache,args.source_dirty)
     import site_coordinator_selection as coordinator_inputs
     if coordinator_inputs.admitted(args.profile, arguments,
             args.site_coordinator_inputs, args.site_coordinator_inputs_sha256):
@@ -3310,6 +3349,9 @@ def _main(argv, admission_resources, retirement_resources):
                                 codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes,
                                 site_coordinator_inputs=args.site_coordinator_inputs,
                                 site_coordinator_inputs_sha256=args.site_coordinator_inputs_sha256)
+            if toolbar_preparation:
+                command=toolbar_prepare_command(command,run,delivery_entry_monotonic_ns,
+                    delivery_entry_deadline_ns,args.source_commit,graph_sha256,Path.cwd().resolve(strict=True))
             if site and args.site_phase == 'lock':
                 site_lock_evidence['before'] = site.retain_lockfile(args.site_source, run,
                     site_snapshot['MODULE.bazel.lock'], 'before')
@@ -3979,6 +4021,15 @@ def _main(argv, admission_resources, retirement_resources):
                 final_status = 125
             if content_delivery_failure:
                 final_status = 125
+            toolbar_preparation_verified = None
+            if toolbar_preparation:
+                toolbar_preparation_verified = False
+                try:
+                    toolbar_preparation_verified = (result == 0 and cleanup is True and evidence_ok
+                        and pids_cancellation is None and graph_digest(Path.cwd()) == (graph_sha256,graph_inputs))
+                except (OSError,ValueError,TypeError):
+                    toolbar_preparation_verified = False
+                if toolbar_preparation_verified is not True: final_status=125
             receipt = {'id': identifier, 'unit': unit, 'exit': final_status,
                        'workload_exit': result, 'epoch_start_ns': epoch_start_ns,
                        'test_evidence': evidence,
@@ -4258,6 +4309,13 @@ def _main(argv, admission_resources, retirement_resources):
                     except (OSError,ValueError,KeyError,TypeError):
                         content_dependency_verified=False
                         if result == 0: final_status=receipt['exit']=125
+            if toolbar_preparation:
+                receipt['yoga_public_artifact_preparation']={'scope':'yoga-current-public-toolbar-retained-v1',
+                    'verified_after_cleanup':toolbar_preparation_verified,
+                    'original_entry_monotonic_ns':delivery_entry_monotonic_ns,
+                    'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
+                    'original_runfiles_retained_only':True,'fresh_consumer_qualification_required':True,
+                    'execution_authority':False,'seat_qualified':False,'toolbar_consent_proved':False}
             record_resident_lifecycle(receipt,resident_input)
             if dev_stage_proof:
                 receipt['development_stage'] = {'scope':DEV_STAGE_SCOPE,'stage_child':'dev-stage-complete',

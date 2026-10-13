@@ -2214,6 +2214,48 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         return self.pin.retire(terminal_published=True, original_entry_ns=self.entry_ns,
             original_deadline_ns=self.entry_ns + 1200 * 10**9, **options)
 
+    def toolbar_products(self):
+        label=self.guard.TOOLBAR_PREP_LABEL
+        root=self.output/'execroot/_main/bazel-out/k8-fastbuild/testlogs/delivery/yoga_public_artifact_prepare_producer/test.outputs'
+        product=root/'yoga-public-toolbar';product.mkdir(mode=0o700,parents=True)
+        for name in ('artifact.json','runfiles-inventory.json'):
+            (product/name).write_bytes(b'{"fixture":"current public inputs; no execution authority"}')
+            (product/name).chmod(0o600)
+        actual=self.output/'execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh.runfiles'
+        actual.mkdir(mode=0o700,parents=True);(actual/'complete-public-input').write_bytes(b'original public bytes')
+        rows={'schema':1,'results':[{'target':label,'configuration':'k8-fastbuild','state':'observed',
+            'files':[{'source':'test.xml','state':'copied','bytes':20}]}]}
+        raw=json.dumps(rows,sort_keys=True).encode();self.write('test-evidence.json',raw)
+        self.receipt.update(targets=[label],yoga_public_artifact_preparation={'verified_after_cleanup':True})
+        self.receipt['test_evidence']['sha256']=hashlib.sha256(raw).hexdigest();self.save_receipt()
+        return actual,product
+
+    def test_exact_toolbar_producer_retains_original_physical_runfiles_and_receipts(self):
+        actual,product=self.toolbar_products();before=actual.stat().st_ino
+        result=self.retire()
+        self.assertEqual(result['children']['output-base'],'retained-declared-producer')
+        self.assertEqual(actual.stat().st_ino,before)
+        self.assertEqual((actual/'complete-public-input').read_bytes(),b'original public bytes')
+        self.assertTrue((product/'artifact.json').is_file())
+        self.assertEqual(result['retained_output_contract'],[self.guard.TOOLBAR_PREP_LABEL])
+        self.assertEqual(self.retire(),result)
+
+    def test_bare_build_and_partial_toolbar_products_receive_no_retention_credit(self):
+        for failure in ('build','missing'):
+            # Independent real filesystem cases, never reuse a removed root.
+            with self.subTest(failure=failure):
+                actual,product=self.toolbar_products()
+                if failure=='build':self.receipt['verb']='build'
+                else:(product/'runfiles-inventory.json').unlink()
+                self.save_receipt();result=self.retire()
+                self.assertEqual(result['retained_output_contract'],[])
+                self.assertFalse(actual.exists())
+                # Reset only this model's known test root for the next subcase.
+                self.output.mkdir(mode=0o700)
+                self.receipt['verb']='test'
+                self.pin.bindings={}
+                (self.run/'test-evidence-retirement.json').unlink()
+
     def delivered_roots(self):
         for name in self.guard.CONTENT_DELIVERY_RETIREMENT_CHILDREN:
             (self.run/name).mkdir(mode=0o700)
@@ -3142,6 +3184,47 @@ class SiteDevelopmentArtifactAdmissionModels(unittest.TestCase):
         self.assertTrue(guard.ordinary_check_reuse_selected(ordinary, ['test', '//:docs_check']))
         ordinary.site_development_artifact_selection = '/owned/selection.json'
         self.assertFalse(guard.ordinary_check_reuse_selected(ordinary, ['test', '//:docs_check']))
+
+
+class ToolbarPreparationContextModels(unittest.TestCase):
+    def test_preallocation_admission_refuses_mixed_build_cache_and_wrong_profile(self):
+        import execution_guard as guard
+        label=guard.TOOLBAR_PREP_LABEL
+        self.assertTrue(guard.toolbar_prepare_selected('standard','system',['test',label]))
+        for profile,manager,arguments,reuse,dirty in [
+                ('standard','system',['build',label],False,'false'),
+                ('standard','system',['test',label,'//:docs_check'],False,'false'),
+                ('installed-browser','system',['test',label],False,'false'),
+                ('standard','user',['test',label],False,'false'),
+                ('standard','system',['test',label],True,'false'),
+                ('standard','system',['test',label],False,'true')]:
+            with self.assertRaises(ValueError):guard.toolbar_prepare_selected(profile,manager,arguments,reuse,dirty)
+        self.assertFalse(guard.toolbar_prepare_selected('standard','system',['test','//:docs_check']))
+
+    def test_exact_fresh_context_is_added_once_under_original_clock(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as selected:
+            source=Path(selected).resolve();run=source/'12345678-1234-4234-8234-123456789abc'
+            entry=1000*10**9;until=entry+1200*10**9
+            command=guard.bazel_command('bazel',run,['test',guard.TOOLBAR_PREP_LABEL],source_commit='a'*40,source_dirty='false')
+            with patch.object(guard.time,'monotonic_ns',return_value=entry+10**9):
+                new=guard.toolbar_prepare_command(command,run,entry,until,'a'*40,'b'*64,source)
+                fields=[part for part in new if part.startswith('--test_env='+guard.TOOLBAR_PREP_VARIABLE)]
+                self.assertEqual(len(fields),6)
+                self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'DEADLINE_NS='+str(until),fields)
+                self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'GRAPH_SHA256='+'b'*64,fields)
+                self.assertIn('--nocache_test_results',new)
+                self.assertEqual(command[-1],guard.TOOLBAR_PREP_LABEL)
+                with self.assertRaises(ValueError):guard.toolbar_prepare_command(new,run,entry,until,'a'*40,'b'*64,source)
+            with patch.object(guard.time,'monotonic_ns',return_value=until-30*10**9):
+                with self.assertRaises(ValueError):guard.toolbar_prepare_command(command,run,entry,until,'a'*40,'b'*64,source)
+
+    def test_only_exact_test_vector_has_toolbar_output_contract(self):
+        import execution_guard as guard
+        label=guard.TOOLBAR_PREP_LABEL
+        self.assertEqual(guard.RETAINED_OUTPUT_VECTORS[('test',label)],(label,))
+        for vector in [('build',label),('test',label,'//:docs_check'),('test','//delivery:yoga_toolbar_consent_proof')]:
+            self.assertNotIn(vector,guard.RETAINED_OUTPUT_VECTORS)
 
 
 if __name__ == '__main__':

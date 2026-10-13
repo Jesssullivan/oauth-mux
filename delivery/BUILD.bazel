@@ -5,6 +5,7 @@ load("//tools:runtime_zig.bzl", "static_linux_launcher_binary")
 load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
 load(":metadata_rules.bzl", "extension_metadata")
 load(":browser_proof_rules.bzl", "browser_runtime_authority")
+load(":yoga_public_artifact_prepare.bzl", "yoga_public_artifact_declaration")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -1635,6 +1636,54 @@ python_test(
     srcs = ["public_package_retention.py", "retained_public_install.py", "install.py", "pack.py", "portable.py",
         "test_delivery.py", "test_portable.py", "resident_enrollment.py",
         "//tools:guard_resident_enrollment_profile.py", "//tools:resident_owned_update_sources"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Current provider-free public toolbar preparation; never launch the runner.
+yoga_public_artifact_declaration(
+    name = "yoga_public_artifact_inputs",
+    runner = ":yoga_toolbar_consent_proof",
+    metadata = ["@omux_nix//:native.json", "@omux_nix//:store-paths",
+        "@omux_nix//:interpreter-closures.json", "//tools:rules.bzl"],
+    roles = {
+        ":development_instance_archive": "bundle",
+        "//extensions:chromium_dev_package": "extension",
+        "@omux_cached_site//:packages/chromium/bin/chromium": "chromium",
+        "@omux_cached_site//:packages/node/bin/node": "node",
+        "yoga_toolbar_observer.mjs": "observer",
+        "@omux_nix//:dbus_run_session": "dbus_session",
+        "@omux_nix//:dbus_daemon": "dbus_daemon",
+        "@omux_nix//:gnome_keyring_daemon": "keyring",
+        ":qualified_browser_runtime": "runtime_authority",
+        "yoga_toolbar_native_recorder.py": "recorder",
+        "chromium_native_recorder.py": "recorder_implementation",
+        "@omux_nix//:native.json": "native_manifest",
+        "@omux_nix//:store-paths": "native_store_paths",
+        "@omux_nix//:interpreter-closures.json": "interpreter_closures",
+        "@omux_nix//:python": "python_wrapper",
+        "//tools:rules.bzl": "rules_source",
+    },
+)
+python_test(
+    name = "yoga_public_artifact_prepare_producer",
+    main = "yoga_public_artifact_prepare.py",
+    srcs = ["pack.py", "portable.py", "browser_runtime_authority.py"],
+    data = [":yoga_public_artifact_inputs", ":yoga_toolbar_consent_proof"],
+    args = ["--declaration", "$(location :yoga_public_artifact_inputs)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "yoga_public_artifact_prepare_test",
+    main = "test_yoga_public_artifact_prepare.py",
+    srcs = ["yoga_public_artifact_prepare.py", "pack.py", "portable.py", "install.py",
+        "browser_runtime_authority.py", "test_browser_runtime_authority.py",
+        "test_delivery.py", "test_portable.py"],
+    data = [":yoga_public_artifact_prepare.bzl", "//tools:rules.bzl",
+        "//extensions:chromium_dev_package"],
+    args = ["$(location //extensions:chromium_dev_package)", "$(location //tools:rules.bzl)"],
     tags = ["manual", "no-remote", "no-cache"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
