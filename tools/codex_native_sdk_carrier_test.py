@@ -643,6 +643,217 @@ class CarrierModels(unittest.TestCase):
             self.assertEqual(after[0], expected)
             self.assertEqual(after[2], carrier.nar_origins(roots, expected, clock))
 
+    def retained_prefix_fixture(self, name, depth=1):
+        parent, expected, values = self.fresh_fixture(name)
+        (parent / "sdk").chmod(0o700)
+        directory = parent / "sdk"
+        components = ["p"+str(index).zfill(2) for index in range(depth)]
+        for component in components:
+            directory /= component; directory.mkdir(mode=0o700)
+            relative = str(directory.relative_to(parent / "sdk"))
+            expected[("sdk", relative)] = {"kind":"directory", "mode":0o555}
+        leaf = "/".join(components+["leaf"])
+        raw = b"retained current prefix bytes"; self.write(directory / "leaf", raw)
+        expected[("sdk", leaf)] = {"kind":"file", "mode":0o444, "size":len(raw), "sha256":carrier.sha(raw)}
+        self.seal_dirs(parent / "sdk")
+        return parent, expected, leaf
+
+    def retained_stream(self, roots, expected, clock, cache, name):
+        snapshots = carrier._fresh_namespace(roots, expected, clock)
+        stream = carrier._FreshNarFile(roots["sdk"], name, expected[("sdk", name)], snapshots,
+            "sdk", {}, set(), [0], clock, cache)
+        return stream, snapshots
+
+    def drain_stream(self, stream):
+        while stream.read(65536):pass
+
+    def test_retained_prefix_complete_nar_preserves_checks_and_reduces_real_dup_close(self):
+        parent, expected, unused = self.retained_prefix_fixture("retained-comparison", 6)
+        clock = carrier.Clock(self.deadline)
+        actual_check = carrier.Root.check
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            results = []; counts = []
+            for optimized in (False, True):
+                seen = [0]
+                def checked(root):seen[0]+=1;return actual_check(root)
+                with ExitStack() as instruments:
+                    if not optimized:instruments.enter_context(patch.object(carrier._FreshNarParents, "borrow_path", return_value=None))
+                    dup = instruments.enter_context(patch.object(carrier.os, "dup", wraps=os.dup))
+                    closed = instruments.enter_context(patch.object(carrier.os, "close", wraps=os.close))
+                    named = instruments.enter_context(patch.object(carrier.os, "stat", wraps=os.stat))
+                    held = instruments.enter_context(patch.object(carrier.os, "fstat", wraps=os.fstat))
+                    instruments.enter_context(patch.object(carrier.Root, "check", checked))
+                    results.append(carrier._scan_nar(roots, expected, clock))
+                    counts.append((dup.call_count,closed.call_count,named.call_count,held.call_count,seen[0]))
+            self.assertEqual(results[0],results[1]);self.assertEqual(results[1][0],expected)
+            self.assertEqual(results[1][2],carrier.nar_origins(roots,expected,clock))
+            self.assertLess(counts[1][0],counts[0][0]);self.assertLess(counts[1][1],counts[0][1])
+            self.assertEqual(counts[1][2:],counts[0][2:])
+
+    def test_retained_prefix_late_real_ancestor_replacement_link_and_mode_refuse(self):
+        for fault in ("higher", "immediate", "root", "symbolic", "mode", "uid"):
+            with self.subTest(fault=fault):
+                parent,expected,name=self.retained_prefix_fixture("retained-race-"+fault,3)
+                clock=carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    cache=stack.enter_context(carrier._FreshNarParents(roots["sdk"],clock))
+                    stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                    self.assertIsNotNone(stream.path)
+                    actual=carrier._FreshNarPath.current;armed=[True]
+                    def mutate(path,root,selected,selected_clock):
+                        if armed[0]:
+                            armed[0]=False
+                            if fault=="uid":
+                                named=os.stat
+                                class ForeignUID:
+                                    def __init__(view,info):view.info=info
+                                    def __getattr__(view,field):return view.info.st_uid+1 if field=="st_uid" else getattr(view.info,field)
+                                def foreign(component,*args,**kwargs):
+                                    info=named(component,*args,**kwargs)
+                                    return ForeignUID(info) if component=="p00" and kwargs.get("dir_fd")==path.root_fd else info
+                                with patch.object(carrier.os,"stat",foreign):return actual(path,root,selected,selected_clock)
+                            target=(parent/"sdk") if fault=="root" else (parent/"sdk/p00/p01/p02" if fault=="immediate" else parent/"sdk/p00")
+                            if fault=="mode":target.chmod(0o500)
+                            else:
+                                target.parent.chmod(0o700);aside=target.with_name(target.name+"-aside");target.rename(aside)
+                                if fault=="symbolic":target.symlink_to(aside,target_is_directory=True)
+                                else:shutil.copytree(aside,target,symlinks=True)
+                                target.parent.chmod(0o555 if target.parent!=parent else 0o700)
+                        return actual(path,root,selected,selected_clock)
+                    with patch.object(carrier._FreshNarPath,"current",mutate):
+                        with self.assertRaises(ValueError):
+                            with stream:self.drain_stream(stream)
+                    self.assertFalse(armed[0]);self.assertIsNone(cache.active_path)
+                    self.assertIsNone(stream.fd);self.assertIsNone(stream.parent);self.assertTrue(stream.closed)
+
+    def test_retained_prefix_pins_existing_32_entries_and_rejects_eviction_reentry_and_dup_exhaustion(self):
+        parent,expected,name=self.retained_prefix_fixture("retained-pin-bound",32)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                self.assertIsNotNone(stream.path);self.assertEqual(len(cache.entries),32)
+                pinned=tuple(cache.entries.items());actual_dup=os.dup
+                with patch.object(carrier.os,"dup",wraps=actual_dup) as duplicated:
+                    with self.assertRaises(ValueError):cache.keep("unselected",roots["sdk"].fd,carrier.identity(os.fstat(roots["sdk"].fd),True))
+                    with self.assertRaises(ValueError):cache.parent("a/child")
+                    self.assertEqual(duplicated.call_count,0)
+                self.assertEqual(tuple(cache.entries.items()),pinned)
+                with stream:self.drain_stream(stream)
+                self.assertIsNone(cache.active_path)
+                with patch.object(carrier.os,"dup",side_effect=OSError("synthetic duplicate refusal")):
+                    with self.assertRaises(OSError):cache.parent(name)
+                self.assertLessEqual(len(cache.entries),32)
+                retained=[fd for fd,unused in cache.entries.values()]
+            self.assert_descriptors_closed(retained)
+
+    def test_retained_prefix_depth_and_actual_evicted_chain_use_exact_old_fallback(self):
+        for depth in (1,33,63):
+            with self.subTest(depth=depth):
+                parent,expected,name=self.retained_prefix_fixture("retained-fallback-"+str(depth),depth)
+                clock=carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        actual_parent=cache.parent;actual_borrow=cache.borrow_path;calls=[]
+                        def parent_lookup(selected):calls.append(selected);return actual_parent(selected)
+                        def evict(selected,snapshots,role):
+                            if depth==1:
+                                fd,unused=cache.entries.pop("p00");os.close(fd)
+                            return actual_borrow(selected,snapshots,role)
+                        with patch.object(cache,"parent",parent_lookup),patch.object(cache,"borrow_path",evict):
+                            stream,snapshots=self.retained_stream(roots,expected,clock,cache,name)
+                            self.assertIsNone(stream.path)
+                            with stream:self.drain_stream(stream)
+                        self.assertEqual(calls,[name]*3);self.assertIsNone(cache.active_path)
+                        self.assertLessEqual(len(cache.entries),32)
+                    self.assertEqual(carrier._fresh_namespace(roots,expected,clock),snapshots)
+
+    def test_retained_prefix_allocation_before_and_after_pin_drain_actual_owner_fds(self):
+        for stage in ("construct","after-pin"):
+            with self.subTest(stage=stage):
+                parent,expected,name=self.retained_prefix_fixture("retained-allocation-"+stage,2)
+                clock=carrier.Clock(self.deadline);original_set=carrier._FreshNarParents.__setattr__;armed=[True]
+                def refuse_pin(owner,key,value):
+                    original_set(owner,key,value)
+                    if armed[0] and key=="active_path" and isinstance(value,carrier._FreshNarPath):
+                        armed[0]=False;raise MemoryError("synthetic post-pin refusal")
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack);owned=[];returned=[]
+                    with self.assertRaises(MemoryError):
+                        with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                            actual_parent=cache.parent
+                            def enrolled(selected):
+                                fd,leaf=actual_parent(selected);returned.append(fd);owned.extend(fd for fd,unused in cache.entries.values());return fd,leaf
+                            with patch.object(cache,"parent",enrolled):
+                                if stage=="construct":
+                                    with patch.object(carrier._FreshNarPath,"__init__",side_effect=MemoryError("synthetic path allocation")):
+                                        self.retained_stream(roots,expected,clock,cache,name)
+                                else:
+                                    with patch.object(carrier._FreshNarParents,"__setattr__",refuse_pin):
+                                        self.retained_stream(roots,expected,clock,cache,name)
+                    self.assertIsNone(cache.active_path);self.assertIsNone(cache.pending);self.assertEqual(cache.entries,{})
+                    self.assert_descriptors_closed(set(owned+returned))
+                    if stage=="after-pin":self.assertFalse(armed[0])
+
+    def test_retained_prefix_active_cache_failed_close_drains_once_before_fd_reuse(self):
+        parent,expected,name=self.retained_prefix_fixture("retained-active-close",2)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            cache=carrier._FreshNarParents(roots["sdk"],clock)
+            stream,unused=self.retained_stream(roots,expected,clock,cache,name);path=stream.path
+            self.assertIsNotNone(path)
+            descriptors=[fd for fd,unused in cache.entries.values()];close=os.close;attempts=[]
+            def refuse(fd):
+                self.assertEqual(cache.entries,{});self.assertIsNone(cache.active_path)
+                attempts.append(fd);close(fd)
+                if fd==descriptors[0]:raise OSError("synthetic active cache successful-close refusal")
+            with patch.object(carrier.os,"close",refuse):
+                with self.assertRaises(OSError):cache.close()
+            self.assertEqual(attempts,descriptors);self.assertTrue(path.closed);self.assertEqual(path.records,())
+            self.assert_descriptors_closed(descriptors)
+            with self.assertRaises(ValueError):stream.check()
+            stream.close();self.assertIsNone(stream.fd);self.assertIsNone(stream.parent)
+            probe=os.open(parent/"sdk/one",os.O_RDONLY|os.O_NOFOLLOW)
+            try:cache.close();self.assertTrue(stat.S_ISREG(os.fstat(probe).st_mode))
+            finally:close(probe)
+
+    def test_retained_prefix_foreign_deadline_thread_and_first_cleanup_cause_are_closed(self):
+        parent,expected,name=self.retained_prefix_fixture("retained-owner-close",2)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                stream,unused=self.retained_stream(roots,expected,clock,cache,name);path=stream.path
+                self.assertIsNotNone(path)
+                for args in ((roots["jdk"],name,clock),(roots["sdk"],name,carrier.Clock(self.deadline)),(roots["sdk"],"a/child",clock)):
+                    with self.assertRaises(ValueError):path.current(*args)
+                with patch.object(carrier.threading,"get_ident",return_value=cache.owner+1):
+                    with self.assertRaises(ValueError):path.current(roots["sdk"],name,clock)
+                with patch.object(carrier.time,"monotonic",return_value=clock.deadline):
+                    with self.assertRaises(ValueError):path.current(roots["sdk"],name,clock)
+                self.assertEqual(clock.deadline,self.deadline)
+                stream.close();self.assertIsNone(cache.active_path)
+            first=MemoryError("synthetic original body");cleanup=OSError("synthetic first successful-close refusal")
+            close=os.close;attempts=[];owned=[]
+            def refuse(fd):
+                if fd in owned:attempts.append(fd)
+                close(fd)
+                if owned and fd in owned:raise cleanup if fd==owned[0] else OSError("synthetic later close refusal")
+            with self.assertRaises(MemoryError) as caught:
+                with patch.object(carrier.os,"close",refuse):
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                        owned[:]=[stream.fd,stream.parent]+[fd for fd,unused in cache.entries.values()]
+                        with stream:raise first
+            self.assertIs(caught.exception,first);self.assertIs(caught.exception.__cause__,cleanup)
+            self.assertEqual(attempts,owned);self.assertIsNone(cache.active_path);self.assertEqual(cache.entries,{})
+            self.assert_descriptors_closed(owned)
+
     def test_fresh_nar_parent_cache_bound_exhaustion_and_failed_close_retire_all_fds(self):
         parent, unused, unused_values = self.fresh_fixture("fresh-parent-bound")
         (parent / "sdk").chmod(0o700)
@@ -750,6 +961,15 @@ class CarrierModels(unittest.TestCase):
                 clock = carrier.Clock(self.deadline)
                 fired, retained = [False], []
                 actual_take, actual_close = carrier._FreshNarParents.take, carrier._FreshNarParents.close
+                actual_current = carrier._FreshNarPath.current
+                def current(path, root, name, selected_clock):
+                    if fault == "cached-parent" and path.records and not fired[0]:
+                        fired[0] = True
+                        (parent / "sdk").chmod(0o700)
+                        (parent / "sdk/a").rename(parent / "sdk/a-aside")
+                        shutil.copytree(parent / "sdk/a-aside", parent / "sdk/a")
+                        (parent / "sdk").chmod(0o555)
+                    return actual_current(path, root, name, selected_clock)
                 def take(owner, key, directory, name, selected):
                     cached = key in owner.entries
                     fd = actual_take(owner, key, directory, name, selected)
@@ -771,7 +991,8 @@ class CarrierModels(unittest.TestCase):
                 with ExitStack() as stack:
                     roots = self.fresh_roots(parent, clock, stack)
                     with patch.object(carrier._FreshNarParents, "take", take), \
-                            patch.object(carrier._FreshNarParents, "close", close):
+                            patch.object(carrier._FreshNarParents, "close", close), \
+                            patch.object(carrier._FreshNarPath, "current", current):
                         with self.assertRaises(ValueError): carrier._scan_nar(roots, expected, clock)
                 self.assertTrue(fired[0])
                 self.assert_descriptors_closed(set(retained))

@@ -626,8 +626,10 @@ class _FreshNarParents(_ParentHandles):
 
     This is a local IO owner, not content or namespace authority. Every lookup
     still traverses Root._parent's complete current named/before/held/after
-    checks; caching replaces directory open with dup only. Full-nine stream
-    parent/leaf checks and both complete namespace passes remain unchanged.
+    checks. A complete already-enrolled prefix chain may then be borrowed for
+    the current stream's two later observations without additional prefix FDs.
+    Full-nine stream parent/leaf, all root-check regions and both complete
+    namespace passes remain unchanged; deep/missing chains use the old path.
     """
     def __init__(self, root, clock):
         need(type(root) is Root and root.clock is clock and not root.owned,
@@ -638,16 +640,41 @@ class _FreshNarParents(_ParentHandles):
              "fresh-parent-sealed-root")
         self.root, self.entries, self.closed = root, {}, False
         self.pending = None
+        self.active_path = None
         self.clock, self.deadline, self.until_ns = clock, clock.deadline, clock.until_ns
         self.owner, self.self = threading.get_ident(), self
 
     def parent(self, name):
         need(self.self is self and threading.get_ident() == self.owner
-             and not self.closed and self.root.clock is self.clock
+             and not self.closed and self.root.clock is self.clock and self.active_path is None
              and self.clock.deadline == self.deadline and self.clock.until_ns == self.until_ns,
              "fresh-parent-current-owner-clock")
         self.clock.tick()
         return self.root._parent(name, self)
+
+    def borrow_path(self, name, witnesses, role):
+        # The initial Root._parent walk has already populated and checked these
+        # entries. Missing/deep chains are an IO fallback, never a proof flag.
+        need(self.self is self and threading.get_ident() == self.owner
+             and not self.closed and self.active_path is None and self.root.clock is self.clock
+             and self.clock.deadline == self.deadline and self.clock.until_ns == self.until_ns,
+             "fresh-path-owner-clock")
+        self.clock.tick()
+        parts = relative(name)
+        keys = tuple("/".join(parts[:index]) for index in range(1, len(parts)))
+        if len(keys) > 32 or any(key not in self.entries for key in keys):
+            return None
+        records = tuple((key, parts[index], self.entries[key], tuple(witnesses[(role, key)]))
+                        for index, key in enumerate(keys))
+        path = _FreshNarPath(self, name, records)
+        try:
+            self.active_path = path
+        except BaseException:
+            if self.active_path is path: self.active_path = None
+            path.closed = True
+            path.records = ()
+            raise
+        return path
 
     def take(self, key, parent, name, selected):
         if key in self.entries:
@@ -662,7 +689,10 @@ class _FreshNarParents(_ParentHandles):
         need(self.pending is None, "fresh-parent-pending-owner")
         if key not in self.entries:
             if len(self.entries) == 32:
-                oldest = next(iter(self.entries))
+                pinned = () if self.active_path is None else self.active_path.keys
+                candidates = [key for key in self.entries if key not in pinned]
+                need(bool(candidates), "fresh-path-pinned-capacity")
+                oldest = candidates[0]
                 prior, unused = self.entries.pop(oldest)
                 os.close(prior)
             # Enroll the actual duplicate before dict allocation/validation.
@@ -674,7 +704,11 @@ class _FreshNarParents(_ParentHandles):
     def close(self):
         entries, self.entries = self.entries, {}
         pending, self.pending = self.pending, None
+        active, self.active_path = self.active_path, None
         self.closed = True
+        if active is not None:
+            active.closed = True
+            active.records = ()
         failure = None
         for fd, unused in entries.values():
             if fd == pending: pending = None  # insertion may succeed then raise
@@ -693,8 +727,69 @@ class _FreshNarParents(_ParentHandles):
         try:
             self.close()
         except BaseException as cleanup:
-            if error is not None: raise error.with_traceback(traceback) from cleanup
+            if error is not None:
+                prior = BaseException.__cause__.__get__(error)
+                raise BaseException.with_traceback(error, traceback) from (cleanup if prior is None else prior)
             raise
+
+
+class _FreshNarPath:
+    """Borrow one current prefix chain; own no extra FD or physical authority."""
+    def __init__(self, owner, name, records):
+        need(type(owner) is _FreshNarParents and len(records) <= 32,
+             "fresh-path-bounded-owner")
+        self.owner, self.root, self.clock = owner, owner.root, owner.clock
+        self.name, self.leaf, self.records = name, relative(name)[-1], records
+        self.keys = tuple(row[0] for row in records)
+        self.pid, self.thread, self.self = os.getpid(), threading.get_ident(), self
+        self.root_path, self.root_fd = self.root.path, self.root.fd
+        self.deadline, self.until_ns = self.clock.deadline, self.clock.until_ns
+        self.closed = False
+
+    def current(self, root, name, clock):
+        need(self.self is self and not self.closed and os.getpid() == self.pid
+             and threading.get_ident() == self.thread == self.owner.owner
+             and self.owner.self is self.owner and not self.owner.closed
+             and self.owner.active_path is self
+             and root is self.root is self.owner.root and root.path == self.root_path
+             and bool(root.chain) and root.fd == self.root_fd and name == self.name
+             and clock is self.clock is self.owner.clock is root.clock
+             and clock.deadline == self.deadline == self.owner.deadline
+             and clock.until_ns == self.until_ns == self.owner.until_ns,
+             "fresh-path-current-owner-clock")
+        self.clock.tick()
+        # Same current-ancestry region as Root._parent, without prefix dup/close.
+        root.check()
+        parent = self.root_fd
+        for key, component, entry, snapshot in self.records:
+            self.clock.tick()
+            need(key in self.owner.entries and self.owner.entries[key] == entry,
+                 "fresh-path-enrolled-prefix")
+            child, selected = entry
+            before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            need(stat.S_ISDIR(before.st_mode) and before.st_uid in (0, os.getuid())
+                 and not before.st_mode & 0o022 and identity(before, True) == selected
+                 and key in root.named and root.named[key] == selected,
+                 "fresh-path-current-prefix")
+            held = os.fstat(child)
+            after = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            need(identity(before, True) == identity(held, True) == identity(after, True) == selected
+                 and tuple(identity(before)) == tuple(identity(held)) == tuple(identity(after)) == snapshot,
+                 "fresh-path-prefix-before-held-after")
+            parent = child
+        self.clock.tick()
+        return parent, self.leaf
+
+    def release(self):
+        if self.closed: return
+        # Detach borrowed references before validation; no numeric FD closes.
+        self.closed = True
+        self.records = ()
+        need(self.self is self and os.getpid() == self.pid
+             and threading.get_ident() == self.thread == self.owner.owner
+             and self.owner.self is self.owner and self.owner.active_path is self,
+             "fresh-path-release-owner")
+        self.owner.active_path = None
 
 
 class _FreshNarFile:
@@ -708,12 +803,13 @@ class _FreshNarFile:
         self.witness = witnesses[self.key]
         self.parent_key = (role, "/".join(relative(name)[:-1]))
         self.parent_witness = witnesses[self.parent_key]
-        self.parent = self.fd = None
+        self.parent = self.fd = self.path = None
         self.count, self.hash, self.eof, self.closed = 0, hashlib.sha256(), False, False
         try:
             clock.tick()
             need(self.key not in completed, "fresh-duplicate-stream")
             self.parent, self.leaf = root.parent(name) if parents is None else parents.parent(name)
+            if parents is not None: self.path = parents.borrow_path(name, witnesses, role)
             need(identity(os.fstat(self.parent)) == self.parent_witness, "fresh-stream-parent")
             before = os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)
             need(identity(before) == self.witness and stat.S_ISREG(before.st_mode)
@@ -724,8 +820,11 @@ class _FreshNarFile:
             need(bool(before.st_mode & stat.S_IXUSR) == bool(row["mode"] & 0o111), "fresh-stream-executable")
             self.fd = os.open(self.leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=self.parent)
             self.check()
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            try: self.close()
+            except BaseException as cleanup:
+                prior = BaseException.__cause__.__get__(error)
+                raise error from (cleanup if prior is None else prior)
             raise
 
     def check(self):
@@ -733,12 +832,17 @@ class _FreshNarFile:
         need(not self.closed and identity(os.fstat(self.parent)) == self.parent_witness
              and identity(os.fstat(self.fd)) == self.witness
              and identity(os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)) == self.witness, "fresh-stream-held-name")
-        current, leaf = self.root.parent(self.name) if self.parents is None else self.parents.parent(self.name)
-        try:
+        if self.path is None:
+            current, leaf = self.root.parent(self.name) if self.parents is None else self.parents.parent(self.name)
+            try:
+                need(identity(os.fstat(current)) == self.parent_witness
+                     and identity(os.stat(leaf, dir_fd=current, follow_symlinks=False)) == self.witness, "fresh-stream-current-parent")
+            finally:
+                os.close(current)
+        else:
+            current, leaf = self.path.current(self.root, self.name, self.clock)
             need(identity(os.fstat(current)) == self.parent_witness
                  and identity(os.stat(leaf, dir_fd=current, follow_symlinks=False)) == self.witness, "fresh-stream-current-parent")
-        finally:
-            os.close(current)
         self.root.check()
 
     def read(self, size=-1):
@@ -756,19 +860,25 @@ class _FreshNarFile:
 
     def close(self):
         self.closed = True
-        try:
-            if self.fd is not None:
-                fd, self.fd = self.fd, None
-                os.close(fd)
-        finally:
-            if self.parent is not None:
-                parent, self.parent = self.parent, None
-                os.close(parent)
+        fd, self.fd = self.fd, None
+        parent, self.parent = self.parent, None
+        path, self.path = self.path, None
+        first = None
+        for descriptor in (fd, parent):
+            if descriptor is None: continue
+            try: os.close(descriptor)
+            except BaseException as error:
+                if first is None: first = error
+        if path is not None:
+            try: path.release()
+            except BaseException as error:
+                if first is None: first = error
+        if first is not None: raise first
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, *unused):
+    def __exit__(self, exc_type, error, trace):
         try:
             if exc_type is None:
                 self.check()
@@ -777,8 +887,19 @@ class _FreshNarFile:
                 self.observed[self.key] = {"kind": "file", "mode": self.row["mode"], "sha256": actual, "size": self.count}
                 self.completed.add(self.key)
                 self.clock.tick()
-        finally:
-            self.close()
+        except BaseException as failure:
+            try: self.close()
+            except BaseException as cleanup:
+                prior = BaseException.__cause__.__get__(failure)
+                raise failure from (cleanup if prior is None else prior)
+            raise
+        try: self.close()
+        except BaseException as cleanup:
+            if error is not None:
+                prior = BaseException.__cause__.__get__(error)
+                raise BaseException.with_traceback(error, trace) from (cleanup if prior is None else prior)
+            raise
+        return False
 
 
 def _scan_nar(roots, expected, clock):
