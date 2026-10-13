@@ -403,7 +403,7 @@ def runfiles_manifest(raw, clock):
         clock.tick(); require(0 < len(line) <= 16386)
         escaped=line.startswith(' ')
         key_wire,separator,target_wire=(line[1:] if escaped else line).partition(' ')
-        require(separator == ' ' and key_wire and target_wire)
+        require(separator == ' ' and key_wire != '' and target_wire != '')
         key=manifest_unescape(key_wire,key=True) if escaped else key_wire
         physical=manifest_unescape(target_wire,key=False) if escaped else target_wire
         relative(key)
