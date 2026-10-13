@@ -13,6 +13,7 @@ def _impl(ctx):
         fail("toolbar custom runfiles symlink maps unsupported")
     original = target.default_runfiles.files.to_list()
     manifest = target.files_to_run.runfiles_manifest
+    repo_mapping = target.files_to_run.repo_mapping_manifest
     if manifest == None:
         fail("toolbar canonical runfiles manifest unavailable")
     launcher = target.files_to_run.executable
@@ -22,7 +23,8 @@ def _impl(ctx):
     # Executable DefaultInfo adds its executable to actual runtime runfiles,
     # including when the rule's explicitly constructed runfiles omit it.
     runner_keys[_key(ctx, launcher)] = True
-    files = depset(original + target.files.to_list() + ctx.files.metadata + [manifest]).to_list()
+    support = [manifest] + ([repo_mapping] if repo_mapping != None else [])
+    files = depset(original + target.files.to_list() + ctx.files.metadata + support).to_list()
     if len(files) < 16 or len(files) > 200000:
         fail("toolbar declaration file bound")
     rows = {}
@@ -48,9 +50,10 @@ def _impl(ctx):
         fail("toolbar executable/runfiles incomplete")
     roles["launcher"] = _key(ctx, launcher)
     roles["runner_manifest"] = _key(ctx, manifest)
-    value = {"schemaVersion": 1, "scope": "yoga-current-toolbar-declaration-v1",
+    value = {"schemaVersion": 2, "scope": "yoga-current-toolbar-declaration-v2",
         "runnerLabel": "//delivery:yoga_toolbar_consent_proof", "preparationSource": revision,
         "preparationSourceDirty": False, "roles": roles,
+        "repoMappingKey": _key(ctx, repo_mapping) if repo_mapping != None else None,
         "files": [rows[key] for key in sorted(rows)]}
     output = ctx.actions.declare_file(ctx.label.name + ".json")
     ctx.actions.write(output, json.encode(value) + "\n")

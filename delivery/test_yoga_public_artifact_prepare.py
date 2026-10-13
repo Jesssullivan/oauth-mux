@@ -109,7 +109,7 @@ class PreparationModels(unittest.TestCase):
             rows.append({'key':key,'executionPath':str(physical.relative_to(self.base/'execroot/_main')),'inRunner':True})
         self.paths['runner_manifest'].write_text('\n'.join(sorted(manifest))+'\n')
         self.paths['runner_manifest'].chmod(0o555)
-        self.declared={'schemaVersion':1,'scope':'yoga-current-toolbar-declaration-v1','runnerLabel':model.RUNNER,
+        self.declared={'schemaVersion':2,'scope':'yoga-current-toolbar-declaration-v2','repoMappingKey':None,'runnerLabel':model.RUNNER,
             'preparationSource':'a'*40,'preparationSourceDirty':False,'roles':roles,
             'files':sorted(rows,key=lambda row:row['key'])}
         self.declaration=self.controls/'_main/delivery/inputs.json'
@@ -474,6 +474,154 @@ class PreparationModels(unittest.TestCase):
             with self.assertRaises(OSError):os.fstat(fd)
         self.assertFalse((self.output/'yoga-public-toolbar').exists())
 
+
+
+    def repo_mapping_fixture(self):
+        # Synthetic representation of the actual provider File and its standard
+        # Bazel alias; this helper never deploys or repairs production runfiles.
+        key='_main/delivery/yoga_toolbar_consent_proof.sh.repo_mapping'
+        target=self.physical/'yoga_toolbar_consent_proof.sh.repo_mapping'
+        raw=b'_main,fixture_repo,fixture_repo\n'
+        target.write_bytes(raw);target.chmod(0o555)
+        (self.controls/key).symlink_to(target)
+        (self.runner/'_repo_mapping').symlink_to(target)
+        self.declared['repoMappingKey']=key
+        self.declared['files'].append({'key':key,
+            'executionPath':str(target.relative_to(self.base/'execroot/_main')),'inRunner':False})
+        self.declared['files'].sort(key=lambda row:row['key'])
+        self.declaration.chmod(0o600)
+        try:self.declaration.write_bytes(model.canonical(self.declared))
+        finally:self.declaration.chmod(0o555)
+        lines=self.paths['runner_manifest'].read_text().splitlines()
+        lines.append('_repo_mapping '+str(target))
+        self.mutate_fixture('runner_manifest',('\n'.join(sorted(lines))+'\n').encode())
+        return key,target,raw
+
+    def test_actual_provider_mapping_file_and_reserved_alias_join_byte_inventory(self):
+        key,target,raw=self.repo_mapping_fixture()
+        result=self.prepare()
+        inventory=model.decode((self.output/'yoga-public-toolbar/runfiles-inventory.json').read_bytes())
+        rows={row['key']:row for row in inventory['files']}
+        for selected in (key,'_repo_mapping'):
+            self.assertEqual(rows[selected]['physical'],str(target))
+            self.assertEqual(rows[selected]['sha256'],hashlib.sha256(raw).hexdigest())
+            self.assertEqual(rows[selected]['bytes'],len(raw))
+            self.assertEqual(rows[selected]['witness'],list(model.witness(target.lstat())))
+        self.assertEqual(inventory['declaredFileCount'],len(self.declared['files']))
+        self.assertEqual(inventory['boundFileCount'],len(self.declared['files'])+1)
+        self.assertTrue(all(result[name] is False for name in model.FALSE))
+        self.assertTrue(result['freshConsumerQualificationRequired'])
+
+    def test_missing_mapping_file_and_dangling_reserved_alias_refuse(self):
+        key,target,raw=self.repo_mapping_fixture()
+        target.unlink()
+        with self.assertRaises(FileNotFoundError):self.prepare()
+        target.write_bytes(raw);target.chmod(0o555)
+        alias=self.runner/'_repo_mapping';alias.unlink();alias.symlink_to(self.physical/'absent-mapping')
+        with self.assertRaises(FileNotFoundError):self.prepare()
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
+    def test_coordinated_mapping_alias_and_manifest_substitution_refuses_before_bytes(self):
+        key,target,raw=self.repo_mapping_fixture()
+        other=self.physical/'other-owned-mapping';other.write_bytes(raw);other.chmod(0o555)
+        for alias in (self.controls/key,self.runner/'_repo_mapping'):
+            alias.unlink();alias.symlink_to(other)
+        text=self.paths['runner_manifest'].read_text().replace('_repo_mapping '+str(target),
+            '_repo_mapping '+str(other))
+        self.mutate_fixture('runner_manifest',text.encode())
+        real=os.read;reads=[];inode=other.stat().st_ino
+        def read(fd,count):
+            if os.fstat(fd).st_ino==inode:reads.append(fd)
+            return real(fd,count)
+        with patch.object(model.os,'read',side_effect=read):
+            with self.assertRaises(ValueError):self.prepare()
+        self.assertEqual(reads,[])
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
+    def test_control_mapping_alias_substitution_refuses_original_provider_binding(self):
+        key,target,raw=self.repo_mapping_fixture()
+        other=self.physical/'other-owned-control-mapping';other.write_bytes(raw);other.chmod(0o555)
+        alias=self.controls/key;alias.unlink();alias.symlink_to(other)
+        with self.assertRaises(ValueError):self.prepare()
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
+    def test_nullable_provider_mapping_and_current_schema_must_agree(self):
+        key,target,raw=self.repo_mapping_fixture()
+        for change in ('none','unknown','runner','legacy'):
+            value=copy.deepcopy(self.declared)
+            if change=='none':value['repoMappingKey']=None
+            elif change=='unknown':value['repoMappingKey']='_main/delivery/unknown-mapping'
+            elif change=='runner':next(row for row in value['files'] if row['key']==key)['inRunner']=True
+            else:
+                value.pop('repoMappingKey');value['schemaVersion']=1
+                value['scope']='yoga-current-toolbar-declaration-v1'
+            with self.subTest(change=change):
+                if change=='none':
+                    self.declaration.chmod(0o600)
+                    try:self.declaration.write_bytes(model.canonical(value))
+                    finally:self.declaration.chmod(0o555)
+                    with self.assertRaises(ValueError):self.prepare()
+                else:
+                    with self.assertRaises(ValueError):model.declaration(model.canonical(value),self.context)
+        self.declaration.chmod(0o600)
+        try:self.declaration.write_bytes(model.canonical(self.declared))
+        finally:self.declaration.chmod(0o555)
+        lines=[line for line in self.paths['runner_manifest'].read_text().splitlines()
+            if not line.startswith('_repo_mapping ')]
+        self.mutate_fixture('runner_manifest',('\n'.join(lines)+'\n').encode())
+        with self.assertRaises(ValueError):self.prepare()
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
+    def test_actual_mapping_read_uses_original_cutoff_and_drains_all_descriptors(self):
+        key,target,raw=self.repo_mapping_fixture()
+        real_open=os.open;real_close=os.close;real_read=os.read;opened=[];closed=[];changed=False
+        inode=target.stat().st_ino
+        def opening(*args,**kwargs):
+            fd=real_open(*args,**kwargs);opened.append(fd);return fd
+        def closing(fd):
+            closed.append(fd);return real_close(fd)
+        def read(fd,count):
+            nonlocal changed
+            block=real_read(fd,count)
+            if block and os.fstat(fd).st_ino==inode:
+                self.now=self.deadline-30*10**9;changed=True
+            return block
+        with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
+                patch.object(model.os,'read',side_effect=read):
+            with self.assertRaises(ValueError):self.prepare()
+        self.assertTrue(changed)
+        self.assertEqual(closed,list(reversed(opened)))
+        for fd in opened:
+            with self.assertRaises(OSError):os.fstat(fd)
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+
+    def test_mapping_alias_change_during_final_fd_retirement_refuses_provisional_product(self):
+        key,target,raw=self.repo_mapping_fixture()
+        other=self.physical/'later-owned-mapping';other.write_bytes(raw);other.chmod(0o555)
+        alias=self.runner/'_repo_mapping'
+        real_open=os.open;real_close=os.close;real_publish=model.publish
+        opened=[];closed=[];armed=False;changed=False
+        def opening(*args,**kwargs):
+            fd=real_open(*args,**kwargs);opened.append(fd);return fd
+        def publishing(*args,**kwargs):
+            nonlocal armed
+            result=real_publish(*args,**kwargs);armed=True;return result
+        def closing(fd):
+            nonlocal changed
+            closed.append(fd)
+            if armed and not changed:
+                alias.unlink();alias.symlink_to(other);changed=True
+            return real_close(fd)
+        with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
+                patch.object(model,'publish',side_effect=publishing):
+            with self.assertRaises(ValueError):self.prepare()
+        self.assertTrue(armed and changed)
+        self.assertEqual(sorted(opened),sorted(closed))
+        for fd in set(opened):
+            with self.assertRaises(OSError):os.fstat(fd)
+        # Publication may precede the final refusal: only a genuine zero-exit
+        # outer receipt can accept the product, never mere file existence.
+        self.assertTrue((self.output/'yoga-public-toolbar/artifact.json').exists())
 
 if __name__=='__main__':
     ZIP=Path(sys.argv.pop(1)).read_bytes()

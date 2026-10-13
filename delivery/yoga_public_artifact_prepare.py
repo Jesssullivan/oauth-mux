@@ -268,8 +268,8 @@ class Inputs:
 def declaration(raw, context):
     value = decode(raw)
     require(type(value) is dict and set(value) == {'schemaVersion','scope','runnerLabel',
-        'preparationSource','preparationSourceDirty','roles','files'}
-        and value['schemaVersion'] == 1 and value['scope'] == 'yoga-current-toolbar-declaration-v1'
+        'preparationSource','preparationSourceDirty','roles','files','repoMappingKey'}
+        and value['schemaVersion'] == 2 and value['scope'] == 'yoga-current-toolbar-declaration-v2'
         and value['runnerLabel'] == RUNNER and value['preparationSource'] == context['sourceCommit']
         and value['preparationSourceDirty'] is False
         and type(value['roles']) is dict and set(value['roles']) == ROLES
@@ -284,6 +284,10 @@ def declaration(raw, context):
         and len(set(value['roles'].values())) == len(ROLES)
         and REQUIRED_RUNFILES.issubset(files)
         and all(files[key]['inRunner'] is True for key in REQUIRED_RUNFILES))
+    mapping_key=value['repoMappingKey']
+    if mapping_key is not None:
+        relative(mapping_key)
+        require(mapping_key in files and files[mapping_key]['inRunner'] is False)
     return value, files
 
 
@@ -471,9 +475,14 @@ def prepare(declaration_path, environment):
         manifest = runfiles_manifest(data['runner_manifest'],clock)
         expected_keys = {key for key,row in files.items() if row['inRunner']}
         require(set(manifest) - {'_repo_mapping'} == expected_keys)
-        if '_repo_mapping' in manifest:
-            require(Path(manifest['_repo_mapping']).is_relative_to(base))
-            inputs.read('_repo_mapping',runfiles/'_repo_mapping',manifest['_repo_mapping'],maximum=MAX_METADATA)
+        mapping_key=value['repoMappingKey']
+        require(('_repo_mapping' in manifest) == (mapping_key is not None))
+        if mapping_key is not None:
+            expected_mapping=execroot/files[mapping_key]['executionPath']
+            require(expected_mapping.is_relative_to(base)
+                and inputs.resolve(manifest['_repo_mapping']) == inputs.resolve(expected_mapping))
+            inputs.read(mapping_key,controls/mapping_key,expected_mapping,maximum=MAX_METADATA)
+            inputs.read('_repo_mapping',runfiles/'_repo_mapping',expected_mapping,maximum=MAX_METADATA)
         keys_to_roles = {key:role for role,key in value['roles'].items()}
         for key, row in files.items():
             clock.tick()
