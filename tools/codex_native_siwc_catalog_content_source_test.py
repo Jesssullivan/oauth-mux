@@ -210,6 +210,50 @@ class ContentSourceTests(regression.CatalogSourceTests):
         self.assertNotIn(canary, diagnostic); self.assertNotIn('secret_frame', diagnostic)
         self.assertNotIn('secret_environment', diagnostic)
 
+    def test_deep_unknown_frames_reach_actual_trusted_leaf_with_closed_visibility(self):
+        canary = 'TEST-ONLY-deep-trace-private-canary'
+        namespace = {'payload': canary, '__name__': canary, 'secret_environment': canary,
+            'trusted_leaf': content.source.require}
+        exec(compile('def private_frame(depth):\n    if depth: return private_frame(depth - 1)\n    trusted_leaf(False)\n',
+            canary, 'exec'), namespace)
+        try: namespace['private_frame'](80)
+        except ValueError as error:
+            with patch.object(content, 'MAX_TRACE_SCAN', 32):
+                old_diagnostic = content.refusal_diagnostic(error)
+            diagnostic = content.refusal_diagnostic(error)
+        self.assertEqual(content.MAX_TRACE_SCAN, 128)
+        old_rows = old_diagnostic.split('; locus=', 1)[1].split('; truncated=', 1)[0].split(',')
+        self.assertEqual(old_rows, ['unknown:0'] * content.MAX_TRACE_ROWS)
+        rows = diagnostic.split('; locus=', 1)[1].split('; truncated=', 1)[0].split(',')
+        self.assertEqual(len(rows), content.MAX_TRACE_ROWS)
+        self.assertTrue(rows[-1].startswith('source-io:'))
+        self.assertGreater(int(rows[-1].split(':')[1]), 0)
+        self.assertLessEqual(int(rows[-1].split(':')[1]), content.MAX_SOURCE_LINE)
+        self.assertEqual(rows[:-1], ['unknown:0'] * (content.MAX_TRACE_ROWS - 1))
+        for value in (old_diagnostic, diagnostic):
+            self.assertTrue(value.endswith('; truncated=1'))
+            self.assertIn('; class=ValueError; errno=0; locus=', value)
+            self.assertLessEqual(len((value + '\n').encode()), content.MAX_DIAGNOSTIC_BYTES)
+            for forbidden in (canary, 'private_frame', 'trusted_leaf',
+                    'secret_environment', '.py', 'account_payload', 'token_payload'):
+                self.assertNotIn(forbidden, value)
+
+    def test_exhausted_trace_scan_never_reads_or_names_deeper_trusted_leaf(self):
+        canary = 'TEST-ONLY-exhausted-trace-private-canary'
+        namespace = {'payload': canary, '__name__': canary, 'secret_environment': canary,
+            'trusted_leaf': content.source.require}
+        exec(compile('def private_frame(depth):\n    if depth: return private_frame(depth - 1)\n    trusted_leaf(False)\n',
+            canary, 'exec'), namespace)
+        try: namespace['private_frame'](content.MAX_TRACE_SCAN + content.MAX_TRACE_ROWS)
+        except ValueError as error: diagnostic = content.refusal_diagnostic(error)
+        rows = diagnostic.split('; locus=', 1)[1].split('; truncated=', 1)[0].split(',')
+        self.assertEqual(rows, ['unknown:0'] * content.MAX_TRACE_ROWS)
+        self.assertTrue(diagnostic.endswith('; truncated=1'))
+        self.assertNotIn('source-io:', diagnostic)
+        self.assertLessEqual(len((diagnostic + '\n').encode()), content.MAX_DIAGNOSTIC_BYTES)
+        for forbidden in (canary, 'private_frame', 'trusted_leaf', 'secret_environment', '.py'):
+            self.assertNotIn(forbidden, diagnostic)
+
     def test_diagnostic_io_refusal_keeps_original_exit_and_unhandled_failures_propagate(self):
         class RefusingWriter:
             def write(self, unused): raise OSError('TEST-ONLY-diagnostic-write-canary')

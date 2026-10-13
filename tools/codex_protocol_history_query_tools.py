@@ -515,9 +515,17 @@ def qualify(top_raw, digest, bundle_raw, mapping_sha256, bundle_path,
             labels.add(item["alias"])
     require(len(labels) <= seed.MAX_FILES and labels == {
         "regular/"+str(index).zfill(8) for index in range(len(labels))})
+    lookup_root, lookup_nodes = None, None
     def opener(root, relative):
+        nonlocal lookup_root, lookup_nodes
         row = bundle["objects"][root]
-        node = {item["path"]: item for item in row["descriptor"]["nodes"]}[relative]
+        # verify_objects and the serializer admit this root before its first
+        # regular open. Keep only its logical index, never bytes or FD authority.
+        if lookup_root != root:
+            lookup_nodes = None
+            lookup_nodes = {item["path"]: item for item in row["descriptor"]["nodes"]}
+            lookup_root = root
+        node = lookup_nodes[relative]
         item = row["regularInputs"][relative]
         stream = open_declared(Path(bundle_path).parent/item["alias"],
             [Path(path)/item["alias"] for path in aliases], item["source"], node)

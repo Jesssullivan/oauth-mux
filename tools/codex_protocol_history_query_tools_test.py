@@ -4,6 +4,7 @@ External evaluation/guard observations are synthetic. They never establish that
 six real query roots exist or that a real missing-plan action succeeded.
 """
 import copy
+from contextlib import ExitStack, contextmanager
 import ast
 import json
 import os
@@ -332,6 +333,85 @@ class ToolFixture:
             float(time.monotonic()+60) if deadline is None else deadline)
 
 
+class DeclaredLookupFixture:
+    """Actual qualifier/alias/NAR IO; only outer lineage observations injected."""
+    class Nodes(list):
+        def __init__(self, nodes):
+            super().__init__(nodes)
+            self.walks = 0
+        def __iter__(self):
+            self.walks += 1
+            return super().__iter__()
+
+    def __init__(self, directory, top, extra_files):
+        physical = directory / "physical"; physical.mkdir()
+        self.fixture = ToolFixture(physical)
+        for index, root in enumerate(sorted(self.fixture.selected)):
+            for number in range(extra_files):
+                leaf = self.fixture.physical[root] / ("public-" + str(number))
+                leaf.write_bytes((str(index) + ":" + str(number) + "\n").encode())
+                leaf.chmod(0o444)
+            descriptor = nar.describe(str(self.fixture.physical[root])); descriptor["root"] = root
+            result = nar.hash_descriptor(descriptor, opener=self.fixture.opener, deadline=float(time.monotonic()+60))
+            self.fixture.objects[root] = {"descriptor": descriptor, "regularInputs": {
+                node["path"]: {} for node in descriptor["nodes"] if node["type"] == "regular"}}
+            self.fixture.records[root]["record"][1:3] = [result["narHash"], str(result["narSize"])]
+        self.repository = directory / "repository"; self.repository.mkdir()
+        (self.repository / "metadata").mkdir(); (self.repository / "regular").mkdir()
+        self.top = top; self.top["inputs"]["sha256"] = seed.sha(b"{}")
+        self.top_raw = query.inputs.encode(self.top)
+        metadata = self.repository / "metadata/00000000"
+        metadata.write_bytes(b"{}"); metadata.chmod(0o444)
+        self.objects = copy.deepcopy(self.fixture.objects)
+        index = 0
+        for root, row in sorted(self.objects.items()):
+            for relative in sorted(row["regularInputs"]):
+                alias = "regular/" + str(index).zfill(8); index += 1
+                row["regularInputs"][relative] = {"source": root + "/" + relative, "alias": alias}
+                (self.repository / alias).symlink_to(root + "/" + relative)
+        self.expected = {"seed_selection": self.top["inputs"]}
+        self.bundle = {"schema_version": 1, "kind": query.KIND, "selection_sha256": seed.sha(self.top_raw),
+            "query_tools": self.fixture.descriptor, "metadata": {"seed_selection": {
+                "alias": "metadata/00000000", "pin": self.top["inputs"]}}, "objects": self.objects}
+        self.path = self.repository / "query-inputs.json"
+        self.opened = []
+
+    @contextmanager
+    def installed(self):
+        raw = query.inputs.encode(self.bundle)
+        self.path.write_bytes(raw)
+        observed = copy.deepcopy(self.bundle)
+        for row in observed["objects"].values():
+            row["descriptor"]["nodes"] = self.Nodes(row["descriptor"]["nodes"])
+        original_decode, original_open, original_declared = query.decode, nar.open_regular, query.open_declared
+        def decode(content, maximum):
+            return observed if content == raw else original_decode(content, maximum)
+        def open_model(root, relative):
+            for logical, physical in self.fixture.physical.items():
+                if root == logical or root.startswith(logical + "/"):
+                    member = root[len(logical):].lstrip("/")
+                    return original_open(str(physical), "/".join(part for part in (member, relative) if part))
+            return original_open(root, relative)
+        def opened(label, aliases, source, node):
+            if str(label).startswith(str(self.repository / "regular") + "/"):
+                root = "/".join(source.split("/")[:4])
+                self.opened.append((root, node["path"], observed["objects"][root]["descriptor"]["nodes"].walks))
+            return original_declared(label, aliases, source, node)
+        def qualify(deadline=None):
+            return query.qualify(self.top_raw, seed.sha(self.top_raw), raw, seed.sha(raw), self.path,
+                b"", b"", {}, b"", {}, float(time.monotonic()+60) if deadline is None else deadline)
+        with ExitStack() as stack:
+            for target, name, options in ((query.inputs, "selection", {"return_value": {}}),
+                    (query, "roles", {"return_value": self.expected}),
+                    (query, "lineage", {"return_value": self.fixture.body}),
+                    (query, "candidate_records", {"return_value": self.fixture.records}),
+                    (query, "decode", {"side_effect": decode}), (query, "open_declared", {"side_effect": opened}),
+                    (nar, "open_regular", {"side_effect": open_model})):
+                stack.enter_context(patch.object(target, name, **options))
+            stack.enter_context(patch("verify_declared_nars.open_regular", side_effect=open_model))
+            yield qualify, observed
+
+
 class QueryToolModels(unittest.TestCase):
     def test_full_six_root_reference_closure_rehashes_actual_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -472,6 +552,120 @@ class QueryToolModels(unittest.TestCase):
                 node=fixture.physical[fixture.extra]/"runtime"
                 old=node.read_bytes();node.chmod(0o600);node.write_bytes(b"X"+old[1:]);node.chmod(0o444)
                 with self.assertRaises(ValueError):qualify()
+
+    def test_logical_lookup_walks_once_per_root_independent_of_regular_count(self):
+        for extra_files in (1, 5):
+            with self.subTest(extra_files=extra_files), tempfile.TemporaryDirectory() as temporary:
+                fixture = DeclaredLookupFixture(Path(temporary), self.selection(), extra_files)
+                baseline = fixture.fixture.verify()
+                with fixture.installed() as (qualify, observed):
+                    report = qualify()
+                    self.assertEqual(report["counts"], baseline)
+                    self.assertIs(report["inputs_rechecked"], True)
+                    self.assertEqual(set(root for root, _, _ in fixture.opened), set(fixture.fixture.selected))
+                    self.assertEqual(len(fixture.opened), baseline["regular_inputs"])
+                    # Root admission + serializer admission + checked index +
+                    # qualifier index. No further full walk for later leaves.
+                    self.assertTrue(all(walks == 4 for _, _, walks in fixture.opened))
+                    self.assertGreater(len(fixture.opened), 7)
+                    before = {root: row["descriptor"]["nodes"].walks for root, row in observed["objects"].items()}
+                    fixture.opened.clear()
+                    self.assertEqual(qualify(), report)
+                    self.assertTrue(all(walks - before[root] == 4 for root, _, walks in fixture.opened))
+                    self.assertEqual(len(fixture.opened), baseline["regular_inputs"])
+                    self.assertTrue(all(report[name] is False for name in ("realized", "complete_build_seed_verified",
+                        "sdk_qualified", "native_runtime_qualified", "execution_authority")))
+
+    def test_logical_lookup_never_reuses_bytes_or_replaced_alias_authority(self):
+        for change in ("bytes", "inode", "alias", "mode", "size"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                fixture = DeclaredLookupFixture(Path(temporary), self.selection(), 3)
+                root = fixture.fixture.extra; relative = "public-0"
+                leaf = fixture.fixture.physical[root] / relative
+                with fixture.installed() as (qualify, _):
+                    qualify(); original = leaf.read_bytes()
+                    if change == "alias":
+                        alias = fixture.repository / fixture.objects[root]["regularInputs"][relative]["alias"]
+                        alias.unlink(); alias.symlink_to(str(leaf))
+                    elif change == "inode":
+                        leaf.rename(leaf.with_name("old-public"))
+                        leaf.write_bytes(b"X" + original[1:]); leaf.chmod(0o444)
+                    else:
+                        leaf.chmod(0o600)
+                        if change == "bytes": leaf.write_bytes(b"X" + original[1:])
+                        if change == "size": leaf.write_bytes(original + b"X")
+                        if change != "mode": leaf.chmod(0o444)
+                    fixture.opened.clear()
+                    with self.assertRaises(ValueError): qualify()
+                    self.assertTrue(fixture.opened)
+
+    def test_logical_lookup_checks_later_leaves_after_same_root_alias_or_byte_change(self):
+        for change in ("bytes", "alias"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                fixture = DeclaredLookupFixture(Path(temporary), self.selection(), 3)
+                root = fixture.fixture.extra
+                first = fixture.repository / fixture.objects[root]["regularInputs"]["public-0"]["alias"]
+                later = fixture.fixture.physical[root] / "public-1"
+                with fixture.installed() as (qualify, _):
+                    original = query.open_declared
+                    def changed(label, aliases, source, node):
+                        stream = original(label, aliases, source, node)
+                        if Path(label) == first:
+                            if change == "bytes":
+                                raw = later.read_bytes(); later.chmod(0o600)
+                                later.write_bytes(b"X" + raw[1:]); later.chmod(0o444)
+                            else:
+                                alias = fixture.repository / fixture.objects[root]["regularInputs"]["public-1"]["alias"]
+                                alias.unlink(); alias.symlink_to(str(later))
+                        return stream
+                    with patch.object(query, "open_declared", side_effect=changed):
+                        with self.assertRaises(ValueError): qualify()
+                    self.assertIn((root, "public-1", 4), fixture.opened)
+
+    def test_logical_lookup_is_lazy_after_root_admission_and_aggregate_bound(self):
+        for change in ("duplicate", "bound"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                fixture = DeclaredLookupFixture(Path(temporary), self.selection(), 2)
+                first = sorted(fixture.objects)[0]
+                if change == "duplicate":
+                    nodes = fixture.objects[first]["descriptor"]["nodes"]
+                    nodes.append(copy.deepcopy(nodes[0]))
+                with fixture.installed() as (qualify, observed), ExitStack() as stack:
+                    if change == "bound":
+                        stack.enter_context(patch.object(nar, "MAX_ENTRIES",
+                            len(observed["objects"][first]["descriptor"]["nodes"])))
+                    with self.assertRaises(ValueError): qualify()
+                    if change == "duplicate":
+                        self.assertEqual(fixture.opened, [])
+                        self.assertEqual(observed["objects"][first]["descriptor"]["nodes"].walks, 1)
+                    else:
+                        # Each individual root fits; the second root is refused
+                        # by the existing aggregate gate before its index/IO.
+                        second = sorted(fixture.objects)[1]
+                        self.assertEqual(set(root for root, _, _ in fixture.opened), {first})
+                        self.assertEqual(len(fixture.opened), len(fixture.objects[first]["regularInputs"]))
+                        self.assertEqual(observed["objects"][second]["descriptor"]["nodes"].walks, 1)
+
+    def test_logical_lookup_keeps_original_deadline_and_metadata_readback(self):
+        for change in ("deadline", "metadata"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                fixture = DeclaredLookupFixture(Path(temporary), self.selection(), 2)
+                with fixture.installed() as (qualify, _):
+                    if change == "deadline":
+                        with self.assertRaises(ValueError): qualify(float(time.monotonic()-1))
+                        self.assertEqual(fixture.opened, [])
+                    else:
+                        original = query.open_declared
+                        def changed(label, aliases, source, node):
+                            result = original(label, aliases, source, node)
+                            if str(label).startswith(str(fixture.repository / "regular") + "/"):
+                                metadata = fixture.repository / "metadata/00000000"
+                                metadata.chmod(0o600); metadata.write_bytes(b"[]"); metadata.chmod(0o444)
+                            return result
+                        with patch.object(query, "open_declared", side_effect=changed):
+                            with self.assertRaises(ValueError): qualify()
+                        self.assertEqual(len(fixture.opened), sum(len(row["regularInputs"])
+                            for row in fixture.objects.values()))
 
     def test_unknown_metadata_role_refuses_before_referenced_opener(self):
         # Pre-IO shape gate; no physical source/tool namespace is inspected.

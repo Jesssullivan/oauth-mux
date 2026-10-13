@@ -74,7 +74,7 @@ def main(*, _child=None, _extra=None, _retainer=None, _admitted=None):
 
 
 REFUSAL_ERRORS = (ValueError, OSError, KeyError, TypeError, UnicodeError, IndexError, MemoryError)
-MAX_TRACE_SCAN = 32
+MAX_TRACE_SCAN = 128
 MAX_TRACE_ROWS = 8
 MAX_SOURCE_LINE = 65535
 MAX_DIAGNOSTIC_BYTES = 512
