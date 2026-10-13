@@ -1618,3 +1618,23 @@ python_test(name="carrier_direct_native_tui_contract_test",main="test_direct_nat
     target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"],
 )
 exports_files(["carrier_direct_native_tui_runtime.py"])
+
+# Whole public package retention: no service, account or native activation.
+exports_files(["public_package_retention.py"])
+python_binary(
+    name = "retained_public_install",
+    main = "retained_public_install.py",
+    srcs = ["public_package_retention.py", "install.py", "pack.py", "portable.py",
+        "resident_enrollment.py", "//tools:guard_resident_enrollment_profile.py", "//tools:resident_owned_update_sources"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "public_package_retention_test",
+    main = "test_public_package_retention.py",
+    srcs = ["public_package_retention.py", "retained_public_install.py", "install.py", "pack.py", "portable.py",
+        "test_delivery.py", "test_portable.py", "resident_enrollment.py",
+        "//tools:guard_resident_enrollment_profile.py", "//tools:resident_owned_update_sources"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)

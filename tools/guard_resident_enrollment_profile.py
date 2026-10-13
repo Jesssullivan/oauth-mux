@@ -170,7 +170,7 @@ def manifest_schema(value,home):
         require(value["ownership"] == "omux-installation" and value["native_context"] is None
             and permissions == expected_permissions)
         import guard_resident_owned_update as update
-        update.start_pins(value["start"],home)
+        update.start_pins(value["start"],home,allow_retained=value["action"] == "observe-custody-existing")
     elif updating:
         require(value["ownership"] == "omux-installation" and value["native_context"] is None
             and not any(permissions.values()))
@@ -416,6 +416,7 @@ class OwnedUnitCustody:
     def __init__(self,selected):
         self.selected = selected
         self.held = []
+        self.pending = None
         self.files = []
         self.alias = None
         try:
@@ -423,10 +424,14 @@ class OwnedUnitCustody:
             require(selected["ownership"] == "omux-installation")
             for path,limit in ((records/"install.json",131072),(unit,65536)):
                 parent = open_directory(path.parent)
+                self.pending = parent
                 self.held.append(parent)
+                self.pending = None
                 require(os.fstat(parent).st_uid == os.getuid())
                 descriptor = os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
+                self.pending = descriptor
                 self.held.append(descriptor)
+                self.pending = None
                 info = os.fstat(descriptor)
                 require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
                     and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
@@ -436,7 +441,7 @@ class OwnedUnitCustody:
                 self.files.append((path,parent,descriptor,file_identity(info),raw,stable(os.fstat(parent))))
             record = json.loads(self.files[0][4],object_pairs_hook=unique)
             keys = {"schemaVersion","prefix","product","userService","serviceActivated","artifact","files"}
-            require(type(record) is dict and set(record) in (keys, keys | {"desktopDirectory"}) and type(record["schemaVersion"]) is int
+            require(type(record) is dict and set(record) in (keys, keys | {"desktopDirectory"}, keys | {"publicRetention"}, keys | {"desktopDirectory","publicRetention"}) and type(record["schemaVersion"]) is int
                 and record["schemaVersion"] == 1 and record["prefix"] == str(prefix)
                 and record["userService"] == str(unit) and type(record["serviceActivated"]) is bool
                 and type(record["artifact"]) is dict
@@ -450,6 +455,9 @@ class OwnedUnitCustody:
                 identity = "ai.xoxd.omux.dev" if channel == "development" else "ai.xoxd.omux"
                 require(unit.name == identity + ".service")
                 desktop_path = prefix/"share/applications"/(identity + ".desktop")
+            if "publicRetention" in record:
+                require(selected.get("action") == "observe-custody-existing"
+                    and record["publicRetention"] == selected["start"].get("retention"))
             rows = record["files"]
             require(type(rows) is list and 0 < len(rows) <= 256)
             seen = set()
@@ -473,8 +481,11 @@ class OwnedUnitCustody:
             require(unit_row is not None and unit_row["mode"] == 0o600
                 and hashlib.sha256(self.files[1][4]).hexdigest() == unit_row["sha256"])
             self.recheck()
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            try:self.close()
+            except BaseException as cleanup:
+                prior=BaseException.__cause__.__get__(error)
+                raise BaseException.with_traceback(error,BaseException.__traceback__.__get__(error)) from (cleanup if prior is None else prior)
             raise
 
     def verify_fragment(self,fragment):
@@ -485,9 +496,11 @@ class OwnedUnitCustody:
             try:
                 witness = file_identity(os.stat(fragment.name,dir_fd=parent,follow_symlinks=False))
                 if self.alias is None:
-                    self.held.append(parent)
-                    self.alias = (fragment,parent,witness,stable(os.fstat(parent)))
-                    parent = None
+                    alias = (fragment,parent,witness,stable(os.fstat(parent)))
+                    self.pending,parent = parent,None
+                    self.held.append(self.pending)
+                    self.pending = None
+                    self.alias = alias
                 else:
                     require(fragment == self.alias[0] and witness == self.alias[2])
             finally:
@@ -518,16 +531,19 @@ class OwnedUnitCustody:
             resolve_owned_unit_fragment(path,self.selected["service_path"])
 
     def close(self):
-        held,self.held = self.held,[]
+        pending,self.pending = self.pending,None
         failure = None
-        for descriptor in reversed(held):
-            try:
-                os.close(descriptor)
-            except OSError as error:
-                if failure is None:
-                    failure = error
-        if failure is not None:
-            raise failure
+        if pending is not None and pending in self.held:pending=None
+        while self.held:
+            descriptor=self.held.pop()
+            try:os.close(descriptor)
+            except BaseException as error:
+                if failure is None:failure=error
+        if pending is not None:
+            try:os.close(pending)
+            except BaseException as error:
+                if failure is None:failure=error
+        if failure is not None:raise failure
 
 def recovery_loaded_properties(values):
     require(values["LoadState"] == "loaded" and values["ActiveState"] == "inactive"

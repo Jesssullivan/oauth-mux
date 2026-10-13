@@ -111,6 +111,18 @@ def _record(prefix: Path, state_dir: Path) -> dict | None:
     result = json.loads(_read_regular(path))
     if result.get("schemaVersion") != 1 or result.get("prefix") != str(prefix):
         raise ValueError("ownership record does not match installation")
+    if "publicRetention" in result:
+        retained = result["publicRetention"]
+        if (type(retained) is not dict or set(retained) != {"path","sha256","bytes"}
+                or type(retained["sha256"]) is not str or re.fullmatch(r"[0-9a-f]{64}",retained["sha256"]) is None
+                or type(retained["bytes"]) is not int or not 0 < retained["bytes"] <= 2*1024*1024):
+            raise ValueError("invalid public retention record")
+        path = _absolute(Path(retained["path"]))
+        relative = path.relative_to(state_dir/"public-packages")
+        if (len(relative.parts) != 3 or relative.parts[0] != result["artifact"]["archiveSha256"]
+                or re.fullmatch(r"(?:[0-9a-f]{64}|unqualified)",relative.parts[1]) is None
+                or relative.parts[2] != "descriptor.json"):
+            raise ValueError("public retention record contains unmanaged path")
     known = {str(prefix / "bin" / name) for name in (*BINARIES, "omux-control")}
     desktop_path = None
     desktop_directory = result.get("desktopDirectory")
@@ -241,7 +253,7 @@ def installation_plan(manifest, files, prefix, state_dir, user_service=None, pla
 def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                    user_service: Path | None = None, platform: str = "linux",
                    *, daemon_state_dir: Path | None = None, desktop_dir: Path | None = None,
-                   _owned_update=None, _owned_prepare=None) -> dict:
+                   _owned_update=None, _owned_prepare=None, _public_retention=None) -> dict:
     if _owned_prepare is not None and _owned_update is not None:
         raise ValueError("owned installation purposes overlap")
     bounded_owned = _owned_update is not None or _owned_prepare is not None
@@ -250,6 +262,11 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
         if type(deadline_ns) is not int or time.monotonic_ns() >= deadline_ns:
             raise ValueError("owned preparation deadline expired")
     manifest, files = verify_bundle(payload)
+    if _public_retention is not None:
+        from public_package_retention import HeldPackage
+        if type(_public_retention) is not HeldPackage or _public_retention.archive.raw != payload:
+            raise ValueError("retained package owner differs")
+        _public_retention.full()
     destinations = installation_plan(manifest, files, prefix, state_dir, user_service, platform,
                                     daemon_state_dir=daemon_state_dir, desktop_dir=desktop_dir)
     desktop_directory = _desktop_directory(manifest, files, prefix, desktop_dir)
@@ -314,6 +331,8 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                          "manifestSha256": digest(files["release-manifest.json"])},
             "files": [{"path": str(path), "sha256": digest(data), "mode": mode} for path, data, mode in destinations],
         }
+        if _public_retention is not None:
+            result["publicRetention"] = _public_retention.reference()
         if desktop_directory is not None:
             result["desktopDirectory"] = str(desktop_directory)
         try:
@@ -330,6 +349,8 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
             if bounded_owned and time.monotonic_ns() >= deadline_ns:
                 raise ValueError("owned installation deadline expired")
             _write(state_dir / RECORD, json_bytes(result), 0o600)
+            if _public_retention is not None:
+                _public_retention.full()
             if _owned_update is not None:
                 after_replace(result)
             if _owned_prepare is not None:

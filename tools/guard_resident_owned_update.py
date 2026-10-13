@@ -92,9 +92,9 @@ def qualification_output(receipt,qualification):
     resident.require(resident.canonical(receipt["output_base"]) == expected)
     return expected
 
-def start_pins(value,home):
+def start_pins(value,home,*,allow_retained=False):
     resident.require(type(value) is dict and set(value) == {
-        "archive_path","archive_sha256","archive_bytes","manifest_sha256","qualification"})
+        "archive_path","archive_sha256","archive_bytes","manifest_sha256","qualification"} | ({"retention"} if allow_retained and "retention" in value else set()))
     for name in ("archive_sha256","manifest_sha256"):
         resident.require(type(value[name]) is str and re.fullmatch(r"[0-9a-f]{64}",value[name]))
     resident.require(type(value["archive_bytes"]) is int and 0 < value["archive_bytes"] <= pack.MAX_BYTES)
@@ -105,8 +105,17 @@ def start_pins(value,home):
     resident.require(type(q["bytes"]) is int and 0 < q["bytes"] <= 8*1024*1024)
     path = resident.canonical(q["path"])
     resident.require(path.name == "receipt.json" and str(uuid.UUID(path.parent.name)) == path.parent.name)
-    output = archive_namespace(resident.canonical(value["archive_path"]),home)
-    resident.require(output.parent.parent == path.parent.parent)
+    if "retention" in value:
+        import public_package_retention as retained
+        retained.retention_pin(value["retention"],resident.fixed_paths(Path(home))["records"],value)
+        # Validate the original qualification namespace independently: retention
+        # only chooses public content, never old process/source physical facts.
+        resident.require(path.parent.parent == Path(home)/".local/state/omux-execution-20261005"
+            or path.parent.parent.parent == Path("/srv/fast-local/jess/state/codex")
+                and re.fullmatch(r"omux-[a-z0-9-]+",path.parent.parent.name))
+    else:
+        output = archive_namespace(resident.canonical(value["archive_path"]),home)
+        resident.require(output.parent.parent == path.parent.parent)
     return value
 
 def active_start_properties(values,selected):
@@ -340,8 +349,11 @@ class PublicFile:
             self.raw = b"".join(chunks)
             resident.require(len(self.raw) == info.st_size)
             self.recheck()
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            try:self.close()
+            except BaseException as cleanup:
+                prior=BaseException.__cause__.__get__(error)
+                raise BaseException.with_traceback(error,BaseException.__traceback__.__get__(error)) from (cleanup if prior is None else prior)
             raise
     def recheck(self):
         tick(self.deadline)
@@ -354,38 +366,45 @@ class PublicFile:
         resident.require(resident.file_identity(os.fstat(self.fd)) == self.identity
             == resident.file_identity(os.stat(self.path.name,dir_fd=self.parent,follow_symlinks=False)))
     def close(self):
-        descriptors = [getattr(self,name,None) for name in ("fd","parent")]
-        self.fd = self.parent = None
         failure = None
-        for descriptor in descriptors:
+        for name in ("fd","parent"):
+            descriptor=getattr(self,name,None)
+            setattr(self,name,None)
             if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError as error:
-                    if failure is None:
-                        failure = error
-        if failure is not None:
-            raise failure
+                try:os.close(descriptor)
+                except BaseException as error:
+                    if failure is None:failure=error
+        if failure is not None:raise failure
 
 class QualifiedExistingEnrollment:
     """Public archive/installed-software authority; never open private custody."""
     def __init__(self,selected,home,deadline):
         self.deadline = deadline
-        self.files,self.unit = [],None
+        self.files,self.unit,self.retention,self.pending = [],None,None,None
         try:
-            self.selection = start_pins(selected["existing_archive"],home)
+            self.selection = start_pins(selected["existing_archive"],home,
+                allow_retained=selected.get("action") == "observe-custody-existing")
             q = self.selection["qualification"]
-            qualification = PublicFile(q["path"],deadline,8*1024*1024)
-            self.files.append(qualification)
-            resident.require(len(qualification.raw) == q["bytes"]
-                and hashlib.sha256(qualification.raw).hexdigest() == q["sha256"])
-            receipt = json.loads(qualification.raw,object_pairs_hook=resident.unique)
-            output = qualification_output(receipt,q)
-            resident.require(Path(self.selection["archive_path"]) == output/ARCHIVE_RELATIVE)
-            archive = PublicFile(self.selection["archive_path"],deadline,pack.MAX_BYTES)
-            self.files.append(archive)
-            resident.require(len(archive.raw) == self.selection["archive_bytes"]
-                and hashlib.sha256(archive.raw).hexdigest() == self.selection["archive_sha256"])
+            if "retention" in self.selection:
+                import public_package_retention as retained
+                self.retention = retained.qualified_retained(self.selection,selected["records"],home,deadline)
+                # Borrowed roles preserve the original [qualification, archive]
+                # order; the separate owner alone closes these descriptors.
+                qualification,archive = self.retention.qualification,self.retention.archive
+            else:
+                q = self.selection["qualification"]
+                qualification = PublicFile(q["path"],deadline,8*1024*1024)
+                self.capture(qualification)
+                resident.require(len(qualification.raw) == q["bytes"]
+                    and hashlib.sha256(qualification.raw).hexdigest() == q["sha256"])
+                receipt = json.loads(qualification.raw,object_pairs_hook=resident.unique)
+                output = qualification_output(receipt,q)
+                resident.require(Path(self.selection["archive_path"]) == output/ARCHIVE_RELATIVE)
+                archive = PublicFile(self.selection["archive_path"],deadline,pack.MAX_BYTES)
+                self.capture(archive)
+                resident.require(len(archive.raw) == self.selection["archive_bytes"]
+                    and hashlib.sha256(archive.raw).hexdigest() == self.selection["archive_sha256"])
+            if self.retention is not None:self.files.extend((qualification,archive))
             files,_ = pack.archive_contents(archive.raw)
             resident.require(hashlib.sha256(files["release-manifest.json"]).hexdigest() == self.selection["manifest_sha256"])
             manifest = json.loads(files["release-manifest.json"],object_pairs_hook=resident.unique)
@@ -396,7 +415,8 @@ class QualifiedExistingEnrollment:
             expected = {str(path):{"sha256":hashlib.sha256(raw).hexdigest(),"mode":mode} for path,raw,mode in plan}
             self.unit = resident.OwnedUnitCustody(selected)
             record = json.loads(self.unit.files[0][4],object_pairs_hook=resident.unique)
-            resident.require(record["product"] == manifest["product"] and record["artifact"] == {
+            resident.require(record.get("publicRetention") == self.selection.get("retention")
+                and record["product"] == manifest["product"] and record["artifact"] == {
                 "channel":manifest["channel"],"target":manifest["target"],"distribution":manifest["distribution"],
                 "provenance":manifest["provenance"],"archiveSha256":self.selection["archive_sha256"],
                 "manifestSha256":self.selection["manifest_sha256"]}
@@ -404,31 +424,53 @@ class QualifiedExistingEnrollment:
                 and {row["path"]:{"sha256":row["sha256"],"mode":row["mode"]} for row in record["files"]} == expected)
             for row in record["files"]:
                 public = PublicFile(row["path"],deadline,128*1024*1024,owned=True)
-                self.files.append(public)
+                self.capture(public)
                 resident.require(stat.S_IMODE(os.fstat(public.fd).st_mode) == row["mode"]
                     and hashlib.sha256(public.raw).hexdigest() == row["sha256"])
             self.unit.verify_fragment(Path(home)/".config/systemd/user"/Path(selected["service_path"]).name)
             self.recheck()
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            try:self.close()
+            except BaseException as cleanup:
+                prior=BaseException.__cause__.__get__(error)
+                raise BaseException.with_traceback(error,BaseException.__traceback__.__get__(error)) from (cleanup if prior is None else prior)
             raise
+    def capture(self,public):
+        self.pending=public
+        self.files.append(public)
+        self.pending=None
+        return public
     def recheck(self):
         tick(self.deadline)
         self.unit.recheck()
+        if self.retention is not None:self.retention.full()
         for public in self.files:
             public.recheck()
     def close(self):
-        unit,files = self.unit,self.files
-        self.unit,self.files = None,[]
-        failure = None
-        for held in ([unit] if unit is not None else [])+list(reversed(files)):
-            try:
-                held.close()
+        unit,retention,pending = self.unit,self.retention,self.pending
+        self.unit,self.retention,self.pending = None,None,None
+        failure=None
+        if pending is not None:
+            for public in self.files:
+                if public is pending:pending=None;break
+        if unit is not None:
+            try:unit.close()
+            except BaseException as error:failure=error
+        while self.files:
+            public=self.files.pop()
+            if retention is not None and (public is retention.archive or public is retention.qualification):continue
+            try:public.close()
             except BaseException as error:
-                if failure is None:
-                    failure = error
-        if failure is not None:
-            raise failure
+                if failure is None:failure=error
+        if pending is not None:
+            try:pending.close()
+            except BaseException as error:
+                if failure is None:failure=error
+        if retention is not None:
+            try:retention.close()
+            except BaseException as error:
+                if failure is None:failure=error
+        if failure is not None:raise failure
 
 def portable_process_images(exe_name,exe_identity,maps,loader,backend):
     """Public mapping identities of exact archive-bound held portable images."""
@@ -496,8 +538,11 @@ class OwnedCustodyReopen:
             self.lock = os.open("daemon.lock",os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.directory)
             self.lock_identity = resident.stable(os.fstat(self.lock))
             self.pristine()
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            try:self.close()
+            except BaseException as cleanup:
+                prior=BaseException.__cause__.__get__(error)
+                raise BaseException.with_traceback(error,BaseException.__traceback__.__get__(error)) from (cleanup if prior is None else prior)
             raise
     def recheck(self):
         tick(self.deadline)
@@ -567,14 +612,20 @@ class OwnedCustodyReopen:
         self.recheck()
         return self.lock_identity,images
     def close(self):
+        failure = None
         for name in ("lock","directory"):
             fd = getattr(self,name,None)
+            setattr(self,name,None)
             if fd is not None:
-                os.close(fd)
-                setattr(self,name,None)
-        if self.software is not None:
-            self.software.close()
-            self.software = None
+                try:os.close(fd)
+                except BaseException as error:
+                    if failure is None:failure=error
+        software,self.software = self.software,None
+        if software is not None:
+            try:software.close()
+            except BaseException as error:
+                if failure is None:failure=error
+        if failure is not None:raise failure
 
 class RuntimeFence:
     """Hold existing singleton lock and exact named/held metadata; read no private bytes."""
