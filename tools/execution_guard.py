@@ -3123,6 +3123,7 @@ def _main(argv, admission_resources, retirement_resources):
         content_checkpoint = content_publication = content_delivery = None
         content_dependency_verified = False
         content_delivery_failure = False
+        content_capture_failure = None
         supervisor_pid = os.getpid()
         supervisor_stat = Path('/proc/self/stat').read_text()
         supervisor_start_ticks = supervisor_stat[supervisor_stat.rindex(')') + 2:].split()[19]
@@ -3266,6 +3267,7 @@ def _main(argv, admission_resources, retirement_resources):
                 if args.profile == 'native-siwc-catalog-content-source-reserved':
                     cache_profile['native_content_dependency_scope'] = seed_reserved.DEPENDENCY_SCOPE
                     cache_profile['fixed_cohort'] = seed_reserved.ARGUMENTS
+                    cache_profile = seed_reserved.source_cache_policy(cache_profile)
                     # No UUID, entry, deadline or six per-run values in the key.
                     # Exact fresh values still enter every repository/test action.
                 cache_key = stable_fingerprint(workload_cwd if site else Path.cwd(), cache_inputs, os.getuid(), os.getgid(),
@@ -3912,7 +3914,11 @@ def _main(argv, admission_resources, retirement_resources):
                                     and cleanup_summary.get('readback_attempts',0) >= 2
                                     and evidence_ok and pids_cancellation is None
                                     and graph_digest(Path.cwd()) == (graph_sha256,graph_inputs)):
-                                lease.prepare_capture()
+                                try:
+                                    lease.prepare_capture()
+                                except (OSError,ValueError) as error:
+                                    content_capture_failure=seed_reserved.capture_failure(error)
+                                    raise
                                 seed_reservation.observe(cleanup=True)
                                 content_dependency_verified = True
                                 if result == 0 and seed_verified_after is True:
@@ -4237,7 +4243,8 @@ def _main(argv, admission_resources, retirement_resources):
                         'seed_qualification':False,'seed_qualification_requires_matching_outer_success':True,
                         'native_runtime_qualified':False,'complete_build_seed_qualified':False}
             if args.profile == 'native-siwc-catalog-content-source-reserved' and lease is not None:
-                receipt.update(source_phase_receipt=content_checkpoint,
+                receipt.update(native_siwc_content_post_source_capture_failure=content_capture_failure,
+                    source_phase_receipt=content_checkpoint,
                     native_siwc_content_publication=content_publication,
                     native_siwc_content_delivery=content_delivery)
                 if content_dependency_verified and (result != 0 or final_status == 0):

@@ -26,6 +26,7 @@ SOURCE = "OMUX_NATIVE_FILE_WRITER_MODELS_SOURCE_COMMIT"
 GRAPH = "OMUX_NATIVE_FILE_WRITER_MODELS_GRAPH_SHA256"
 ACTION_SECONDS = 840
 DEPENDENCY_SCOPE = "fixed-siwc-content-dependency-state-v1"
+SOURCE_CONVENIENCE_MODE = "ignore"
 DELIVERY_ARGUMENTS = ["test", "//tools:codex_native_siwc_content_delivery_producer"]
 DELIVERY_REQUEST = "OMUX_NATIVE_SIWC_CONTENT_DELIVERY_REQUEST"
 DELIVERY_REQUEST_SHA256 = DELIVERY_REQUEST + "_SHA256"
@@ -39,6 +40,26 @@ remaining = kernel.remaining
 def require(value):
     if value is not True:
         raise ValueError("native-file-writer-models-reservation-refused")
+
+
+class CheckoutCustodyRefused(ValueError):
+    def __init__(self): super().__init__('content-checkout-custody-refused')
+
+
+def source_cache_policy(profile):
+    """Partition the changed fixed execution policy, never the per-run tuple."""
+    require(type(profile) is dict and type(profile.get('execution')) is dict)
+    return {**profile,'execution':{**profile['execution'],
+        'source_convenience_symlinks':SOURCE_CONVENIENCE_MODE}}
+
+
+def capture_failure(error):
+    """Closed failure metadata only; no exception text, paths or authority."""
+    reason=('checkout-custody' if type(error) is CheckoutCustodyRefused else
+        'os-refusal' if isinstance(error,OSError) else 'validation-refusal')
+    return {'kind':'omux-native-content-post-source-capture-refusal-v1',
+        'phase':'post-source-capture','reason':reason,
+        'source_qualified':False,'dependency_reuse_qualified':False}
 
 
 def selected(profile, arguments):
@@ -141,10 +162,11 @@ class ContentDependencyLease(cache.CacheLease):
             raise
 
     def _named(self):
-        require(self.checkout.resolve(strict=True) == self.checkout
-            and _witness(os.fstat(self.checkout_fd)) == self.checkout_anchor == _witness(
-                os.stat(self.checkout,follow_symlinks=False))
-            and _witness(os.fstat(self.state_fd))[:5] == self.state_anchor == _witness(
+        if not (self.checkout.resolve(strict=True) == self.checkout
+                and _witness(os.fstat(self.checkout_fd)) == self.checkout_anchor == _witness(
+                    os.stat(self.checkout,follow_symlinks=False))):
+            raise CheckoutCustodyRefused()
+        require(_witness(os.fstat(self.state_fd))[:5] == self.state_anchor == _witness(
                 os.stat(self.state_root,follow_symlinks=False))[:5]
             and _witness(os.fstat(self.directory)) == self.directory_anchor == _witness(
                 os.stat(self.name,dir_fd=self.state_fd,follow_symlinks=False))
@@ -425,11 +447,14 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, *, graph_s
     action_seconds = runtime_seconds(entry, deadline)
     require(action_seconds >= 1)
     result = builder(bazel, run, arguments, profile="standard", **kwargs)
+    require(not any(value == '--experimental_convenience_symlinks' or
+        value.startswith('--experimental_convenience_symlinks=') or value == '--symlink_prefix' or
+        value.startswith('--symlink_prefix=') for value in result))
     index = result.index("test") + 1
     # Repository declarations and genuine consumers bind the identical actual
     # coordinator tuple. Env presence alone never proves SDK/child readiness.
-    result[index:index] = ["--repository_disable_download", "--repo_contents_cache=",
-        "--test_timeout=" + str(action_seconds)] + [
+    result[index:index] = ["--experimental_convenience_symlinks="+SOURCE_CONVENIENCE_MODE,
+        "--repository_disable_download", "--repo_contents_cache=", "--test_timeout=" + str(action_seconds)] + [
         "--"+kind+"="+key+"="+value for kind in ("repo_env","test_env")
         for key,value in environment.items()]
     return result

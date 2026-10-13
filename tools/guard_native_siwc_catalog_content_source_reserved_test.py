@@ -671,4 +671,65 @@ class ContentDependencyAndDeliveryTests(unittest.TestCase):
         self.assertTrue(all(not owner for owner in registries))
 
 
+    def test_real_source_builder_ignores_convenience_links_without_conflicting_flags(self):
+        lease=self.acquire()
+        with patch.object(Path,'cwd',return_value=self.checkout):
+            command=model.command(guard.bazel_command,'bazel',self.run,model.ARGUMENTS,model.PROFILE,
+                self.entry,self.until,graph_sha256='c'*64,source_commit='b'*40,source_dirty='false',dependency_lease=lease)
+        flag='--experimental_convenience_symlinks=ignore'
+        self.assertEqual(command[command.index('test')+1],flag)
+        self.assertEqual([value for value in command if value.startswith('--experimental_convenience_symlinks')],[flag])
+        self.assertFalse(any(value.startswith('--symlink_prefix') for value in command))
+        self.assertEqual([value for value in command if value.startswith('--output_base=')],
+            ['--output_base='+str(lease.output_base)])
+        self.assertEqual(command[-2:],model.ARGUMENTS[1:])
+        self.assertIn('--nocache_test_results',command)
+        for extra in (['--experimental_convenience_symlinks=normal'],['--experimental_convenience_symlinks','clean'],
+                ['--symlink_prefix=/foreign'],['--symlink_prefix','/foreign']):
+            def conflict(*args,**kwargs):
+                values=guard.bazel_command(*args,**kwargs)
+                values[values.index('test')+1:values.index('test')+1]=extra
+                return values
+            with patch.object(Path,'cwd',return_value=self.checkout):
+                with self.assertRaises(ValueError): model.command(conflict,'bazel',self.run,model.ARGUMENTS,model.PROFILE,
+                    self.entry,self.until,graph_sha256='c'*64,source_commit='b'*40,source_dirty='false',dependency_lease=lease)
+
+    def test_real_checkout_fd_stamps_detect_default_link_self_mutation_and_closed_capture_reason(self):
+        lease=self.acquire(); before=lease.checkout_anchor
+        for name in ('bazel-bin','bazel-out','bazel-testlogs','bazel-checkout'):
+            (self.checkout/name).symlink_to(lease.output_base/name)
+        self.assertNotEqual(model._witness(os.fstat(lease.checkout_fd)),before)
+        with self.assertRaises(model.CheckoutCustodyRefused) as refused: lease.prepare_capture()
+        diagnostic=model.capture_failure(refused.exception)
+        self.assertEqual(diagnostic,{'kind':'omux-native-content-post-source-capture-refusal-v1',
+            'phase':'post-source-capture','reason':'checkout-custody','source_qualified':False,
+            'dependency_reuse_qualified':False})
+        self.assertNotIn(str(self.checkout),json.dumps(diagnostic))
+        self.assertNotIn(self.key,json.dumps(diagnostic))
+        self.assertEqual(lease.checkout_anchor,before)  # no timestamp rebase or bypass.
+        self.assertFalse(model.cache.read_marker(lease.directory)['clean'])
+
+    def test_fixed_ignore_policy_changes_only_dependency_key_partition_and_failed_old_cache_stays_dirty(self):
+        profile={'fixed_cohort':model.ARGUMENTS,'native_content_dependency_scope':model.DEPENDENCY_SCOPE,
+            'execution':{'batch':True,'cache_test_results':False}}
+        inputs={'python':'/nix/store/aaaa-python'}
+        old=model.cache.stable_fingerprint(self.checkout,inputs,os.getuid(),os.getgid(),'system',profile)
+        policy=model.source_cache_policy(profile)
+        new=model.cache.stable_fingerprint(self.checkout,inputs,os.getuid(),os.getgid(),'system',policy)
+        self.assertNotEqual(old,new)
+        self.assertNotIn('source_convenience_symlinks',profile['execution'])
+        self.assertEqual(policy['execution']['source_convenience_symlinks'],'ignore')
+        self.assertEqual(new,model.cache.stable_fingerprint(self.checkout,inputs,os.getuid(),os.getgid(),'system',
+            model.source_cache_policy(profile)))
+        self.key=old; prior=self.acquire(); prior.close(); self.lease=None
+        original=(self.state/prior.name/'owner.json').read_bytes()
+        with self.assertRaises(ValueError): self.acquire()
+        self.key=new; fresh=self.acquire()
+        self.assertNotEqual(fresh.output_base,prior.output_base)
+        self.assertEqual((self.state/prior.name/'owner.json').read_bytes(),original)
+        self.assertFalse(model.cache.read_marker(fresh.directory)['clean'])
+        fresh.prepare_capture()  # unmodified real named/held checkout can pass; no actor effects claimed.
+        self.assertEqual(fresh.checkout_anchor,model._witness(os.fstat(fresh.checkout_fd)))
+
+
 if __name__ == '__main__': unittest.main()
