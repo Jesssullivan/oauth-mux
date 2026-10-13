@@ -3641,5 +3641,68 @@ class Runtime009SeedOwnedWorkerReentryModels(unittest.TestCase):
             self.assertEqual((run / 'workload.log').read_bytes(), b'OMUX_SYNTHETIC_SEED_WORKER_OK\n')
 
 
+class RetainedOrdinaryNativeSchedulingModels(unittest.TestCase):
+    def test_actual_retained_pair_builder_serializes_clean_actions_and_keeps_complete_input_flags(self):
+        import execution_guard as guard
+        run=Path('/owned/12345678-1234-4234-8234-123456789abc')
+        retained=Path('/owned/retained/runtime009')
+        arguments=['test','//tools:codex_owner_runtime_input_qualification',
+            '//delivery:installed_retained_ordinary_native_tui_test']
+        def command(dirty):
+            return guard.bazel_command('/declared/bazel',run,arguments,
+                source_commit='a'*40,source_dirty=dirty,codex_owner_runtime_directory=retained)
+        clean=command('false');dirty=command('true')
+        self.assertEqual([part for part in clean if part.startswith('--jobs')],['--jobs=1'])
+        self.assertEqual([part for part in dirty if part.startswith('--jobs')],['--jobs=2'])
+        self.assertLess(clean.index('test'),clean.index('--jobs=1'))
+        self.assertLess(clean.index('--jobs=1'),clean.index(arguments[1]))
+        self.assertEqual(clean[-2:],arguments[-2:])
+        self.assertEqual([part.replace('--jobs=1','--jobs=2')
+            .replace('--define=OMUX_SOURCE_DIRTY=false','--define=OMUX_SOURCE_DIRTY=true') for part in clean],dirty)
+        self.assertIn('--repo_env=OMUX_CODEX_OWNER_RUNTIME_DIRECTORY='+str(retained),clean)
+        self.assertFalse(any(part.startswith('--repo_env=OMUX_NIXPKGS_EVALUATION_SOURCE=') for part in clean))
+        self.assertEqual(guard.toolbar_prepare_action_jobs('standard',arguments,source_dirty='false'),1)
+        self.assertEqual(guard.toolbar_prepare_action_jobs('standard',arguments,source_dirty='true'),2)
+        for flag in ('--host_jvm_args=-Xmx1536m','--host_jvm_args=-XX:ActiveProcessorCount=2',
+                '--nocache_test_results','--remote_executor=','--remote_cache=','--disk_cache=',
+                '--spawn_strategy=sandboxed','--strategy=TestRunner=processwrapper-sandbox',
+                '--sandbox_default_allow_network=false','--lockfile_mode=error'):
+            self.assertIn(flag,clean)
+        self.assertEqual(guard.controller_thread_profile(),
+            {'legacy_globbing_threads':2,'fsvc_threads':2,'loading_phase_threads':2})
+        self.assertEqual(guard.PROPERTIES['MemoryMax'],'4294967296')
+        self.assertEqual(guard.PROPERTIES['TasksMax'],'512')
+        self.assertEqual(guard.PROPERTIES['CPUQuotaPerSecUSec'],'2s')
+        self.assertEqual(guard.CGROUP['memory.swap.max'],'0')
+
+    def test_native_jobs_policy_requires_exact_order_profile_and_clean_provenance_without_new_admission(self):
+        import execution_guard as guard
+        from guard_owner_runtime_input import finite
+        arguments=['test','//tools:codex_owner_runtime_input_qualification',
+            '//delivery:installed_retained_ordinary_native_tui_test']
+        for profile,vector,dirty in [('standard',arguments,None),('standard',arguments,'true'),
+                ('standard',arguments,False),('standard',['test',*reversed(arguments[1:])],'false'),
+                ('standard',['build',*arguments[1:]],'false'),('standard',['test',arguments[1]],'false'),
+                ('standard',['test',arguments[2]],'false'),('standard',arguments+['//:docs_check'],'false'),
+                ('standard',arguments+['--jobs=1'],'false'),('installed-browser',arguments,'false')]:
+            with self.subTest(profile=profile,vector=vector,dirty=dirty):
+                self.assertEqual(guard.toolbar_prepare_action_jobs(profile,vector,source_dirty=dirty),2)
+        self.assertEqual(guard.toolbar_prepare_action_jobs('standard',['test',guard.TOOLBAR_PREP_LABEL]),1)
+        self.assertTrue(guard.toolbar_prepare_selected('standard','system',['test',guard.TOOLBAR_PREP_LABEL]))
+        for vector,unrelated in ((arguments,('/foreign/nixpkgs',)),
+                (arguments+['//:unrelated'],()),(arguments+['--jobs=1'],())):
+            with self.subTest(vector=vector,unrelated=unrelated),self.assertRaises(ValueError):
+                finite('standard',vector,unrelated)
+        run=Path('/owned/12345678-1234-4234-8234-123456789abc')
+        retained=Path('/owned/retained/runtime009')
+        for options in ({'source_commit':'a'*40,'source_dirty':None},
+                {'source_commit':None,'source_dirty':'false'},
+                {'source_commit':'a'*40,'source_dirty':'false','nixpkgs_source':Path('/foreign/nixpkgs')}):
+            with self.subTest(options=options),self.assertRaises(ValueError):
+                guard.bazel_command('/declared/bazel',run,arguments,codex_owner_runtime_directory=retained,**options)
+        with self.assertRaises(ValueError):
+            guard.bazel_command('/declared/bazel',run,arguments+['--jobs=1'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1206,7 +1206,7 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             '--nosystem_rc', '--nohome_rc',
             '--host_jvm_args=-Xmx1536m', '--host_jvm_args=-XX:ActiveProcessorCount=2',
             '--noworkspace_rc', '--output_base=' + str(output_base or run / 'output-base')] + arguments[:1] + [
-            '--jobs=' + str(toolbar_prepare_action_jobs(profile, arguments)),
+            '--jobs=' + str(toolbar_prepare_action_jobs(profile, arguments, source_dirty=source_dirty)),
             '--legacy_globbing_threads=' + str(threads['legacy_globbing_threads']),
             '--experimental_fsvc_threads=' + str(threads['fsvc_threads']),
             '--loading_phase_threads=' + str(threads['loading_phase_threads']),
@@ -1582,13 +1582,18 @@ def toolbar_prepare_selected(profile, manager, arguments, reuse=False, dirty='fa
     return True
 
 
-def toolbar_prepare_action_jobs(profile, arguments):
-    """One retained public preparer serializes actions; all other vectors stay at two.
+def toolbar_prepare_action_jobs(profile, arguments, *, source_dirty=None):
+    """Two fixed standard vectors serialize actions; all others stay at two.
 
-    This is scheduling only. The coordinator independently admits the exact
-    clean standard/system singleton and refuses cache reuse before dispatch.
+    Scheduling grants no admission. Existing public-preparer admission stays
+    unchanged; the retained ordinary-native pair selects one only with explicit
+    clean provenance. All input/ownership checks remain with their callers.
     """
-    return 1 if profile == 'standard' and arguments == ['test', TOOLBAR_PREP_LABEL] else 2
+    return 1 if profile == 'standard' and (
+        arguments == ['test', TOOLBAR_PREP_LABEL]
+        or source_dirty == 'false' and arguments == ['test',
+            '//tools:codex_owner_runtime_input_qualification',
+            '//delivery:installed_retained_ordinary_native_tui_test']) else 2
 
 
 def toolbar_prepare_command(command, run, entry_ns, deadline_ns, source, graph, source_root):
@@ -3494,7 +3499,7 @@ def _main(argv, admission_resources, retirement_resources):
                                  'system_identity': {'PrivateUsers': 'no', 'CapabilityBoundingSet': '',
                                                      'AmbientCapabilities': '', 'StandardInput': 'null'} if args.manager == 'system' else None,
                                  'execution': {'batch': True, 'jvm_heap_mib': 1536, 'active_processors': 2,
-                                               'jobs': toolbar_prepare_action_jobs(args.profile, arguments),
+                                               'jobs': toolbar_prepare_action_jobs(args.profile, arguments, source_dirty=args.source_dirty),
                                                'spawn_strategy': 'sandboxed',
                                                'test_strategy': 'processwrapper-sandbox',
                                                'cache_test_results': False, 'remote_executor': '',
@@ -4570,9 +4575,14 @@ def _main(argv, admission_resources, retirement_resources):
                     'inventory_binding_before':toolbar_inventory_before,
                     'inventory_binding_after':toolbar_inventory_after,
                     'cached_candidate_input_only':True,
-                    'action_jobs':toolbar_prepare_action_jobs(args.profile, arguments),
+                    'action_jobs':toolbar_prepare_action_jobs(args.profile, arguments, source_dirty=args.source_dirty),
                     'original_runfiles_retained_only':True,'fresh_consumer_qualification_required':True,
                     'execution_authority':False,'seat_qualified':False,'toolbar_consent_proved':False}
+            if args.profile == 'standard' and arguments == ['test',
+                    '//tools:codex_owner_runtime_input_qualification',
+                    '//delivery:installed_retained_ordinary_native_tui_test']:
+                receipt['retained_ordinary_native_action_jobs']=toolbar_prepare_action_jobs(
+                    args.profile,arguments,source_dirty=args.source_dirty)
             record_resident_lifecycle(receipt,resident_input)
             if dev_stage_proof:
                 receipt['development_stage'] = {'scope':DEV_STAGE_SCOPE,'stage_child':'dev-stage-complete',
