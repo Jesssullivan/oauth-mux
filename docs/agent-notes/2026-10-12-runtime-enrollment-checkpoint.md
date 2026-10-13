@@ -769,3 +769,142 @@ UI, ordinary accepted-history resume, same-process live handoff, provider,
 stock Codex and Darwin remain unproved. Signing/publication and measured SLO
 gates remain open; the original active, overdue, incomplete goal/clock and
 resource/deadline limits are unchanged.
+
+## Owned-site checks and changed-source models — 2026-10-13 01:00 UTC
+
+Runtime source is `588c8800260c606a341779ce97c59b09d9ea99cc`, graph
+`4e7046587f2b7b292a616e300870e0ec00e9bd4a096f3e0984b5e1b12aaef09e`/523.
+Production first-cause preservation and closed phase/budget diagnostics, one
+bounded fixture correction, and the literal `omux-site-owned-v9` sibling
+selector have been implemented, reviewed and tested. The selector retains
+private ownership, independent Git custody, locked-tool and later qualification
+predicates; it does not admit arbitrary roots or inherit prior native proof.
+FC0032's original 3/3 fixture failure remains recorded at epoch
+`de0dd723-510e-4443-a947-3bb5dfafe9b0`, raw receipt
+`3a1dd8f0cdeab89e61cb573c7088403e75b9dc1396ec1d3eed3028a3ffe23658`.
+
+CG0038, epoch `b715e678-1c77-4fa8-9213-a9a5001d20ba`, closed 0/0 at
+current 588c: all six targets passed—content 50, carrier 83, driver 15,
+execution guard 172, site guard 44 and docs. Raw receipt
+`2cd332a346312b99cbf7e1c1992cfa68f4651e1536a6d25ad07a7d55f18b1084`;
+evidence manifest
+`a020ad28d7cbc7969e921cabd1a2e7c9c94e70bc9744d26e02b6cdfa51dbb3cd`.
+These finite predicates do not qualify SDK/SOURCE/HUB, native compilation,
+ordinary accepted-history resume or live continuity.
+
+CC0046, epoch `16261fb5-9269-49ec-b078-f0528767e710`, then closed 0/0
+using the clean owned site contribution
+`b60c6cf3a2b77bf8b57592edd16712ba482ea59d`. All four declared targets
+passed: 131 unit cases across 9 files, Svelte, reference and archive checks.
+Raw receipt
+`7ebff04d9503c7ebf336ef9123201bfa44b506c2436439834ffb67a62c703e7f`;
+evidence manifest
+`a130465c6181e9adf8d393a6539304ae6051732596a541696cd358c8ea3ea656`.
+The original and copied site archive match SHA256
+`6e39c2a7f1dbd9b13aced2bd263ebb46904ba33a36c6abb97994593183c0cb64`,
+1,117,590 bytes. This is the already preserved payload subsequently verified,
+not a new upload or deployment. Selected reference and development-extension
+facts retain their original provenance; signing and an installed human-browser
+journey remain unproved. Earlier analysis/archive failures keep their outcomes.
+Both CG0038 and CC0046 standard manager-cleanup receipts remain ownership
+unproved/readbacks 0/stop not requested despite empty descendants/absent cgroup.
+
+The dated 00:55 UTC maintenance readback records 14 named held output roots,
+zero unknown roots and zero per-run user roots within its documented shallow
+scope, with the new owned-checkout reuse namespace clean. Required current
+inputs and evidence keeps remain retained. Receipt
+`bf6e042437efd409e6eaf05d06866daca284a519b217de380420dfb3f1d80bec`
+does not rewrite the earlier October 12 11:22 UTC administrative rollup of
+86,605,957 removed entries and 202,049,421,312 observed last-link allocated
+bytes, or turn those counters into filesystem-wide free-space attribution.
+
+Retained PR readbacks recorded at 00:55:07 UTC show
+[PR541](https://github.com/Jesssullivan/oauth-mux/pull/541) at head
+`588c8800260c606a341779ce97c59b09d9ea99cc` and
+[SPA PR94](https://github.com/xoxd-ai/omux.xoxd.ai/pull/94) at
+`b60c6cf3a2b77bf8b57592edd16712ba482ea59d`, both open, draft and unmerged.
+Exact additive TIN-734/TIN-2063 comment readbacks recorded at 00:57:35 UTC
+preserve issue state, scope, owner and dates. The root checkpoint receipt
+`16a4198237d4ba3dd032935b8b8251083639b2026a02b75c7ccd461e292da6e6`
+pins these dated source, archive, maintenance and tracker facts; they are not
+claims about future PR state or published site content.
+
+At the retained 01:00:03 UTC observation, CNS0059, original handle 49218,
+epoch `5ecf88ac-d351-464c-8f04-d8706e0a75a5`, was verified LIVE at 588c.
+Its worker budget remains 3.75 GiB/480 tasks/190% CPU/zero swap, with the
+separate 256-MiB/32-task/10% reserve. Original SOURCE 600/action 840/outer
+1200-second limits are unchanged. This dated observation establishes no
+terminal outcome, timing fit or SDK/SOURCE/HUB/native qualification.
+
+<!-- ROOT CNS0059 TERMINAL: append actual closed-original-handle outcome and exact evidence/cleanup/retention pins separately; preserve the preceding dated LIVE observation and all earlier failures. -->
+
+Native selector remains `source:null`. Normal-vault usable enrollment, attended
+Yoga browser consent, actual installed lifecycle/UI, native SDK/SOURCE/HUB and
+ordinary accepted-history resume, same-process live handoff, stock Codex and
+Darwin remain unproved. Signing/public distribution and measured SLO gates
+stay open. The original active, overdue, incomplete full goal and acceptance
+clock remain unchanged; finite passes do not complete that goal.
+
+## CNS0059 actual terminal and delivery-custody proposal — 2026-10-13 01:24 UTC
+
+Original handle 49218, epoch `5ecf88ac-d351-464c-8f04-d8706e0a75a5`,
+closed outer/workload 125/3 at the same 588c/4e7046/523 source checkpoint.
+Content-source 50 passed; the genuine producer FAILED. Four copied TEST
+evidence files total 128,942 bytes. Raw receipt SHA256
+`a67345223da675b87bf6006a870fe681335ca393d9b97048b3b25071aeeef005`;
+evidence index
+`f0ae25665489640d4ecb08a59acef2545f48871bea6e5d87ba90f89f85b906ea`;
+workload log
+`da6303cab466206009ee3b22ff5f44536e669d5677ff28a8517784a90d7ecd40`
+(6,969 bytes).
+
+The extraction-entry marker reported 105,328,268,522 nanoseconds remaining
+on the original SDK/SOURCE clock. It created 20,756 directories by the
+15.213996448-second elapsed marker, then refused copying at the
+105.378754183-second marker after 56,115 files and 1,514,955,418 bytes.
+These are elapsed-from-start partial progress counters. The retained first-cause
+diagnostic identifies a plain ValueError at `Clock.tick` line 89 through
+`owner_tick`/`_copy_regulars`: an original deadline refusal for this run only.
+CNS2335's earlier cause remains Unknown. Reported Bazel/test durations
+585.951/253.7 seconds differ by 332.251 seconds of aggregate time outside the
+reported producer duration; that is not an exclusive analysis measurement.
+No complete SDK/SOURCE/HUB, native image, fit or measured improvement follows.
+
+Owned reserved cleanup verified two readbacks, successful stop, empty
+descendants and absent cgroup. Automatic retirement was separately deferred
+at 0 removed entries. The administrative residual disposal then removed
+236,100 entries/last-link inodes with 1,634,832,384 observed allocated bytes,
+journal
+`a0700592aadd88d9a69f8dce35459b7619a7f3afdba6dd81417a3400b7b3f684`.
+Fixed receipt/supervisor/test-evidence/workload keeps remained. These counters
+retain their own scope rather than claiming filesystem-wide recovered space.
+
+The next engineering proposal joins controlled cache reuse with fresh per-UUID
+copied SOURCE/HUB delivery custody. It keeps all current-action SDK/SOURCE
+final proof within the original 600-second cutoff. Separate complete artifact
+copy/current custody would use the existing original-entry + 1170-second work
+cutoff, inside the unchanged 1200-second outer envelope; the action cap stays
+840 seconds. There is no new budget entry, source-clock reset or extension.
+This cannot cure the failed SOURCE600 attempt or promote cached success or
+old copied-inode authority.
+
+The proposed join requires genuine uncached workload exit 0, verified owned
+terminal cleanup, exact complete evidence/source/graph/epoch binding, fresh
+copied named/held custody and full byte/member/mode/link checks, a typed
+content-only delivery receipt and final outer-descriptor join. Historical
+SOURCE/HUB action reports remain provenance; a clean lease requires successful
+retention and an exact final receipt. Producer outputs remain sandbox-owned,
+with the existing aggregate resources and no arbitrary writable-path exception.
+The guard/cache/envelope lane belongs to estate_execution_reapi and the typed
+SOURCE/HUB retention/consumer lane to estate_codex_native for this proposal.
+
+This is root's engineering decision under the existing task, not a new operator
+ruling or architecture ratification. Joint code review, affected regressions and
+a genuine producer result remain unrun for the proposed change; no code
+adoption, fit or qualified-image outcome is claimed. Decision receipt
+`1bd247380348393be4b2cab33cd88c27f46083c915bd135326b7d99c81ce56c0`
+binds the actual failure and this bounded next work. The preceding LIVE
+observation remains dated history. Native selector `source:null`, all wider
+vault/installed/Yoga/ordinary accepted-history/live/stock/Darwin/signing/SLO
+proof gates and the original active, overdue, incomplete full goal/clock are
+unchanged.
