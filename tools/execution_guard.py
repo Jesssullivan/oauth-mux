@@ -1201,7 +1201,8 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             '--nosystem_rc', '--nohome_rc',
             '--host_jvm_args=-Xmx1536m', '--host_jvm_args=-XX:ActiveProcessorCount=2',
             '--noworkspace_rc', '--output_base=' + str(output_base or run / 'output-base')] + arguments[:1] + [
-            '--jobs=2', '--legacy_globbing_threads=' + str(threads['legacy_globbing_threads']),
+            '--jobs=' + str(toolbar_prepare_action_jobs(profile, arguments)),
+            '--legacy_globbing_threads=' + str(threads['legacy_globbing_threads']),
             '--experimental_fsvc_threads=' + str(threads['fsvc_threads']),
             '--loading_phase_threads=' + str(threads['loading_phase_threads']),
             '--spawn_strategy=' + ('linux-sandbox' if profile == 'codex-live' else 'sandboxed'), '--remote_executor=',
@@ -1576,6 +1577,15 @@ def toolbar_prepare_selected(profile, manager, arguments, reuse=False, dirty='fa
     return True
 
 
+def toolbar_prepare_action_jobs(profile, arguments):
+    """One retained public preparer serializes actions; all other vectors stay at two.
+
+    This is scheduling only. The coordinator independently admits the exact
+    clean standard/system singleton and refuses cache reuse before dispatch.
+    """
+    return 1 if profile == 'standard' and arguments == ['test', TOOLBAR_PREP_LABEL] else 2
+
+
 def toolbar_prepare_command(command, run, entry_ns, deadline_ns, source, graph, source_root):
     if (type(entry_ns) is not int or type(deadline_ns) is not int
             or deadline_ns-entry_ns != 1200*10**9
@@ -1588,6 +1598,8 @@ def toolbar_prepare_command(command, run, entry_ns, deadline_ns, source, graph, 
             or source_root.resolve(strict=True) != source_root
             or command[-1:] != [TOOLBAR_PREP_LABEL] or command.count('test') != 1
             or {part for part in command if part.startswith('//')} != {TOOLBAR_PREP_LABEL}
+            or [part for part in command if part.startswith('--jobs')] != ['--jobs=1']
+            or not command.index('test') < command.index('--jobs=1') < len(command)-1
             or any(TOOLBAR_PREP_VARIABLE in part for part in command)):
         raise ValueError('toolbar-preparation-context-refused')
     values={'EPOCH':str(run),'ENTRY_NS':str(entry_ns),'DEADLINE_NS':str(deadline_ns),
@@ -3420,7 +3432,8 @@ def _main(argv, admission_resources, retirement_resources):
                                  'system_identity': {'PrivateUsers': 'no', 'CapabilityBoundingSet': '',
                                                      'AmbientCapabilities': '', 'StandardInput': 'null'} if args.manager == 'system' else None,
                                  'execution': {'batch': True, 'jvm_heap_mib': 1536, 'active_processors': 2,
-                                               'jobs': 2, 'spawn_strategy': 'sandboxed',
+                                               'jobs': toolbar_prepare_action_jobs(args.profile, arguments),
+                                               'spawn_strategy': 'sandboxed',
                                                'test_strategy': 'processwrapper-sandbox',
                                                'cache_test_results': False, 'remote_executor': '',
                                                'remote_cache': '', 'sandbox_allow_network': False,
@@ -4479,6 +4492,7 @@ def _main(argv, admission_resources, retirement_resources):
                     'inventory_binding_before':toolbar_inventory_before,
                     'inventory_binding_after':toolbar_inventory_after,
                     'cached_candidate_input_only':True,
+                    'action_jobs':toolbar_prepare_action_jobs(args.profile, arguments),
                     'original_runfiles_retained_only':True,'fresh_consumer_qualification_required':True,
                     'execution_authority':False,'seat_qualified':False,'toolbar_consent_proved':False}
             record_resident_lifecycle(receipt,resident_input)

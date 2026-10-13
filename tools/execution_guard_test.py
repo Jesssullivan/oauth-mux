@@ -3531,5 +3531,71 @@ class ToolbarWorkerAndInventoryModels(unittest.TestCase):
         with self.assertRaises(OSError):os.fstat(opened[0])
 
 
+class ToolbarPreparationSchedulingModels(unittest.TestCase):
+    def test_exact_actual_builder_serializes_only_standard_preparer_and_keeps_other_policy(self):
+        import execution_guard as guard
+        run=Path('/owned/12345678-1234-4234-8234-123456789abc')
+        vector=['test',guard.TOOLBAR_PREP_LABEL]
+        actual=guard.bazel_command('/declared/bazel',run,vector,source_commit='a'*40,source_dirty='false')
+        ordinary=guard.bazel_command('/declared/bazel',run,['test','//:docs_check'],
+            source_commit='a'*40,source_dirty='false')
+        self.assertEqual([part for part in actual if part.startswith('--jobs')],['--jobs=1'])
+        self.assertLess(actual.index('test'),actual.index('--jobs=1'))
+        self.assertLess(actual.index('--jobs=1'),actual.index(guard.TOOLBAR_PREP_LABEL))
+        self.assertEqual(actual[-1],guard.TOOLBAR_PREP_LABEL)
+        # Apart from the fixed requested label and scheduling, the actual
+        # complete builder output must preserve every startup/action flag.
+        self.assertEqual([part.replace('--jobs=1','--jobs=2').replace(guard.TOOLBAR_PREP_LABEL,'//:docs_check')
+            for part in actual],ordinary)
+        for profile,arguments in [('standard',['build',guard.TOOLBAR_PREP_LABEL]),
+                ('standard',['test',guard.TOOLBAR_PREP_LABEL,'//:docs_check']),
+                ('standard',['test','//delivery:yoga_toolbar_consent_proof']),
+                ('installed-browser',vector),('yoga-toolbar',vector)]:
+            with self.subTest(profile=profile,arguments=arguments):
+                self.assertEqual(guard.toolbar_prepare_action_jobs(profile,arguments),2)
+        self.assertEqual(guard.controller_thread_profile(),
+            {'legacy_globbing_threads':2,'fsvc_threads':2,'loading_phase_threads':2})
+        self.assertEqual(guard.PROPERTIES['MemoryMax'],'4294967296')
+        self.assertEqual(guard.PROPERTIES['TasksMax'],'512')
+        self.assertEqual(guard.PROPERTIES['CPUQuotaPerSecUSec'],'2s')
+        self.assertEqual(guard.CGROUP['memory.swap.max'],'0')
+        for flag in ('--host_jvm_args=-Xmx1536m','--host_jvm_args=-XX:ActiveProcessorCount=2',
+                '--nocache_test_results','--remote_executor=','--remote_cache=','--disk_cache=',
+                '--sandbox_default_allow_network=false'):
+            self.assertIn(flag,actual)
+
+    def test_final_actual_toolbar_command_requires_unique_action_jobs_and_preserves_original_context(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory).resolve();run=source/'12345678-1234-4234-8234-123456789abc'
+            entry=1000*10**9;until=entry+1200*10**9
+            command=guard.bazel_command('/declared/bazel',run,['test',guard.TOOLBAR_PREP_LABEL],
+                source_commit='a'*40,source_dirty='false')
+            with patch.object(guard.time,'monotonic_ns',return_value=entry+10**9):
+                result=guard.toolbar_prepare_command(command,run,entry,until,'a'*40,'b'*64,source)
+                self.assertEqual([part for part in result if part.startswith('--jobs')],['--jobs=1'])
+                self.assertEqual(command.count('--jobs=1'),1)
+                self.assertNotIn('--jobs=2',result)
+                self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'ENTRY_NS='+str(entry),result)
+                self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'DEADLINE_NS='+str(until),result)
+                self.assertEqual(len([part for part in result if part.startswith('--test_env='+guard.TOOLBAR_PREP_VARIABLE)]),6)
+                malformed=[]
+                for flag in ('--jobs=2','--jobs=100','--jobs=01','--jobs','--jobs-extra=1'):
+                    malformed.append([flag if part=='--jobs=1' else part for part in command])
+                malformed.append([part for part in command if part!='--jobs=1'])
+                malformed.append(command[:-1]+['--jobs=1']+command[-1:])
+                misplaced=[part for part in command if part!='--jobs=1']
+                misplaced.insert(misplaced.index('test'),'--jobs=1');malformed.append(misplaced)
+                for candidate in malformed:
+                    with self.subTest(candidate=candidate),self.assertRaisesRegex(ValueError,'toolbar-preparation-context-refused'):
+                        guard.toolbar_prepare_command(candidate,run,entry,until,'a'*40,'b'*64,source)
+            with patch.object(guard.time,'monotonic_ns',return_value=until-30*10**9):
+                with self.assertRaises(ValueError):guard.toolbar_prepare_command(command,run,entry,until,'a'*40,'b'*64,source)
+            self.assertEqual(guard.toolbar_prepare_action_jobs('standard',['test',guard.TOOLBAR_PREP_LABEL]),1)
+            for reuse,dirty in ((True,'false'),(False,'true')):
+                with self.assertRaises(ValueError):
+                    guard.toolbar_prepare_selected('standard','system',['test',guard.TOOLBAR_PREP_LABEL],reuse,dirty)
+
+
 if __name__ == '__main__':
     unittest.main()
