@@ -1099,6 +1099,58 @@ class Range(io.RawIOBase):
         return block
 
 
+
+def _payload_sha_pass(fd, files, size, payload_pin, clock):
+    """One bounded linear SHA pass through already-validated contiguous extents.
+
+    Borrow the existing held payload FD. Each file receives its own exact SHA;
+    the aggregate hashes every actual byte once. Canonical NAR is independently
+    reread afterward by validate_content; no physical proof or old authority is
+    replaced. This reader owns no additional descriptor or renewed clock.
+    """
+    loaded = consumed = cursor = 0
+    block = None
+    total_hash = hashlib.sha256()
+    for entry in files.values():
+        clock.tick()
+        need(entry["offset"] == consumed, "payload-batch-contiguous")
+        remaining = entry["size"]
+        h = hashlib.sha256()
+        while remaining:
+            clock.tick()
+            if block is None:
+                request = min(65536, size-loaded)
+                need(request > 0, "payload-truncated")
+                block = os.pread(fd, request, loaded)
+                clock.tick()
+                need(0 < len(block) <= request, "payload-truncated")
+                loaded += len(block)
+                total_hash.update(block)
+                cursor = 0
+            count = min(remaining, len(block)-cursor)
+            need(count > 0, "payload-batch-progress")
+            part = memoryview(block)[cursor:cursor+count]
+            try:
+                h.update(part)
+            finally:
+                part.release()
+            cursor += count
+            consumed += count
+            remaining -= count
+            if cursor == len(block):
+                # Release the sole buffer before allocating the next block.
+                block = None
+                cursor = 0
+        need(h.hexdigest() == digest(entry["sha256"]), "payload-file-digest")
+        clock.tick()
+    need(consumed == loaded == size and block is None, "payload-batch-complete")
+    clock.tick()
+    need(os.pread(fd, 1, size) == b"", "payload-trailing-bytes")
+    clock.tick()
+    need(total_hash.hexdigest() == digest(payload_pin), "payload-digest")
+    clock.tick()
+
+
 def validate_content(root, manifest, expected, clock):
     need(type(manifest) is dict and set(manifest) == {"kind", "origin_root", "origin_receipt_sha256",
          "jdk_origin_root", "origin_receipt_mode", "origin_graph_modes", "entries", "payload_sha256", "payload_bytes", "nars"}
@@ -1131,18 +1183,7 @@ def validate_content(root, manifest, expected, clock):
     fd, before = root.open("payload.bin")
     try:
         need(before[6] == offset and transport_leaf_mode(root, before), "payload-size-mode")
-        total_hash = hashlib.sha256()
-        for key, entry in files.items():
-            part = Range(fd, entry["offset"], entry["size"], clock)
-            h = hashlib.sha256()
-            while True:
-                block = part.read(65536)
-                if not block:
-                    break
-                h.update(block)
-                total_hash.update(block)
-            need(h.hexdigest() == digest(entry["sha256"]), "payload-file-digest")
-        need(total_hash.hexdigest() == digest(manifest["payload_sha256"]), "payload-digest")
+        _payload_sha_pass(fd, files, offset, manifest["payload_sha256"], clock)
         need(type(manifest["nars"]) is dict and set(manifest["nars"]) == {"sdk", "jdk"}, "nar-roles")
         for role in ("sdk", "jdk"):
             def opener(unused, name, selected=role):

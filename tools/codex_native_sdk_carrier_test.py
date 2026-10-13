@@ -1662,6 +1662,104 @@ class CarrierModels(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.seal()
 
+    def batch_payload(self, name, parts):
+        path = self.root / name
+        data = b"".join(parts)
+        self.write(path, data, 0o444)
+        files = {}; offset = 0
+        for index, raw in enumerate(parts):
+            files[("sdk", str(index).zfill(8))] = {"offset": offset, "size": len(raw), "sha256": carrier.sha(raw)}
+            offset += len(raw)
+        return path, data, files
+
+    def test_batched_payload_full_sha_crosses_chunk_file_and_empty_extent_boundaries(self):
+        parts = [b"", b"a"*32767, b"bc", b"d"*65535, b"", b"e"*65537, b"f", b""] + [b"x"]*2048
+        for short, items in ((False, parts), (True, parts), (False, [b"", b""])):
+            with self.subTest(short=short, extents=len(items)):
+                path, data, files = self.batch_payload("batched-complete-"+str(short)+"-"+str(len(items)), items)
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW); self.addCleanup(os.close, fd)
+                original = os.pread; reads = []
+                def observed(number, size, offset):
+                    self.assertEqual(number, fd); self.assertLessEqual(size, 65536)
+                    result = original(number, min(size, 113) if short else size, offset)
+                    reads.append((size, offset, len(result)))
+                    return result
+                clock = carrier.Clock(self.deadline)
+                with patch.object(carrier.os, "pread", observed):
+                    carrier._payload_sha_pass(fd, files, len(data), carrier.sha(data), clock)
+                nonempty = [row for row in reads if row[2]]
+                self.assertEqual(sum(row[2] for row in nonempty), len(data))
+                self.assertEqual(reads[-1], (1, len(data), 0))
+                offset = 0
+                for row in nonempty:
+                    self.assertEqual(row[1], offset); offset += row[2]
+                self.assertEqual(offset, len(data))
+                if not short:self.assertEqual(len(reads), (len(data)+65535)//65536+1)
+                self.assertEqual(clock.deadline, self.deadline)
+                self.assertEqual(os.fstat(fd).st_size, len(data))
+
+    def test_batched_payload_real_corruption_truncation_and_trailing_bytes_refuse(self):
+        parts = [b"a"*32767, b"bc", b"", b"d"*65537]
+        for fault in ("file-edge", "chunk-edge", "next-chunk", "truncate", "append", "file-pin", "payload-pin"):
+            with self.subTest(fault=fault):
+                path, data, files = self.batch_payload("batched-fault-"+fault, parts)
+                changed = bytearray(data)
+                if fault in ("file-edge", "chunk-edge", "next-chunk"):
+                    index = {"file-edge":32767, "chunk-edge":65535, "next-chunk":65536}[fault]
+                    changed[index] ^= 1
+                elif fault == "truncate":changed = changed[:-1]
+                elif fault == "append":changed += b"unselected"
+                elif fault == "file-pin":files[("sdk", "00000002")]["sha256"] = "0"*64
+                pin = "0"*64 if fault == "payload-pin" else carrier.sha(data)
+                path.chmod(0o600);path.write_bytes(changed);path.chmod(0o444)
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    with self.assertRaises(ValueError):
+                        carrier._payload_sha_pass(fd, files, len(data), pin, carrier.Clock(self.deadline))
+                finally:os.close(fd)
+
+    def test_batched_payload_same_byte_named_replacement_refuses_after_independent_full_nars(self):
+        root, unused, pin = self.seal("batch-replaced")
+        leaf = root / "payload.bin"; raw = leaf.read_bytes()
+        pread, nar_hash = os.pread, carrier.nar.hash_descriptor
+        armed = [True]; held = []; nars = []
+        def replace(fd, size, offset):
+            block = pread(fd, size, offset)
+            if armed[0] and block:
+                armed[0] = False; held.append(fd); old = os.fstat(fd)
+                root.chmod(0o700)
+                replacement = root / "replacement-payload"; self.write(replacement, raw, 0o444)
+                replacement.replace(leaf); root.chmod(0o555)
+                self.assertNotEqual(old.st_ino, leaf.stat().st_ino)
+            return block
+        def complete_nar(*args, **kwargs):
+            result = nar_hash(*args, **kwargs); nars.append(args[0]["root"]); return result
+        with patch.object(carrier.os, "pread", replace), patch.object(carrier.nar, "hash_descriptor", complete_nar):
+            with self.assertRaises(ValueError):carrier.validate_binding(root, pin, self.deadline)
+        self.assertFalse(armed[0]);self.assertEqual(len(nars), 2)
+        self.assertEqual(leaf.read_bytes(), raw)
+        for fd in held:
+            with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_batched_payload_original_deadline_and_read_error_close_actual_owner_fd(self):
+        for fault in ("deadline", "read-error"):
+            with self.subTest(fault=fault):
+                root, unused, pin = self.seal("batch-close-"+fault)
+                pread, monotonic = os.pread, time.monotonic
+                armed = [False]; held = []
+                def now():return self.deadline if armed[0] and fault == "deadline" else monotonic()
+                def refuse(fd, size, offset):
+                    if not armed[0]:
+                        armed[0] = True; held.append(fd)
+                        if fault == "read-error":raise OSError("synthetic payload read refusal")
+                    return pread(fd, size, offset)
+                expected = ValueError if fault == "deadline" else OSError
+                with patch.object(carrier.os, "pread", refuse), patch.object(carrier.time, "monotonic", now):
+                    with self.assertRaises(expected):carrier.validate_binding(root, pin, self.deadline)
+                self.assertTrue(armed[0]);self.assertEqual(len(held), 1)
+                for fd in held:
+                    with self.assertRaises(OSError):os.fstat(fd)
+
     def test_payload_corruption_truncation_and_unlisted_carrier_refuse(self):
         for change in ("corrupt", "truncate", "extra"):
             with self.subTest(change=change):
