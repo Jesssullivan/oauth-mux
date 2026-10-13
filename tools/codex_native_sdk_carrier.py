@@ -625,9 +625,10 @@ class _FreshNarParents(_ParentHandles):
     """At most 32 cached sealed-parent FDs for one fresh NAR pass.
 
     This is a local IO owner, not content or namespace authority. Every lookup
-    still traverses Root._parent's complete current named/before/held/after
-    checks. A complete already-enrolled prefix chain may then be borrowed for
-    the current stream's two later observations without additional prefix FDs.
+    retains Root._parent's complete current named/before/held/after checks.
+    A complete already-enrolled chain can omit intermediate prefix duplicates
+    during initial acquisition and the stream's two later observations. Cold,
+    missing or deep initial chains still use the original Root._parent walk.
     Full-nine stream parent/leaf, all root-check regions and both complete
     namespace passes remain unchanged; deep/missing chains use the old path.
     """
@@ -651,6 +652,52 @@ class _FreshNarParents(_ParentHandles):
              "fresh-parent-current-owner-clock")
         self.clock.tick()
         return self.root._parent(name, self)
+
+    def initial_parent(self, name, stream):
+        """Assign one owned parent into a preregistered stream receiver.
+
+        A COMPLETE already-enrolled chain needs no intermediate dup/close.
+        Every Root._parent ancestry/custody/before-held-after comparison still
+        happens now; no stat observation or content authority is reused.
+        Cold, evicted or deep chains keep the exact existing traversal.
+        """
+        need(type(stream) is _FreshNarFile and stream.root is self.root
+             and stream.parents is self and stream.clock is self.clock
+             and stream.name == name and stream.parent is None and not stream.closed,
+             "fresh-initial-stream-receiver")
+        need(self.self is self and threading.get_ident() == self.owner
+             and not self.closed and self.root.clock is self.clock and self.active_path is None
+             and self.clock.deadline == self.deadline and self.clock.until_ns == self.until_ns,
+             "fresh-parent-current-owner-clock")
+        self.clock.tick()
+        parts = relative(name)
+        keys = tuple("/".join(parts[:index]) for index in range(1, len(parts)))
+        if len(keys) > 32 or any(key not in self.entries for key in keys):
+            stream.parent, stream.leaf = self.parent(name)
+            return
+        root = self.root
+        root.check()
+        parent = root.fd
+        for key, part in zip(keys, parts[:-1]):
+            self.clock.tick()
+            before = os.stat(part, dir_fd=parent, follow_symlinks=False)
+            need(stat.S_ISDIR(before.st_mode) and before.st_uid in (0, os.getuid())
+                 and not before.st_mode & 0o022, "internal-parent-custody")
+            selected = identity(before, True)
+            if key in root.named:
+                need(root.named[key] == selected, "internal-parent-replacement")
+            child, enrolled = self.entries[key]
+            need(enrolled == selected, "fresh-parent-handle-replacement")
+            need(selected == identity(os.fstat(child), True) == identity(
+                os.stat(part, dir_fd=parent, follow_symlinks=False), True), "internal-parent-race")
+            need(self.pending is None, "fresh-parent-pending-owner")
+            root.named[key] = selected
+            parent = child
+        # Both receiver fields are established before this acquisition. The
+        # call frame already exists; no raw FD return tuple or enrollment call
+        # follows dup. Any later refusal is drained by the real stream owner.
+        stream.leaf = parts[-1]
+        stream.parent = os.dup(parent)
 
     def borrow_path(self, name, witnesses, role):
         # The initial Root._parent walk has already populated and checked these
@@ -825,7 +872,10 @@ class _FreshNarFile:
         try:
             clock.tick()
             need(self.key not in completed, "fresh-duplicate-stream")
-            self.parent, self.leaf = root.parent(name) if parents is None else parents.parent(name)
+            if parents is None:
+                self.parent, self.leaf = root.parent(name)
+            else:
+                parents.initial_parent(name, self)
             if parents is not None: self.path = parents.borrow_path(name, witnesses, role)
             need(identity(os.fstat(self.parent)) == self.parent_witness, "fresh-stream-parent")
             before = os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)

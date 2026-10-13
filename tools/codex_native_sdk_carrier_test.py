@@ -1129,6 +1129,120 @@ class CarrierModels(unittest.TestCase):
                 self.assertTrue(fired[0])
                 self.assert_descriptors_closed(set(retained))
 
+    def test_initial_cached_prefix_keeps_all_observations_and_complete_nar_with_fewer_real_dups(self):
+        parent, expected, name = self.retained_prefix_fixture("initial-parent-ops", 4)
+        directory = (parent / "sdk" / name).parent; directory.chmod(0o700)
+        for index in range(8):
+            raw = ("actual sibling " + str(index)).encode(); leaf = directory / ("sibling" + str(index))
+            self.write(leaf, raw)
+            expected[("sdk", str(leaf.relative_to(parent / "sdk")))] = {
+                "kind":"file", "mode":0o444, "size":len(raw), "sha256":carrier.sha(raw)}
+        directory.chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        def old_initial(owner, selected, stream):stream.parent, stream.leaf = owner.parent(selected)
+        real_dup, real_close, real_stat, real_fstat = os.dup, os.close, os.stat, os.fstat
+        real_check = carrier.Root.check; results=[]; counts=[]
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            for optimized in (False,True):
+                seen=[0]
+                def checked(root):seen[0]+=1;return real_check(root)
+                with ExitStack() as observations:
+                    if not optimized:observations.enter_context(patch.object(carrier._FreshNarParents,"initial_parent",old_initial))
+                    dup=observations.enter_context(patch.object(carrier.os,"dup",wraps=real_dup))
+                    close=observations.enter_context(patch.object(carrier.os,"close",wraps=real_close))
+                    named=observations.enter_context(patch.object(carrier.os,"stat",wraps=real_stat))
+                    held=observations.enter_context(patch.object(carrier.os,"fstat",wraps=real_fstat))
+                    observations.enter_context(patch.object(carrier.Root,"check",checked))
+                    results.append(carrier._scan_nar(roots,expected,clock))
+                    counts.append((dup.call_count,close.call_count,named.call_count,held.call_count,seen[0]))
+            self.assertEqual(results[0],results[1]);self.assertEqual(results[1][0],expected)
+            self.assertEqual(results[1][2],carrier.nar_origins(roots,expected,clock))
+            self.assertLess(counts[1][0],counts[0][0]);self.assertLess(counts[1][1],counts[0][1])
+            self.assertEqual(counts[1][2:],counts[0][2:])
+
+    def test_initial_cached_walk_refuses_real_prefix_replacement_link_mode_and_closed_cached_fd(self):
+        for fault in ("replacement","link","mode","closed"):
+            with self.subTest(fault=fault):
+                parent,expected,name=self.retained_prefix_fixture("initial-parent-race-"+fault,2)
+                clock=carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        fd,unused=cache.parent(name);os.close(fd)
+                        retained=[fd for fd,unused in cache.entries.values()];fired=[False]
+                        actual=cache.initial_parent
+                        def mutate(selected,stream):
+                            self.assertFalse(fired[0]);fired[0]=True
+                            if fault=="closed":
+                                fd,unused=cache.entries["p00"];os.close(fd)
+                            else:
+                                target=parent/"sdk/p00"
+                                if fault=="mode":target.chmod(0o500)
+                                else:
+                                    (parent/"sdk").chmod(0o700);aside=target.with_name("p00-aside");target.rename(aside)
+                                    if fault=="link":target.symlink_to(aside,target_is_directory=True)
+                                    else:shutil.copytree(aside,target,symlinks=True)
+                                    (parent/"sdk").chmod(0o555)
+                            return actual(selected,stream)
+                        try:
+                            with patch.object(cache,"initial_parent",side_effect=mutate):
+                                with self.assertRaises((ValueError,OSError)):
+                                    self.retained_stream(roots,expected,clock,cache,name)
+                        finally:
+                            if fault=="closed":
+                                # Detach only the known deliberately closed fixture
+                                # descriptor; never have cleanup retry its number.
+                                cache.entries.pop("p00")
+                        self.assertTrue(fired[0]);self.assertIsNone(cache.active_path)
+                    self.assert_descriptors_closed(retained)
+
+    def test_initial_cached_receiver_owns_duplicate_before_late_refusal_and_original_expiry(self):
+        for fault in ("body","body-close","expiry"):
+            with self.subTest(fault=fault):
+                parent,expected,name=self.retained_prefix_fixture("initial-parent-owned-"+fault,2)
+                clock=carrier.Clock(self.deadline);original_deadline=clock.deadline
+                body=MemoryError("synthetic after receiver acquisition");cleanup=OSError("synthetic receiver close")
+                real_initial=carrier._FreshNarParents.initial_parent;real_close=os.close
+                real_monotonic=time.monotonic;owned=[];closed=[];late_clock=[False]
+                def now():return original_deadline+1 if late_clock[0] else real_monotonic()
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        fd,unused=cache.parent(name);os.close(fd)
+                        def late(owner,selected,stream):
+                            real_initial(owner,selected,stream);self.assertIsNotNone(stream.parent);owned.append(stream.parent)
+                            if fault in ("body","body-close"):raise body
+                            late_clock[0]=True
+                        def close(fd):
+                            if fd in owned:closed.append(fd)
+                            real_close(fd)
+                            if fault=="body-close" and fd in owned:raise cleanup
+                        with patch.object(carrier._FreshNarParents,"initial_parent",late),                                patch.object(carrier.os,"close",close),patch.object(carrier.time,"monotonic",side_effect=now):
+                            with self.assertRaises(MemoryError if fault!="expiry" else ValueError) as failure:
+                                self.retained_stream(roots,expected,clock,cache,name)
+                        if fault!="expiry":self.assertIs(failure.exception,body)
+                        if fault=="body-close":self.assertIs(failure.exception.__cause__,cleanup)
+                        self.assertEqual(clock.deadline,original_deadline)
+                        self.assertEqual(closed,owned);self.assertEqual(len(owned),1)
+                        self.assert_descriptors_closed(owned);self.assertIsNone(cache.active_path)
+
+    def test_initial_cached_receiver_and_owner_refusals_acquire_no_duplicate(self):
+        parent,expected,name=self.retained_prefix_fixture("initial-parent-foreign",2)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                fd,unused=cache.parent(name);os.close(fd)
+                with patch.object(carrier.os,"dup",wraps=os.dup) as duplicate:
+                    with self.assertRaises(ValueError):cache.initial_parent(name,object())
+                    self.assertEqual(duplicate.call_count,0)
+                stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                with patch.object(carrier.os,"dup",wraps=os.dup) as duplicate:
+                    with self.assertRaises(ValueError):cache.initial_parent(name,stream)
+                    self.assertEqual(duplicate.call_count,0)
+                with stream:self.drain_stream(stream)
+
     def test_fused_real_stream_matches_full_scan_nar_with_one_read_and_eof_per_file(self):
         parent, expected, values = self.fresh_fixture("fusion-golden")
         clock = carrier.Clock(self.deadline)
