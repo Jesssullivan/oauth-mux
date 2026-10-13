@@ -381,9 +381,9 @@ def publish(source, records, until):
             try:os.close(writer)
             except BaseException as error:
                 if cleanup is None:cleanup=error
-        for descriptor in (fd,directory):
-            if descriptor is None:continue
-            try:os.close(descriptor)
+        for cleanup_descriptor in (fd,directory):
+            if cleanup_descriptor is None:continue
+            try:os.close(cleanup_descriptor)
             except BaseException as error:
                 if cleanup is None:cleanup=error
         try:parent.close()
