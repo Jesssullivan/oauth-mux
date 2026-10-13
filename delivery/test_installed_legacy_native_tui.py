@@ -176,6 +176,7 @@ CLI_FAILURE_MESSAGES = {
     "installed CLI response rejected": "cli-result-rejected",
 }
 CLI_FAILURES = (*CLI_FAILURE_MESSAGES.values(), "cli-json", "cli-process-deadline", "unclassified")
+METADATA_ROW_DIAGNOSTICS = ("metadata-row-absent", "metadata-row-ambiguous")
 METADATA_DIAGNOSTICS = {
     "native metadata row is absent or ambiguous": "metadata-row-cardinality",
     "native metadata was not initialized provider-free": "metadata-provider-free-fields",
@@ -194,7 +195,7 @@ SEED_ATTACHMENT_DIAGNOSTICS = (
     "seed-history-attachment-other",
 )
 
-DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
+DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), *METADATA_ROW_DIAGNOSTICS, "metadata-database-absent",
                "metadata-database-busy", "metadata-database-query", "metadata-database-error",
                "rollout-file-absent", "rollout-json", "metadata-other-predicate",
                "detach-health-rpc", "detach-rpc", "detach-ack-predicate",
@@ -649,6 +650,8 @@ def wait_metadata(home, thread, terminal, *, expected_name=tui.FIXTURE_NAME):
             DIAGNOSTIC = "rollout-file-absent"
         except json.JSONDecodeError:
             DIAGNOSTIC = "rollout-json"
+        except tui.MetadataRowCardinality as error:
+            DIAGNOSTIC = error.category if error.category in METADATA_ROW_DIAGNOSTICS else "metadata-other-predicate"
         except ValueError as error:
             DIAGNOSTIC = METADATA_DIAGNOSTICS.get(str(error), "metadata-other-predicate")
         else:
@@ -780,6 +783,7 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
 ORDINARY_MARKER = b"OMUX_INSTALLED_RETAINED_ORDINARY_NATIVE_TUI_OK\n"
 ORDINARY_FAILURE_MARKER = "installed legacy ordinary native refusal "
 ORDINARY_FAILURE_MESSAGES = {
+    "retained ordinary export changed native history": "ordinary-export-history",
     "retained ordinary export changed process or committed attachment": "ordinary-export-preservation",
     "legacy native discovery lacks exact installed owner": "ordinary-discovery-installed-owner",
     "legacy discovery owner identity differs": "ordinary-discovery-owner-identity",
@@ -788,7 +792,7 @@ ORDINARY_FAILURE_MESSAGES = {
     "legacy discovery disagrees with committed attached ledger": "ordinary-discovery-ledger",
 }
 ORDINARY_FAILURES = (*RESUME_FAILURES, *ORDINARY_FAILURE_MESSAGES.values())
-ORDINARY_METADATA_DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), "metadata-database-absent",
+ORDINARY_METADATA_DIAGNOSTICS = (*METADATA_DIAGNOSTICS.values(), *METADATA_ROW_DIAGNOSTICS, "metadata-database-absent",
     "metadata-database-busy", "metadata-database-query", "metadata-database-error",
     "rollout-file-absent", "rollout-json", "metadata-other-predicate")
 ORDINARY_PHASES = ("private-context", "runtime-verification", "keyring-startup", "daemon-startup",
@@ -810,10 +814,14 @@ def emit_ordinary_metadata_failure(error):
 
 def ordinary_first_history(binary, environment, work, home, cli, config, configured,
                            capability_path, capability, failure_observer):
-    """Real terminal commands and actual committed daemon discovery only.
+    """Real terminal input and actual committed daemon discovery only.
 
-    Own the first terminal through partial failure; no status normalization,
-    app-server history call, submitted turn or accepted work replay is possible.
+    Own the first terminal through partial failure. Native /rename requests
+    its name metadata; actual full empty history is still required before
+    /export input submission. Later equality observes preservation after that
+    submission, not dispatch/processing/completion acknowledgment. No
+    driver-owned app-server history call, status
+    normalization, submitted turn or accepted work replay is possible.
     """
     global PHASE
     PHASE = "ordinary-tui-startup"
@@ -823,17 +831,24 @@ def ordinary_first_history(binary, environment, work, home, cli, config, configu
         first_pid = terminal.process.pid
         endpoint, thread, first = wait_attached(cli, home, terminal)
         witness = tui.process_witness(first_pid)
+        # Runtime009's empty paginated export does not promise persistence.
+        # Exercise the real native name update first; actual SQLite AND rollout
+        # custody/bytes must pass unchanged metadata() predicates before export.
+        PHASE = "native-rename"
+        terminal.send("/rename " + tui.FIXTURE_NAME + "\r")
         PHASE = "native-history-materialization"
+        before = wait_metadata(home, thread, terminal)
+        require(before[0][4] == "paginated", "retained ordinary history mode differs")
+        # Submission only: an already-valid metadata snapshot may return
+        # immediately. Neither this equality nor liveness pumping is an
+        # acknowledgment of export dispatch, processing or completion.
         terminal.send("/export omux-native-resume-fixture.md\r")
-        wait_metadata(home, thread, terminal, expected_name=None)
+        exported = wait_metadata(home, thread, terminal)
+        require(exported == before, "retained ordinary export changed native history")
         terminal.alive()
         require(terminal.process.pid == first_pid and tui.process_witness(first_pid) == witness
                 and discovered_attachment(cli, endpoint) == first,
                 "retained ordinary export changed process or committed attachment")
-        PHASE = "native-rename"
-        terminal.send("/rename " + tui.FIXTURE_NAME + "\r")
-        before = wait_metadata(home, thread, terminal)
-        require(before[0][4] == "paginated", "retained ordinary history mode differs")
         support.HISTORY_MODE = "paginated"
         PHASE = "selected-detach"
         operation = detach(cli, endpoint, first)

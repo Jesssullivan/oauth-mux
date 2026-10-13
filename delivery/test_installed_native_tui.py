@@ -2,8 +2,11 @@
 
 Uses an installed daemon, genuine disposable Secret Service and the exact SDK
 archive. A PTY exercises ordinary native commands; no turns, accounts, synthetic
-history or guessed attachment authority are supplied. Native /export materializes
-the original empty rollout before /rename; an empty export need not write Markdown.
+history or guessed attachment authority are supplied. The retained ordinary-first
+variant requests native /rename, then requires actual complete empty history.
+After /export input is submitted to the PTY, it observes snapshot/PID/attachment
+preservation; command dispatch/processing/completion is not acknowledged. An
+empty export need not write Markdown; input submission never proves persistence.
 Cold resume is a separate new native process, never evidence of same-process
 account handoff or accepted nonempty history.
 """
@@ -238,11 +241,24 @@ def wait_loaded(home, terminal):
     raise ValueError("ordinary native attachment deadline exceeded")
 
 
+class MetadataRowCardinality(ValueError):
+    """One closed negative category from the actual selected-thread query."""
+    def __init__(self, count):
+        require(type(count) is int and (count == 0 or count > 1),
+                "native metadata cardinality observation changed")
+        self.category = "metadata-row-absent" if count == 0 else "metadata-row-ambiguous"
+        # Preserve the old public failure message and classification. Store no
+        # count, rows, thread identifier, database/path or query text.
+        super().__init__("native metadata row is absent or ambiguous")
+
+
 def metadata(home, thread, *, expected_name=FIXTURE_NAME):
     database = home / "state_5.sqlite"
     with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
         rows = connection.execute("SELECT id,rollout_path,source,cwd,history_mode,cli_version,name,"
                                   "tokens_used,has_user_event FROM threads WHERE id=?", (thread,)).fetchall()
+    if len(rows) != 1:
+        raise MetadataRowCardinality(len(rows))
     require(len(rows) == 1, "native metadata row is absent or ambiguous")
     row = rows[0]
     require(row[0] == thread and row[6] == expected_name and row[7:] == (0, 0),

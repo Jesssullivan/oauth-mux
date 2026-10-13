@@ -1,6 +1,8 @@
-"""Exact runtime009 ordinary launch/export/rename/empty cold resume entrypoint.
+"""Exact runtime009 ordinary launch/rename/export/empty cold resume entrypoint.
 
 Uses actual committed daemon discovery and legacy detach/durable inspectors.
+Export denotes PTY input submission followed by observed preservation; no
+command dispatch, processing or completion acknowledgment is established.
 Never enters the old seeded default, invents native status, submits provider
 work or claims resident/accepted-history/same-process handoff support.
 """
