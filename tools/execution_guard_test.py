@@ -5,6 +5,7 @@ Live acceptance still requires bounded declared stress actions: exceed 512 tasks
 empty descendants. These tests do not perform those workloads or call systemd.
 """
 import tempfile
+import io
 import stat
 import hashlib
 import json
@@ -3225,6 +3226,309 @@ class ToolbarPreparationContextModels(unittest.TestCase):
         self.assertEqual(guard.RETAINED_OUTPUT_VECTORS[('test',label)],(label,))
         for vector in [('build',label),('test',label,'//:docs_check'),('test','//delivery:yoga_toolbar_consent_proof')]:
             self.assertNotIn(vector,guard.RETAINED_OUTPUT_VECTORS)
+
+
+class ToolbarWorkerAndInventoryModels(unittest.TestCase):
+    def test_actual_main_worker_dispatch_reaches_owned_go_log_and_original_argv(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as selected:
+            run=Path(selected).resolve();(run/'go').write_bytes(b'owned coordinator go')
+            command=guard.bazel_command('/declared/bazel',run,['test',guard.TOOLBAR_PREP_LABEL],
+                source_commit='a'*40,source_dirty='false')
+            process=Mock();process.stdout=io.BytesIO(b'bounded public worker fixture\n');process.wait.return_value=0
+            with patch.dict(guard.os.environ,{'OMUX_EXECUTION_GUARD':str(run)},clear=True),\
+                    patch.object(guard.subprocess,'Popen',return_value=process) as launch,\
+                    patch.object(guard,'toolbar_prepare_selected',side_effect=AssertionError('worker is not coordinator')) as selection:
+                self.assertEqual(guard.main(['--worker',str(run),'--',*command]),0)
+            selection.assert_not_called();self.assertEqual(launch.call_args.args[0],command)
+            self.assertEqual((run/'workload.log').read_bytes(),b'bounded public worker fixture\n')
+            self.assertEqual(stat.S_IMODE((run/'workload.log').stat().st_mode),0o600)
+
+    def test_actual_main_worker_keeps_original_ownership_refusal_before_log_or_spawn(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as selected:
+            run=Path(selected).resolve();command=guard.bazel_command('/declared/bazel',run,['test',guard.TOOLBAR_PREP_LABEL])
+            for environment in ({},{'OMUX_EXECUTION_GUARD':str(run/'different')}):
+                with patch.dict(guard.os.environ,environment,clear=True),patch.object(guard.subprocess,'Popen') as launch:
+                    with self.assertRaisesRegex(ValueError,'worker ownership marker missing'):
+                        guard.main(['--worker',str(run),'--',*command])
+                launch.assert_not_called();self.assertFalse((run/'workload.log').exists())
+
+    def test_actual_main_coordinator_keeps_exact_selection_and_requires_explicit_inventory_before_tools(self):
+        import execution_guard as guard
+        base=['--manager','system','--source-commit','a'*40,'--source-dirty','false']
+        pair=['--site-inventory','/owned/public/inventory.json','--site-inventory-sha256',guard.TOOLBAR_PREP_INVENTORY_SHA256]
+        for flags,arguments in [(base,['test',guard.TOOLBAR_PREP_LABEL]),
+                (base+pair+['--site-source','/foreign/spa'],['test',guard.TOOLBAR_PREP_LABEL]),
+                (base+pair,['build',guard.TOOLBAR_PREP_LABEL]),
+                (base+pair,['test',guard.TOOLBAR_PREP_LABEL,'//:docs_check']),
+                (base+pair+['--reuse-owned-cache'],['test',guard.TOOLBAR_PREP_LABEL]),
+                (base+pair+['--manager','user'],['test',guard.TOOLBAR_PREP_LABEL])]:
+            with self.subTest(flags=flags,arguments=arguments),patch.object(guard,'immutable') as reader:
+                with self.assertRaises(ValueError):guard.main([*flags,'--',*arguments])
+                reader.assert_not_called()
+
+    def test_only_exact_inventory_pair_supplies_cached_repo_binding_without_spa_source(self):
+        import execution_guard as guard
+        fields=('site_source','site_nixpkgs_source','site_phase','site_qualification','site_qualification_sha256',
+            'site_delivery_manifest','site_delivery_manifest_sha256','site_reference_bundle','site_reference_bundle_sha256',
+            'site_coordinator_inputs','site_coordinator_inputs_sha256',
+            'site_development_artifact_selection','site_development_artifact_selection_sha256')
+        args=SimpleNamespace(**{name:None for name in fields},site_inventory=Path('/owned/public/inventory.json'),
+            site_inventory_sha256=guard.TOOLBAR_PREP_INVENTORY_SHA256)
+        self.assertTrue(guard.toolbar_prepare_inventory_request(args,True))
+        self.assertFalse(guard.toolbar_prepare_inventory_request(args,False))
+        for field,value in [('site_inventory',None),('site_inventory_sha256','0'*64)]+[(field,'unrelated') for field in fields]:
+            altered=SimpleNamespace(**{**vars(args),field:value})
+            with self.subTest(field=field),self.assertRaises(ValueError):guard.toolbar_prepare_inventory_request(altered,True)
+        command=guard.bazel_command('/declared/bazel',Path('/owned/new-epoch'),['test',guard.TOOLBAR_PREP_LABEL],
+            site_inventory=args.site_inventory,site_inventory_sha256=args.site_inventory_sha256)
+        self.assertIn('--repo_env=OMUX_SITE_INVENTORY='+str(args.site_inventory),command)
+        self.assertIn('--repo_env=OMUX_SITE_INVENTORY_SHA256='+args.site_inventory_sha256,command)
+        self.assertFalse(any(value.startswith('--repo_env=OMUX_SITE_SOURCE=') for value in command))
+        self.assertEqual(guard.selected_profile('standard',['test',guard.TOOLBAR_PREP_LABEL],site_inputs=True),{'PrivateNetwork':'yes'})
+
+    def setUp(self):
+        import execution_guard as guard
+        self.guard=guard;temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.state=Path(temporary.name).resolve();self.state.chmod(0o700)
+        self.path=self.state/'12345678-1234-4234-8234-123456789abc/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/cached_site_inventory_probe/test.outputs/inventory.json'
+        self.path.parent.mkdir(parents=True);self.raw=b'{"public":"synthetic inventory bytes; no execution authority"}\n'
+        self.path.write_bytes(self.raw);self.path.chmod(0o444);self.sha=hashlib.sha256(self.raw).hexdigest()
+        self.entry=1000*10**9;self.deadline=self.entry+1200*10**9;self.now=self.entry+10**9
+        def private(path,owner_only=True):
+            self.assertEqual(Path(path),self.state);self.assertTrue(owner_only)
+            self.assertEqual(stat.S_IMODE(self.state.lstat().st_mode),0o700)
+        # Explicit public inventory hash + trusted temporary-root seam only;
+        # production constant and filesystem source readers are not relaxed.
+        self.hash_patch=patch.object(guard,'TOOLBAR_PREP_INVENTORY_SHA256',self.sha);self.hash_patch.start();self.addCleanup(self.hash_patch.stop)
+        self.private_patch=patch.object(guard,'private',side_effect=private);self.private_patch.start();self.addCleanup(self.private_patch.stop)
+        self.clock_patch=patch.object(guard.time,'monotonic_ns',side_effect=lambda:self.now);self.clock_patch.start();self.addCleanup(self.clock_patch.stop)
+
+    def snapshot(self):
+        return self.guard.toolbar_prepare_inventory_snapshot(self.path,self.sha,self.state,None,self.entry,self.deadline)
+
+    def test_full_snapshot_is_stable_across_own_new_epoch_creation_without_prior_proof_credit(self):
+        before=self.snapshot();(self.state/'new-guardian-epoch').mkdir(mode=0o700);after=self.snapshot()
+        self.assertEqual(before,after);self.assertEqual(before['bytes'],len(self.raw))
+        self.assertFalse(before['execution_authority']);self.assertFalse(before['prior_producer_success_inherited'])
+        self.assertEqual(len(before['named_roles'][-1]['witness']),9)
+        self.assertEqual(len(before['named_roles'][0]['witness']),5)
+
+    def test_same_bytes_replaced_leaf_and_original_parent_cannot_match_pre_dispatch_snapshot(self):
+        before=self.snapshot();replacement=self.path.with_name('replacement');replacement.write_bytes(self.raw);replacement.chmod(0o444)
+        replacement.replace(self.path);self.assertNotEqual(before,self.snapshot())
+        current=self.snapshot();parent=self.path.parent;parent.rename(parent.with_name('old-test.outputs'))
+        parent.mkdir();self.path.write_bytes(self.raw);self.path.chmod(0o444)
+        self.assertNotEqual(current,self.snapshot())
+
+    def test_snapshot_refuses_missing_foreign_copied_writable_and_alias_inputs(self):
+        for path in (self.state.parent/'foreign.json',self.path.with_name('copied-inventory.json'),
+                Path(str(self.path).replace('cached_site_inventory_probe','other_producer'))):
+            with self.subTest(path=path),self.assertRaises(ValueError):
+                self.guard.toolbar_prepare_inventory_snapshot(path,self.sha,self.state,None,self.entry,self.deadline)
+        with self.assertRaises(ValueError):
+            self.guard.toolbar_prepare_inventory_snapshot(self.path,'0'*64,self.state,None,self.entry,self.deadline)
+        self.path.chmod(0o644)
+        with self.assertRaises(ValueError):self.snapshot()
+        self.path.unlink()
+        with self.assertRaises(FileNotFoundError):self.snapshot()
+        copy=self.path.with_name('same-public-bytes');copy.write_bytes(self.raw);copy.chmod(0o444)
+        self.path.symlink_to(copy)
+        with self.assertRaises(OSError):self.snapshot()
+
+    def test_same_bytes_mutation_during_actual_inventory_read_refuses_held_metadata(self):
+        actual=os.read;changed=False
+        def read(fd,count):
+            nonlocal changed
+            data=actual(fd,count)
+            if data and not changed and os.fstat(fd).st_ino==self.path.lstat().st_ino:
+                self.path.chmod(0o600);self.path.write_bytes(self.raw);self.path.chmod(0o444);changed=True
+            return data
+        with patch.object(self.guard.os,'read',side_effect=read),self.assertRaises(ValueError):self.snapshot()
+        self.assertTrue(changed)
+
+    def test_reader_first_cause_survives_attempt_all_once_descriptor_close_failure(self):
+        body=MemoryError('fixture read allocation');cleanup=OSError(5,'fixture close');closed=[];armed=False;actual=os.close
+        def read(fd,count):
+            nonlocal armed
+            armed=True;raise body
+        def close(fd):
+            if armed:closed.append(fd)
+            actual(fd)
+            if armed and len(closed)==1:raise cleanup
+        with patch.object(self.guard.os,'read',side_effect=read),patch.object(self.guard.os,'close',side_effect=close):
+            with self.assertRaises(MemoryError) as error:self.snapshot()
+        self.assertIs(error.exception,body);self.assertIs(error.exception.__cause__,cleanup)
+        self.assertGreater(len(closed),3);self.assertEqual(len(closed),len(set(closed)))
+
+    def test_original_snapshot_cutoff_after_all_descriptor_close_refuses_without_new_clock(self):
+        actual_read=os.read;actual_close=os.close;armed=False;closed=[]
+        def read(fd,count):
+            nonlocal armed
+            result=actual_read(fd,count);armed=True;return result
+        def close(fd):
+            actual_close(fd)
+            if armed:closed.append(fd);self.now=self.deadline-30*10**9
+        with patch.object(self.guard.os,'read',side_effect=read),patch.object(self.guard.os,'close',side_effect=close):
+            with self.assertRaises(ValueError):self.snapshot()
+        self.assertGreater(len(closed),3);self.assertEqual(len(closed),len(set(closed)))
+
+    def acquisition_fault(self,phase,position):
+        guard=self.guard;body=MemoryError('fixture registration boundary');opened=[];closed=[];calls=0
+        actual_open=os.open;actual_close=os.close;actual_register=guard.toolbar_prepare_inventory_register
+        def open_fd(*args,**kwargs):
+            fd=actual_open(*args,**kwargs);opened.append(fd);return fd
+        def close_fd(fd):closed.append(fd);actual_close(fd)
+        def register(owned):
+            nonlocal calls
+            calls+=1
+            if calls!=position:return actual_register(owned)
+            if phase=='entry':raise body
+            class InsertionFault:
+                def append(proxy,slot):
+                    self.assertIsNone(slot.fd)
+                    if phase=='after':owned.append(slot)
+                    raise body
+            return actual_register(InsertionFault())
+        with patch.object(guard,'toolbar_prepare_inventory_register',side_effect=register),\
+                patch.object(guard.os,'open',side_effect=open_fd),patch.object(guard.os,'close',side_effect=close_fd):
+            with self.assertRaises(MemoryError) as error:self.snapshot()
+        self.assertIs(error.exception,body)
+        # Failure belongs to an EMPTY slot, before this acquisition. Every
+        # previously acquired real root/parent/leaf FD is closed exactly once.
+        self.assertEqual(len(opened),position-1)
+        self.assertEqual(closed,list(reversed(opened)))
+        self.assertEqual(len(closed),len(set(closed)))
+        for fd in opened:
+            with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_preregister_call_entry_fault_opens_no_unowned_fd_at_every_acquisition_slot(self):
+        slots=len(self.path.relative_to(self.state).parts)+1
+        self.assertEqual(slots,12)
+        for position in range(1,slots+1):
+            with self.subTest(position=position):self.acquisition_fault('entry',position)
+
+    def test_preregister_before_and_after_insertion_faults_drain_all_prior_fds_once(self):
+        slots=len(self.path.relative_to(self.state).parts)+1
+        for phase in ('before','after'):
+            for position in range(1,slots+1):
+                with self.subTest(phase=phase,position=position):self.acquisition_fault(phase,position)
+
+    def graph_fixture(self):
+        root=self.state/'current-graph';root.mkdir()
+        (root/'BUILD.bazel').write_bytes(b'# synthetic declared graph fixture\n')
+        (root/'tools').mkdir();(root/'tools/role.py').write_bytes(b'# exact synthetic tool input\n')
+        return root,self.guard.graph_digest(root)
+
+    def finish(self,before,graph,expected):
+        return self.guard.toolbar_prepare_inventory_finish(self.path,self.sha,self.state,None,
+            self.entry,self.deadline,before,expected,lambda:self.guard.graph_digest(graph))
+
+    def test_terminal_actual_graph_matches_only_with_held_input_roles_and_original_cutoff(self):
+        graph,expected=self.graph_fixture();before=self.snapshot();opened=[];closed=[];observed=False
+        actual_open=os.open;actual_close=os.close
+        def open_fd(name,*args,**kwargs):
+            nonlocal observed
+            if Path(name)==graph/'BUILD.bazel':
+                self.assertEqual(len(opened),12)
+                for descriptor in opened:os.fstat(descriptor)
+                observed=True
+                return actual_open(name,*args,**kwargs)
+            fd=actual_open(name,*args,**kwargs)
+            if kwargs.get('dir_fd') is not None or Path(name)==self.state:opened.append(fd)
+            return fd
+        def close_fd(fd):closed.append(fd);actual_close(fd)
+        with patch.object(self.guard.os,'open',side_effect=open_fd),patch.object(self.guard.os,'close',side_effect=close_fd):
+            after,accepted=self.finish(before,graph,expected)
+        self.assertTrue(observed);self.assertTrue(accepted);self.assertEqual(before,after)
+        self.assertEqual(closed,list(reversed(opened)))
+        self.assertFalse(after['execution_authority']);self.assertFalse(after['prior_producer_success_inherited'])
+        for descriptor in opened:
+            with self.assertRaises(OSError):os.fstat(descriptor)
+
+    def test_terminal_actual_graph_same_bytes_inventory_write_refuses_final_full_metadata(self):
+        graph,expected=self.graph_fixture();before=self.snapshot();actual_open=os.open;changed=False
+        def open_fd(name,*args,**kwargs):
+            nonlocal changed
+            if Path(name)==graph/'BUILD.bazel' and not changed:
+                self.path.chmod(0o600);self.path.write_bytes(self.raw);self.path.chmod(0o444);changed=True
+            return actual_open(name,*args,**kwargs)
+        with patch.object(self.guard.os,'open',side_effect=open_fd),self.assertRaises(ValueError):
+            self.finish(before,graph,expected)
+        self.assertTrue(changed);self.assertEqual(self.guard.graph_digest(graph),expected)
+        self.assertEqual(self.path.read_bytes(),self.raw)
+
+    def test_terminal_actual_graph_same_bytes_parent_replacement_refuses_named_held_join(self):
+        graph,expected=self.graph_fixture();before=self.snapshot();actual_open=os.open;changed=False
+        def open_fd(name,*args,**kwargs):
+            nonlocal changed
+            if Path(name)==graph/'BUILD.bazel' and not changed:
+                parent=self.path.parent;parent.rename(parent.with_name('old-test.outputs'))
+                parent.mkdir();self.path.write_bytes(self.raw);self.path.chmod(0o444);changed=True
+            return actual_open(name,*args,**kwargs)
+        with patch.object(self.guard.os,'open',side_effect=open_fd),self.assertRaises(ValueError):
+            self.finish(before,graph,expected)
+        self.assertTrue(changed);self.assertEqual(self.guard.graph_digest(graph),expected)
+        self.assertEqual(self.path.read_bytes(),self.raw)
+
+    def test_terminal_actual_graph_cannot_replace_original_cutoff_with_its_fresh_read_budget(self):
+        graph,expected=self.graph_fixture();before=self.snapshot();actual_open=os.open;late=False;closed=[];actual_close=os.close
+        def open_fd(name,*args,**kwargs):
+            nonlocal late
+            if Path(name)==graph/'BUILD.bazel':self.now=self.deadline-30*10**9;late=True
+            return actual_open(name,*args,**kwargs)
+        def close_fd(fd):closed.append(fd);actual_close(fd)
+        with patch.object(self.guard.os,'open',side_effect=open_fd),patch.object(self.guard.os,'close',side_effect=close_fd):
+            with self.assertRaises(ValueError):self.finish(before,graph,expected)
+        self.assertTrue(late);self.assertEqual(len(closed),12);self.assertEqual(len(closed),len(set(closed)))
+        # Actual graph's independent15s reader still succeeds; it cannot grant
+        # this caller a new1170s window after the original one expired.
+        self.assertEqual(self.guard.graph_digest(graph),expected)
+
+    def test_terminal_actual_graph_mismatch_keeps_inventory_metadata_but_refuses_acceptance(self):
+        graph,expected=self.graph_fixture();before=self.snapshot()
+        (graph/'tools/role.py').write_bytes(b'# changed declared synthetic graph input\n')
+        after,accepted=self.finish(before,graph,expected)
+        self.assertFalse(accepted);self.assertEqual(before,after)
+        self.assertNotEqual(self.guard.graph_digest(graph),expected)
+
+    def test_terminal_actual_graph_failure_preserves_first_cause_and_drains_all_input_owners(self):
+        graph,expected=self.graph_fixture();before=self.snapshot();actual_open=os.open;actual_close=os.close
+        body=MemoryError('fixture terminal graph read allocation');cleanup=OSError(5,'fixture terminal close')
+        closed=[];armed=False
+        def open_fd(name,*args,**kwargs):
+            nonlocal armed
+            if Path(name)==graph/'BUILD.bazel':armed=True;raise body
+            return actual_open(name,*args,**kwargs)
+        def close_fd(fd):
+            actual_close(fd)
+            if armed:
+                closed.append(fd)
+                if len(closed)==1:raise cleanup
+        with patch.object(self.guard.os,'open',side_effect=open_fd),patch.object(self.guard.os,'close',side_effect=close_fd):
+            with self.assertRaises(MemoryError) as error:self.finish(before,graph,expected)
+        self.assertIs(error.exception,body);self.assertIs(error.exception.__cause__,cleanup)
+        self.assertEqual(len(closed),12);self.assertEqual(len(closed),len(set(closed)))
+        for descriptor in closed:
+            with self.assertRaises(OSError):os.fstat(descriptor)
+
+    def test_actual_root_open_boundary_mode_change_refuses_held_admission_and_closes_fd(self):
+        actual_open=os.open;actual_close=os.close;opened=[];closed=[];changed=False
+        def open_fd(name,*args,**kwargs):
+            nonlocal changed
+            if Path(name)==self.state:
+                # private(root) already observed0700 and released its own scope.
+                # The newly held root must independently admit its actual mode.
+                self.state.chmod(0o777);changed=True
+            fd=actual_open(name,*args,**kwargs);opened.append(fd);return fd
+        def close_fd(fd):closed.append(fd);actual_close(fd)
+        try:
+            with patch.object(self.guard.os,'open',side_effect=open_fd),patch.object(self.guard.os,'close',side_effect=close_fd):
+                with self.assertRaisesRegex(ValueError,'toolbar-public-inventory-root-refused'):self.snapshot()
+        finally:self.state.chmod(0o700)
+        self.assertTrue(changed);self.assertEqual(len(opened),1);self.assertEqual(closed,opened)
+        with self.assertRaises(OSError):os.fstat(opened[0])
 
 
 if __name__ == '__main__':

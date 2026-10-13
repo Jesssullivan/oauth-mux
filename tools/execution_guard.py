@@ -1563,6 +1563,7 @@ class OrdinaryCheckLease(CacheLease):
 # declare its exact producer vector and leaves here before producing its inputs.
 TOOLBAR_PREP_LABEL = '//delivery:yoga_public_artifact_prepare_producer'
 TOOLBAR_PREP_VARIABLE = 'OMUX_YOGA_PUBLIC_PREP_'
+TOOLBAR_PREP_INVENTORY_SHA256 = '1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931'
 
 
 def toolbar_prepare_selected(profile, manager, arguments, reuse=False, dirty='false'):
@@ -1595,6 +1596,146 @@ def toolbar_prepare_command(command, run, entry_ns, deadline_ns, source, graph, 
     result[result.index('test')+1:result.index('test')+1]=[
         '--test_env='+TOOLBAR_PREP_VARIABLE+key+'='+value for key,value in sorted(values.items())]
     return result
+
+
+def toolbar_prepare_inventory_request(args, selected):
+    """One explicit cached candidate, never sibling SPA or site authority."""
+    if not selected:
+        return False
+    if (args.site_inventory is None or args.site_inventory_sha256 != TOOLBAR_PREP_INVENTORY_SHA256
+            or any(value is not None for value in (args.site_source,args.site_nixpkgs_source,
+                args.site_phase,args.site_qualification,args.site_qualification_sha256,
+                args.site_delivery_manifest,args.site_delivery_manifest_sha256,
+                args.site_reference_bundle,args.site_reference_bundle_sha256,
+                args.site_coordinator_inputs,args.site_coordinator_inputs_sha256,
+                args.site_development_artifact_selection,args.site_development_artifact_selection_sha256))):
+        raise ValueError('toolbar-preparation-requires-only-exact-public-inventory')
+    return True
+
+
+class ToolbarInventoryFdSlot:
+    """One empty owner is registered before its descriptor can be acquired."""
+    __slots__ = ('fd',)
+
+    def __init__(self):
+        self.fd = None
+
+
+def toolbar_prepare_inventory_register(owned):
+    slot = ToolbarInventoryFdSlot()
+    owned.append(slot)
+    return slot
+
+
+def toolbar_prepare_inventory_snapshot(path, expected_sha256, state_root, coordination_root, entry, deadline, *, last_io=None):
+    """Fresh bytes and full named/held metadata; no prior execution credit.
+
+    The owned state root uses stable identity/permissions because this same
+    guardian creates its new epoch there. Original producer parents and leaf
+    use all nine facts. Descriptors remain held through the final read and optional terminal graph
+    IO, then all close attempts and original-cutoff/named checks precede success.
+    """
+    dev_stage_budget(entry,deadline)
+    if expected_sha256 != TOOLBAR_PREP_INVENTORY_SHA256:
+        raise ValueError('toolbar-public-inventory-digest-refused')
+    if state_root is None:
+        raise ValueError('toolbar-public-inventory-owned-state-required')
+    path=Path(path)
+    roots=[Path(state_root)]
+    if coordination_root is not None:
+        roots.append(validate_coordination('standard',coordination_root,state_root))
+    root=next((value for value in roots if path.is_relative_to(value)),None)
+    if root is None or not path.is_absolute():
+        raise ValueError('toolbar-public-inventory-owned-output-required')
+    relative=path.relative_to(root).parts
+    suffix=('output-base','execroot','_main','bazel-out','k8-fastbuild','testlogs',
+        'tools','cached_site_inventory_probe','test.outputs','inventory.json')
+    if (not relative or not (re.fullmatch(r'cache-(?:v2-)?[0-9a-f]{64}',relative[0])
+            or re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',relative[0]))
+            or relative[1:] != suffix):
+        raise ValueError('toolbar-public-inventory-exact-producer-output-required')
+    private(root)
+    def fact(info):
+        return (info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode,
+            info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+    owned=[];records=[];primary=None;result=None
+    try:
+        root_slot=toolbar_prepare_inventory_register(owned)
+        root_slot.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        directory=root_slot.fd
+        root_information=os.fstat(directory)
+        if root_information.st_uid != os.getuid() or stat.S_IMODE(root_information.st_mode) != 0o700:
+            raise ValueError('toolbar-public-inventory-root-refused')
+        records.append((root,directory,fact(root_information)[:5]))
+        selected=root
+        for part in path.relative_to(root).parts[:-1]:
+            dev_stage_budget(entry,deadline)
+            child_slot=toolbar_prepare_inventory_register(owned)
+            child_slot.fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory)
+            directory=child_slot.fd
+            selected/=part;information=os.fstat(directory)
+            if information.st_uid != os.getuid() or information.st_mode & 0o022:
+                raise ValueError('toolbar-public-inventory-parent-refused')
+            records.append((selected,directory,fact(information)))
+        leaf_slot=toolbar_prepare_inventory_register(owned)
+        leaf_slot.fd=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=directory)
+        fd=leaf_slot.fd
+        before=fact(os.fstat(fd))
+        if (not stat.S_ISREG(before[4]) or before[2] != os.getuid() or before[5] != 1
+                or stat.S_IMODE(before[4]) not in (0o444,0o555) or not 0 < before[6] <= 8*1024*1024):
+            raise ValueError('toolbar-public-inventory-leaf-refused')
+        records.append((path,fd,before));digest=hashlib.sha256();count=0
+        while True:
+            dev_stage_budget(entry,deadline);block=os.read(fd,65536)
+            if not block:break
+            count+=len(block)
+            if count>before[6]:raise ValueError('toolbar-public-inventory-byte-bound')
+            digest.update(block)
+        if count != before[6] or digest.hexdigest() != expected_sha256:
+            raise ValueError('toolbar-public-inventory-bytes-changed')
+        if last_io is not None:
+            last_io()
+        for name,descriptor,expected in records:
+            dev_stage_budget(entry,deadline)
+            if fact(os.fstat(descriptor))[:len(expected)] != expected or fact(name.lstat())[:len(expected)] != expected:
+                raise ValueError('toolbar-public-inventory-role-changed')
+        result={'path':str(path),'sha256':expected_sha256,'bytes':count,
+            'named_roles':[{'path':str(name),'witness':list(expected)} for name,fd,expected in records],
+            'execution_authority':False,'prior_producer_success_inherited':False}
+    except BaseException as error:primary=error;raise
+    finally:
+        failure=None
+        while owned:
+            slot=owned.pop();descriptor=slot.fd;slot.fd=None
+            if descriptor is None:continue
+            try:os.close(descriptor)
+            except BaseException as error:
+                if failure is None:failure=error
+        if failure is not None:
+            if primary is not None:raise primary from failure
+            raise failure
+        if primary is None:
+            for name,descriptor,expected in records:
+                if fact(name.lstat())[:len(expected)] != expected:
+                    raise ValueError('toolbar-public-inventory-role-changed-after-close')
+            dev_stage_budget(entry,deadline)
+    return result
+
+
+def toolbar_prepare_inventory_finish(path, expected_sha256, state_root, coordination_root, entry, deadline,
+        before, expected_graph, graph_reader):
+    """Read the terminal graph inside the actual input-owner lifetime.
+
+    A matching saved report is insufficient: the snapshot checks all held and
+    named roles after the graph's last IO, drains owners and checks the original
+    cutoff before returning. The graph reader never receives a fresh guard budget.
+    """
+    graph=[None]
+    def read_graph():
+        graph[0]=graph_reader()
+    after=toolbar_prepare_inventory_snapshot(path,expected_sha256,state_root,coordination_root,
+        entry,deadline,last_io=read_graph)
+    return after, after == before and graph[0] == expected_graph
 
 
 RETAINED_OUTPUT_PRODUCTS = {
@@ -2463,8 +2604,6 @@ def _main(argv, admission_resources, retirement_resources):
         raise ValueError('wrapper request is exclusive to exact companion profile')
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
     site_development_artifact_request(args, arguments)
-    toolbar_preparation = toolbar_prepare_selected(args.profile,args.manager,arguments,
-        args.reuse_owned_cache,args.source_dirty)
     import site_coordinator_selection as coordinator_inputs
     if coordinator_inputs.admitted(args.profile, arguments,
             args.site_coordinator_inputs, args.site_coordinator_inputs_sha256):
@@ -2544,6 +2683,13 @@ def _main(argv, admission_resources, retirement_resources):
     resident_output = None
     if args.worker:
         return worker(args.worker, arguments)
+    # Workers receive the entire admitted Bazel argv, including this label;
+    # coordinator selection must not reinterpret it before worker ownership.
+    toolbar_preparation = toolbar_prepare_selected(args.profile,args.manager,arguments,
+        args.reuse_owned_cache,args.source_dirty)
+    toolbar_prepare_inventory_request(args,toolbar_preparation)
+    toolbar_inventory_before = None
+    toolbar_inventory_after = None
     ordinary_check_reuse = ordinary_check_reuse_selected(args, arguments)
     home_manager_owned = home_manager_owned_request(args,arguments,
         delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
@@ -2904,10 +3050,15 @@ def _main(argv, admission_resources, retirement_resources):
             raise ValueError('site Nixpkgs input requires explicit sibling source')
         args.site_nixpkgs_source = store_directory(args.site_nixpkgs_source)
     if args.site_inventory is not None or args.site_inventory_sha256 is not None:
-        if args.site_inventory is None or args.site_source is None:
+        if args.site_inventory is None or (args.site_source is None and not toolbar_preparation):
             raise ValueError('site inventory requires explicit sibling source and complete selection')
-        args.site_inventory = selected_site_inventory(args.site_inventory, args.site_inventory_sha256,
-                                                     args.state_dir, coordination)
+        if toolbar_preparation:
+            toolbar_inventory_before = toolbar_prepare_inventory_snapshot(args.site_inventory,
+                args.site_inventory_sha256,args.state_dir,coordination,
+                delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
+        else:
+            args.site_inventory = selected_site_inventory(args.site_inventory, args.site_inventory_sha256,
+                                                         args.state_dir, coordination)
     if site:
         if bazel != str(site.BAZEL_NATIVE) or java != site.JDK:
             raise ValueError('site dispatch requires the fixed native ELF and JDK')
@@ -3350,6 +3501,10 @@ def _main(argv, admission_resources, retirement_resources):
                                 site_coordinator_inputs=args.site_coordinator_inputs,
                                 site_coordinator_inputs_sha256=args.site_coordinator_inputs_sha256)
             if toolbar_preparation:
+                if toolbar_prepare_inventory_snapshot(args.site_inventory,args.site_inventory_sha256,
+                        args.state_dir,coordination,delivery_entry_monotonic_ns,
+                        delivery_entry_deadline_ns) != toolbar_inventory_before:
+                    raise ValueError('toolbar-public-inventory-changed-before-dispatch')
                 command=toolbar_prepare_command(command,run,delivery_entry_monotonic_ns,
                     delivery_entry_deadline_ns,args.source_commit,graph_sha256,Path.cwd().resolve(strict=True))
             if site and args.site_phase == 'lock':
@@ -4025,8 +4180,15 @@ def _main(argv, admission_resources, retirement_resources):
             if toolbar_preparation:
                 toolbar_preparation_verified = False
                 try:
-                    toolbar_preparation_verified = (result == 0 and cleanup is True and evidence_ok
-                        and pids_cancellation is None and graph_digest(Path.cwd()) == (graph_sha256,graph_inputs))
+                    if result == 0 and cleanup is True and evidence_ok and pids_cancellation is None:
+                        toolbar_inventory_after,toolbar_preparation_verified = toolbar_prepare_inventory_finish(
+                            args.site_inventory,args.site_inventory_sha256,args.state_dir,coordination,
+                            delivery_entry_monotonic_ns,delivery_entry_deadline_ns,toolbar_inventory_before,
+                            (graph_sha256,graph_inputs),lambda:graph_digest(Path.cwd()))
+                    else:
+                        toolbar_inventory_after = toolbar_prepare_inventory_snapshot(args.site_inventory,
+                            args.site_inventory_sha256,args.state_dir,coordination,
+                            delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
                 except (OSError,ValueError,TypeError):
                     toolbar_preparation_verified = False
                 if toolbar_preparation_verified is not True: final_status=125
@@ -4314,6 +4476,9 @@ def _main(argv, admission_resources, retirement_resources):
                     'verified_after_cleanup':toolbar_preparation_verified,
                     'original_entry_monotonic_ns':delivery_entry_monotonic_ns,
                     'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
+                    'inventory_binding_before':toolbar_inventory_before,
+                    'inventory_binding_after':toolbar_inventory_after,
+                    'cached_candidate_input_only':True,
                     'original_runfiles_retained_only':True,'fresh_consumer_qualification_required':True,
                     'execution_authority':False,'seat_qualified':False,'toolbar_consent_proved':False}
             record_resident_lifecycle(receipt,resident_input)
