@@ -362,18 +362,20 @@ def delivery_command(builder,bazel,run,entry,deadline,request_sha256,*,source_co
     result = builder(bazel,run,DELIVERY_ARGUMENTS,profile='standard',
         source_commit=source_commit,source_dirty='false',repository_cache=repository_cache,
         nixpkgs_source=nixpkgs_source,output_base=run/'delivery-output-base')
-    require(sum(value.startswith('--output_user_root=') for value in result) == 1
-        and sum(value.startswith('--symlink_prefix=') for value in result) == 1
+    require([value for value in result if value.startswith('--output_user_root=')] ==
+            ['--output_user_root='+str(run/'bazel-user-root')]
+        and [value for value in result if value.startswith('--output_base=')] ==
+            ['--output_base='+str(run/'delivery-output-base')]
+        and not any(value == '--symlink_prefix' or value.startswith('--symlink_prefix=') for value in result)
         and '--nocache_test_results' in result and '--remote_executor=' in result and '--remote_cache=' in result)
-    result = [('--output_user_root='+str(run/'delivery-user-root')) if value.startswith('--output_user_root=') else
-        ('--symlink_prefix='+str(run/'delivery-evidence/bazel-')) if value.startswith('--symlink_prefix=') else value
+    result = [('--output_user_root='+str(run/'delivery-user-root')) if value.startswith('--output_user_root=') else value
         for value in result]
     environment = {MODE:INPUT_MODE,ENTRY:str(entry),DEADLINE:str(deadline),EPOCH:str(run),
         SOURCE:source_commit,GRAPH:graph_sha256,DELIVERY_REQUEST:str(run/'native-content-delivery-request.json'),
         DELIVERY_REQUEST_SHA256:request_sha256}
     index = result.index('test')+1
-    result[index:index] = ['--repository_disable_download','--repo_contents_cache=',
-        '--test_timeout='+str(seconds)] + ['--test_env='+key+'='+value for key,value in environment.items()]
+    result[index:index] = ['--symlink_prefix='+str(run/'delivery-evidence/bazel-'),
+        '--repository_disable_download','--repo_contents_cache=', '--test_timeout='+str(seconds)] + ['--test_env='+key+'='+value for key,value in environment.items()]
     return result,environment
 
 

@@ -169,19 +169,28 @@ class PublicationTests(unittest.TestCase):
     def test_late_directory_seal_replacement_does_not_inherit_creator_fsync(self):
         for target in ('one','alias'):
             unused,run,owner=self.scope();original,fresh,expected=self.trees(run,owner)
-            chmod=os.fchmod;armed=[True]
+            chmod=os.fchmod;armed=[True];changed=[]
             def change(fd,mode):
-                result=chmod(fd,mode)
-                if armed[0] and mode==0o555 and publication.stat.S_ISDIR(os.fstat(fd).st_mode):
-                    armed[0]=False
+                if armed[0] and fd==fresh.fd and mode==0o555:
+                    # Replace after each created leaf has been fsynced, but
+                    # before this owner seals its still-writable root. No
+                    # root privileges or production permission bypass needed.
+                    self.assertEqual(os.fstat(fd).st_mode&0o777,0o700)
+                    armed[0]=False;original_anchor=publication.witness(os.lstat(fresh.path/target))
+                    replacement=fresh.path/'replacement'
                     if target=='one':
-                        replacement=fresh.path/'replacement';replacement.write_bytes(b'public-one');replacement.chmod(0o555);replacement.replace(fresh.path/'one')
-                    else:
-                        (fresh.path/'alias').unlink();(fresh.path/'alias').symlink_to('one')
-                return result
+                        replacement.write_bytes(b'public-one');replacement.chmod(0o555)
+                    else:replacement.symlink_to('one')
+                    replacement.replace(fresh.path/target)
+                    changed.append((original_anchor,publication.witness(os.lstat(fresh.path/target))))
+                return chmod(fd,mode)
             with patch.object(publication.os,'fchmod',change):
                 with self.assertRaises(ValueError):publication._copy(owner,original,fresh,expected)
-            self.assertFalse(armed[0])
+            self.assertFalse(armed[0]);self.assertEqual(len(changed),1)
+            self.assertNotEqual(changed[0][0][1],changed[0][1][1])
+            self.assertEqual(os.fstat(fresh.fd).st_mode&0o777,0o555)
+            if target=='one':self.assertEqual((fresh.path/target).read_bytes(),b'public-one')
+            else:self.assertEqual(os.readlink(fresh.path/target),'one')
 
     def test_after_append_failure_detaches_before_close_and_drain_never_retries(self):
         unused,run,owner=self.scope()

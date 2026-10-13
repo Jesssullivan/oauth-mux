@@ -279,6 +279,38 @@ class ContentDependencyAndDeliveryTests(unittest.TestCase):
         with self.assertRaises(ValueError): model.delivery_command(guard.bazel_command,'bazel',self.run,self.entry,self.until,'d'*64,
             source_commit='b'*40,graph_sha256='c'*64,seconds=51,sample_ns=sample)
 
+    def test_actual_standard_builder_delivery_prefix_placement_and_conflicts_refuse(self):
+        sample=self.clock
+        seconds=model.delivery_seconds(self.entry,self.until,sample_ns=sample)
+        standard=guard.bazel_command('bazel',self.run,model.DELIVERY_ARGUMENTS,profile='standard',
+            source_commit='b'*40,source_dirty='false',output_base=self.run/'delivery-output-base')
+        self.assertFalse(any(value.startswith('--symlink_prefix') for value in standard))
+        command,_=model.delivery_command(guard.bazel_command,'bazel',self.run,self.entry,self.until,'d'*64,
+            source_commit='b'*40,graph_sha256='c'*64,seconds=seconds,sample_ns=sample)
+        prefix='--symlink_prefix='+str(self.run/'delivery-evidence/bazel-')
+        index=command.index('test')
+        self.assertEqual([value for value in command if value.startswith('--symlink_prefix')],[prefix])
+        self.assertEqual(command[index+1],prefix)
+        self.assertNotIn(prefix,command[:index])
+        self.assertEqual([value for value in command if value.startswith('--output_user_root=')],
+            ['--output_user_root='+str(self.run/'delivery-user-root')])
+        self.assertEqual([value for value in command if value.startswith('--output_base=')],
+            ['--output_base='+str(self.run/'delivery-output-base')])
+        self.assertEqual(command[-1],model.DELIVERY_ARGUMENTS[1])
+        self.assertIn('--nocache_test_results',command)
+        self.assertIn('--remote_executor=',command); self.assertIn('--remote_cache=',command)
+        faults=[standard[:index+1]+['--symlink_prefix=/foreign/']+standard[index+1:],
+            standard[:index+1]+['--symlink_prefix','/foreign/']+standard[index+1:],
+            standard+['--output_user_root=/foreign'],
+            [value for value in standard if not value.startswith('--output_user_root=')],
+            ['--output_base=/foreign' if value.startswith('--output_base=') else value for value in standard],
+            ['--output_user_root=/foreign' if value.startswith('--output_user_root=') else value for value in standard]]
+        for fault in faults:
+            with self.subTest(fault=fault):
+                with self.assertRaises(ValueError):
+                    model.delivery_command(lambda *args,**kwargs:list(fault),'bazel',self.run,self.entry,self.until,'d'*64,
+                        source_commit='b'*40,graph_sha256='c'*64,seconds=seconds,sample_ns=sample)
+
     def test_actual_metadata_read_detects_named_replacement_and_original_cutoff(self):
         path=self.run/'metadata.json'; path.write_bytes(b'{"kind":"test"}'); path.chmod(0o600)
         real=os.read; changed=False
