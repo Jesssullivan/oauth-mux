@@ -482,6 +482,37 @@ def prepare(declaration_path, environment):
         if primary is None: clock.tick()
 
 
+REFUSAL_FILES = frozenset(('yoga_public_artifact_prepare.py', 'browser_runtime_authority.py',
+    'pack.py', 'portable.py'))
+REFUSAL_TYPES = frozenset(('ValueError', 'TypeError', 'KeyError', 'OSError', 'FileNotFoundError',
+    'PermissionError', 'MemoryError', 'RuntimeRootError', 'UnicodeDecodeError', 'UnicodeEncodeError',
+    'JSONDecodeError', 'BadZipFile', 'AssertionError', 'KeyboardInterrupt', 'SystemExit', 'BrokenPipeError'))
+
+
+def refusal_diagnostic(error):
+    """Bounded code coordinates only; no messages, locals, paths or env values."""
+    name = type(error).__name__
+    frames = []; selected = error.__traceback__; visited = 0
+    while selected is not None and visited < 64:
+        code = selected.tb_frame.f_code
+        filename = code.co_filename.rsplit('/', 1)[-1]
+        function = code.co_name; line = selected.tb_lineno
+        if (filename in REFUSAL_FILES and type(function) is str
+                and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,95}', function) is not None
+                and type(line) is int and 1 <= line <= 100000):
+            frames.append({'file':filename, 'function':function, 'line':line})
+            if len(frames) > 12: del frames[0]
+        visited += 1; selected = selected.tb_next
+    return {'errorType':name if name in REFUSAL_TYPES else 'OtherError', 'ownedFrames':frames}
+
+
+def emit_refusal_diagnostic(error):
+    payload = json.dumps(refusal_diagnostic(error),sort_keys=True,separators=(',',':'),ensure_ascii=True)
+    if len(payload.encode('ascii')) > 4096:
+        return
+    print('toolbar-public-preparation-diagnostic '+payload,file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--declaration',required=True)
@@ -495,8 +526,10 @@ def main():
         sys.stdout.flush()
         clock.tick()
         return 0
-    except BaseException:
+    except BaseException as error:
         print('toolbar-public-preparation-refused',file=sys.stderr)
+        try: emit_refusal_diagnostic(error)
+        except BaseException: pass  # Diagnostics cannot turn refusal into acceptance.
         return 125
 
 

@@ -311,7 +311,11 @@ class PreparationModels(unittest.TestCase):
             status=model.main()
         self.assertEqual(status,125)
         self.assertIn('OMUX_YOGA_CURRENT_PUBLIC_TOOLBAR_PREPARED_NO_EXECUTION',output.getvalue())
-        self.assertEqual(diagnostic.getvalue(),'toolbar-public-preparation-refused\n')
+        lines=diagnostic.getvalue().splitlines()
+        self.assertEqual(lines[0],'toolbar-public-preparation-refused')
+        details=json.loads(lines[1].removeprefix('toolbar-public-preparation-diagnostic '))
+        self.assertEqual(details['errorType'],'ValueError')
+        self.assertIn('tick',[row['function'] for row in details['ownedFrames']])
         self.assertTrue((self.output/'yoga-public-toolbar/artifact.json').is_file())
         # Complete metadata plus a provisional marker is not a successful
         # producer receipt; guard retention still requires workload exit zero.
@@ -321,6 +325,54 @@ class PreparationModels(unittest.TestCase):
 
     def test_actual_main_late_success_marker_flush_refuses_original_cutoff(self):
         self.actual_main('flush')
+
+    def assert_redacted_main_refusal(self,env,declaration):
+        output=io.StringIO();diagnostic=io.StringIO()
+        with patch.dict(model.os.environ,env,clear=True),patch.object(model.sys,'argv',
+                ['prepare','--declaration',str(declaration)]),patch.object(model.sys,'stdout',output),                patch.object(model.sys,'stderr',diagnostic):
+            status=model.main()
+        self.assertEqual(status,125);self.assertEqual(output.getvalue(),'')
+        lines=diagnostic.getvalue().splitlines();self.assertEqual(len(lines),2)
+        self.assertEqual(lines[0],'toolbar-public-preparation-refused')
+        self.assertTrue(lines[1].startswith('toolbar-public-preparation-diagnostic '))
+        record=json.loads(lines[1].removeprefix('toolbar-public-preparation-diagnostic '))
+        self.assertEqual(set(record),{'errorType','ownedFrames'})
+        self.assertLessEqual(len(lines[1].encode('ascii')),4096+len('toolbar-public-preparation-diagnostic '))
+        self.assertTrue(1 <= len(record['ownedFrames']) <= 12)
+        for row in record['ownedFrames']:
+            self.assertEqual(set(row),{'file','function','line'})
+            self.assertIn(row['file'],model.REFUSAL_FILES);self.assertNotIn('/',row['file'])
+            self.assertTrue(1 <= row['line'] <= 100000)
+        self.assertFalse((self.output/'yoga-public-toolbar').exists())
+        self.assertNotIn(str(self.root),diagnostic.getvalue())
+        self.assertNotIn('PRIVATE_DIAGNOSTIC_CANARY',diagnostic.getvalue())
+        return record
+
+    def test_actual_main_context_conversion_refusal_reports_owned_coordinates_without_environment(self):
+        env=dict(self.env);env[model.VARIABLE+'ENTRY_NS']='PRIVATE_DIAGNOSTIC_CANARY'
+        record=self.assert_redacted_main_refusal(env,self.declaration)
+        self.assertEqual(record['errorType'],'ValueError')
+        self.assertIn('prepare',[row['function'] for row in record['ownedFrames']])
+
+    def test_actual_main_missing_declared_leaf_reports_owned_coordinates_without_private_filename(self):
+        absent=self.declaration.with_name('PRIVATE_DIAGNOSTIC_CANARY.json')
+        record=self.assert_redacted_main_refusal(self.env,absent)
+        self.assertEqual(record['errorType'],'FileNotFoundError')
+        self.assertIn('resolve',[row['function'] for row in record['ownedFrames']])
+
+    def test_actual_main_diagnostic_write_failure_stays_refused_without_raw_exception(self):
+        class RefusingDiagnostic(io.StringIO):
+            def write(stream,text):
+                if 'toolbar-public-preparation-diagnostic ' in text:
+                    raise OSError('PRIVATE_DIAGNOSTIC_CANARY')
+                return super().write(text)
+        env=dict(self.env);env[model.VARIABLE+'ENTRY_NS']='PRIVATE_DIAGNOSTIC_CANARY'
+        diagnostic=RefusingDiagnostic();output=io.StringIO()
+        with patch.dict(model.os.environ,env,clear=True),patch.object(model.sys,'argv',
+                ['prepare','--declaration',str(self.declaration)]),patch.object(model.sys,'stdout',output),                patch.object(model.sys,'stderr',diagnostic):
+            self.assertEqual(model.main(),125)
+        self.assertEqual(diagnostic.getvalue(),'toolbar-public-preparation-refused\n')
+        self.assertEqual(output.getvalue(),'');self.assertFalse((self.output/'yoga-public-toolbar').exists())
 
 
 if __name__=='__main__':
