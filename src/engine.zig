@@ -371,6 +371,26 @@ const OwnedRenewalPending = struct {
         self.* = undefined;
     }
 };
+/// Test-only wait for the SAME original Unix-second grant bound. Subtracting
+/// floored seconds and then sleeping whole seconds adds the current fraction.
+const OwnedRenewalFixtureExpiry = struct {
+    fn remaining(expires_at: i64, now: std.Io.Timestamp) !i96 {
+        if (!builtin.is_test) return error.TestOnly;
+        if (expires_at <= 0 or now.nanoseconds < 0) return error.InvalidFixtureWindow;
+        const original_ns = @as(i96, expires_at) * 1_000_000_000;
+        if (now.nanoseconds >= original_ns) return 0;
+        if (expires_at - now.toSeconds() > 3) return error.InvalidFixtureWindow;
+        return original_ns - now.nanoseconds;
+    }
+    fn wait(io: std.Io, expires_at: i64) !void {
+        const left = try remaining(expires_at, std.Io.Clock.real.now(io));
+        if (left == 0) return;
+        try io.sleep(.fromNanoseconds(left), .awake);
+        // Never rearm the fixture window if wall time changes or an IO clock
+        // returns early. Failure cannot masquerade as reaching original expiry.
+        if (try remaining(expires_at, std.Io.Clock.real.now(io)) != 0) return error.InvalidFixtureWindow;
+    }
+};
 const OwnedRenewalVerifyTask = struct {
     allocator: std.mem.Allocator,
     ticket: *oauth_issue.IssuedTicket,
@@ -401,12 +421,7 @@ const OwnedRenewalVerifyTask = struct {
                 self.failure = error.InvalidFixtureWindow;
                 return;
             };
-            const seconds = limit - std.Io.Clock.real.now(self.ticket.clockIo()).toSeconds();
-            if (seconds > 3) {
-                self.failure = error.InvalidFixtureWindow;
-                return;
-            }
-            if (seconds > 0) self.ticket.clockIo().sleep(.fromSeconds(seconds), .awake) catch |err| {
+            OwnedRenewalFixtureExpiry.wait(self.ticket.clockIo(), limit) catch |err| {
                 self.failure = err;
                 return;
             };
@@ -4746,9 +4761,7 @@ pub const Engine = struct {
         if (!builtin.is_test) return error.TestOnly;
         if (self.fixture_owned_renewal_hold_window) {
             const limit = operation.grant_window.limitingExpiry() orelse return error.InvalidFixtureWindow;
-            const seconds = limit - self.now();
-            if (seconds > 3) return error.InvalidFixtureWindow;
-            if (seconds > 0) try self.io.sleep(.fromSeconds(seconds), .awake);
+            try OwnedRenewalFixtureExpiry.wait(self.io, limit);
         } else {
             const remaining = operation.originalUntil().durationFromNow(self.io).raw.toNanoseconds();
             if (remaining > 0) try self.io.sleep(.fromNanoseconds(remaining + 20_000_000), .awake);
@@ -15213,6 +15226,30 @@ const OwnedRenewalActorModel = struct {
     }
 };
 
+test "fixture expiry remaining honors original fractional boundary and rejects invalid windows" {
+    const F = OwnedRenewalFixtureExpiry;
+    try std.testing.expectEqual(@as(i96, 3_000_000_000), try F.remaining(103, .{ .nanoseconds = 100_000_000_000 }));
+    try std.testing.expectEqual(@as(i96, 2_250_000_000), try F.remaining(103, .{ .nanoseconds = 100_750_000_000 }));
+    try std.testing.expectEqual(@as(i96, 1), try F.remaining(103, .{ .nanoseconds = 102_999_999_999 }));
+    try std.testing.expectEqual(@as(i96, 0), try F.remaining(103, .{ .nanoseconds = 103_000_000_000 }));
+    try std.testing.expectEqual(@as(i96, 0), try F.remaining(103, .{ .nanoseconds = 104_000_000_000 }));
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(104, .{ .nanoseconds = 100_750_000_000 }));
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(0, .{ .nanoseconds = 100_000_000_000 }));
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(103, .{ .nanoseconds = -1 }));
+    const maximum = std.math.maxInt(i64);
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(maximum, .{ .nanoseconds = 0 }));
+    try std.testing.expectEqual(@as(i96, 1), try F.remaining(maximum, .{ .nanoseconds = @as(i96, maximum) * 1_000_000_000 - 1 }));
+}
+
+test "fixture expiry wait reaches its unchanged actual wall boundary before returning" {
+    const io = std.testing.io;
+    const original_expiry = std.Io.Clock.real.now(io).toSeconds() + 1;
+    try OwnedRenewalFixtureExpiry.wait(io, original_expiry);
+    try std.testing.expect(std.Io.Clock.real.now(io).toSeconds() >= original_expiry);
+    try OwnedRenewalFixtureExpiry.wait(io, original_expiry);
+    try std.testing.expectEqual(@as(i96, 0), try OwnedRenewalFixtureExpiry.remaining(original_expiry, std.Io.Clock.real.now(io)));
+}
+
 test "owned paired renewal preserves usable current access and accepted native work while one writer rotates" {
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
     const N = @import("native_owner_fixture.zig");
@@ -16027,16 +16064,27 @@ test "paired grant expiry after sealing and before recovery publication rolls ba
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
+    const matrix_started = std.Io.Clock.awake.now(io);
+    M.trace("grant-expiry", 0, "matrix-start", matrix_started);
     for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, bound_index| {
         for ([_][]const u8{ "before_begin", "before_reservation", "before_commit" }, 0..) |stage, stage_index| {
+            const case_index = bound_index * 3 + stage_index;
+            M.trace("grant-expiry", case_index, "case-start", matrix_started);
+            defer M.trace("grant-expiry", case_index, "case-cleanup-returned", matrix_started);
             var directory = std.testing.tmpDir(.{});
             defer directory.cleanup();
             try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
             const path = try directory.dir.realPathFileAlloc(io, ".", a);
             defer a.free(path);
             try F.seed(path);
+            M.trace("grant-expiry", case_index, "actor-open-enter", matrix_started);
             const current = try Engine.openWithKey(io, a, path, F.key);
-            defer current.deinit();
+            defer {
+                M.trace("grant-expiry", case_index, "actor-close-enter", matrix_started);
+                current.deinit();
+                M.trace("grant-expiry", case_index, "actor-close-returned", matrix_started);
+            }
+            M.trace("grant-expiry", case_index, "actor-open-complete", matrix_started);
             const subject = try std.fmt.allocPrint(a, "renew-sql-window-{d}-{d}", .{ bound_index, stage_index });
             defer a.free(subject);
             const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
@@ -16045,20 +16093,32 @@ test "paired grant expiry after sealing and before recovery publication rolls ba
             const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
             defer handles.deinit();
             const transaction = try control.string(try M.result(&handles), "transaction_id");
+            M.trace("grant-expiry", case_index, "paired-admission-complete", matrix_started);
             var key = try M.signer();
-            defer key.deinit() catch @panic("renewal signing key cleanup failed");
+            defer {
+                M.trace("grant-expiry", case_index, "signer-cleanup-enter", matrix_started);
+                key.deinit() catch @panic("renewal signing key cleanup failed");
+                M.trace("grant-expiry", case_index, "signer-cleanup-returned", matrix_started);
+            }
             const keys = try key.jwks();
             defer a.free(keys);
             var body = try M.makeBody(&key, subject, .{});
             defer body.deinit();
+            M.trace("grant-expiry", case_index, "signing-complete", matrix_started);
+            M.trace("grant-expiry", case_index, "grant-window-enter", matrix_started);
             const expiry = try M.window(current, account, bound, 3);
+            M.trace("grant-expiry", case_index, "grant-window-complete", matrix_started);
+            M.trace("grant-expiry", case_index, "held-issuance-enter", matrix_started);
             const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_stage = stage, .hold_window = true });
             defer started.deinit();
             _ = try M.result(&started);
+            M.trace("grant-expiry", case_index, "held-issuance-complete", matrix_started);
+            M.trace("grant-expiry", case_index, "terminal-observation-enter", matrix_started);
             if (stage_index != 2) {
                 const refused = try M.wait(current, account, "quarantined", 1);
                 defer refused.deinit();
                 const value = try M.result(&refused);
+                M.trace("grant-expiry", case_index, "terminal-observation-complete", matrix_started);
                 try M.assertPair(value, "quarantined", 1, false);
                 try M.assertOriginalWindow(value, bound, expiry);
                 try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
@@ -16078,9 +16138,12 @@ test "paired grant expiry after sealing and before recovery publication rolls ba
                     } else try io.sleep(.fromMilliseconds(5), .awake);
                 }
                 try std.testing.expect(poisoned);
+                M.trace("grant-expiry", case_index, "terminal-observation-complete", matrix_started);
             }
+            M.trace("grant-expiry", case_index, "assertions-complete", matrix_started);
         }
     }
+    M.trace("grant-expiry", 8, "matrix-complete", matrix_started);
 }
 
 test "paired issuance original grant expiry before reserve cannot return ticket or publish an issued witness" {
