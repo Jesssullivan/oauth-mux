@@ -52,9 +52,9 @@ def selected_document():
     return binding.selected_document()
 
 
-def configure_selection():
+def configure_selection(*, sdk_domain=None):
     global INPUT_CONTROL, BINDING_SHA
-    value = binding.config()
+    value = binding.config() if sdk_domain is None else binding.config(sdk_domain=sdk_domain)
     binding.selected_document(value)
     INPUT_CONTROL = Path(value['binding']['path'])
     BINDING_SHA = value['binding']['sha256']

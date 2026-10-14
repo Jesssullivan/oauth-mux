@@ -57,7 +57,7 @@ def tick(deadline):
     require(type(deadline) is float and time.monotonic() < deadline)
 
 
-def selection(raw):
+def selection(raw, *, sdk_domain=None):
     require(type(raw) is bytes and 0 < len(raw) <= 16384)
     value = json.loads(raw, object_pairs_hook=source.unique)
     require(type(value) is dict and set(value) == {"schema_version", "kind", "status", "selection"}
@@ -65,7 +65,8 @@ def selection(raw):
         and value["kind"] == KIND and value["status"] == "selected-qualified-carrier-for-metadata")
     selected = value["selection"]
     require(type(selected) is dict and set(selected) == {"original_selection", "carrier", "qualification"}
-        and selected["original_selection"] == binding.selected_document())
+        and selected["original_selection"] == (binding.selected_document() if sdk_domain is None else
+            binding.selected_document(sdk_domain=sdk_domain)))
     require(type(selected["carrier"]) is dict and set(selected["carrier"]) == {"receipt_sha256"})
     protocol.pin(selected["carrier"]["receipt_sha256"])
     qualified = selected["qualification"]
@@ -95,7 +96,7 @@ def envelope(environment):
 
 
 @contextmanager
-def proof_scope(deadline):
+def proof_scope(deadline, *, sdk_domain=None):
     """Original proof APIs retain their clock; restore every touched value exactly."""
     tick(deadline)
     require(_SCOPE.get() is None)
@@ -104,7 +105,13 @@ def proof_scope(deadline):
         legacy.QUERY_REPOSITORY)
     try:
         source.DEADLINE = legacy.DEADLINE = deadline
-        legacy.configure_selection()
+        if sdk_domain is None:
+            legacy.configure_selection()
+        else:
+            import codex_public_sdk_custody as public
+            require(type(sdk_domain) is public.Domain and sdk_domain.deadline == deadline)
+            sdk_domain.check()
+            legacy.configure_selection(sdk_domain=sdk_domain)
         yield
     finally:
         (source.DEADLINE, legacy.DEADLINE, legacy.INPUT_CONTROL, legacy.BINDING_SHA,
@@ -112,7 +119,7 @@ def proof_scope(deadline):
         _SCOPE.reset(token)
 
 
-def declared_carrier(runfiles, rows, selected_input, deadline):
+def declared_carrier(runfiles, rows, selected_input, deadline, *, sdk_domain=None):
     tick(deadline)
     selected = [row[2] for row in rows if len(row) == 3 and row[0] in ("", "_main")
         and row[1] == REPOSITORY]
@@ -128,11 +135,15 @@ def declared_carrier(runfiles, rows, selected_input, deadline):
     physical_selection = alias.resolve(strict=True)
     require(physical_selection.name == "selection.json" and physical_selection.parent.name == selected[0]
         and physical_selection.parent.parent.name == "external")
-    fd = source.directory(physical_selection.parent)
-    try:
-        raw, _ = source.read(fd, physical_selection.name, 8192)
-    finally:
-        os.close(fd)
+    if sdk_domain is None:
+        fd = source.directory(physical_selection.parent)
+        try:
+            raw, _ = source.read(fd, physical_selection.name, 8192)
+        finally:
+            os.close(fd)
+    else:
+        import codex_public_sdk_custody as public
+        raw = public.read(physical_selection, sdk_domain, 8192)
     declaration = json.loads(raw, object_pairs_hook=source.unique)
     require(type(declaration) is dict and set(declaration) == {"carrier_root", "digests"}
         and declaration["carrier_root"] == str(root) and type(declaration["digests"]) is dict
@@ -182,7 +193,7 @@ class ProofInputs:
             "inputs": copy.deepcopy(self.document["proofs"])}
 
 
-def declared_proofs(runfiles, rows, selected_input, deadline):
+def declared_proofs(runfiles, rows, selected_input, deadline, *, sdk_domain=None):
     tick(deadline)
     selected = [row[2] for row in rows if len(row) == 3 and row[0] in ("", "_main")
         and row[1] == PROOF_REPOSITORY]
@@ -192,11 +203,15 @@ def declared_proofs(runfiles, rows, selected_input, deadline):
     physical = alias.resolve(strict=True)
     require(physical.name == "proof-inputs.json" and physical.parent.name == selected[0]
         and physical.parent.parent.name == "external")
-    fd = source.directory(physical.parent)
-    try:
-        raw, _ = source.read(fd, physical.name, 65536)
-    finally:
-        os.close(fd)
+    if sdk_domain is None:
+        fd = source.directory(physical.parent)
+        try:
+            raw, _ = source.read(fd, physical.name, 65536)
+        finally:
+            os.close(fd)
+    else:
+        import codex_public_sdk_custody as public
+        raw = public.read(physical, sdk_domain, 65536)
     document = json.loads(raw, object_pairs_hook=source.unique)
     require(type(document) is dict and set(document) == {"kind", "proofs"}
         and document["kind"] == PROOF_KIND and type(document["proofs"]) is dict
@@ -220,9 +235,28 @@ def declared_proofs(runfiles, rows, selected_input, deadline):
         and all(protocol.path(rows[role]["path"]).parent == parent / "test-evidence"
             and re.fullmatch(r"[0-9a-f]{64}\.evidence", protocol.path(rows[role]["path"]).name) is not None
             for role in ("test_log", "test_xml")))
-    result = ProofInputs(document, physical, raw, aliases)
+    if sdk_domain is not None: sdk_domain.bind_proofs(document)
+    result = (ProofInputs(document, physical, raw, aliases) if sdk_domain is None else
+              PublicProofInputs(document, physical, raw, aliases, sdk_domain))
     result.recheck(deadline)
     return result
+
+
+class PublicProofInputs(ProofInputs):
+    """Explicit exact variant; original private-proof owner checks stay strict."""
+    def __init__(self, document, path, raw, aliases, domain):
+        import codex_public_sdk_custody as public
+        require(type(self) is PublicProofInputs and type(domain) is public.Domain)
+        super().__init__(document, path, raw, aliases)
+        self.domain = domain
+
+    def recheck(self, deadline):
+        import codex_public_sdk_custody as public
+        require(type(self) is PublicProofInputs and deadline == self.domain.deadline)
+        self.domain.check(); recheck_aliases(self.aliases, deadline)
+        raw = public.read(self.path, self.domain, 65536, self.sha256)
+        require(json.loads(raw, object_pairs_hook=source.unique) == self.document)
+        recheck_aliases(self.aliases, deadline); self.domain.check()
 
 
 def _read_declaration(declaration, deadline):
@@ -309,9 +343,17 @@ def qualify_producer(selected, deadline, proof_inputs):
     value = selected["qualification"]["producer"]
     protocol.producer_pin(value)
     receipt_path = protocol.path(value["receipt"])
-    require(type(proof_inputs) is ProofInputs)
+    require(type(proof_inputs) in (ProofInputs, PublicProofInputs))
+    public_domain = proof_inputs.domain if type(proof_inputs) is PublicProofInputs else None
+    def read_json(path, pin, until, maximum=None):
+        if public_domain is None:
+            return protocol.read_json(path, pin, until) if maximum is None else protocol.read_json(path, pin, until, maximum)
+        import codex_public_sdk_custody as public
+        require(until == public_domain.deadline)
+        return json.loads(public.read(path, public_domain, 16 * 1024 * 1024 if maximum is None else maximum,
+            pin, "proof"), object_pairs_hook=source.unique)
     proof_inputs.join("outer_receipt", receipt_path, value["sha256"], deadline)
-    receipt = protocol.read_json(receipt_path, value["sha256"], deadline)
+    receipt = read_json(receipt_path, value["sha256"], deadline)
     reserved = producer_policy(receipt)
     require(receipt["id"] == receipt_path.parent.name and receipt["unit"] == "omux-execution-" + receipt["id"] + ".service"
         and receipt["manager"] == "system" and type(receipt["exit"]) is int and receipt["exit"] == 0
@@ -323,7 +365,7 @@ def qualify_producer(selected, deadline, proof_inputs):
         and receipt["test_evidence"]["state"] == "preserved")
     evidence_path = receipt_path.parent / "test-evidence.json"
     proof_inputs.join("test_evidence", evidence_path, receipt["test_evidence"]["sha256"], deadline)
-    evidence = protocol.read_json(evidence_path, receipt["test_evidence"]["sha256"], deadline)
+    evidence = read_json(evidence_path, receipt["test_evidence"]["sha256"], deadline)
     require(type(evidence["schema"]) is int and evidence["schema"] == 1
         and type(evidence["bazel_exit"]) is int and evidence["bazel_exit"] == 0
         and evidence["epoch_start_ns"] == receipt["epoch_start_ns"]
@@ -336,10 +378,17 @@ def qualify_producer(selected, deadline, proof_inputs):
         require(re.fullmatch(r"[0-9a-f]{64}\.evidence", entry["file"]) is not None)
         proof_inputs.join("test_log" if member == "test.log" else "test_xml",
             receipt_path.parent / "test-evidence" / entry["file"], entry["sha256"], deadline)
-        fd = protocol.trusted_parent(receipt_path.parent / "test-evidence")
+        fd = None
         try:
-            digest, count, raw = protocol.hash_regular(fd, entry["file"], 64 * 1024 * 1024, True,
-                on_read=lambda count: tick(deadline))
+            if public_domain is None:
+                fd = protocol.trusted_parent(receipt_path.parent / "test-evidence")
+                digest, count, raw = protocol.hash_regular(fd, entry["file"], 64 * 1024 * 1024, True,
+                    on_read=lambda count: tick(deadline))
+            else:
+                import codex_public_sdk_custody as public
+                raw = public.read(receipt_path.parent / "test-evidence" / entry["file"],
+                    public_domain, 64 * 1024 * 1024, entry["sha256"], "proof")
+                digest, count = source.sha(raw), len(raw)
             require(digest == entry["sha256"] and type(entry["bytes"]) is int and count == entry["bytes"] and count > 0)
             if member == "test.xml":
                 xml = ET.fromstring(raw)
@@ -348,7 +397,7 @@ def qualify_producer(selected, deadline, proof_inputs):
                     int(suite.get("tests", "0")) > 0 and all(int(suite.get(name, "0")) == 0
                         for name in ("failures", "errors", "skipped")) for suite in suites))
         finally:
-            os.close(fd)
+            if fd is not None: os.close(fd)
     report = selected["qualification"]["report"]
     path = protocol.path(report["path"])
     prefix = str(protocol.path(receipt["output_base"])) + "/execroot/_main/bazel-out/"
@@ -356,7 +405,7 @@ def qualify_producer(selected, deadline, proof_inputs):
     require(str(path).startswith(prefix) and str(path).endswith(suffix)
         and re.fullmatch(r"[A-Za-z0-9_.-]+", str(path)[len(prefix):-len(suffix)]) is not None)
     proof_inputs.join("program_report", path, report["sha256"], deadline)
-    proof = protocol.read_json(path, report["sha256"], deadline, 65536)
+    proof = read_json(path, report["sha256"], deadline, 65536)
     expected = {"kind": PRODUCER_KIND, "producer": SEAL_TARGET,
         "carrier_receipt_sha256": selected["carrier"]["receipt_sha256"],
         "origin_receipt_sha256": legacy.EXPORT_SHA,

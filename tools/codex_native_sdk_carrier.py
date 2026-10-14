@@ -48,6 +48,11 @@ def need(value, reason):
         raise ValueError("SDK carrier refused: " + reason)
 
 
+def _first_cause(primary, cleanup):
+    prior = BaseException.__cause__.__get__(primary)
+    return cleanup if prior is None else prior
+
+
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
@@ -242,6 +247,182 @@ class Root:
         self.close()
 
 
+class PublicRoot:
+    """Explicit SDK variant; private Root's constructor/predicates stay literal."""
+    def __init__(self, path, clock, domain, sealed=True, expected_identity=None, owned=False):
+        import codex_public_sdk_custody as public
+        need(type(self) is PublicRoot and type(domain) is public.Domain
+             and domain.clock is clock and type(owned) is bool and type(sealed) is bool, "public-root-domain")
+        self.path, self.clock, self.domain = absolute(path), clock, domain
+        self.named, self.leaves, self.sources = {}, {}, {}
+        self.owned, self.origin_jdk = owned, False
+        self._public_binding = self.path, self.clock, self.domain, self.owned
+        self.ancestry = None
+        self.chain = []
+        role = domain.root_role(self.path, owned)
+        try:
+            directory = public.OutputDirectory if role == "writer" else public.Directory
+            self.ancestry = directory(self.path, domain)
+            self.chain = [(name, fd, identity(os.fstat(fd), True))
+                          for name, fd, unused, mount in self.ancestry.chain]
+            held = os.fstat(self.fd)
+            need(stat.S_ISDIR(held.st_mode) and stat.S_IMODE(held.st_mode) == (0o555 if sealed else 0o700),
+                 "public-root-mode")
+            need(not owned or held.st_uid == os.getuid(), "public-mutable-root-owner")
+            if expected_identity is not None:
+                need(identity(held, True) == expected_identity, "public-created-root-join")
+            self.check()
+        except BaseException as body:
+            try: self.close()
+            except BaseException as cleanup: raise body from _first_cause(body, cleanup)
+            raise
+
+    @property
+    def fd(self): return self.ancestry.fd
+
+    def check(self):
+        need(type(self) is PublicRoot and self.ancestry is not None and bool(self.chain)
+             and self.path == self.ancestry.path and self.clock is self.domain.clock,
+             "public-root-current")
+        need(self._public_binding == (self.path, self.clock, self.domain, self.owned), "public-root-original-role")
+        self.ancestry.check()
+        for name, selected in self.leaves.items():
+            self.clock.tick()
+            need(identity(os.stat(name, dir_fd=self.fd, follow_symlinks=False)) == selected,
+                 "public-named-root-leaf")
+
+    def _node(self, name, fd, witness):
+        import codex_public_sdk_custody as public
+        self.check()
+        parts = relative(name)
+        parent = public.MemberDirectory(self, "/".join(parts[:-1]))
+        body = None
+        try:
+            parent.observe(parts[-1], fd, witness, private=self.owned)
+        except BaseException as error:
+            body = error; raise
+        finally: public.drain(owners=(parent,), body=body)
+        self.check()
+
+    def parent(self, name): return self._parent(name, None)
+
+    def _parent(self, name, handles):
+        parts = relative(name)
+        need(handles is None or (type(handles) in (_PublicParentHandles, _FreshNarParents)
+             and handles.root is self and self.owned == (type(handles) is _PublicParentHandles)),
+             "public-exact-parent-owner")
+        self.check()
+        fd, prefix, child = os.dup(self.fd), [], None
+        try:
+            for part in parts[:-1]:
+                self.clock.tick(); prefix.append(part)
+                key = "/".join(prefix)
+                before = os.stat(part, dir_fd=fd, follow_symlinks=False)
+                need(stat.S_ISDIR(before.st_mode) and not before.st_mode & 0o022,
+                     "public-internal-parent-mode")
+                selected = identity(before, True)
+                if self.owned:
+                    need(before.st_uid == os.getuid() and key in self.named, "public-owned-output-parent")
+                if key in self.named: need(self.named[key] == selected, "public-parent-replacement")
+                child = (handles.take(key, fd, part, selected) if handles is not None else
+                    os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd))
+                try:
+                    need(identity(before) == identity(os.fstat(child)) == identity(
+                        os.stat(part, dir_fd=fd, follow_symlinks=False)), "public-parent-race")
+                    self._node(key, child, identity(before))
+                    if not self.owned:
+                        need(key not in self.sources or self.sources[key] == identity(before),
+                             "public-original-parent-nine")
+                        self.sources[key] = identity(before)
+                    if handles is not None: handles.keep(key, child, selected)
+                except BaseException:
+                    raise
+                self.named[key] = selected
+                retired, fd, child = fd, child, None
+                os.close(retired)
+            return fd, parts[-1]
+        except BaseException as body:
+            import codex_public_sdk_custody as public
+            public.drain(fds=(child, fd), body=body)
+            raise
+
+    def open(self, name):
+        parent, leaf = self.parent(name)
+        child = None
+        try:
+            before = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+            need(stat.S_ISREG(before.st_mode) and self.regular_links(before)
+                 and not before.st_mode & 0o022 and (not self.owned or before.st_uid == os.getuid()),
+                 "public-regular-custody")
+            child = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent)
+            self._node(name, child, identity(before))
+            if "/" not in name:
+                need(name not in self.leaves or self.leaves[name] == identity(before), "public-leaf-replacement")
+                self.leaves[name] = identity(before)
+            retired, parent = parent, None
+            os.close(retired)
+            result = child, identity(before)
+            child = None
+            return result
+        except BaseException as body:
+            import codex_public_sdk_custody as public
+            public.drain(fds=(child, parent), body=body)
+            raise
+
+    def regular_links(self, info): return info.st_nlink == 1
+
+    def close(self):
+        ancestry, self.ancestry, self.chain = self.ancestry, None, []
+        if ancestry is not None: ancestry.close()
+
+    def __enter__(self): return self
+    def __exit__(self, kind, body, trace):
+        try: self.close()
+        except BaseException as cleanup:
+            if body is not None: raise BaseException.with_traceback(body, trace) from _first_cause(body, cleanup)
+            raise
+        return False
+
+
+def _node_owner(root, info):
+    return info.st_uid in (0, os.getuid()) or (type(root) is PublicRoot and not root.owned)
+
+
+def _public_node(root, name, fd, witness):
+    if type(root) is PublicRoot: root._node(name, fd, witness)
+
+
+def _public_metadata(root, name, info, held_parent):
+    if type(root) is not PublicRoot: return
+    import codex_public_sdk_custody as public
+    parts = relative(name)
+    directory = public.MemberDirectory(root, "/".join(parts[:-1]))
+    held = None
+    body = None
+    try:
+        directory.check()
+        if stat.S_ISLNK(info.st_mode):
+            # Link text is inert. Foreign links require both CURRENT and held
+            # parent mounts RO; no O_PATH/fstatvfs portability assumption.
+            current, mount = public._snapshot(directory.fd, root.clock)
+            old, old_mount = public._snapshot(held_parent, root.clock)
+            need(current == old and mount == old_mount, "public-link-current-held-parent")
+            if info.st_uid not in (0, os.getuid()):
+                need(bool(mount[2] & os.ST_RDONLY) and bool(old_mount[2] & os.ST_RDONLY),
+                     "public-foreign-link-writable-parent")
+            need(identity(info) == identity(os.stat(parts[-1], dir_fd=directory.fd, follow_symlinks=False)),
+                 "public-current-link")
+            directory.check()
+        else:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            if stat.S_ISDIR(info.st_mode): flags |= os.O_DIRECTORY
+            held = os.open(parts[-1], flags, dir_fd=held_parent)
+            root._node(name, held, identity(info))
+    except BaseException as error:
+        body = error; raise
+    finally: public.drain(fds=(held,), owners=(directory,), body=body)
+
+
 class _ParentHandles:
     """At most 32 owned directory FDs, scoped to creation or regular writes.
 
@@ -294,6 +475,62 @@ class _ParentHandles:
         self.close()
 
 
+class _PublicParentHandles(_ParentHandles):
+    """The existing32 writer cache, with preregistered pending public FD."""
+    def __init__(self, root):
+        need(type(root) is PublicRoot and root.owned, "public-writer-parent-type")
+        super().__init__(root)
+        self.pending = None
+
+    def keep(self, key, fd, selected):
+        if key not in self.entries:
+            if len(self.entries) == 32:
+                oldest = next(iter(self.entries))
+                retired, unused = self.entries.pop(oldest)
+                os.close(retired)
+            self.pending = os.dup(fd)
+            self.entries[key] = (self.pending, selected)
+            self.pending = None
+
+    def close(self):
+        entries, self.entries = self.entries, {}
+        pending, self.pending = self.pending, None
+        self.closed = True
+        failure = None
+        for fd, unused in entries.values():
+            if fd == pending: pending = None
+            try: os.close(fd)
+            except BaseException as error:
+                if failure is None: failure = error
+        if pending is not None:
+            try: os.close(pending)
+            except BaseException as error:
+                if failure is None: failure = error
+        if failure is not None: raise failure
+
+    def __exit__(self, kind, body, trace):
+        try: self.close()
+        except BaseException as cleanup:
+            if body is not None: raise BaseException.with_traceback(body, trace) from _first_cause(body, cleanup)
+            raise
+        return False
+
+
+def _writer_parents(root):
+    return _PublicParentHandles(root) if type(root) is PublicRoot else _ParentHandles(root)
+
+
+def _close_scoped(root, fd):
+    if type(root) is not PublicRoot:
+        os.close(fd)
+        return
+    body = sys.exception()
+    try: os.close(fd)
+    except BaseException as cleanup:
+        if body is not None: raise body from _first_cause(body, cleanup)
+        raise
+
+
 def read(root, name, limit, pin=None):
     fd, witness = root.open(name)
     try:
@@ -311,10 +548,11 @@ def read(root, name, limit, pin=None):
         need(identity(os.fstat(fd)) == witness and len(raw) == witness[6], "metadata-read-race")
         if pin is not None:
             need(sha(raw) == digest(pin), "metadata-pin")
+        _public_node(root, name, fd, witness)
         root.check()
         return raw
     finally:
-        os.close(fd)
+        _close_scoped(root, fd)
 
 
 def decode(raw):
@@ -489,7 +727,7 @@ def scan(roots, expected, clock):
         clock.tick()
         before = os.fstat(fd)
         key = (role, path)
-        need(stat.S_IMODE(before.st_mode) == 0o555 and before.st_uid in (0, os.getuid()), "unsealed-directory")
+        need(stat.S_IMODE(before.st_mode) == 0o555 and _node_owner(roots[role], before), "unsealed-directory")
         observed[key] = {"kind": "directory", "mode": 0o555}
         witnesses[key] = identity(before)
         for name in names(fd, children.get(key, set()), clock):
@@ -507,7 +745,7 @@ def scan(roots, expected, clock):
                     need(identity(info) == identity(os.fstat(nested)), "directory-open-race")
                     walk(role, nested, child)
                 finally:
-                    os.close(nested)
+                    _close_scoped(roots[role], nested)
             elif item["kind"] == "symlink":
                 need(stat.S_ISLNK(info.st_mode), "link-type")
                 target = os.readlink(name, dir_fd=fd)
@@ -517,10 +755,11 @@ def scan(roots, expected, clock):
             else:
                 need(stat.S_ISREG(info.st_mode) and roots[role].regular_links(info)
                      and stat.S_IMODE(info.st_mode) == item["mode"]
-                     and info.st_uid in (0, os.getuid()), "file-mode-type-custody")
+                     and _node_owner(roots[role], info), "file-mode-type-custody")
                 opened = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
                 try:
                     need(identity(info) == identity(os.fstat(opened)), "file-open-race")
+                    _public_node(roots[role], child, opened, identity(info))
                     h, count = hashlib.sha256(), 0
                     while True:
                         clock.tick()
@@ -532,12 +771,14 @@ def scan(roots, expected, clock):
                         need(count <= sdk.MAX_FILE and total <= MAX_BYTES, "content-bound")
                         h.update(block)
                     need(identity(info) == identity(os.fstat(opened)) and count == info.st_size, "file-read-race")
+                    _public_node(roots[role], child, opened, identity(info))
                     actual = {"kind": "file", "mode": item["mode"], "sha256": h.hexdigest(), "size": count}
                     need(all(actual[key] == value for key, value in item.items()), "file-content")
                     observed[item_key] = actual
                     witnesses[item_key] = identity(info)
                 finally:
-                    os.close(opened)
+                    _close_scoped(roots[role], opened)
+            _public_metadata(roots[role], child, info, fd)
             need(identity(info) == identity(os.stat(name, dir_fd=fd, follow_symlinks=False)), "node-race")
         need(identity(before) == identity(os.fstat(fd)), "directory-read-race")
     for role, root in roots.items():
@@ -582,7 +823,7 @@ def _fresh_namespace(roots, expected, clock):
         key = (role, path)
         need(key in expected and expected[key]["kind"] == "directory"
              and stat.S_ISDIR(before.st_mode) and stat.S_IMODE(before.st_mode) == 0o555
-             and before.st_uid in (0, os.getuid()), "fresh-directory-custody")
+             and _node_owner(roots[role], before), "fresh-directory-custody")
         witnesses[key] = identity(before)
         for name in names(fd, children.get(key, set()), clock):
             clock.tick()
@@ -599,17 +840,18 @@ def _fresh_namespace(roots, expected, clock):
                         os.stat(name, dir_fd=fd, follow_symlinks=False)), "fresh-directory-open-race")
                     walk(role, nested, child)
                 finally:
-                    os.close(nested)
+                    _close_scoped(roots[role], nested)
             elif row["kind"] == "symlink":
                 need(stat.S_ISLNK(info.st_mode) and os.readlink(name, dir_fd=fd) == row["target"], "fresh-link-text")
                 witnesses[selected] = identity(info)
             else:
                 need(stat.S_ISREG(info.st_mode) and roots[role].regular_links(info)
-                     and info.st_uid in (0, os.getuid()) and stat.S_IMODE(info.st_mode) == row["mode"]
+                     and _node_owner(roots[role], info) and stat.S_IMODE(info.st_mode) == row["mode"]
                      and info.st_size == row["size"], "fresh-file-custody")
                 total += info.st_size
                 need(total <= MAX_BYTES, "fresh-byte-bound")
                 witnesses[selected] = identity(info)
+            _public_metadata(roots[role], child, info, fd)
             need(identity(info) == identity(os.stat(name, dir_fd=fd, follow_symlinks=False)), "fresh-node-race")
         need(identity(before) == identity(os.fstat(fd)), "fresh-directory-read-race")
     for role, root in roots.items():
@@ -633,7 +875,7 @@ class _FreshNarParents(_ParentHandles):
     namespace passes remain unchanged; deep/missing chains use the old path.
     """
     def __init__(self, root, clock):
-        need(type(root) is Root and root.clock is clock and not root.owned,
+        need(type(root) in (Root, PublicRoot) and root.clock is clock and not root.owned,
              "fresh-parent-role")
         root.check()
         info = os.fstat(root.fd)
@@ -671,6 +913,11 @@ class _FreshNarParents(_ParentHandles):
              "fresh-parent-current-owner-clock")
         self.clock.tick()
         parts = relative(name)
+        if type(self.root) is PublicRoot:
+            # Public prefixes require independent named mount opens. The old
+            # optimized borrowed-prefix path is private-Root only.
+            stream.parent, stream.leaf = self.parent(name)
+            return
         keys = tuple("/".join(parts[:index]) for index in range(1, len(parts)))
         if len(keys) > 32 or any(key not in self.entries for key in keys):
             stream.parent, stream.leaf = self.parent(name)
@@ -700,6 +947,7 @@ class _FreshNarParents(_ParentHandles):
         stream.parent = os.dup(parent)
 
     def borrow_path(self, name, witnesses, role):
+        if type(self.root) is PublicRoot: return None
         # The initial Root._parent walk has already populated and checked these
         # entries. Missing/deep chains are an IO fallback, never a proof flag.
         need(self.self is self and threading.get_ident() == self.owner
@@ -880,7 +1128,7 @@ class _FreshNarFile:
             need(identity(os.fstat(self.parent)) == self.parent_witness, "fresh-stream-parent")
             before = os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)
             need(identity(before) == self.witness and stat.S_ISREG(before.st_mode)
-                 and root.regular_links(before) and before.st_uid in (0, os.getuid())
+                 and root.regular_links(before) and _node_owner(root, before)
                  and before.st_size == row["size"] and stat.S_IMODE(before.st_mode) == row["mode"], "fresh-stream-before")
             # A custom opener bypasses the protected serializer's default fstat
             # checks. Restore its exact size/owner-executable predicates here.
@@ -899,13 +1147,14 @@ class _FreshNarFile:
         need(not self.closed and identity(os.fstat(self.parent)) == self.parent_witness
              and identity(os.fstat(self.fd)) == self.witness
              and identity(os.stat(self.leaf, dir_fd=self.parent, follow_symlinks=False)) == self.witness, "fresh-stream-held-name")
+        _public_node(self.root, self.name, self.fd, self.witness)
         if self.path is None:
             current, leaf = self.root.parent(self.name) if self.parents is None else self.parents.parent(self.name)
             try:
                 need(identity(os.fstat(current)) == self.parent_witness
                      and identity(os.stat(leaf, dir_fd=current, follow_symlinks=False)) == self.witness, "fresh-stream-current-parent")
             finally:
-                os.close(current)
+                _close_scoped(self.root, current)
         else:
             current, leaf = self.path.current(self.root, self.name, self.clock)
             need(identity(os.fstat(current)) == self.parent_witness
@@ -1080,7 +1329,8 @@ class Output:
             os.close(fd)
 
     def mkdir(self, name, *, parent_handles=None):
-        need(parent_handles is None or (type(parent_handles) is _ParentHandles
+        parent_type = _PublicParentHandles if type(self.root) is PublicRoot else _ParentHandles
+        need(parent_handles is None or (type(parent_handles) is parent_type
              and parent_handles.root is self.root), "mkdir-parent-owner")
         fd, leaf = (self.root.parent(name) if parent_handles is None else parent_handles.parent(name))
         try:
@@ -1094,9 +1344,9 @@ class Output:
                     os.stat(leaf, dir_fd=fd, follow_symlinks=False), True), "created-directory-race")
                 self.root.named[name] = identity(before, True)
             finally:
-                os.close(child)
+                _close_scoped(self.root, child)
         finally:
-            os.close(fd)
+            _close_scoped(self.root, fd)
 
     def seal_directory(self, name):
         fd, leaf = self.root.parent(name)
@@ -1112,9 +1362,9 @@ class Output:
                      "owned-chmod-readback")
                 self.root.named[name] = selected
             finally:
-                os.close(child)
+                _close_scoped(self.root, child)
         finally:
-            os.close(fd)
+            _close_scoped(self.root, fd)
 
     def create(self, name):
         self.root.check()
@@ -1131,17 +1381,54 @@ class Output:
             need(selected == identity(os.stat(name, dir_fd=self.root.fd, follow_symlinks=False)), "output-file-name")
             self.materialized[name] = selected
         finally:
-            os.close(fd)
+            _close_scoped(self.root, fd)
 
     def finish(self):
         self.root.check()
         os.fchmod(self.root.fd, 0o555)
         # Deliberately refresh only the newly published output's own mode witness.
         self.root.chain[-1] = (self.root.chain[-1][0], self.root.fd, identity(os.fstat(self.root.fd), True))
+        if type(self.root) is PublicRoot:
+            import codex_public_sdk_custody as public
+            info, mount = public._snapshot(self.root.fd, self.clock)
+            name, fd, prior, prior_mount = self.root.ancestry.chain[-1]
+            need(info[2] == os.getuid() and info[:4] == prior[:4] and mount == prior_mount
+                 and stat.S_IMODE(info[4]) == 0o555, "public-owned-output-reseal")
+            self.root.ancestry.chain[-1] = (name, fd, info[:5], mount)
         self.root.check()
 
     def close(self):
         self.root.close()
+
+
+class PublicOutput(Output):
+    """Explicit creator writer, below the closed owned SDK output roles."""
+    def __init__(self, path, clock, domain):
+        import codex_public_sdk_custody as public
+        need(type(self) is PublicOutput and type(domain) is public.Domain and domain.clock is clock,
+             "public-output-domain")
+        self.path, self.clock = absolute(path), clock
+        domain.root_role(self.path, True)
+        self.materialized, self.root = {}, None
+        parent = public.WriterDirectory(self.path.parent, domain)
+        try:
+            os.mkdir(self.path.name, mode=0o700, dir_fd=parent.fd)
+            created = os.stat(self.path.name, dir_fd=parent.fd, follow_symlinks=False)
+            need(stat.S_ISDIR(created.st_mode) and created.st_uid == os.getuid()
+                 and stat.S_IMODE(created.st_mode) == 0o700, "public-created-owned-output")
+            self.root = PublicRoot(self.path, clock, domain, sealed=False,
+                                   expected_identity=identity(created, True), owned=True)
+            need(identity(os.stat(self.path.name, dir_fd=parent.fd, follow_symlinks=False), True)
+                 == identity(created, True), "public-created-output-readback")
+            parent.check()
+        except BaseException as body:
+            public.drain(owners=(self.root, parent), body=body)
+            raise
+        else:
+            try: parent.close()
+            except BaseException as body:
+                public.drain(owners=(self.root,), body=body)
+                raise
 
 
 def write_all(fd, raw, clock):
@@ -1455,10 +1742,11 @@ def validate_content(root, manifest, expected, clock):
                 need(nar.hash_descriptor(descriptor(role, rows, clock), opener=opener, deadline=clock.deadline)
                      == manifest["nars"][role], "nar-digest")
         need(identity(os.fstat(fd)) == before, "payload-read-race")
+        _public_node(root, "payload.bin", fd, before)
         root.check()
         return rows, files
     finally:
-        os.close(fd)
+        _close_scoped(root, fd)
 
 
 def binding(root, pin, clock):
@@ -1471,7 +1759,7 @@ def binding(root, pin, clock):
         try:
             need(transport_leaf_mode(root, witness), "transport-leaf-mode")
         finally:
-            os.close(fd)
+            _close_scoped(root, fd)
     raw = read(root, "receipt.json", 65536, digest(pin))
     report = decode(raw)
     need(type(report) is dict and set(report) == {"kind", "producer_context", "origin", "origin_custody", "manifest_sha256",
@@ -1582,8 +1870,9 @@ class HeldCarrier:
             after = os.stat(name, dir_fd=self._root.fd, follow_symlinks=False)
             need(identity(before) == identity(held) == identity(after) == list(witness)
                  and stat.S_ISREG(held.st_mode) and held.st_nlink == 1
-                 and held.st_uid in (0, os.getuid()) and transport_leaf_mode(self._root, witness),
+                 and _node_owner(self._root, held) and transport_leaf_mode(self._root, witness),
                  "held-carrier-current-leaf")
+            _public_node(self._root, name, fd, list(witness))
         self._root.check()
 
     def join(self, carrier_dir, pin, absolute_deadline):
@@ -1668,10 +1957,98 @@ class HeldCarrier:
         raise ValueError("SDK carrier refused: held-carrier-nontransferable")
 
 
+class PublicHeldCarrier(HeldCarrier):
+    """Explicit closed carrier variant; generic and scratch calls stay private."""
+    def __init__(self, carrier_dir, pin, absolute_deadline, domain):
+        import codex_public_sdk_custody as public
+        need(type(self) is PublicHeldCarrier and type(domain) is public.Domain,
+             "public-held-domain-type")
+        domain.check()
+        need(domain.carrier_root == absolute(carrier_dir) and domain.carrier_pin == pin
+             and domain.deadline == absolute_deadline, "public-held-declared-carrier")
+        super().__init__(carrier_dir, pin, absolute_deadline)
+        self._sdk_domain = domain
+        self._clock = domain.clock
+        self._deadline, self._until_ns = self._clock.deadline, self._clock.until_ns
+        self._public_slots = tuple(public.FdSlot() for unused in FILES)
+
+    def __enter__(self):
+        need(type(self) is PublicHeldCarrier and self._self is self and not self._entered
+             and os.getpid() == self._pid and threading.get_ident() == self._thread,
+             "public-held-reentry")
+        self._entered = self._active = True
+        try:
+            self._root = self._owner = PublicRoot(self._path, self._clock, self._sdk_domain)
+            self._chain = tuple(self._root.chain)
+            held = []
+            for name, slot in zip(FILES, self._public_slots):
+                slot.fd, witness = self._root.open(name)
+                need(witness[5] == 1 and transport_leaf_mode(self._root, witness), "public-held-leaf")
+                held.append((name, slot.fd, tuple(witness)))
+            self._held = tuple(held)
+            self.check()
+            return self
+        except BaseException as body:
+            try: self.close()
+            except BaseException as cleanup: raise body from _first_cause(body, cleanup)
+            raise
+
+    def close(self):
+        need(type(self) is PublicHeldCarrier and self._self is self, "public-held-close-owner")
+        import codex_public_sdk_custody as public
+        self._active = False
+        self._facts, self._held = None, ()
+        root, self._root, self._owner = self._root, None, None
+        failure = None
+        for slot in self._public_slots:
+            try: slot.close()
+            except BaseException as error:
+                if failure is None: failure = error
+        if root is not None:
+            try: root.close()
+            except BaseException as error:
+                if failure is None: failure = error
+        if failure is not None: raise failure
+
+    def __exit__(self, kind, body, trace):
+        if kind is None:
+            try:
+                self.check()
+                need(self._final and (self._extracted is None or self._final_fresh), "public-held-final-required")
+            except BaseException as refusal:
+                try: self.close()
+                except BaseException as cleanup: raise refusal from _first_cause(refusal, cleanup)
+                raise
+        try: self.close()
+        except BaseException as cleanup:
+            if body is not None: raise BaseException.with_traceback(body, trace) from _first_cause(body, cleanup)
+            raise
+        return False
+
+
+def _sdk_root(held, path, clock):
+    if type(held) is PublicHeldCarrier:
+        held._sdk_domain.check()
+        return PublicRoot(path, clock, held._sdk_domain)
+    need(held is None or type(held) is HeldCarrier, "private-root-carrier-type")
+    return Root(path, clock)
+
+
+def _sdk_enter_root(stack, held, path, clock):
+    if type(held) is not PublicHeldCarrier:
+        return stack.enter_context(_sdk_root(held, path, clock))
+    owner = _sdk_root(held, path, clock)
+    try: return stack.enter_context(owner)
+    except BaseException as body:
+        try: owner.close()
+        except BaseException as cleanup: raise body from _first_cause(body, cleanup)
+        raise
+
+
 def _carrier_clock(held, carrier_dir, pin, deadline):
     if held is None:
         return Clock(deadline)
-    need(type(held) is HeldCarrier, "held-carrier-type")
+    need(type(held) in (HeldCarrier, PublicHeldCarrier), "held-carrier-type")
     held.join(carrier_dir, pin, deadline)
     return held._clock
 
@@ -1694,6 +2071,22 @@ class _ProofExitStack(ExitStack):
         # Proof scopes never turn a body failure into a successful result, even
         # if a future callback accidentally claims suppression.
         return False if error is not None else result
+
+
+class _PublicProofExitStack(_ProofExitStack):
+    """Public SDK callbacks drain without replacing the original first cause."""
+    def __exit__(self, exc_type, error, traceback):
+        try:
+            result = ExitStack.__exit__(self, exc_type, error, traceback)
+        except BaseException as cleanup:
+            if error is not None:
+                raise BaseException.with_traceback(error, traceback) from _first_cause(error, cleanup)
+            raise
+        return False if error is not None else result
+
+
+def _sdk_proof_stack(held):
+    return _PublicProofExitStack() if type(held) is PublicHeldCarrier else _ProofExitStack()
 
 
 def _remaining_original_ns(clock):
@@ -1736,12 +2129,12 @@ def _revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted
                   or pinned_extraction_receipt_sha256 == _held_carrier._extracted[1]),
              "held-carrier-registered-extraction")
         _held_carrier.check()
-    with _ProofExitStack() as stack:
+    with _sdk_proof_stack(_held_carrier) as stack:
         carrier = stack.enter_context(Root(carrier_dir, clock)) if _held_carrier is None else _held_carrier._owner
         if _held_carrier is not None:
             stack.callback(_held_carrier.check)
         report, manifest, rows, _ = _carrier_binding(_held_carrier, carrier, pinned_carrier_receipt_sha256, clock)
-        output = stack.enter_context(Root(extracted_dir, clock))
+        output = _sdk_enter_root(stack, _held_carrier, extracted_dir, clock)
         names(output.fd, {"sdk", "jdk", "extraction-receipt.json"}, clock)
         raw = read(output, "extraction-receipt.json", 65536, pinned_extraction_receipt_sha256)
         receipt_pin = sha(raw) if pinned_extraction_receipt_sha256 is None else pinned_extraction_receipt_sha256
@@ -1763,7 +2156,7 @@ def _revalidate_extraction(carrier_dir, pinned_carrier_receipt_sha256, extracted
              and receipt["payload_sha256"] == report["payload_sha256"] and receipt["nars"] == manifest["nars"],
              "extraction-lineage")
         need(type(receipt["fresh_custody"]) is dict and set(receipt["fresh_custody"]) == {"sdk", "jdk"}, "fresh-roles")
-        roots = {role: stack.enter_context(Root(output.path / role, clock)) for role in ("sdk", "jdk")}
+        roots = {role: _sdk_enter_root(stack, _held_carrier, output.path / role, clock) for role in ("sdk", "jdk")}
         if _held_carrier is None:
             observed, witnesses = scan(roots, rows, clock)
             need(observed == rows and nar_origins(roots, rows, clock) == manifest["nars"], "fresh-content-nar")
@@ -1925,6 +2318,15 @@ class _CopyState:
         self.clock.tick()
 
 
+class _PublicCopyState(_CopyState):
+    def cleanup_error(self, error):
+        with self.lock:
+            if self.error is None: self.error = error
+            elif self.error is not error and BaseException.__cause__.__get__(self.error) is None:
+                self.error.__cause__ = error
+            self.cancel.set()
+
+
 class _ActionScratchCopyState(_CopyState):
     def __init__(self, clock, scope):
         need(type(scope) is _ActionScratchScope and scope.clock is clock, "scratch-copy-state")
@@ -1983,7 +2385,8 @@ def _copy_regular_job(state, parent, leaf, parent_witness, payload, entry):
             try:
                 os.close(target)
             except BaseException as error:
-                state.fail(error)
+                if type(state) is _PublicCopyState: state.cleanup_error(error)
+                else: state.fail(error)
                 raise
 
 
@@ -2016,7 +2419,8 @@ def _copy_regulars(output, payload, payload_witness, files, clock, on_copied, *,
     if _scratch_scope is not None:
         need(type(_scratch_scope) is _ActionScratchScope and output.root.owned, "scratch-owned-copy")
         _scratch_scope.join(_scratch_scope.held, output.path, clock)
-    state = _CopyState(clock) if _scratch_scope is None else _ActionScratchCopyState(clock, _scratch_scope)
+    need(type(output.root) is not PublicRoot or type(output) is PublicOutput, "public-copy-exact-output")
+    state = (_PublicCopyState(clock) if type(output) is PublicOutput else _CopyState(clock)) if _scratch_scope is None else _ActionScratchCopyState(clock, _scratch_scope)
     jobs, results = Queue(maxsize=2), Queue(maxsize=2)
     gate, stop = threading.Event(), threading.Event()
     ready = (threading.Event(), threading.Event())
@@ -2028,7 +2432,11 @@ def _copy_regulars(output, payload, payload_witness, files, clock, on_copied, *,
                     for index, event in enumerate(ready))
     attempted, started, pending, leases, completed = [], [], [], {}, {}
     entries, exhausted, sequence = iter(files.items()), False, 0
-    with _ParentHandles(output.root) as parents:
+    public_slots = None
+    if type(output) is PublicOutput:
+        import codex_public_sdk_custody as public
+        public_slots = (public.FdSlot(), public.FdSlot())
+    with _writer_parents(output.root) as parents:
         try:
             state.owner_tick()
             for worker in workers:
@@ -2052,11 +2460,17 @@ def _copy_regulars(output, payload, payload_witness, files, clock, on_copied, *,
                         exhausted = True
                         break
                     name = role + "/" + path
-                    parent, leaf = parents.parent(name)
+                    if public_slots is None:
+                        parent, leaf = parents.parent(name)
+                    else:
+                        slot = public_slots[0] if public_slots[0].fd is None else public_slots[1]
+                        need(slot.fd is None, "public-copy-two-owned-parent-slots")
+                        slot.fd, leaf = parents.parent(name)
+                        parent = slot.fd
                     sequence += 1
                     # Register the owner lease before the queue operation, so
                     # even interruption AFTER enqueue still joins before close.
-                    leases[sequence] = parent
+                    leases[sequence] = parent if public_slots is None else slot
                     selected_parent = identity(os.fstat(parent), True)
                     pending.append((sequence, name, leaf, selected_parent, entry))
                     state.owner_tick()
@@ -2076,7 +2490,7 @@ def _copy_regulars(output, payload, payload_witness, files, clock, on_copied, *,
                     need(len(completed) <= 2, "copy-result-bound")
                 selected, count = completed.pop(number)
                 state.owner_tick()
-                parent = leases[number]
+                parent = leases[number] if public_slots is None else leases[number].fd
                 current, current_leaf = parents.parent(name)
                 try:
                     need(current_leaf == leaf
@@ -2086,14 +2500,15 @@ def _copy_regulars(output, payload, payload_witness, files, clock, on_copied, *,
                          and identity(os.stat(current_leaf, dir_fd=current, follow_symlinks=False)) == selected,
                          "copy-owner-current-name")
                 finally:
-                    os.close(current)
+                    _close_scoped(output.root, current)
                 need(count == entry["size"] and identity(os.fstat(payload)) == payload_witness,
                      "copy-owner-payload")
                 output.root.check()
                 state.owner_tick()
                 on_copied(name, selected, count)
                 # Detach before close: never retry a possibly reused FD.
-                os.close(leases.pop(number))
+                if public_slots is None: os.close(leases.pop(number))
+                else: leases.pop(number).close()
                 pending.pop(0)
         except BaseException as error:
             state.fail(error)
@@ -2124,12 +2539,17 @@ def _copy_regulars(output, payload, payload_witness, files, clock, on_copied, *,
                         # Blocked fsync is not clock-interruptible. Keep leases
                         # until actual joins; unchanged outer guard is ultimate.
                         state.fail(error)
-            closing, leases = tuple(leases.values()), {}
-            for parent in closing:
-                try:
-                    os.close(parent)
-                except BaseException as error:
-                    state.fail(error)
+            if public_slots is None:
+                closing, leases = tuple(leases.values()), {}
+                for parent in closing:
+                    try: os.close(parent)
+                    except BaseException as error: state.fail(error)
+            else:
+                # Both receivers existed before any worker/FD admission. A
+                # failed leases/pending insertion cannot orphan the acquired FD.
+                for slot in public_slots:
+                    try: slot.close()
+                    except BaseException as error: state.cleanup_error(error)
         state.owner_tick()
         if _scratch_scope is not None: _scratch_scope.join(_scratch_scope.held, output.path, clock)
 
@@ -2179,7 +2599,7 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
     progress("initial-start")
     print("sdk-carrier-budget: extraction-entry remaining_ns=" + str(_remaining_original_ns(clock)),
           file=sys.stderr, flush=True)
-    with _ProofExitStack() as stack:
+    with _sdk_proof_stack(_held_carrier) as stack:
         carrier = stack.enter_context(Root(carrier_dir, clock)) if _held_carrier is None else _held_carrier._owner
         if _held_carrier is not None:
             stack.callback(_held_carrier.check)
@@ -2192,8 +2612,15 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
             carrier.check()
             if _held_carrier is not None:
                 _held_carrier.check()
-        output = Output(output_dir, clock)
-        stack.callback(output.close)
+        output = (PublicOutput(output_dir, clock, _held_carrier._sdk_domain)
+            if type(_held_carrier) is PublicHeldCarrier else Output(output_dir, clock))
+        if type(output) is PublicOutput:
+            try: stack.callback(output.close)
+            except BaseException as body:
+                try: output.close()
+                except BaseException as cleanup: raise body from _first_cause(body, cleanup)
+                raise
+        else: stack.callback(output.close)
         progress("directories-start")
         try:
             for role in ("sdk", "jdk"):
@@ -2206,7 +2633,7 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
         try:
             # All parent directories first; no links exist during writes.
             try:
-                with _ParentHandles(output.root) as directory_parents:
+                with _writer_parents(output.root) as directory_parents:
                     for role, path in sorted(rows, key=lambda key: (len(relative(key[1], empty=True)), key)):
                         clock.tick()
                         if path and rows[(role, path)]["kind"] == "directory":
@@ -2243,11 +2670,12 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
                              "created-link-name")
                         output.materialized[role + "/" + path] = identity(selected)
                     finally:
-                        os.close(fd)
+                        _close_scoped(output.root, fd)
             need(identity(os.fstat(payload)) == witness, "payload-extraction-race")
+            _public_node(carrier, "payload.bin", payload, witness)
             progress("links-complete")
         finally:
-            os.close(payload)
+            _close_scoped(carrier, payload)
         progress("seal-start")
         for role, path in sorted(rows, key=lambda key: (-len(relative(key[1], empty=True)), key)):
             if rows[(role, path)]["kind"] == "directory":
@@ -2255,7 +2683,7 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
                 output.seal_directory(role + ("/" + path if path else ""))
         progress("seal-complete")
         progress("final-proof-start")
-        fresh = {role: stack.enter_context(Root(output.path / role, clock)) for role in ("sdk", "jdk")}
+        fresh = {role: _sdk_enter_root(stack, _held_carrier, output.path / role, clock) for role in ("sdk", "jdk")}
         if _held_carrier is None:
             observed, witnesses = scan(fresh, rows, clock)
             fresh_nars = None
@@ -2307,8 +2735,8 @@ def _extract(carrier_dir, pinned_carrier_receipt_sha256, output_dir, absolute_de
         progress("published-content-start")
         # The owned output parent has deliberately changed700→555. Reopen and
         # join its final namespace while preserving all fresh member identities.
-        with ExitStack() as final_stack:
-            final_roots = {role: final_stack.enter_context(Root(output.path / role, clock))
+        with (_PublicProofExitStack() if type(_held_carrier) is PublicHeldCarrier else ExitStack()) as final_stack:
+            final_roots = {role: _sdk_enter_root(final_stack, _held_carrier, output.path / role, clock)
                            for role in ("sdk", "jdk")}
             final_rows, final_witnesses = scan(final_roots, rows, clock)
             need(final_rows == observed and final_witnesses == witnesses, "publication-extracted-custody")

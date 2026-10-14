@@ -41,8 +41,9 @@ def refusal_message():
     return 'ninth source binding refused at '+selected
 
 
-def config():
-    raw=ninth.parent.declared(CONFIG,16384)
+def config(*, sdk_domain=None):
+    raw=(ninth.parent.declared(CONFIG,16384) if sdk_domain is None else
+         _public_declared(CONFIG,16384,sdk_domain))
     value=json.loads(raw,object_pairs_hook=source.unique)
     source.require(type(value) is dict and set(value)=={'schema_version','kind','status','source','binding','metadata','sdk','compile'}
         and type(value['schema_version']) is int and value['schema_version']==1
@@ -52,14 +53,21 @@ def config():
     source.require(type(row) is dict and set(row)=={'root','receipt_sha256','inventory_sha256','producer'}
         and type(row['root']) is str and SOURCE_SCOPE.fullmatch(row['root']))
     protocol.pin(row['receipt_sha256']);protocol.pin(row['inventory_sha256']);protocol.producer_pin(row['producer'])
-    witness=n9_witness()
+    witness=n9_witness() if sdk_domain is None else n9_witness(sdk_domain=sdk_domain)
     source.require(row['root']==witness['root'] and row['receipt_sha256']==witness['receipt_sha256']
         and row['inventory_sha256']==witness['inventory_sha256'])
     return value
 
 
-def n9_witness():
-    raw=ninth.parent.declared(N9_WITNESS,16384)
+def _public_declared(name, maximum, domain):
+    import codex_public_sdk_custody as public
+    source.require(type(domain) is public.Domain and name in (CONFIG, N9_WITNESS))
+    return public.read(ninth.parent.ROOT / name, domain, maximum)
+
+
+def n9_witness(*, sdk_domain=None):
+    raw=(ninth.parent.declared(N9_WITNESS,16384) if sdk_domain is None else
+         _public_declared(N9_WITNESS,16384,sdk_domain))
     source.require(source.sha(raw)==N9_WITNESS_SHA)
     value=json.loads(raw,object_pairs_hook=source.unique)
     source.require(value['kind']==ninth.KIND and value['tracked_files']==8552
@@ -302,8 +310,8 @@ def binding_report(value,report):
         'native_support':False,'provider_evaluation':False,'credential_acquisition_qualified':False,'live_handoff_proven':False}
 
 
-def selected_document(value=None):
-    value=config() if value is None else value
+def selected_document(value=None, *, sdk_domain=None):
+    value=(config() if sdk_domain is None else config(sdk_domain=sdk_domain)) if value is None else value
     row=value['binding']
     source.require(type(row) is dict and set(row)=={'path','sha256','producer'}
         and type(row['path']) is str and BINDING_SCOPE.fullmatch(row['path']))

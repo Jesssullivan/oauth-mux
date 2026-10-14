@@ -138,6 +138,7 @@ retained_sdk_tree = rule(
 # Inspect the actual configured materializer runfiles in Bazel analysis. This
 # does not run/materialize an SDK or turn source inspection into qualification.
 _MATERIALIZER_IMPORT_FILES = [
+    "codex_public_sdk_custody.py",
     "codex_fresh_source.py",
     "codex_live_source.py",
     "codex_native_acquisition_binding.py",

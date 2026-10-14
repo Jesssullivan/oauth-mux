@@ -111,6 +111,24 @@ def scan_retained_tree(roots, logical, policy, clock):
     core.need(set(roots) == {"sdk", "jdk"} and all(type(root) is core.Root
         and root.clock is clock and root.owned is False for root in roots.values()),
         "sdk-tree-exact-current-roots")
+    return _scan_tree(roots, logical, policy, clock)
+
+
+def scan_public_sdk_tree(roots, logical, policy, clock, domain):
+    """Exact creator-qualification route; default retained admission stays strict."""
+    import codex_public_sdk_custody as public
+    core.need(type(domain) is public.Domain and domain.phase == "qualify"
+        and domain.clock is clock and set(roots) == {"sdk", "jdk"}
+        and all(type(root) is core.PublicRoot and root.domain is domain
+            and root.clock is clock and root.owned is False for root in roots.values()),
+        "sdk-tree-exact-public-qualification-roots")
+    domain.check()
+    result = _scan_tree(roots, logical, policy, clock)
+    domain.check()
+    return result
+
+
+def _scan_tree(roots, logical, policy, clock):
     physical = physical_expected(logical, policy, clock)
     witnesses = core._fresh_namespace(roots, physical, clock)
     observed = {key: dict(row) for key, row in physical.items()}

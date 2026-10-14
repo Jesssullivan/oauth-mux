@@ -27,6 +27,7 @@ def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
         "codex_retained_sdk_tree.py", "codex_native_retained_sdk_tree_producer.py",
         "codex_retained_sdk_tree_inputs.py", "guard_native_sdk_tree_reserved.py",
         "codex_original_sdk_inputs.py", "codex_native_file_writer_model_source.py",
+        "codex_public_sdk_custody.py",
     ] + materializer_guard_sources + production_sources).to_list()
     python_binary(
         name = "codex_native_retained_sdk_tree_materializer",
@@ -81,6 +82,7 @@ def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
         "codex_native_sdk_carrier_test.py", "codex_native_siwc_catalog_tree_source_test.py",
         "codex_retained_sdk_tree_fixture.py", "codex_retained_sdk_tree_admission_fixture.py",
         "guard_native_sdk_tree_reserved_test.py", "guard_test_evidence.py",
+        "codex_public_sdk_custody_test.py",
     ]).to_list()
     model_data = ["codex_retained_sdk_tree_rules.bzl", "codex_retained_sdk_tree_proof_inputs.bzl",
         "codex_retained_sdk_tree_targets.bzl", "//integrations/codex-upstream:native-retained-sdk-tree-inputs.json"]
@@ -88,6 +90,10 @@ def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
                        ("codex_retained_sdk_tree_inputs_test", "codex_retained_sdk_tree_inputs_test.py")]:
         python_test(name = name, main = main, srcs = model_sources, data = model_data,
             tags = ["manual", "no-remote", "no-cache"], timeout = "long")
+    python_test(name = "codex_public_sdk_custody_test", main = "codex_public_sdk_custody_test.py",
+        srcs = model_sources, data = model_data,
+        tags = ["manual", "no-remote", "no-cache"], timeout = "long",
+        target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"])
     python_test(name = "guard_native_sdk_tree_reserved_test", main = "guard_native_sdk_tree_reserved_test.py",
         srcs = depset(guard_sources + ["guard_cache.py", "guard_native_sdk_tree_reserved.py", "guard_native_sdk_tree_reserved_test.py",
             "guard_yoga_delivery_profile.py", "yoga_executable_qualification.py"]).to_list(),

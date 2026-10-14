@@ -865,7 +865,9 @@ class CreatorCarrierInputs:
         self.check()
         need(not self.carrier_open_consumed, "creator-single-carrier-owner")
         self.carrier_open_consumed = True
-        held = core.HeldCarrier(self._root, self._pin, self.deadline)
+        need(type(self) in (CreatorCarrierInputs, PublicCreatorCarrierInputs), "creator-exact-owner-type")
+        held = (core.PublicHeldCarrier(self._root, self._pin, self.deadline, self.sdk_domain)
+            if type(self) is PublicCreatorCarrierInputs else core.HeldCarrier(self._root, self._pin, self.deadline))
         # No descriptors/proof exist before this exact Clock join. The helper
         # owns the pending object before returning its context to the writer.
         held._clock = self.clock
@@ -894,7 +896,8 @@ class CreatorCarrierInputs:
 
     def finish(self):
         need(not self.finished, "creator-one-final")
-        need(type(self.carrier) is core.HeldCarrier and self.carrier._clock is self.clock
+        carrier_type = core.PublicHeldCarrier if type(self) is PublicCreatorCarrierInputs else core.HeldCarrier
+        need(type(self.carrier) is carrier_type and self.carrier._clock is self.clock
              and self.carrier._active and self.carrier._final and self.carrier._final_fresh
              and self.carrier._extracted is not None, "creator-complete-held-carrier-and-final-fresh")
         self.carrier.check()
@@ -947,7 +950,39 @@ class CreatorCarrierInputs:
     def __reduce_ex__(self, unused): raise ValueError("creator-inputs-not-transferable")
 
 
-def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw):
+class PublicCreatorCarrierInputs(CreatorCarrierInputs):
+    """Exact public-SDK creator owner; never accepted as a default private owner."""
+    def __init__(self, seal, domain):
+        import codex_public_sdk_custody as public
+        need(type(self) is PublicCreatorCarrierInputs and type(domain) is public.Domain,
+             "public-creator-exact-domain")
+        super().__init__(seal)
+        self.sdk_domain = domain
+
+    def check(self):
+        self.sdk_domain.check()
+        need(self.clock is self.sdk_domain.clock, "public-creator-same-clock")
+        super().check()
+        self.sdk_domain.check()
+
+    def __exit__(self, exc_type, error, trace):
+        try:
+            if exc_type is None:
+                need(self.finished, "creator-success-requires-final")
+                self.check()
+        except BaseException as refusal:
+            try: self.close()
+            except BaseException as cleanup: raise refusal from core._first_cause(refusal, cleanup)
+            raise
+        try: self.close()
+        except BaseException as cleanup:
+            if error is not None:
+                raise BaseException.with_traceback(error, trace) from core._first_cause(error, cleanup)
+            raise
+        if exc_type is None: self.clock.tick()
+
+
+def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw, *, sdk_domain=None):
     """Genuine original five-role evidence; creator still proves full bytes."""
     import codex_native_carrier_metadata as metadata
     import codex_native_file_writer_model_source as family
@@ -956,17 +991,23 @@ def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw):
     need(core.encoded(creator_context) == core.encoded({key: os.environ.get("OMUX_NATIVE_SDK_TREE_" + key)
                                                       for key in creator_context}), "actual-creator-environment")
     need(entry <= time.monotonic_ns() < entry + 1170 * 10**9, "actual-creator-original-work")
-    owner = CreatorCarrierInputs(_SEAL)
-    owner.clock = core.Clock((entry + 1170 * 10**9) / 10**9)
+    if sdk_domain is not None:
+        import codex_public_sdk_custody as public
+        need(type(sdk_domain) is public.Domain and sdk_domain.context == core.encoded(creator_context),
+             "public-admission-same-context")
+        sdk_domain.confirm(current_domain_raw)
+    owner = CreatorCarrierInputs(_SEAL) if sdk_domain is None else PublicCreatorCarrierInputs(_SEAL, sdk_domain)
+    owner.clock = core.Clock((entry + 1170 * 10**9) / 10**9) if sdk_domain is None else sdk_domain.clock
     owner.clock.until_ns = owner.until_ns = entry + 1170 * 10**9
     owner.deadline = owner.clock.deadline
     owner.context, owner.context_raw = tuple(creator_context), core.encoded(creator_context)
     owner.current_domain_raw = current_domain_raw
     owner._metadata = metadata
     try:
-        owner.scope = metadata.proof_scope(owner.deadline)
+        owner.scope = metadata.proof_scope(owner.deadline) if sdk_domain is None else metadata.proof_scope(
+            owner.deadline, sdk_domain=sdk_domain)
         owner.scope.__enter__()
-        owner.controls = family.HeldControls()
+        owner.controls = family.HeldControls() if sdk_domain is None else public.Controls(sdk_domain)
         # proof_scope's initial configure read is provisional. Retain both
         # fixed declared ancestry controls before selected/config qualification;
         # they remain held through actual full final proof and recipe emission.
@@ -976,8 +1017,10 @@ def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw):
             metadata.binding.N9_WITNESS_SHA, 16384)
         config_path = control_root / metadata.CONFIG
         config_raw = owner.controls.add(config_path, maximum=16384)
-        selected = metadata.selection(config_raw)
-        root, aliases, declaration = metadata.declared_carrier(Path(runfiles), mapping_rows, selected, owner.deadline)
+        selected = metadata.selection(config_raw) if sdk_domain is None else metadata.selection(config_raw, sdk_domain=sdk_domain)
+        root, aliases, declaration = (metadata.declared_carrier(Path(runfiles), mapping_rows, selected, owner.deadline)
+            if sdk_domain is None else metadata.declared_carrier(Path(runfiles), mapping_rows, selected, owner.deadline,
+                sdk_domain=sdk_domain))
         for alias, physical in aliases: owner.controls.add_alias(alias, physical)
         # The repository exports a fifth declared control alongside four blobs.
         # Retain its actual selected bytes before recipe emission can use them;
@@ -986,7 +1029,9 @@ def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw):
             if str(physical) == declaration["selection_path"]]
         need(len(declaration_aliases) == 1, "creator-exact-carrier-declaration-alias")
         owner.controls.add(declaration_aliases[0], declaration["selection_sha256"], 8192)
-        proofs = metadata.declared_proofs(Path(runfiles), mapping_rows, selected, owner.deadline)
+        proofs = (metadata.declared_proofs(Path(runfiles), mapping_rows, selected, owner.deadline)
+            if sdk_domain is None else metadata.declared_proofs(Path(runfiles), mapping_rows, selected, owner.deadline,
+                sdk_domain=sdk_domain))
         mapping_aliases = [alias for alias, physical in proofs.aliases if physical == proofs.path]
         need(len(mapping_aliases) == 1, "creator-proof-mapping-alias")
         owner.controls.add(mapping_aliases[0], proofs.sha256, MAX_SMALL)
@@ -1016,6 +1061,7 @@ def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw):
              and declaration["selection"]["digests"] == {row["name"]: row["sha256"] for row in qualified["report"]["files"]},
              "creator-original-carrier-declaration")
         owner._root, owner._pin = root, selected["carrier"]["receipt_sha256"]
+        if sdk_domain is not None: sdk_domain.bind_carrier(root, owner._pin)
         owner.aliases, owner.proofs = aliases, proofs
         owner._selection_raw, owner._qualified_raw = core.encoded(selected), core.encoded(qualified)
         owner._proof_metadata = MappingProxyType({path: MappingProxyType({"raw": raw,
@@ -1024,5 +1070,7 @@ def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw):
         return owner
     except BaseException as error:
         try: owner.close()
-        except BaseException as cleanup: raise error from cleanup
+        except BaseException as cleanup:
+            if sdk_domain is not None: raise error from core._first_cause(error, cleanup)
+            raise error from cleanup
         raise

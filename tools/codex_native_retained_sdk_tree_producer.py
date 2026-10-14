@@ -15,6 +15,7 @@ import codex_native_sdk_carrier as core
 import codex_original_sdk_inputs as original
 import codex_retained_sdk_tree as tree
 import codex_retained_sdk_tree_inputs as admission
+import codex_public_sdk_custody as public
 
 OUTPUTS = list(admission.OUTPUTS)
 ACTION_KIND = "omux-retained-public-sdk-tree-declared-action-inputs-v1"
@@ -77,7 +78,16 @@ def _metadata_observation(path, clock, role):
     return record
 
 
-def _public_directory(path, clock, role):
+def _public_directory(path, clock, role, sdk_domain=None):
+    if sdk_domain is not None:
+        core.need(type(sdk_domain) is public.Domain and sdk_domain.clock is clock, "sdk-tree-exact-public-domain")
+        if (sdk_domain.phase == "materialize" and sdk_domain.output_parent is not None
+                and Path(path) == sdk_domain.output_parent):
+            # Generated controls share the declared actor-owned output parent.
+            # Its held/current FULL9 regions remain joined, but the actor's
+            # known sibling writes may advance its timestamps during creation.
+            return public.WriterDirectory(path, sdk_domain)
+        return public.Directory(path, sdk_domain)
     try:
         return admission._Directory(path, clock)
     except ValueError:
@@ -101,19 +111,20 @@ def _public_directory(path, clock, role):
 
 class PublicInput:
     """Declared code/tool bytes; this scope grants no SDK input authority."""
-    def __init__(self, path, clock):
+    def __init__(self, path, clock, sdk_domain=None):
         self.alias, self.clock = core.absolute(path), clock
+        self.sdk_domain = sdk_domain
         self.parent = self.alias_parent = self.fd = None
         self.closed = False
         try:
             self.path = self.alias.resolve(strict=True)
-            self.alias_parent = _public_directory(self.alias.parent.resolve(strict=True), clock, "public-alias-parent")
+            self.alias_parent = _public_directory(self.alias.parent.resolve(strict=True), clock, "public-alias-parent", sdk_domain)
             self.alias_witness = core.identity(os.stat(self.alias.name, dir_fd=self.alias_parent.fd, follow_symlinks=False))
             core.need(stat.S_ISREG(self.alias_witness[4]) or stat.S_ISLNK(self.alias_witness[4]), "sdk-tree-public-alias-kind")
             self.alias_literal = os.readlink(self.alias.name, dir_fd=self.alias_parent.fd) if stat.S_ISLNK(self.alias_witness[4]) else None
-            self.parent = _public_directory(self.path.parent, clock, "public-resolved-parent")
+            self.parent = _public_directory(self.path.parent, clock, "public-resolved-parent", sdk_domain)
             before = os.stat(self.path.name, dir_fd=self.parent.fd, follow_symlinks=False)
-            core.need(stat.S_ISREG(before.st_mode) and before.st_uid in (0, os.getuid())
+            core.need(stat.S_ISREG(before.st_mode) and (before.st_uid in (0, os.getuid()) or type(sdk_domain) is public.Domain)
                 and stat.S_IMODE(before.st_mode) in (0o444, 0o555, 0o644, 0o755)
                 and 0 <= before.st_size <= core.MAX_METADATA,
                 "sdk-tree-declared-public-input")
@@ -123,7 +134,7 @@ class PublicInput:
             self.check()
         except BaseException as error:
             try: self.close()
-            except BaseException as cleanup: raise error from cleanup
+            except BaseException as cleanup: raise error from core._first_cause(error, cleanup)
             raise
 
     def check(self):
@@ -138,6 +149,10 @@ class PublicInput:
         core.need(core.identity(os.fstat(self.fd)) == self.witness == core.identity(
             os.stat(self.path.name, dir_fd=self.parent.fd, follow_symlinks=False)),
             "sdk-tree-public-input-held-name")
+        if self.sdk_domain is not None:
+            core.need(type(self.sdk_domain) is public.Domain and self.sdk_domain.clock is self.clock,
+                      "sdk-tree-public-input-domain")
+            self.parent.observe(self.path.name, self.fd, self.witness)
 
     def digest(self):
         self.check()
@@ -178,7 +193,7 @@ class PublicInput:
     def __exit__(self, kind, error, trace):
         try: self.close()
         except BaseException as cleanup:
-            if error is not None: raise BaseException.with_traceback(error, trace) from cleanup
+            if error is not None: raise BaseException.with_traceback(error, trace) from core._first_cause(error, cleanup)
             raise
         return False
 
@@ -225,8 +240,8 @@ def _descriptor(raw, clock):
     return doc
 
 
-def _read_small(path, clock, maximum=65536):
-    with PublicInput(path, clock) as owner:
+def _read_small(path, clock, maximum=65536, *, sdk_domain=None):
+    with PublicInput(path, clock, sdk_domain) as owner:
         core.need(0 < owner.witness[6] <= maximum, "sdk-tree-control-size")
         raw = bytearray()
         while True:
@@ -243,11 +258,14 @@ def _read_small(path, clock, maximum=65536):
 
 def _recipe(descriptor, creator):
     clock = creator.clock
+    core.need(type(creator) in (admission.CreatorCarrierInputs, admission.PublicCreatorCarrierInputs),
+              "sdk-tree-public-recipe-owner")
+    sdk_domain = creator.sdk_domain if type(creator) is admission.PublicCreatorCarrierInputs else None
     inputs, witnesses = {"code": [], "tools": [], "proofs": [], "carrier": []}, {}
     for role in ("code", "tools"):
         for row in sorted(descriptor[role], key=lambda row: row["logical_path"]):
             clock.tick()
-            with PublicInput(_execution_path(row["execution_path"]), clock) as held:
+            with PublicInput(_execution_path(row["execution_path"]), clock, sdk_domain) as held:
                 pin, count = held.digest()
                 witnesses[(role, row["logical_path"])] = (str(held.path), held.witness)
             inputs[role].append({"path": row["logical_path"], "sha256": pin, "bytes": count})
@@ -273,13 +291,13 @@ def _recipe(descriptor, creator):
     return raw, witnesses
 
 
-def _recheck_recipe(descriptor, raw, witnesses, clock):
+def _recheck_recipe(descriptor, raw, witnesses, clock, *, sdk_domain=None):
     expected = core.decode(raw)["inputs"]
     for role in ("code", "tools"):
         rows = sorted(descriptor[role], key=lambda row: row["logical_path"])
         for row, selected in zip(rows, expected[role]):
             clock.tick()
-            with PublicInput(_execution_path(row["execution_path"]), clock) as held:
+            with PublicInput(_execution_path(row["execution_path"]), clock, sdk_domain) as held:
                 core.need((str(held.path), held.witness) == witnesses[(role, row["logical_path"])],
                           "sdk-tree-original-declared-input-witness")
                 core.need(held.digest() == (selected["sha256"], selected["bytes"]), "sdk-tree-final-declared-input")
@@ -292,6 +310,11 @@ def _write_leaf(parent, name, raw, clock):
     try:
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
             0o600, dir_fd=parent.fd)
+        if type(parent) is public.WriterDirectory:
+            created = os.fstat(fd)
+            core.need(stat.S_ISREG(created.st_mode) and created.st_uid == os.getuid()
+                and created.st_nlink == 1 and stat.S_IMODE(created.st_mode) == 0o600,
+                "sdk-tree-owned-exclusive-mutable-leaf")
         core.write_all(fd, raw, clock)
         os.fchmod(fd, 0o444); os.fsync(fd)
         witness = core.identity(os.fstat(fd))
@@ -301,7 +324,7 @@ def _write_leaf(parent, name, raw, clock):
         held, fd = fd, None
         if held is not None:
             try: os.close(held)
-            except BaseException as cleanup: raise error from cleanup
+            except BaseException as cleanup: raise error from core._first_cause(error, cleanup)
         raise
     else:
         held, fd = fd, None
@@ -322,6 +345,15 @@ def _drain(resources, error=None):
             prior = BaseException.__cause__.__get__(error)
             raise error from (first if prior is None else prior)
         raise first
+
+
+def _keep_root(roots, role, path, clock, sdk_domain):
+    owner = core.PublicRoot(path, clock, sdk_domain)
+    try: roots[role] = owner
+    except BaseException as error:
+        try: owner.close()
+        except BaseException as cleanup: raise error from core._first_cause(error, cleanup)
+        raise
 
 
 def _relocate_owned_tree(stage, parent, tree_fd, expected, clock):
@@ -386,11 +418,14 @@ def materialize(args):
     clock = core.Clock((entry + 1170 * 10**9) / 10**9)
     clock.until_ns = entry + 1170 * 10**9
     core.need(0 < entry <= core.time.monotonic_ns() < clock.until_ns, "sdk-tree-original-creator-clock")
+    sdk_domain = public.materializer_domain(context, clock)
     context_path = _execution_path(args.creator_context)
-    context_raw = _read_small(context_path, clock)
+    core.need(context_path.name == "creator-context.json", "sdk-tree-generated-context-role")
+    sdk_domain.bind_output(context_path.parent)
+    context_raw = _read_small(context_path, clock, sdk_domain=sdk_domain)
     core.need(core.decode(context_raw) == context, "sdk-tree-actual-pinned-creator-context")
     runfiles = Path(os.environ["RUNFILES_DIR"]).resolve(strict=True)
-    mapping = _read_small(runfiles / "_repo_mapping", clock, 1024 * 1024)
+    mapping = _read_small(runfiles / "_repo_mapping", clock, 1024 * 1024, sdk_domain=sdk_domain)
     rows = [row.split(",") for row in mapping.decode().splitlines()]
     core.need(all(len(row) == 3 for row in rows), "sdk-tree-creator-repository-mapping")
     creator = parent = stage = carrier = published = domain = None
@@ -399,16 +434,17 @@ def materialize(args):
     try:
         domain_path = _execution_path(args.clock_domain)
         core.need(domain_path == context_path.with_name("current-clock-domain.json"), "sdk-tree-fixed-current-clock-domain")
-        domain = PublicInput(domain_path, clock)
+        domain = PublicInput(domain_path, clock, sdk_domain)
         domain_raw = _capture_public(domain, 4096)
         admission.current_creator_domain(domain_raw, context)
-        creator = admission.admit_carrier(runfiles, rows, context, domain_raw)
-        core.need(type(creator) is admission.CreatorCarrierInputs, "sdk-tree-real-carrier-creator-owner")
+        sdk_domain.confirm(domain_raw)
+        creator = admission.admit_carrier(runfiles, rows, context, domain_raw, sdk_domain=sdk_domain)
+        core.need(type(creator) is admission.PublicCreatorCarrierInputs, "sdk-tree-real-carrier-creator-owner")
         clock = creator.clock
         core.need(clock.until_ns == entry + 1170 * 10**9 and clock.deadline == clock.until_ns / 10**9,
                   "sdk-tree-same-original-creator-clock")
         descriptor_path = _execution_path(args.input_descriptor)
-        descriptor_raw = _read_small(descriptor_path, clock, core.MAX_METADATA)
+        descriptor_raw = _read_small(descriptor_path, clock, core.MAX_METADATA, sdk_domain=sdk_domain)
         descriptor = _descriptor(descriptor_raw, clock)
         tree_path = _execution_path(args.tree_output)
         paths = [_execution_path(value) for value in (args.inventory_output, args.receipt_output, args.recipe_output)]
@@ -420,7 +456,8 @@ def materialize(args):
             and context_path.name == "creator-context.json" and descriptor_path.parent == parent_path
             and descriptor_path.name == "declared-inputs.json", "sdk-tree-exact-action-output-roles")
         recipe_raw, input_witnesses = _recipe(descriptor, creator)
-        parent = admission._Directory(parent_path, clock)
+        sdk_domain.bind_output(parent_path)
+        parent = public.WriterDirectory(parent_path, sdk_domain)
         for name in ("tree", "inventory.json", "receipt.json", "recipe.json", ".sdk-tree-creation-private"):
             try: os.stat(name, dir_fd=parent.fd, follow_symlinks=False)
             except FileNotFoundError: pass
@@ -428,7 +465,7 @@ def materialize(args):
         parent.check(); clock.tick()
         os.mkdir(".sdk-tree-creation-private", mode=0o700, dir_fd=parent.fd)
         stage_path = parent_path / ".sdk-tree-creation-private"
-        stage = core.Root(stage_path, clock, sealed=False, owned=True)
+        stage = core.PublicRoot(stage_path, clock, sdk_domain, sealed=False, owned=True)
         core.need(os.fstat(stage.fd).st_dev == os.fstat(parent.fd).st_dev,
                   "sdk-tree-single-filesystem-publication")
         carrier = creator.open_carrier()
@@ -445,7 +482,7 @@ def materialize(args):
             pinned_extraction_receipt_sha256=core.sha(core.encoded(extraction)), _held_carrier=carrier) == extraction,
             "sdk-tree-complete-created-final-proof")
         for role in ("sdk", "jdk"):
-            old_roots[role] = core.Root(stage_path / "tree" / role, clock)
+            _keep_root(old_roots, role, stage_path / "tree" / role, clock, sdk_domain)
         before = core._fresh_namespace(old_roots, logical, clock)
         for role in ("sdk", "jdk"):
             selected = extraction["fresh_custody"][role]
@@ -461,19 +498,19 @@ def materialize(args):
                   "sdk-tree-relocation-same-sealed-owner")
         core.need(old_tree == core.identity(os.fstat(old_tree_fd), True) == core.identity(
             os.stat("tree", dir_fd=parent.fd, follow_symlinks=False), True), "sdk-tree-owned-rename-root")
-        published = core.Root(tree_path, clock)
+        published = core.PublicRoot(tree_path, clock, sdk_domain)
         core.need(core.identity(os.fstat(published.fd)) == core.identity(os.fstat(old_tree_fd)),
                   "sdk-tree-published-held-root")
         core.names(published.fd, {"sdk", "jdk", "extraction-receipt.json"}, clock)
         for role in ("sdk", "jdk"):
-            new_roots[role] = core.Root(tree_path / role, clock)
+            _keep_root(new_roots, role, tree_path / role, clock, sdk_domain)
         observed, after, nars = core._scan_nar(new_roots, logical, clock)
         core.need(observed == logical and after == before and nars == manifest["nars"],
                   "sdk-tree-published-complete-original-proof")
         core.need(core.read(published, "extraction-receipt.json", 65536,
             core.sha(core.encoded(extraction))) == core.encoded(extraction), "sdk-tree-created-extraction-receipt")
         inventory_raw = tree.inventory_document(creator.pin, report, nars, logical, clock)
-        _recheck_recipe(descriptor, recipe_raw, input_witnesses, clock)
+        _recheck_recipe(descriptor, recipe_raw, input_witnesses, clock, sdk_domain=sdk_domain)
         creator.finish()
         carrier.check(); published.check(); parent.check()
         core.need(core._fresh_namespace(new_roots, logical, clock) == before,
@@ -498,7 +535,7 @@ def materialize(args):
         for name, raw in (("recipe.json", recipe_raw), ("inventory.json", inventory_raw), ("receipt.json", program_raw)):
             created[name] = _write_leaf(parent, name, raw, clock)
         for name, raw in (("recipe.json", recipe_raw), ("inventory.json", inventory_raw), ("receipt.json", program_raw)):
-            core.need(_read_small(parent_path / name, clock, core.MAX_METADATA) == raw
+            core.need(_read_small(parent_path / name, clock, core.MAX_METADATA, sdk_domain=sdk_domain) == raw
                 and core.identity(os.stat(name, dir_fd=parent.fd, follow_symlinks=False)) == created[name],
                 "sdk-tree-published-control-readback")
         stage.check(); stage.close(); stage = None
@@ -507,17 +544,17 @@ def materialize(args):
         creator.full(); carrier.check()
         core.need(_capture_public(domain, 4096) == domain_raw, "sdk-tree-current-domain-final")
         admission.current_creator_domain(domain_raw, context)
-        core.need(_read_small(context_path, clock) == context_raw
-            and _read_small(descriptor_path, clock, core.MAX_METADATA) == descriptor_raw,
+        core.need(_read_small(context_path, clock, sdk_domain=sdk_domain) == context_raw
+            and _read_small(descriptor_path, clock, core.MAX_METADATA, sdk_domain=sdk_domain) == descriptor_raw,
             "sdk-tree-action-controls-final")
         core.need(core._fresh_namespace(new_roots, logical, clock) == before,
                   "sdk-tree-after-publication-all-member-fence")
-        _fence_recipe(descriptor, input_witnesses, clock)
+        _fence_recipe(descriptor, input_witnesses, clock, sdk_domain=sdk_domain)
         creator.check(); carrier.check(); published.check(); parent.check(); domain.check(); clock.tick()
     except BaseException as error:
         try:
             if old_tree_fd is not None: os.close(old_tree_fd)
-        except BaseException as cleanup: raise error from cleanup
+        except BaseException as cleanup: raise error from core._first_cause(error, cleanup)
         finally:
             _drain(tuple(old_roots.values()) + tuple(new_roots.values()) + (published, stage, parent, carrier, creator, domain), error)
         raise
@@ -535,6 +572,8 @@ def materialize(args):
         _drain(tuple(new_roots.values()) + (published, parent, creator, domain), first)
         if first is not None: raise first
         clock.tick()
+    finally:
+        sdk_domain.close()
 
 
 def _capture_public(owner, maximum):
@@ -567,10 +606,10 @@ def _runfiles_descriptor(descriptor, runfiles):
     return result
 
 
-def _fence_recipe(descriptor, witnesses, clock):
+def _fence_recipe(descriptor, witnesses, clock, *, sdk_domain=None):
     for role in ("code", "tools"):
         for row in descriptor[role]:
-            with PublicInput(_execution_path(row["execution_path"]), clock) as held:
+            with PublicInput(_execution_path(row["execution_path"]), clock, sdk_domain) as held:
                 core.need((str(held.path), held.witness) == witnesses[(role, row["logical_path"])],
                           "sdk-tree-final-declared-input-physical-fence")
     clock.tick()
@@ -578,22 +617,26 @@ def _fence_recipe(descriptor, witnesses, clock):
 
 class _TreeScan:
     """Current physical byte/semantic proof only; no producer success token."""
-    def __init__(self, path, logical, clock):
+    def __init__(self, path, logical, clock, sdk_domain=None):
         self.alias, self.expected, self.clock = core.absolute(path), logical, clock
+        self.sdk_domain = sdk_domain
         self.path = self.alias.resolve(strict=True)
         self.alias_parent = None
         self.root = None
         self.roots = {"sdk": None, "jdk": None}
         try:
-            self.alias_parent = admission._Directory(self.alias.parent.resolve(strict=True), clock)
+            self.alias_parent = (admission._Directory(self.alias.parent.resolve(strict=True), clock)
+                if sdk_domain is None else public.Directory(self.alias.parent.resolve(strict=True), sdk_domain))
             before = os.stat(self.alias.name, dir_fd=self.alias_parent.fd, follow_symlinks=False)
             core.need(stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode), "sdk-tree-qualifier-directory-alias-kind")
             self.alias_witness = core.identity(before)
             self.alias_literal = os.readlink(self.alias.name, dir_fd=self.alias_parent.fd) if stat.S_ISLNK(before.st_mode) else None
-            self.root = core.Root(self.path, clock)
+            self.root = core.Root(self.path, clock) if sdk_domain is None else core.PublicRoot(self.path, clock, sdk_domain)
             core.names(self.root.fd, {"sdk", "jdk", "extraction-receipt.json"}, clock)
-            for role in self.roots: self.roots[role] = core.Root(self.path / role, clock)
-            self.witnesses, self.nars = tree.scan_retained_tree(self.roots, logical, tree.PHYSICAL_POLICY, clock)
+            for role in self.roots:
+                if sdk_domain is None: self.roots[role] = core.Root(self.path / role, clock)
+                else: _keep_root(self.roots, role, self.path / role, clock, sdk_domain)
+            self.witnesses, self.nars = self._scan(logical)
             self.check()
         except BaseException as error:
             _drain(tuple(self.roots.values()) + (self.root, self.alias_parent), error)
@@ -632,9 +675,14 @@ class _TreeScan:
         return core.encoded(original._semantic_export(self, recipe))
 
     def final(self):
-        witnesses, nars = tree.scan_retained_tree(self.roots, self.expected, tree.PHYSICAL_POLICY, self.clock)
+        witnesses, nars = self._scan(self.expected)
         core.need(witnesses == self.witnesses and nars == self.nars, "sdk-tree-qualified-current-final-proof")
         self.check()
+
+    def _scan(self, logical):
+        if self.sdk_domain is None:
+            return tree.scan_retained_tree(self.roots, logical, tree.PHYSICAL_POLICY, self.clock)
+        return tree.scan_public_sdk_tree(self.roots, logical, tree.PHYSICAL_POLICY, self.clock, self.sdk_domain)
 
     def fence(self):
         self.check()
@@ -657,6 +705,7 @@ def qualify(args):
     clock = core.Clock((entry + 1170 * 10**9) / 10**9)
     clock.until_ns = entry + 1170 * 10**9
     core.need(entry <= core.time.monotonic_ns() < clock.until_ns, "sdk-tree-qualifier-original-clock")
+    sdk_domain = public.qualifier_domain(context, clock)
     runfiles = Path(os.environ["TEST_SRCDIR"]).resolve(strict=True)
     fixed_data = runfiles / "_main/tools/retained-sdk-tree-data.json"
     core.need(args.data is not None and _execution_path(args.data) == fixed_data,
@@ -666,18 +715,19 @@ def qualify(args):
     owners = {name: None for name in names}
     raws = {}
     try:
-        mapping = _read_small(runfiles / "_repo_mapping", clock, 1024 * 1024)
+        mapping = _read_small(runfiles / "_repo_mapping", clock, 1024 * 1024, sdk_domain=sdk_domain)
         rows = [row.split(",") for row in mapping.decode().splitlines()]
         core.need(all(len(row) == 3 for row in rows), "sdk-tree-qualifier-mapping")
         domain_path = _execution_path(args.clock_domain)
         core.need(domain_path == runfiles / admission.BASE / "current-clock-domain.json", "sdk-tree-qualifier-fixed-domain")
-        owners["domain"] = PublicInput(domain_path, clock)
+        owners["domain"] = PublicInput(domain_path, clock, sdk_domain)
         raws["domain"] = _capture_public(owners["domain"], 4096)
         admission.current_creator_domain(raws["domain"], context)
-        creator = admission.admit_carrier(runfiles, rows, context, raws["domain"])
-        core.need(type(creator) is admission.CreatorCarrierInputs, "sdk-tree-qualifier-real-provenance")
+        sdk_domain.confirm(raws["domain"])
+        creator = admission.admit_carrier(runfiles, rows, context, raws["domain"], sdk_domain=sdk_domain)
+        core.need(type(creator) is admission.PublicCreatorCarrierInputs, "sdk-tree-qualifier-real-provenance")
         clock = creator.clock
-        owners["data"] = PublicInput(fixed_data, clock)
+        owners["data"] = PublicInput(fixed_data, clock, sdk_domain)
         raws["data"] = _capture_public(owners["data"], 65536)
         layout = admission._layout(raws["data"])
         tree_path = runfiles / layout["artifact"]["root"]
@@ -689,7 +739,7 @@ def qualify(args):
             "receipt": runfiles / layout["artifact"]["receipt"],
             "descriptor": base / "declared-inputs.json", "extraction": tree_path / "extraction-receipt.json"}
         for name, path in paths.items():
-            owners[name] = PublicInput(path, clock)
+            owners[name] = PublicInput(path, clock, sdk_domain)
             raws[name] = _capture_public(owners[name], core.MAX_METADATA if name in ("recipe", "inventory", "descriptor") else 65536)
         core.need(core.decode(raws["context"]) == context, "sdk-tree-qualifier-same-creator-context")
         descriptor = _descriptor(raws["descriptor"], clock)
@@ -739,19 +789,20 @@ def qualify(args):
             and extraction["extracted_inventory_rechecked"] is True and all(extraction[key] is False for key in
                 ("original_inodes_reused", "absolute_links_materialized_as_mounts", "sdk_execution_qualified", "metadata_qualified", "source_witnesses_replaced")),
             "sdk-tree-qualifier-durable-extraction-lineage")
-        scan = _TreeScan(tree_path, logical, clock)
+        sdk_domain.bind_output(tree_path.resolve(strict=True).parent)
+        scan = _TreeScan(tree_path, logical, clock, sdk_domain)
         core.need(scan.nars == nars, "sdk-tree-qualifier-fresh-normalized-full-NAR")
         semantic = scan.semantics()
         output_base = core.absolute(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"])
-        output = admission._Directory(output_base, clock)
+        output = public.WriterDirectory(output_base, sdk_domain)
         os.mkdir("sdk-tree-public", mode=0o700, dir_fd=output.fd)
         output.close(); output = None
-        output = admission._Directory(output_base / "sdk-tree-public", clock)
+        output = public.WriterDirectory(output_base / "sdk-tree-public", sdk_domain)
         written = {}
         for name, raw in (("receipt.json", raws["receipt"]), ("inventory.json", raws["inventory"]),
                           ("recipe.json", raws["recipe"]), ("creator-context.json", raws["context"])):
             written[name] = _write_leaf(output, name, raw, clock)
-        _recheck_recipe(current, recipe_raw, input_witnesses, clock)
+        _recheck_recipe(current, recipe_raw, input_witnesses, clock, sdk_domain=sdk_domain)
         creator.full()
         core.need(scan.semantics() == semantic, "sdk-tree-qualifier-final-semantic-readback")
         # Metadata and semantics work precedes the final complete current-tree
@@ -759,7 +810,7 @@ def qualify(args):
         for name, owner in owners.items():
             core.need(_capture_public(owner, core.MAX_METADATA) == raws[name], "sdk-tree-qualifier-held-controls-readback")
         scan.final()
-        _fence_recipe(current, input_witnesses, clock)
+        _fence_recipe(current, input_witnesses, clock, sdk_domain=sdk_domain)
         creator.check()
         for owner in owners.values(): owner.check()
         for name, witness in written.items():
@@ -774,6 +825,8 @@ def qualify(args):
         clock.tick()
         print("retained-sdk-tree: receipt-sha256=" + core.sha(raws["receipt"]), flush=True)
         clock.tick()
+    finally:
+        sdk_domain.close()
 
 
 def main():

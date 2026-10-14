@@ -132,7 +132,7 @@ class DeclaredTreeFixture:
             # Original SOURCE/build ancestry is explicitly outside this tiny model.
             self.original_selection = {"kind": "synthetic-original-source-selection", "source_receipt_sha256": "1" * 64}
             self.stack.enter_context(patch.object(metadata.binding, "selected_document",
-                side_effect=lambda *unused: copy.deepcopy(self.original_selection)))
+                side_effect=lambda *unused, **unused_keywords: copy.deepcopy(self.original_selection)))
             self.stack.enter_context(patch.object(metadata.legacy, "configure_selection", return_value=None))
             self.stack.enter_context(patch.object(metadata.legacy, "EXPORT_SHA", self.tiny.origin_pin))
             self.stack.enter_context(patch.object(original, "ORIGIN_PIN", self.tiny.origin_pin))
