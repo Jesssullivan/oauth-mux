@@ -2,7 +2,7 @@
 load(":rules.bzl","python_test")
 
 def codex_owned_history_cli_targets(model_sources,model_data,guard_sources):
-    package_code = ["codex_native_owned_history_cli.py","guard_native_owned_history_cli_reserved.py",
+    package_code = ["codex_native_owned_history_cli.py","guard_native_owned_history_cli_reserved.py","guard_test_evidence.py",
         "//delivery:owned_history_runtime.py","//delivery:owned_history_native_tui_runtime.py",
         "//delivery:portable.py","//integrations/codex-owner-runtime:runtime_package.py",
         "//integrations/codex-upstream:patch_io.py","//integrations/codex-upstream:restore_source.py"]
@@ -26,7 +26,7 @@ def codex_owned_history_cli_targets(model_sources,model_data,guard_sources):
             "//integrations/codex-upstream/native-owned-history:runtime-selection.json"],
         tags=["manual","no-remote","no-cache"],timeout="long")
     native.filegroup(name="owned_history_runtime_reader_support",srcs=depset(guard_sources+[
-        "guard_native_owned_history_cli_reserved.py","guard_native_owned_history_ordinary_reserved.py"]).to_list(),
+        "guard_native_owned_history_cli_reserved.py","guard_native_owned_history_ordinary_reserved.py","guard_test_evidence.py"]).to_list(),
         visibility=["//delivery:__pkg__"])
     exports = ["codex_owned_history_runtime_inputs.bzl","codex_owned_history_cli_targets.bzl"]
     native.exports_files(exports)

@@ -3091,6 +3091,7 @@ codex_native_siwc_catalog_models_targets(
         "@omux_codex_native_source_context_refresh_inputs//:inputs",
     ],
     original_sdk_sources = ["codex_original_sdk_inputs.py"],
+    guard_sources = _RESIDENT_GUARD_SOURCES + _YOGA_GUARD_SOURCES + _CODEX_SDK_SOURCES,
 )
 
 # Add guard_native_siwc_catalog_models_reserved.py to _RESIDENT_GUARD_SOURCES

@@ -2829,10 +2829,13 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_tree_models_mixed_or_incomplete_source_family_refuses_retention(self):
-        label='//tools:codex_native_siwc_catalog_models_producer';directory=self.producer(label)
-        extra=directory/'native-siwc-catalog-tree-source/source-receipt.json'
+        label='//tools:codex_native_siwc_catalog_tree_models_producer';directory=self.producer(label)
+        # A legacy source receipt cannot replace the missing tree-owned product.
+        (directory/'native-siwc-catalog-tree-source/source-receipt.json').unlink()
+        extra=directory/'native-siwc-catalog-source/source-receipt.json'
         extra.parent.mkdir();extra.write_bytes(b'public mixed source receipt')
-        self.receipt.update(targets=['//tools:codex_native_siwc_catalog_models_test',label]);self.save_receipt()
+        self.receipt.update(profile='native-retained-sdk-tree-models-reserved',targets=[
+            '//tools:codex_native_siwc_catalog_tree_models_test',label]);self.save_receipt()
         report=self.retire();self.assertEqual(report['retained_output_contract'],[])
         self.assertFalse(self.output.exists())
 

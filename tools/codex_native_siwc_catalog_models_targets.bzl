@@ -34,7 +34,7 @@ def catalog_tree_model_test_sources(source_sources, sdk_sources, original_sdk_so
         "codex_native_sdk_carrier_test.py",
     ]).to_list()
 
-def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent_data, original_sdk_sources):
+def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent_data, original_sdk_sources, guard_sources = []):
     sources = depset([
         src for src in native_acquisition_source_closure(source_sources, sdk_sources)
         if str(src) not in ("//delivery:portable.py", "codex_native_acquisition_bridge_material.py")
@@ -75,7 +75,7 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
             "//integrations/codex-upstream/siwc-native-catalog:native_preimages",
             "//integrations/codex-upstream/siwc-native-catalog:BUILD.bazel",
             "//integrations/codex-upstream/siwc-native:BUILD.bazel",
-            "//integrations/codex-upstream/native-retained-sdk-tree-inputs.json",
+            "//integrations/codex-upstream:native-retained-sdk-tree-inputs.json",
             "codex_retained_sdk_tree_targets.bzl",
             "codex_native_siwc_catalog_models_targets.bzl", "codex_native_siwc_catalog_content_source_targets.bzl", "codex_native_siwc_catalog_model_inputs.bzl", "codex_native_siwc_catalog_models_BUILD.snippet", "codex_native_siwc_catalog_models_MODULE.snippet"],
         target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
@@ -95,7 +95,7 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
     python_test(
         name = "guard_native_owned_history_reserved_test",
         main = "guard_native_owned_history_reserved_test.py",
-        srcs = depset(sources + original_sdk_sources + ["guard_native_owned_history_reserved.py",
+        srcs = depset(sources + original_sdk_sources + guard_sources + ["guard_native_owned_history_reserved.py",
             "guard_native_siwc_catalog_models_reserved.py", "guard_native_owned_history_cli_reserved.py"]).to_list(),
         data = ["codex_native_siwc_catalog_models_targets.bzl", "execution_guard.py"],
         tags = ["manual", "no-remote", "no-cache"],
