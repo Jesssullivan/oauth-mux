@@ -297,4 +297,138 @@ class TransportedSDKTests(unittest.TestCase):
         finally:family.source.DEADLINE = old
 
 
+
+    @contextmanager
+    def budget_owner(self):
+        import codex_native_siwc_source as controller
+        real_alias = family.HeldControls.add_alias
+        def add(owner, alias, physical):
+            result = real_alias(owner, alias, physical)
+            if not hasattr(owner, '_source_phase_observer'):
+                observer = controller._SourcePhaseObserver(self.entry, self.until, self.cutoff)
+                observer.bind(owner)
+                # Explicit controller-stage seam: separate actual-main fixture
+                # covers these placements. All real transported IO follows.
+                for stage in observer.stages[:5]: observer.emit(stage)
+            return result
+        with patch.object(family.HeldControls, 'add_alias', add):
+            with self.owner() as session: yield session
+
+    def test_budget_complete_real_transport_ten_scalar_records_and_all_full_proofs(self):
+        import io
+        import codex_native_siwc_source as controller
+        sink = io.StringIO()
+        with patch.object(controller.sys, 'stderr', sink), self.budget_owner() as session:
+            self.assertEqual(session.mapping()['graph_files'], core.decode(session.original_mapping)['graph_files'])
+            self.assertEqual(session.alias_owner._source_phase_observer.count, 10)
+            self.assertEqual(session.until_ns, self.entry+600*10**9)
+            session.finish()
+        lines = [line for line in sink.getvalue().splitlines() if line.startswith('native-source-budget:')]
+        self.assertEqual(len(lines), 10)
+        for stage, line in zip(controller._SourcePhaseObserver.stages, lines):
+            self.assertRegex(line, '^native-source-budget: phase='+stage+r' elapsed_ns=[0-9]+ remaining_ns=[0-9]+$')
+            self.assertLessEqual(len(line.encode()), 160)
+        self.assertFalse(session.active); self.assertEqual(session.transport._held, ())
+        self.assertEqual(session.until_ns, self.entry+600*10**9)
+
+    def test_budget_real_transport_each_io_refusal_boundary_drains_held_resources(self):
+        import io
+        import codex_native_siwc_source as controller
+        for stage in controller._SourcePhaseObserver.stages[5:]:
+            with self.subTest(stage=stage):
+                self.temporary = self.fixture.root/('budget-'+stage); self.temporary.mkdir(mode=0o700)
+                self.environment['TEST_TMPDIR'] = str(self.temporary)
+                first = OSError('synthetic sensitive write body'); owned = []
+                class Refusing(io.StringIO):
+                    def write(inner, text):
+                        if 'native-source-budget: phase='+stage+' ' in text:
+                            current = self.last_session
+                            if hasattr(current, 'scratch'):
+                                owned.extend(fd for _, fd, _ in current.scratch.chain)
+                            if hasattr(current, 'transport'):
+                                owned.extend(fd for _, fd, _ in current.transport._held)
+                                owned.extend(fd for _, fd, _ in current.transport._root.chain)
+                            raise first
+                        return super().write(text)
+                with patch.object(controller.sys, 'stderr', Refusing()):
+                    with self.assertRaises(OSError) as failure:
+                        with self.budget_owner(): self.fail('diagnostic refusal admitted')
+                self.assertIs(failure.exception, first); self.assertFalse(self.last_session.active)
+                if hasattr(self.last_session, 'transport'): self.assertEqual(self.last_session.transport._held, ())
+                self.assertEqual(self.last_session.clock.until_ns, self.entry+600*10**9)
+                self.fixture.assert_descriptors_closed(owned)
+
+    def test_budget_body_first_cause_survives_actual_held_owner_close_error(self):
+        import io
+        import codex_native_siwc_source as controller
+        first, cleanup = MemoryError('synthetic private proof body'), OSError('synthetic close refusal')
+        real_close = os.close; armed, owned, attempted = [False], [], []
+        def refused(owner):
+            owned.extend(fd for _, fd, _ in owner._held)
+            owned.extend(fd for _, fd, _ in owner._root.chain)
+            armed[0] = True
+            raise first
+        def close(fd):
+            real_close(fd)
+            if armed[0] and fd in owned:
+                attempted.append(fd)
+                if len(attempted) == 1: raise cleanup
+        with patch.object(controller.sys, 'stderr', io.StringIO()), \
+                patch.object(core.HeldCarrier, '_binding', refused), patch.object(core.os, 'close', close):
+            with self.assertRaises(MemoryError) as failure:
+                with self.budget_owner(): self.fail('initial proof refusal admitted')
+        self.assertIs(failure.exception, first); self.assertIs(failure.exception.__cause__, cleanup)
+        self.assertEqual(set(attempted), set(owned)); self.assertEqual(len(attempted), len(owned))
+        self.fixture.assert_descriptors_closed(owned)
+        self.assertFalse(self.last_session.active); self.assertEqual(self.last_session.transport._held, ())
+
+    def test_budget_successful_flush_expiry_cannot_dispatch_extraction_or_renew_clock(self):
+        import io
+        import codex_native_siwc_source as controller
+        real_ns, real_float = time.monotonic_ns, time.monotonic
+        late, pending = [False], [False]
+        class Late(io.StringIO):
+            def write(inner, text):
+                if 'native-source-budget: phase=extraction-dispatch ' in text: pending[0] = True
+                return super().write(text)
+            def flush(inner):
+                if pending[0]: late[0] = True
+        def ns(): return self.entry+600*10**9 if late[0] else real_ns()
+        def seconds(): return self.cutoff if late[0] else real_float()
+        with patch.object(controller.sys, 'stderr', Late()), patch.object(core.time, 'monotonic_ns', ns), \
+                patch.object(core.time, 'monotonic', seconds), patch.object(core, 'extract_action_scratch') as extraction:
+            with self.assertRaises(ValueError):
+                with self.budget_owner(): self.fail('late diagnostic admitted extraction')
+        extraction.assert_not_called(); self.assertTrue(late[0])
+        self.assertEqual(self.last_session.clock.deadline, self.cutoff)
+        self.assertEqual(self.last_session.clock.until_ns, self.entry+600*10**9)
+        self.assertFalse(self.last_session.active); self.assertEqual(self.last_session.transport._held, ())
+
+    def test_budget_observer_order_cap_redaction_foreign_owner_fail_before_output(self):
+        import io
+        import codex_native_siwc_source as controller
+        old = family.source.DEADLINE; family.source.DEADLINE = self.cutoff
+        try:
+            sink = io.StringIO()
+            with patch.object(controller.sys, 'stderr', sink):
+                observer = controller._SourcePhaseObserver(self.entry, self.until, self.cutoff)
+                for stage in ('secret/path-or-token', 'controls-complete', None):
+                    with self.assertRaises(ValueError): observer.emit(stage)
+                self.assertEqual(sink.getvalue(), '')
+                for stage in observer.stages: observer.emit(stage)
+                before = sink.getvalue()
+                with self.assertRaises(ValueError): observer.emit('controller-entry')
+                self.assertEqual(sink.getvalue(), before); self.assertEqual(observer.count, 10)
+                with family.HeldControls() as owner:
+                    actual = controller._SourcePhaseObserver(self.entry, self.until, self.cutoff)
+                    actual.bind(owner)
+                    with self.assertRaises(ValueError): actual.bind(owner)
+            with patch.object(controller.sys, 'stderr', sink), self.owner() as session:
+                session.alias_owner._source_phase_observer = object()
+                with self.assertRaises(ValueError): session._budget_phase('transported-entry')
+                del session.alias_owner._source_phase_observer
+                session.finish()
+        finally: family.source.DEADLINE = old
+
+
 if __name__ == '__main__':unittest.main()

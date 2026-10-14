@@ -399,4 +399,47 @@ class ContentSourceTests(regression.CatalogSourceTests):
                     source.DEADLINE, family.query.DEADLINE = old_source, old_query
 
 
+
+    def test_actual_nested_main_budget_phases_keep_original_clock_and_real_fs_closes(self):
+        controller = content.previous
+        real_emit, real_print = controller._SourcePhaseObserver.emit, print
+        sink, observed, clocks = io.StringIO(), [], []
+        def emit(owner, stage):
+            self.assertEqual(owner.cutoff, content.source.DEADLINE)
+            with patch('builtins.print', real_print), patch.object(controller.sys, 'stderr', sink):
+                real_emit(owner, stage)
+            observed.append(stage); clocks.append((owner.entry, owner.until, owner.cutoff))
+        with patch.object(controller._SourcePhaseObserver, 'emit', emit):
+            # Calls the existing actual nested controller fixture, not a mirror.
+            # Real Inputs/intake/Publication/FD cleanup and all old assertions run.
+            self.test_actual_nested_controller_reaches_intake_child_and_final_fences_on_original_clock()
+        self.assertEqual(observed, list(controller._SourcePhaseObserver.stages[:5])*2)
+        for entry, until, cutoff in clocks:
+            self.assertEqual(until-entry, 1200*10**9)
+            self.assertEqual(cutoff, (entry+600*10**9)/10**9)
+        lines = sink.getvalue().splitlines(); self.assertEqual(len(lines), 10)
+        for line in lines:
+            self.assertLessEqual(len(line.encode()), 160)
+            self.assertRegex(line, r'^native-source-budget: phase=[a-z-]+ elapsed_ns=[0-9]+ remaining_ns=[0-9]+$')
+        for forbidden in ('public child', 'fixture', '/srv/', 'SOURCE_COMMIT', 'GRAPH_SHA256', 'qualification seam'):
+            self.assertNotIn(forbidden, sink.getvalue())
+
+    def test_actual_nested_main_budget_io_refusal_keeps_body_and_stops_before_input_effect(self):
+        controller = content.previous
+        real_emit, real_print = controller._SourcePhaseObserver.emit, print
+        first = OSError('synthetic sensitive diagnostic body')
+        class Refusing:
+            def write(self, unused): raise first
+            def flush(self): raise AssertionError('flush after refused write')
+        observed = []
+        def emit(owner, stage):
+            observed.append(stage)
+            with patch('builtins.print', real_print), patch.object(controller.sys, 'stderr', Refusing()):
+                real_emit(owner, stage)
+        with patch.object(controller._SourcePhaseObserver, 'emit', emit):
+            with self.assertRaises(OSError) as failure:
+                self.test_actual_nested_controller_reaches_intake_child_and_final_fences_on_original_clock()
+        self.assertIs(failure.exception, first); self.assertEqual(observed, ['controller-entry'])
+
+
 if __name__ == '__main__': unittest.main()

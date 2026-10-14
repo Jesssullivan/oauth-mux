@@ -89,10 +89,23 @@ class HeldTransportedSDK:
             'transported-output-receipt-current-full-witness')
         self.clock.tick()
 
+    def _budget_phase(self, stage):
+        observer = getattr(self.alias_owner, '_source_phase_observer', None)
+        if observer is None: return
+        import codex_native_siwc_source as controller
+        core.need(type(observer) is controller._SourcePhaseObserver
+            and observer.owner is self.alias_owner and observer.entry+600*10**9 == self.until_ns
+            and observer.cutoff == self.clock.deadline
+            and observer.until == int(core.decode(self.context)['DEADLINE_NS'])
+            and observer.entry == int(core.decode(self.context)['ENTRY_NS']),
+            'transported-phase-observer-owner-envelope')
+        observer.emit(stage)
+
     def __enter__(self):
         core.need(not self.entered and self.self is self, 'transported-reentry')
         self.entered = self.active = True
         try:
+            self._budget_phase('transported-entry')
             self.alias_owner.fence()
             core.need(not self.temporary.exists(), 'transported-exclusive-scratch')
             # The caller supplies a fixed child of its declared TEST_TMPDIR;
@@ -102,7 +115,9 @@ class HeldTransportedSDK:
             transport = core.HeldCarrier(self.carrier_root, self.carrier_pin, self.clock.deadline)
             transport._clock.until_ns = transport._until_ns = self.until_ns
             self.transport = self.stack.enter_context(transport)
+            self._budget_phase('held-leaves-open')
             report, proof, rows, unused = self.transport._binding()
+            self._budget_phase('initial-binding-complete')
             core.need(report['origin']['root'] == str(original.ORIGIN)
                 and report['origin']['receipt_sha256'] == original.ORIGIN_PIN, 'transported-independent-origin')
             self.expected = MappingProxyType({key: MappingProxyType(dict(row)) for key,row in rows.items()})
@@ -113,6 +128,8 @@ class HeldTransportedSDK:
             declared = core.decode(self.declaration)['selection']['digests']
             core.need({row['name']: row['sha256'] for row in published['files']} == declared,
                       'transported-declared-digests')
+            self._budget_phase('declaration-joined')
+            self._budget_phase('extraction-dispatch')
             self.extraction = core.encoded(core.extract_action_scratch(self.carrier_root, self.carrier_pin, self.extracted,
                 self.clock.deadline, _held_carrier=self.transport, consumer_context=core.decode(self.context)))
             self.extraction_pin = core.sha(self.extraction)
@@ -148,9 +165,12 @@ class HeldTransportedSDK:
             self.fresh_mapping = core.encoded(self._mapping(recipe))
             self.fence()
             return self
-        except BaseException:
+        except BaseException as error:
             self.active = False
-            self.stack.__exit__(*sys.exc_info())
+            try: self.stack.__exit__(*sys.exc_info())
+            except BaseException as cleanup:
+                prior = BaseException.__cause__.__get__(error)
+                raise error from (cleanup if prior is None else prior)
             raise
 
     def _mapping(self, recipe):

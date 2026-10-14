@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import threading
 import codex_native_file_writer_model_source as parent
 
 source, tenth, binding, protocol, query, query_tools, material = (parent.source, parent.tenth,
@@ -232,6 +233,49 @@ def produce(output, inputs, work, publication, *, sdk_session=None, query_reposi
         if error is not None: raise error
 
 
+
+class _SourcePhaseObserver:
+    """Ten fixed scalar diagnostics; never proof, clock or resource authority."""
+    stages = ('controller-entry', 'controls-complete', 'inputs-complete',
+        'carrier-proofs-complete', 'producer-qualified', 'transported-entry',
+        'held-leaves-open', 'initial-binding-complete', 'declaration-joined',
+        'extraction-dispatch')
+
+    def __init__(self, entry, until, cutoff):
+        source.require(type(entry) is int and type(until) is int and entry > 0
+            and until-entry == 1200*10**9 and cutoff == (entry+600*10**9)/10**9
+            and source.DEADLINE == cutoff)
+        self.entry, self.until, self.cutoff = entry, until, cutoff
+        self.owner = None
+        self.count = 0
+        self.pid, self.thread = os.getpid(), threading.get_ident()
+
+    def bind(self, owner):
+        source.require(self.owner is None and type(owner) is HeldControls)
+        self.owner = owner
+        owner._source_phase_observer = self
+
+    def emit(self, stage):
+        source.require(type(stage) is str and self.count < len(self.stages)
+            and stage == self.stages[self.count] and os.getpid() == self.pid
+            and threading.get_ident() == self.thread and source.DEADLINE == self.cutoff)
+        source.tick()
+        now = time.monotonic_ns()
+        source.require(self.entry <= now < self.entry+600*10**9 and now < self.until)
+        elapsed = now-self.entry
+        remaining = self.entry+600*10**9-now
+        line = ('native-source-budget: phase='+stage+' elapsed_ns='+str(elapsed)
+            +' remaining_ns='+str(remaining))
+        source.require(len(line.encode('ascii')) <= 160)
+        # Diagnostics have no unwind callback and cannot replace a pending body
+        # error. Actual write/flush refusal propagates through existing cleanup.
+        print(line, file=sys.stderr, flush=True)
+        source.tick()
+        source.require(time.monotonic_ns() < self.entry+600*10**9
+            and time.monotonic_ns() < self.until)
+        self.count += 1
+
+
 def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_factory=None, _admitted=None, _sdk_factory=None, _output=OUTPUT, _marker="native-siwc-source: exact five-path source composition"):
     # Only pinned source-family modules supply these callables; no runtime flag
     # or request claims source qualification. Defaults retain the original route.
@@ -250,16 +294,21 @@ def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_fac
     sdk_session = None
     try:
         source.tick()
+        observer = _SourcePhaseObserver(entry, until, cutoff) if not source_only and _sdk_factory is not None else None
+        if observer is not None: observer.emit('controller-entry')
         runfiles = Path(os.environ['TEST_SRCDIR']).resolve(strict=True)
         output = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True)
         with Publication() as published:
             with HeldControls() as retained:
+                if observer is not None: observer.bind(retained)
                 mapping = retained.add(runfiles / '_repo_mapping', maximum=1024*1024)
                 rows = [row.split(',') for row in mapping.decode().splitlines()]
                 source.require(all(len(row) == 3 for row in rows))
                 initial_config, initial_control = retain_source(retained)
                 initial_context = producer_context()
+                if observer is not None: observer.emit('controls-complete')
                 with input_factory(runfiles, rows) as inputs:
+                    if observer is not None: observer.emit('inputs-complete')
                     if not source_only:
                         import codex_original_sdk_inputs as original_sdk
                         import codex_native_carrier_metadata as metadata
@@ -273,7 +322,9 @@ def main(*, _producer=None, _retainer=None, _child=None, _extra=None, _input_fac
                             captured_proofs = retained.carrier_proofs(selected, proofs, cutoff)
                             material.declared_xml_success(captured_proofs['test_xml'])
                             retained.add(Path(declaration['selection_path']), declaration['selection_sha256'], 8192)
+                            if observer is not None: observer.emit('carrier-proofs-complete')
                             qualified = metadata.qualify_producer(selected, cutoff, proofs)
+                            if observer is not None: observer.emit('producer-qualified')
                             if _sdk_factory is None:
                                 manifest_alias, manifest = original_sdk.declared_manifest(runfiles, rows)
                                 sdk_session = original_sdk.HeldOriginalSDK(manifest_alias, manifest, root,
