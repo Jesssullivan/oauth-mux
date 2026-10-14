@@ -1,7 +1,20 @@
 # Retained public SDK dependency: proposed typed boundary
 
-Status: source-only proposal; unadopted and all actual gates unrun. This record
-does not establish build fit, installed support, ordinary resume or handoff.
+Status when authored: source-only proposal, then unadopted with actual gates
+unrun. This current engineering record describes an unshipped implementation;
+it does not establish build fit, installed support, ordinary resume or handoff.
+
+Current status after SDK-MODEL2: the reviewed implementation was adopted at
+`337692f3`, with cache composition at `ba75fc00` and source-list deduplication at
+`9aee3ea7`. The captured model run ended with outer/workload status 3/3:
+configured materializer closure, 218 coordinator models and format passed;
+the four specialized SDK suites and documentation classification failed.
+Those failures require repair and fresh declared checks. The authored unrun
+statements below remain the original proposal's dated scope, not the current
+run disposition. No genuine SDK creator, action-reuse or SOURCE qualification,
+installed support, ordinary resume or same-process handoff follows from this
+record. Historical monotonic observations from before the power interruption
+cannot authorize a current lease.
 
 Authority: the user's integrated implementation sprint and root design rulings
 on October 14 authorize a new independent SDK-byte dependency and two-cohort

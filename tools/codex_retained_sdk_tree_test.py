@@ -15,7 +15,7 @@ import codex_retained_sdk_tree as tree
 
 class RetainedTreeFactsTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"])
         self.root = Path(self.tmp.name)
         self.tree = self.root / "tree"
         self.tree.mkdir(mode=0o700)
@@ -269,7 +269,7 @@ class RetainedTreeProducerModels(unittest.TestCase):
 
     def test_actual_public_input_hash_refuses_private_mode_and_preserves_read_cleanup_first_cause(self):
         import codex_native_retained_sdk_tree_producer as producer
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
             path = Path(temporary) / "public"
             raw = b"synthetic public declared code"
             path.write_bytes(raw); path.chmod(0o444)
@@ -303,7 +303,7 @@ class RetainedTreeProducerModels(unittest.TestCase):
     def test_actual_metadata_writer_is_exclusive_durable_and_preserves_first_write_cause(self):
         import codex_native_retained_sdk_tree_producer as producer
         import codex_retained_sdk_tree_inputs as admission
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
             parent = admission._Directory(Path(temporary), core.Clock(time.monotonic() + 60))
             try:
                 raw = b"synthetic canonical public receipt"
@@ -411,7 +411,7 @@ class RetainedTreeProducerModels(unittest.TestCase):
         import codex_native_retained_sdk_tree_producer as producer
         import codex_retained_sdk_tree_inputs as admission
         for fault in ("source-name-swap", "chmod-after-effect", "cutoff-after-writable", "reseal-after-effect", "rename-collision", "rename-cleanup-fault"):
-            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
                 root = Path(temporary)
                 staged, destination = root / "stage", root / "destination"
                 staged.mkdir(mode=0o700); destination.mkdir(mode=0o700)

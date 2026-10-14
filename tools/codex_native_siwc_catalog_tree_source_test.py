@@ -40,7 +40,7 @@ class RetainedTreeSourceModels(unittest.TestCase):
         import codex_native_carrier_metadata as metadata
         source, query = model.source, model.query
         prior = source.DEADLINE, query.DEADLINE
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
             root = Path(temporary)
             runfiles = root / "runfiles"; runfiles.mkdir()
             output = root / "outputs"; output.mkdir()

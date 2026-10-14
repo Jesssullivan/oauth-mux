@@ -6,6 +6,7 @@ composition belongs to the separately declared coauthor integration target.
 import copy
 import hashlib
 import os
+import stat
 from pathlib import Path
 import tempfile
 import time
@@ -19,7 +20,7 @@ import codex_retained_sdk_tree_inputs as inputs
 
 class AdmissionMetadataModels(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"])
         self.root = Path(self.temporary.name)
         self.clock = core.Clock(time.monotonic() + 60)
 
@@ -30,6 +31,31 @@ class AdmissionMetadataModels(unittest.TestCase):
         path.write_bytes(raw)
         path.chmod(mode)
         return path
+
+    def test_actual_sticky_writable_ancestor_is_allowed_and_nonsticky_refused(self):
+        ancestor = self.root / "writable-ancestor"
+        ancestor.mkdir(mode=0o700)
+        child = ancestor / "private-child"
+        child.mkdir(mode=0o700)
+        try:
+            for mode in (0o777, 0o770, 0o1777, 0o1770):
+                with self.subTest(mode=mode):
+                    ancestor.chmod(mode)
+                    self.assertEqual(stat.S_IMODE(ancestor.stat().st_mode), mode)
+                    self.assertEqual(ancestor.stat().st_uid, os.getuid())
+                    if not mode & stat.S_ISVTX:
+                        with self.assertRaisesRegex(ValueError, "metadata-ancestor-custody"):
+                            inputs._Directory(child, self.clock)
+                    else:
+                        owner = inputs._Directory(child, self.clock)
+                        descriptors = [row[1] for row in owner.chain]
+                        try:
+                            owner.check()
+                            self.assertEqual(os.fstat(owner.fd).st_ino, child.stat().st_ino)
+                        finally: owner.close()
+                        for fd in descriptors:
+                            with self.assertRaises(OSError): os.fstat(fd)
+        finally: ancestor.chmod(0o700)
 
     def test_unselected_and_caller_success_flags_never_create_authority(self):
         document = {"schema_version": 1, "kind": inputs.SELECTION_KIND, "status": "UNSELECTED", "selection": None}

@@ -167,7 +167,7 @@ class _Directory:
                 selected = core.identity(held, True)
                 need(core.identity(before, True) == selected == core.identity(
                     os.stat(part, dir_fd=parent, follow_symlinks=False), True), "metadata-parent-race")
-                need(held.st_uid in (0, os.getuid()) and (not held.st_mode & 0o022 or held.st_mode & stat.S_ISVTX),
+                need(held.st_uid in (0, os.getuid()) and (not held.st_mode & 0o022 or bool(held.st_mode & stat.S_ISVTX)),
                      "metadata-ancestor-custody")
                 self.chain.append((part, self.pending, selected))
                 self.pending = None

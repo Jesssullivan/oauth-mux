@@ -16,7 +16,7 @@ import guard_native_sdk_tree_reserved as tree
 class LeaseBoundaries(unittest.TestCase):
     @contextmanager
     def fixture(self,profile=tree.PRODUCER):
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
             state=Path(temporary).resolve();state.chmod(0o700)
             checkout=state/'checkout';checkout.mkdir(mode=0o700)
             # Only the test's exact private temporary root is admitted. All
@@ -405,7 +405,7 @@ class LeaseBoundaries(unittest.TestCase):
             def __setattr__(self,name,value):
                 if name == '__cause__':raise RuntimeError('hostile-cause-set')
                 return super().__setattr__(name,value)
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
             owned=[os.open(temporary,os.O_RDONLY|os.O_DIRECTORY) for _ in range(3)]
             primary=Hostile('model-primary');cleanup=OSError('model-cleanup-after-effect');calls=[]
             def first():calls.append(0);os.close(owned[0]);raise cleanup

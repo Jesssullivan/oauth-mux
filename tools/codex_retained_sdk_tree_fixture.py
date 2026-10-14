@@ -8,6 +8,8 @@ from contextlib import ExitStack
 from pathlib import Path
 import os
 import time
+import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import codex_native_sdk_carrier as core
@@ -21,7 +23,12 @@ class TinyCarrier:
         self.patches = ExitStack()
         try:
             self.model = existing.CarrierModels()
-            self.model.setUp()
+            # Bind only this existing model's setup to Bazel's declared temp
+            # namespace; no process-wide tempfile defaults or validator changes.
+            temporary = SimpleNamespace(TemporaryDirectory=lambda:
+                tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]))
+            with patch.object(existing, "tempfile", temporary):
+                self.model.setUp()
             self.root = self.model.root
             self.origin_pin = self.model.pin
             self.carrier_root, self.carrier_report, self.carrier_pin = self.model.seal("tiny-carrier")
