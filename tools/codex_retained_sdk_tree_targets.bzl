@@ -84,7 +84,7 @@ def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
         python_test(name = name, main = main, srcs = model_sources, data = model_data,
             tags = ["manual", "no-remote", "no-cache"], timeout = "long")
     python_test(name = "guard_native_sdk_tree_reserved_test", main = "guard_native_sdk_tree_reserved_test.py",
-        srcs = guard_sources + ["guard_cache.py", "guard_native_sdk_tree_reserved.py", "guard_native_sdk_tree_reserved_test.py"],
+        srcs = depset(guard_sources + ["guard_cache.py", "guard_native_sdk_tree_reserved.py", "guard_native_sdk_tree_reserved_test.py"]).to_list(),
         data = model_data, tags = ["manual", "no-remote", "no-cache"])
     source_data = catalog_content_controls() + [
         "@omux_native_n10_content_inputs//:inputs", "@omux_protocol_history_query_tools//:inputs",
