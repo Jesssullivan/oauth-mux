@@ -779,6 +779,110 @@ def _drain_operations(operations,primary=None):
     return failure
 
 
+def publish_refused_terminal(lease,run,receipt,*,writer_directory,close_inputs=()):
+    """Publish actual nonzero observation without dependency/SDK qualification.
+
+    The coordinator supplies its original held private epoch directory. Missing
+    cleanup/capture predicates stay missing: no confirmation or clean marker is
+    created, and the existing qualified publication path is not retried.
+    """
+    require(type(lease) is SDKTreeDependencyLease and lease.active and lease._lease_self is lease
+        and lease.pid == os.getpid() and lease.thread == threading.get_ident()
+        and lease.binding == lease._binding() and lease.profile in PROFILES
+        and run == lease.state_root/lease.run_id and type(writer_directory) is int
+        and type(close_inputs) is tuple and len(close_inputs) <= 8 and all(callable(close) for close in close_inputs)
+        and type(receipt) is dict and receipt['id'] == lease.run_id and receipt['profile'] == lease.profile
+        and receipt['targets'] == COHORTS[lease.profile][1:]
+        and receipt['source_commit'] == lease.source_commit and receipt['graph_sha256'] == lease.graph_sha256
+        and type(receipt['exit']) is int and receipt['exit'] != 0
+        and type(receipt['workload_exit']) is int and lease._pending_terminal is None)
+    writer = None
+    primary = None
+    committed = False
+    inputs_attempted = False
+    expected = None
+    canonical = parent_after = None
+    def tick():
+        require(lease.entry <= time.monotonic_ns() < lease.deadline)
+    def root_check():
+        tick()
+        require(lease.state_fd is not None and writer is not None
+            and old._witness(os.fstat(lease.state_fd))[:5] == lease.state_anchor == old._witness(
+                os.stat(lease.state_root,follow_symlinks=False))[:5])
+        held = old._witness(os.fstat(writer))
+        require(stat.S_ISDIR(held[4]) and held[2] == os.getuid() and stat.S_IMODE(held[4]) == 0o700
+            and held[:5] == original[:5]
+            and held == old._witness(os.fstat(writer_directory)) == old._witness(
+                os.stat(lease.run_id,dir_fd=lease.state_fd,follow_symlinks=False))
+            and held == old._witness(os.stat(run,follow_symlinks=False)))
+        tick()
+    try:
+        tick()
+        # Register the duplicate before inspection. The original borrowed FD
+        # remains owned by RunRetirement through publication and later cleanup.
+        writer = os.dup(writer_directory)
+        original = old._witness(os.fstat(writer))
+        root_check()
+        for name in ('receipt.json','sdk-tree-qualified.json','receipt.pending.json'):
+            try: os.stat(name,dir_fd=writer,follow_symlinks=False)
+            except FileNotFoundError: continue
+            raise ValueError('SDK failure terminal already exists')
+        inputs_attempted = True
+        failure = _drain_operations(close_inputs)
+        if failure is not None:
+            primary = failure
+            receipt['exit'] = 125
+        receipt['native_sdk_tree_artifact_origin'] = None
+        receipt.pop('native_sdk_tree_dependency_disposition',None)
+        receipt['native_sdk_tree_terminal_publication'] = {'schema_version':1,
+            'kind':'omux-retained-sdk-tree-terminal-publication-v1','state':'failed-observation-only',
+            'input_closes_verified':failure is None,'dependency_adopted':False,
+            'sdk_execution_qualified':False,'source_qualified':False,'runtime_qualified':False}
+        raw = (json.dumps(receipt,sort_keys=True)+'\n').encode()
+        root_check()
+        expected,parent = _write_closed_terminal(run,'receipt.refused.pending.json',raw,tick,
+            writer_directory=writer)
+        root_check()
+        require(parent == old._witness(os.fstat(writer))
+            and expected == old._witness(os.stat('receipt.refused.pending.json',dir_fd=writer,follow_symlinks=False)))
+        tick()
+        os.rename('receipt.refused.pending.json','receipt.json',src_dir_fd=writer,dst_dir_fd=writer)
+        committed = True
+        root_check()
+        canonical = old._witness(os.stat('receipt.json',dir_fd=writer,follow_symlinks=False))
+        parent_after = old._witness(os.fstat(writer))
+        require(expected[:8] == canonical[:8])
+        tick()
+    except BaseException as error:
+        if primary is None: primary = error
+        elif BaseException.__cause__.__get__(primary) is None: BaseException.__cause__.__set__(primary,error)
+    finally:
+        if not inputs_attempted: primary = _drain_operations(close_inputs,primary)
+        owned,writer = writer,None
+        if owned is not None:
+            try: os.close(owned)
+            except BaseException as error:
+                if primary is None: primary = error
+                elif BaseException.__cause__.__get__(primary) is None: BaseException.__cause__.__set__(primary,error)
+        try: lease.close()
+        except BaseException as error:
+            if primary is None: primary = error
+            elif BaseException.__cause__.__get__(primary) is None: BaseException.__cause__.__set__(primary,error)
+    if committed:
+        # Post-drain metadata is an observation, never a writer/SDK success flag.
+        try:
+            require(parent_after == old._witness(os.fstat(writer_directory)) == old._witness(
+                    os.stat(run,follow_symlinks=False))
+                and canonical == old._witness(os.stat('receipt.json',dir_fd=writer_directory,follow_symlinks=False)))
+            tick()
+        except BaseException as error:
+            if primary is None: primary = error
+            elif BaseException.__cause__.__get__(primary) is None: BaseException.__cause__.__set__(primary,error)
+    if primary is not None: raise primary
+    require(committed)
+    return receipt['exit']
+
+
 def publish_terminal(lease,run,receipt,expected_graph,*,close_inputs=()):
     """Qualify/drain before commit; retain writer exclusivity through rename.
 

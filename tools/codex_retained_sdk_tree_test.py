@@ -563,4 +563,84 @@ class RetainedTreeProducerModels(unittest.TestCase):
                     parent.close(); stage.close()
 
 
+    def test_actual_writable_metadata_refusal_emits_numeric_observation_without_admission(self):
+        import io
+        from contextlib import redirect_stderr
+        import codex_native_retained_sdk_tree_producer as producer
+        import codex_retained_sdk_tree_inputs as admission
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
+            ancestor = Path(temporary) / "private-path-canary"
+            ancestor.mkdir(mode=0o700)
+            child = ancestor / "declared-role"; child.mkdir(mode=0o700)
+            path = child / "public-input"; path.write_bytes(b"content-canary-never-diagnostic"); path.chmod(0o444)
+            ancestor.chmod(0o770)
+            try:
+                with redirect_stderr(io.StringIO()) as output:
+                    with self.assertRaisesRegex(ValueError, "metadata-ancestor-custody"):
+                        producer.PublicInput(path, core.Clock(time.monotonic() + 60))
+                raw = output.getvalue()
+                self.assertTrue(raw.startswith("sdk-tree-metadata-observation role=public-alias-parent "))
+                self.assertIn(" mode=" + str(0o770) + " ", raw)
+                self.assertIn(" uid=" + str(os.getuid()) + " ", raw)
+                self.assertLessEqual(len(raw.encode("ascii")), 1025)
+                self.assertNotIn(str(ancestor), raw); self.assertNotIn("canary", raw)
+                with self.assertRaisesRegex(ValueError, "metadata-ancestor-custody"):
+                    admission._Directory(child, core.Clock(time.monotonic() + 60))
+            finally: ancestor.chmod(0o700)
+
+    def test_actual_numeric_metadata_observation_records_late_named_replacement(self):
+        import codex_native_retained_sdk_tree_producer as producer
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
+            parent = Path(temporary); child = parent / "named-input-parent"; child.mkdir(mode=0o700)
+            actual = os.open; replaced = []
+            def acquire(name, flags, *args, **kwargs):
+                fd = actual(name, flags, *args, **kwargs)
+                if name == child.name and not replaced:
+                    child.rename(parent / "retired-input-parent"); child.mkdir(mode=0o700); replaced.append(fd)
+                return fd
+            with patch.object(producer.os, "open", acquire):
+                observed = producer._metadata_observation(child, core.Clock(time.monotonic() + 60), "public-alias-parent")
+            self.assertEqual(observed["held_named"], 0)
+            self.assertEqual(observed["depth"], len(child.parts) - 1)
+            self.assertEqual(observed["mode"], 0o700)
+            self.assertEqual(len(replaced), 1)
+            with self.assertRaises(OSError): os.fstat(replaced[0])
+
+    def test_actual_metadata_observation_allocation_and_close_faults_drain_both_owned_handles(self):
+        import codex_native_retained_sdk_tree_producer as producer
+        body, cleanup = MemoryError("public observation allocation"), OSError("public close failure")
+        actual_open, actual_close = os.open, os.close; opened, closed = [], []
+        def acquire(*args, **kwargs):
+            fd = actual_open(*args, **kwargs); opened.append(fd); return fd
+        def retire(fd):
+            closed.append(fd); actual_close(fd)
+            if len(closed) == 1: raise cleanup
+        with patch.object(producer.os, "open", acquire), patch.object(producer.os, "close", retire), \
+                patch.object(producer.os, "fstatvfs", side_effect=body):
+            with self.assertRaises(MemoryError) as found:
+                producer._metadata_observation(Path("/tmp"), core.Clock(time.monotonic() + 60), "public-alias-parent")
+        self.assertIs(found.exception, body); self.assertIs(found.exception.__cause__, cleanup)
+        self.assertEqual(len(opened), 2); self.assertEqual(set(opened), set(closed))
+        self.assertEqual(len(closed), len(set(closed)))
+        for fd in opened:
+            with self.assertRaises(OSError): os.fstat(fd)
+
+    def test_refusal_observation_never_formats_original_error_or_resets_expired_clock(self):
+        import io
+        from contextlib import redirect_stderr
+        import codex_native_retained_sdk_tree_producer as producer
+        class Sensitive(ValueError):
+            def __str__(self): raise AssertionError("secret exception formatting")
+            def __repr__(self): raise AssertionError("secret exception representation")
+        primary = Sensitive("account/token-canary")
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
+            clock = core.Clock(time.monotonic() - 1)
+            with patch.object(producer.admission, "_Directory", side_effect=primary), \
+                    patch.object(producer.os, "open") as opened, redirect_stderr(io.StringIO()) as output:
+                with self.assertRaises(Sensitive) as found:
+                    producer._public_directory(Path(temporary), clock, "public-alias-parent")
+            self.assertIs(found.exception, primary); opened.assert_not_called()
+            self.assertEqual(output.getvalue(), "")
+
+
 if __name__ == "__main__": unittest.main()

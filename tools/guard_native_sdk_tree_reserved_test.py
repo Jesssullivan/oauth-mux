@@ -716,4 +716,98 @@ class LeaseBoundaries(unittest.TestCase):
             with self.assertRaises(OSError):os.fstat(target[0])
 
 
+    @contextmanager
+    def refused_candidate(self,state,lease):
+        run = state / lease.run_id; run.mkdir(mode=0o700)
+        row = {'id': lease.run_id, 'profile': lease.profile, 'targets': tree.COHORTS[lease.profile][1:],
+            'source_commit': lease.source_commit, 'graph_sha256': lease.graph_sha256,
+            'exit': 125, 'workload_exit': 1, 'native_sdk_tree_artifact_origin': None,
+            'cleanup': {'ownership': 'unproved', 'readback_attempts': 0, 'state': 'unknown'},
+            'test_evidence': {'state': 'preserved', 'manifest': 'test-evidence.json'}}
+        writer = os.open(run,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        try: yield run,row,writer
+        finally: os.close(writer)
+
+    def test_actual_unqualified_failed_build_publishes_failure_without_confirmation_or_cache_adoption(self):
+        with self.fixture() as (state,checkout,lease):
+            lease.__enter__()
+            with self.refused_candidate(state,lease) as (run,row,writer):
+                original = copy.deepcopy(row); closes = []
+                result = tree.publish_refused_terminal(lease,run,row,writer_directory=writer,
+                    close_inputs=(lambda: closes.append('first'),lambda: closes.append('second')))
+                observed = json.loads((run/'receipt.json').read_bytes())
+                self.assertEqual(result,125); self.assertEqual(closes,['first','second'])
+                self.assertEqual(observed['cleanup'],original['cleanup'])
+                self.assertEqual(observed['test_evidence'],original['test_evidence'])
+                self.assertEqual(observed['workload_exit'],1)
+                self.assertEqual(observed['native_sdk_tree_terminal_publication']['state'],'failed-observation-only')
+                self.assertIsNone(observed['native_sdk_tree_artifact_origin'])
+                self.assertNotIn('native_sdk_tree_dependency_disposition',observed)
+                self.assertFalse((run/'sdk-tree-qualified.json').exists())
+                self.assertIs(json.loads((state/lease.name/'owner.json').read_bytes())['clean'],False)
+                self.assertIsNone(lease.lock)
+
+    def test_actual_refused_terminal_preserves_first_close_cause_and_attempts_later_callbacks(self):
+        with self.fixture() as (state,checkout,lease):
+            lease.__enter__()
+            with self.refused_candidate(state,lease) as (run,row,writer):
+                primary = MemoryError('public input drain allocation'); closes=[]
+                def first(): closes.append('first'); raise primary
+                def second(): closes.append('second')
+                with self.assertRaises(MemoryError) as found:
+                    tree.publish_refused_terminal(lease,run,row,writer_directory=writer,close_inputs=(first,second))
+                self.assertIs(found.exception,primary); self.assertEqual(closes,['first','second'])
+                observed=json.loads((run/'receipt.json').read_bytes())
+                self.assertIs(observed['native_sdk_tree_terminal_publication']['input_closes_verified'],False)
+                self.assertEqual(observed['cleanup']['readback_attempts'],0)
+                self.assertFalse((run/'sdk-tree-qualified.json').exists()); self.assertIsNone(lease.lock)
+
+    def test_actual_refused_terminal_rejects_replaced_private_epoch_and_still_drains(self):
+        with self.fixture() as (state,checkout,lease):
+            lease.__enter__()
+            with self.refused_candidate(state,lease) as (run,row,writer):
+                run.rename(state/'retired-epoch'); run.mkdir(mode=0o700); closes=[]
+                with self.assertRaises(ValueError):
+                    tree.publish_refused_terminal(lease,run,row,writer_directory=writer,
+                        close_inputs=(lambda: closes.append('first'),lambda: closes.append('second')))
+                self.assertEqual(closes,['first','second']); self.assertFalse((run/'receipt.json').exists())
+                self.assertIsNone(lease.lock)
+
+    def test_refused_terminal_cannot_publish_zero_status_or_cross_original_outer_deadline(self):
+        for case in ('positive','deadline'):
+            with self.subTest(case=case), self.fixture() as (state,checkout,lease):
+                lease.__enter__()
+                with self.refused_candidate(state,lease) as (run,row,writer):
+                    if case == 'positive':
+                        row['exit']=row['workload_exit']=0
+                        with self.assertRaises(ValueError):tree.publish_refused_terminal(lease,run,row,writer_directory=writer)
+                    else:
+                        closes=[]
+                        with patch.object(tree.time,'monotonic_ns',return_value=lease.deadline):
+                            with self.assertRaises(ValueError):
+                                tree.publish_refused_terminal(lease,run,row,writer_directory=writer,
+                                    close_inputs=(lambda: closes.append('first'),lambda: closes.append('second')))
+                        self.assertEqual(closes,['first','second']); self.assertIsNone(lease.lock)
+                    self.assertFalse((run/'receipt.json').exists()); self.assertFalse((run/'sdk-tree-qualified.json').exists())
+
+    def test_actual_last_writer_close_replacement_refuses_without_sdk_confirmation(self):
+        with self.fixture() as (state,checkout,lease):
+            lease.__enter__()
+            with self.refused_candidate(state,lease) as (run,row,writer):
+                duplicate,retire=os.dup,os.close; owned=[]; changed=[]
+                def acquire(fd):
+                    result=duplicate(fd)
+                    if fd == writer:owned.append(result)
+                    return result
+                def close(fd):
+                    retire(fd)
+                    if owned and fd == owned[0] and not changed:
+                        path=run/'receipt.json'; raw=path.read_bytes();path.rename(run/'retired-receipt.json')
+                        path.write_bytes(raw);path.chmod(0o600);changed.append(fd)
+                with patch.object(tree.os,'dup',acquire),patch.object(tree.os,'close',close):
+                    with self.assertRaises(ValueError):tree.publish_refused_terminal(lease,run,row,writer_directory=writer)
+                self.assertEqual(changed,owned);self.assertFalse((run/'sdk-tree-qualified.json').exists())
+                self.assertIs(json.loads((state/lease.name/'owner.json').read_bytes())['clean'],False)
+
+
 if __name__ == '__main__':unittest.main()

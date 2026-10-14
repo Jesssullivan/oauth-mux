@@ -5414,8 +5414,18 @@ def _main(argv, admission_resources, retirement_resources):
                 # Success remains unselectable until completion, qualification
                 # FD drains and final graph/cutoff checks pass. Cache and
                 # coordinator writer locks stay held through atomic commit.
-                final_status=seed_reserved.publish_terminal(lease,run,receipt,(graph_sha256,graph_inputs),
-                    close_inputs=(resources.close,admission_resources.close))
+                if 'native_sdk_tree_dependency_disposition' not in receipt:
+                    # A failed build/capture still needs its actual terminal
+                    # observation. Missing ownership/readbacks stay missing;
+                    # no SDK confirmation or dependency adoption is attempted.
+                    retirement.recheck()
+                    final_status=seed_reserved.publish_refused_terminal(lease,run,receipt,
+                        writer_directory=retirement.descriptor,
+                        close_inputs=(resources.close,admission_resources.close))
+                    retirement.recheck()
+                else:
+                    final_status=seed_reserved.publish_terminal(lease,run,receipt,(graph_sha256,graph_inputs),
+                        close_inputs=(resources.close,admission_resources.close))
             elif home_manager_owned:
                 home_manager_publication = home_manager_owned_publish(run,home_manager_worker,
                     cleanup_summary,cleanup_deadline,receipt,receipt_raw)

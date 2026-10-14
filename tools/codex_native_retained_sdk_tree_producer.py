@@ -9,6 +9,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import sys
 
 import codex_native_sdk_carrier as core
 import codex_original_sdk_inputs as original
@@ -19,6 +20,84 @@ OUTPUTS = list(admission.OUTPUTS)
 ACTION_KIND = "omux-retained-public-sdk-tree-declared-action-inputs-v1"
 
 
+def _metadata_observation(path, clock, role):
+    """Refusal-only numeric observation; never a directory admission policy.
+
+    The later traversal may observe different metadata than the failed open.
+    It reports that distinction without inspecting file bytes or exception text.
+    """
+    core.need(role in ("public-alias-parent", "public-resolved-parent"), "sdk-tree-observation-role")
+    path = core.absolute(path)
+    core.need(len(path.parts) <= 65, "sdk-tree-observation-depth")
+    current = pending = None
+    primary = None
+    record = None
+    try:
+        clock.tick()
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        for depth, name in enumerate(path.parts[1:], 1):
+            clock.tick()
+            before = os.stat(name, dir_fd=current, follow_symlinks=False)
+            pending = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=current)
+            held = os.fstat(pending)
+            named = os.stat(name, dir_fd=current, follow_symlinks=False)
+            filesystem = os.fstatvfs(pending)
+            record = {"role": role, "depth": depth, "uid": held.st_uid, "gid": held.st_gid,
+                "mode": stat.S_IMODE(held.st_mode), "device": held.st_dev,
+                "filesystem": filesystem.f_fsid, "mount_flags": filesystem.f_flag,
+                "readonly": int(bool(filesystem.f_flag & os.ST_RDONLY)),
+                "held_named": int(core.identity(before, True) == core.identity(held, True)
+                    == core.identity(named, True))}
+            clock.tick()
+            if (held.st_uid not in (0, os.getuid())
+                    or (held.st_mode & 0o022 and not held.st_mode & stat.S_ISVTX)
+                    or not record["held_named"]):
+                break
+            retired, current, pending = current, pending, None
+            os.close(retired)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        failure = None
+        retired, current = current, None
+        last, pending = pending, None
+        if last is not None:
+            try: os.close(last)
+            except BaseException as error: failure = error
+        if retired is not None:
+            try: os.close(retired)
+            except BaseException as error:
+                if failure is None: failure = error
+        if failure is not None:
+            if primary is not None: raise primary from failure
+            raise failure
+    clock.tick()
+    return record
+
+
+def _public_directory(path, clock, role):
+    try:
+        return admission._Directory(path, clock)
+    except ValueError:
+        # Diagnostics cannot replace the actual admission failure or turn a
+        # writable/foreign ancestor into current SDK authority.
+        try:
+            observed = _metadata_observation(path, clock, role)
+            if observed is not None:
+                raw = "sdk-tree-metadata-observation " + " ".join(
+                    name + "=" + str(observed[name]) for name in (
+                        "role", "depth", "uid", "gid", "mode", "device", "filesystem",
+                        "mount_flags", "readonly", "held_named"))
+                core.need(len(raw.encode("ascii")) <= 1024, "sdk-tree-observation-output-bound")
+                clock.tick()
+                print(raw, file=sys.stderr, flush=True)
+                clock.tick()
+        except (OSError, ValueError, MemoryError):
+            pass
+        raise
+
+
 class PublicInput:
     """Declared code/tool bytes; this scope grants no SDK input authority."""
     def __init__(self, path, clock):
@@ -27,11 +106,11 @@ class PublicInput:
         self.closed = False
         try:
             self.path = self.alias.resolve(strict=True)
-            self.alias_parent = admission._Directory(self.alias.parent.resolve(strict=True), clock)
+            self.alias_parent = _public_directory(self.alias.parent.resolve(strict=True), clock, "public-alias-parent")
             self.alias_witness = core.identity(os.stat(self.alias.name, dir_fd=self.alias_parent.fd, follow_symlinks=False))
             core.need(stat.S_ISREG(self.alias_witness[4]) or stat.S_ISLNK(self.alias_witness[4]), "sdk-tree-public-alias-kind")
             self.alias_literal = os.readlink(self.alias.name, dir_fd=self.alias_parent.fd) if stat.S_ISLNK(self.alias_witness[4]) else None
-            self.parent = admission._Directory(self.path.parent, clock)
+            self.parent = _public_directory(self.path.parent, clock, "public-resolved-parent")
             before = os.stat(self.path.name, dir_fd=self.parent.fd, follow_symlinks=False)
             core.need(stat.S_ISREG(before.st_mode) and before.st_uid in (0, os.getuid())
                 and stat.S_IMODE(before.st_mode) in (0o444, 0o555, 0o644, 0o755)
