@@ -1277,15 +1277,86 @@ class Range(io.RawIOBase):
         self.fd, self.start, self.size, self.position, self.clock = fd, start, size, 0, clock
 
     def read(self, size=-1):
+        if type(self) is _PayloadWindowRange:
+            need(not self.closed, "payload-window-stream-closed")
+            self._window.check(self.fd, self.clock)
         self.clock.tick()
         size = self.size - self.position if size < 0 else min(size, self.size-self.position)
         if size <= 0:
             return b""
-        block = os.pread(self.fd, size, self.start+self.position)
+        block = (self._window.read(self.fd, self.start+self.position, size, self.clock)
+                 if type(self) is _PayloadWindowRange else
+                 os.pread(self.fd, size, self.start+self.position))
         need(bool(block), "payload-truncated")
         self.position += len(block)
         return block
 
+
+
+
+class _PayloadNarWindow:
+    """One pass-local <=64KiB byte buffer; never physical/content authority.
+
+    The caller owns the actual payload FD and unchanged before/final full-nine
+    and named-root fences. No data is shared with flat SHA or another NAR call.
+    This owner creates/closes no descriptors, and retains no observed stat proof.
+    """
+    def __init__(self, fd, size, clock):
+        need(type(fd) is int and fd >= 0 and type(size) is int and 0 <= size <= MAX_BYTES,
+             "payload-window-bound")
+        self.fd, self.size, self.clock = fd, size, clock
+        self.deadline, self.until_ns = clock.deadline, clock.until_ns
+        self.pid, self.thread, self.self = os.getpid(), threading.get_ident(), self
+        self.buffer, self.offset, self.active = None, 0, True
+        clock.tick()
+
+    def check(self, fd, clock):
+        need(self.self is self and self.active and os.getpid() == self.pid
+             and threading.get_ident() == self.thread and fd == self.fd and clock is self.clock
+             and clock.deadline == self.deadline and clock.until_ns == self.until_ns,
+             "payload-window-owner-clock")
+        clock.tick()
+
+    def read(self, fd, start, count, clock):
+        self.check(fd, clock)
+        need(type(start) is int and type(count) is int and 0 <= start <= self.size
+             and 0 < count <= 65536 and count <= self.size-start, "payload-window-range")
+        clock.tick()
+        if self.buffer is None or not self.offset <= start < self.offset+len(self.buffer):
+            # Retire the previous sole cache buffer before acquiring another.
+            self.buffer = None
+            self.offset = start
+            request = min(65536, self.size-start)
+            block = os.pread(fd, request, start)
+            clock.tick()
+            need(type(block) is bytes and 0 < len(block) <= request, "payload-truncated")
+            self.buffer = block
+        index = start-self.offset
+        block = self.buffer[index:index+min(count, len(self.buffer)-index)]
+        need(0 < len(block) <= count, "payload-window-progress")
+        clock.tick()
+        return block
+
+    def close(self):
+        self.active = False
+        self.fd = self.buffer = None
+        self.offset = 0
+
+    def __enter__(self):
+        need(self.self is self and self.active, "payload-window-closed")
+        return self
+
+    def __exit__(self, *unused): self.close()
+
+
+class _PayloadWindowRange(Range):
+    def __init__(self, fd, start, size, clock, window):
+        need(type(window) is _PayloadNarWindow and window.active and window.fd == fd
+             and window.clock is clock and type(start) is int and type(size) is int
+             and 0 <= start <= window.size and 0 <= size <= window.size-start,
+             "payload-window-stream")
+        super().__init__(fd, start, size, clock)
+        self._window = window
 
 
 def _payload_sha_pass(fd, files, size, payload_pin, clock):
@@ -1374,11 +1445,15 @@ def validate_content(root, manifest, expected, clock):
         _payload_sha_pass(fd, files, offset, manifest["payload_sha256"], clock)
         need(type(manifest["nars"]) is dict and set(manifest["nars"]) == {"sdk", "jdk"}, "nar-roles")
         for role in ("sdk", "jdk"):
-            def opener(unused, name, selected=role):
-                entry = files[(selected, name)]
-                return Range(fd, entry["offset"], entry["size"], clock)
-            need(nar.hash_descriptor(descriptor(role, rows, clock), opener=opener, deadline=clock.deadline)
-                 == manifest["nars"][role], "nar-digest")
+            # Each independent protected NAR call has a new bounded reader.
+            # Metadata/order and every returned byte still enter that serializer;
+            # caller's exact payload FD/full-nine/root fences remain below.
+            with _PayloadNarWindow(fd, offset, clock) as window:
+                def opener(unused, name, selected=role):
+                    entry = files[(selected, name)]
+                    return _PayloadWindowRange(fd, entry["offset"], entry["size"], clock, window)
+                need(nar.hash_descriptor(descriptor(role, rows, clock), opener=opener, deadline=clock.deadline)
+                     == manifest["nars"][role], "nar-digest")
         need(identity(os.fstat(fd)) == before, "payload-read-race")
         root.check()
         return rows, files

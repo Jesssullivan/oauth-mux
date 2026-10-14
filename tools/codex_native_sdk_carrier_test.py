@@ -3050,5 +3050,150 @@ class CarrierModels(unittest.TestCase):
                         os.fstat(fd)
 
 
+
+    def test_payload_nar_window_complete_binding_matches_unbuffered_proof_with_fewer_real_preads(self):
+        root, report, pin = self.seal('window-binding')
+        real_read = os.pread
+        def unbuffered(fd, start, size, clock, window): return carrier.Range(fd, start, size, clock)
+        with patch.object(carrier, '_PayloadWindowRange', unbuffered), patch.object(carrier.os, 'pread', wraps=real_read) as before:
+            original = carrier.validate_binding(root, pin, self.deadline)
+            old_count = before.call_count
+        with patch.object(carrier.os, 'pread', wraps=real_read) as after:
+            actual = carrier.validate_binding(root, pin, self.deadline)
+            new_count = after.call_count
+        self.assertEqual(actual, original); self.assertEqual(actual, report)
+        self.assertLess(new_count, old_count)
+        self.assertEqual(carrier.publication_report(root, pin, self.deadline)['carrier_receipt_sha256'], pin)
+
+    def window_payload_fixture(self, name):
+        # Inert public regular bytes, no source/SDK readiness from this helper.
+        data = b'z'*17 + b'x'*17 + bytes(range(256))*300
+        path = self.root/name; self.write(path, data, 0o444)
+        descriptor = {'schemaVersion':1,'root':str(self.root),'nodes':[
+            {'path':'','type':'directory'}, {'path':'a','type':'directory'},
+            {'path':'a/x','type':'regular','size':17,'executable':False},
+            {'path':'a-z','type':'regular','size':17,'executable':False},
+            {'path':'b','type':'regular','size':len(data)-34,'executable':True},
+            {'path':'empty','type':'regular','size':0,'executable':False},
+            {'path':'inert','type':'symlink','target':'/unqualified/window-fixture'}]}
+        extents = {'a-z':(0,17),'a/x':(17,17),'b':(34,len(data)-34),'empty':(len(data),0)}
+        fd = None
+        try:
+            fd = os.open(path, os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            return fd, data, descriptor, extents
+        except BaseException as error:
+            if fd is not None:
+                try: os.close(fd)
+                except BaseException as cleanup:
+                    prior = BaseException.__cause__.__get__(error)
+                    raise error from (cleanup if prior is None else prior)
+            raise
+
+    def test_payload_nar_window_lexical_backward_jumps_boundary_and_zero_eof_match_protected_serializer(self):
+        fd, data, descriptor, extents = self.window_payload_fixture('window-lexical')
+        clock = carrier.Clock(self.deadline); visits=[]; real_read=os.pread
+        def original(unused, name): return carrier.Range(fd, *extents[name], clock)
+        try:
+            expected = carrier.nar.hash_descriptor(descriptor, opener=original, deadline=clock.deadline)
+            with carrier._PayloadNarWindow(fd, len(data), clock) as window:
+                def buffered(unused, name):
+                    visits.append(name)
+                    return carrier._PayloadWindowRange(fd, *extents[name], clock, window)
+                with patch.object(carrier.os, 'pread', wraps=real_read) as reads:
+                    actual = carrier.nar.hash_descriptor(descriptor, opener=buffered, deadline=clock.deadline)
+                self.assertEqual(actual, expected)
+                self.assertEqual(visits, ['a/x','a-z','b','empty'])
+                self.assertLessEqual(len(window.buffer), 65536)
+                self.assertTrue(all(call.args[1] <= 65536 for call in reads.call_args_list))
+            self.assertFalse(window.active); self.assertIsNone(window.buffer); self.assertIsNone(window.fd)
+            self.assertTrue(stat.S_ISREG(os.fstat(fd).st_mode)) # borrowed FD still caller owned
+        finally: os.close(fd)
+
+    def test_payload_nar_window_short_reads_and_true_truncation_preserve_actual_byte_order(self):
+        fd, data, descriptor, extents = self.window_payload_fixture('window-partial')
+        clock=carrier.Clock(self.deadline); real_read=os.pread
+        try:
+            def original(unused,name):return carrier.Range(fd,*extents[name],clock)
+            expected=carrier.nar.hash_descriptor(descriptor,opener=original,deadline=clock.deadline)
+            with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                def buffered(unused,name):return carrier._PayloadWindowRange(fd,*extents[name],clock,window)
+                def partial(selected,count,start):return real_read(selected,min(count,7),start)
+                with patch.object(carrier.os,'pread',partial):
+                    self.assertEqual(carrier.nar.hash_descriptor(descriptor,opener=buffered,deadline=clock.deadline),expected)
+            with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                with patch.object(carrier.os,'pread',return_value=b''):
+                    with self.assertRaises(ValueError):window.read(fd,0,17,clock)
+            self.assertFalse(window.active);self.assertIsNone(window.buffer)
+        finally:os.close(fd)
+
+    def test_payload_nar_window_hot_cached_bytes_cannot_hide_mutation_replacement_link_or_mode_from_full_binding(self):
+        for fault in ('mutation','restored-bytes','replacement','link','mode'):
+            with self.subTest(fault=fault):
+                root, unused, pin=self.seal('window-race-'+fault)
+                payload=root/'payload.bin';raw=payload.read_bytes();real=carrier._PayloadNarWindow.read;fired=[False]
+                def race(window,*args):
+                    result=real(window,*args)
+                    if not fired[0]:
+                        fired[0]=True
+                        if fault in ('mutation','restored-bytes'):
+                            previous=payload.stat()
+                            position=args[1] # actual byte already loaded into this NAR window
+                            payload.chmod(0o600)
+                            payload.write_bytes(raw[:position]+bytes([raw[position]^1])+raw[position+1:])
+                            if fault=='restored-bytes':
+                                payload.write_bytes(raw)
+                                os.utime(payload,ns=(previous.st_atime_ns,previous.st_mtime_ns))
+                            payload.chmod(0o444)
+                        elif fault=='mode':payload.chmod(0o400);payload.chmod(0o444)
+                        else:
+                            root.chmod(0o700);aside=root/'payload-aside';payload.rename(aside)
+                            if fault=='replacement':self.write(payload,raw,0o444)
+                            else:payload.symlink_to(aside.name)
+                            root.chmod(0o555)
+                    return result
+                with patch.object(carrier._PayloadNarWindow,'read',race):
+                    with self.assertRaises(ValueError):carrier.validate_binding(root,pin,self.deadline)
+                self.assertTrue(fired[0])
+
+    def test_payload_nar_window_refuses_original_expiry_foreign_owner_and_use_after_scope_even_at_zero_eof(self):
+        fd, data, unused, unused_extents=self.window_payload_fixture('window-owner')
+        clock=carrier.Clock(self.deadline);deadline=clock.deadline;clock.until_ns=time.monotonic_ns()+60*10**9
+        try:
+            with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                empty=carrier._PayloadWindowRange(fd,len(data),0,clock,window)
+                self.assertEqual(empty.read(1),b'')
+                with patch.object(carrier.os,'pread',wraps=os.pread) as reads:
+                    for args in ((fd+1,0,17,clock),(fd,0,17,carrier.Clock(self.deadline))):
+                        with self.assertRaises(ValueError):window.read(*args)
+                    with patch.object(carrier.threading,'get_ident',return_value=window.thread+1):
+                        with self.assertRaises(ValueError):empty.read(1)
+                    self.assertEqual(reads.call_count,0)
+                with patch.object(carrier.time,'monotonic',return_value=deadline):
+                    with self.assertRaises(ValueError):window.read(fd,0,17,clock)
+                with patch.object(carrier.time,'monotonic_ns',return_value=clock.until_ns):
+                    with self.assertRaises(ValueError):empty.read(1)
+                self.assertEqual(clock.deadline,deadline)
+            with self.assertRaises(ValueError):empty.read(1)
+            self.assertTrue(stat.S_ISREG(os.fstat(fd).st_mode))
+        finally:os.close(fd)
+
+    def test_payload_nar_window_scope_retirement_keeps_first_body_without_closing_borrowed_fd(self):
+        fd, data, unused, unused_extents=self.window_payload_fixture('window-body')
+        clock=carrier.Clock(self.deadline);first=MemoryError('synthetic public window body')
+        try:
+            with patch.object(carrier.os,'close',wraps=os.close) as closes:
+                with self.assertRaises(MemoryError) as failure:
+                    with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                        stream=carrier._PayloadWindowRange(fd,0,17,clock,window)
+                        self.assertEqual(stream.read(17),data[:17]);stream.close()
+                        with self.assertRaises(ValueError):stream.read(1)
+                        raise first
+                self.assertIs(failure.exception,first)
+                self.assertEqual(closes.call_count,0)
+            self.assertFalse(window.active);self.assertIsNone(window.buffer);self.assertIsNone(window.fd)
+            self.assertTrue(stat.S_ISREG(os.fstat(fd).st_mode))
+        finally:os.close(fd)
+
+
 if __name__ == "__main__":
     unittest.main()
