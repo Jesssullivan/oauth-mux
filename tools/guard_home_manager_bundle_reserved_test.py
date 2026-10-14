@@ -62,9 +62,10 @@ class HomeManagerReservationModels(unittest.TestCase):
     def test_real_command_constructor_inherits_original_clock_and_offline_fresh_graph(self):
         entry, end = 100 * 10**9, 1300 * 10**9
         for profile, arguments in hm.COHORTS.items():
-            with patch.object(kernel.time, "monotonic_ns", return_value=200 * 10**9):
+            with patch.object(kernel.time, "monotonic_ns", return_value=200 * 10**9), \
+                    patch.object(guard, "graph_digest", return_value=("b"*64, 1)):
                 command = hm.command(guard.bazel_command, "bazel", Path("/model/epoch"), arguments,
-                    profile, entry, end)
+                    profile, entry, end, source_commit="a"*40,source_dirty="false")
             self.assertEqual(command[-len(arguments[1:]):], arguments[1:])
             for flag in ("--repository_disable_download", "--repo_contents_cache=", "--nocache_test_results",
                     "--sandbox_default_allow_network=false", "--remote_executor=", "--remote_cache=",
@@ -141,6 +142,27 @@ class HomeManagerReservationModels(unittest.TestCase):
                 with self.assertRaises(ValueError): witness.complete(*state)
             with patch.object(kernel.time, "monotonic_ns", return_value=witness.deadline):
                 with self.assertRaises(ValueError): witness.complete(0, True, True, True)
+
+    def test_realization_registration_singleton_binds_original_clock_source_and_false_scope(self):
+        entry, end = 100*10**9, 1300*10**9
+        vector = ["test", "//tools:home_manager_linux_realization_inputs_producer"]
+        self.assertEqual(hm.COHORTS[hm.REALIZATION_INPUTS], vector)
+        with patch.object(kernel.time, "monotonic_ns", return_value=200*10**9), \
+                patch.object(guard, "graph_digest", return_value=("b"*64,1)):
+            command = hm.command(guard.bazel_command,"bazel",Path("/model/epoch"),vector,
+                hm.REALIZATION_INPUTS,entry,end,source_commit="a"*40,source_dirty="false")
+        self.assertIn("--test_env=OMUX_HM_REALIZATION_SOURCE_COMMIT="+"a"*40,command)
+        self.assertIn("--test_env=OMUX_HM_REALIZATION_GRAPH_SHA256="+"b"*64,command)
+        self.assertIn("--test_env=OMUX_HM_ROOT_ENTRY_NS="+str(entry),command)
+        self.assertIn("--test_env=OMUX_HM_ROOT_DEADLINE_NS="+str(end),command)
+        self.assertIn("--remote_cache=",command)
+        self.assertIn("--remote_executor=",command)
+        self.assertIn("--nocache_test_results",command)
+        for wrong in (["build",vector[1]],vector+["//:docs_check"], ["test","//tools:home_manager_current_evaluation"]):
+            with self.assertRaises(ValueError):hm.selected(hm.REALIZATION_INPUTS,wrong)
+        row=hm.projection(hm.REALIZATION_INPUTS,entry,end,True,{})
+        for key in ("activation_qualified","current_artifact_qualified","browser_consent_qualified","continuity_qualified"):
+            self.assertIs(row[key],False)
 
     def test_reservation_projection_cannot_promote_installation_or_native_proof(self):
         for profile in hm.PROFILES:

@@ -5,8 +5,10 @@ import guard_native_seed_plan_reserved as kernel
 RECONSTRUCTION = "home-manager-reconstruction-reserved"
 EVALUATION = "home-manager-evaluation-reserved"
 MODELS = "home-manager-bundle-models-reserved"
-PROFILES = (RECONSTRUCTION, EVALUATION, MODELS)
+REALIZATION_INPUTS = "home-manager-realization-inputs-reserved"
+PROFILES = (RECONSTRUCTION, EVALUATION, MODELS, REALIZATION_INPUTS)
 COHORTS = {
+    REALIZATION_INPUTS: ["test", "//tools:home_manager_linux_realization_inputs_producer"],
     RECONSTRUCTION: ["test", "//tools:home_manager_retained_reconstruction_producer"],
     EVALUATION: ["test", "//tools:home_manager_acquired_evaluation"],
     MODELS: ["test", "//tools:guard_home_manager_bundle_reserved_test", "//tools:home_manager_bundle_selection_test", "//tools:home_manager_bundle_test"],
@@ -48,6 +50,11 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
     options = ["--repository_disable_download", "--repo_contents_cache="]
     if profile != MODELS:
         options += ["--test_env=OMUX_HM_ROOT_ENTRY_NS=" + str(entry), "--test_env=OMUX_HM_ROOT_DEADLINE_NS=" + str(deadline), "--test_env=OMUX_HM_RESERVED_PROFILE=" + profile]
+    if profile == REALIZATION_INPUTS:
+        from execution_guard import graph_digest
+        from pathlib import Path
+        options += ["--test_env=OMUX_HM_REALIZATION_SOURCE_COMMIT=" + kwargs["source_commit"],
+                    "--test_env=OMUX_HM_REALIZATION_GRAPH_SHA256=" + graph_digest(Path.cwd())[0]]
     index = result.index("test") + 1
     result[index:index] = options
     return result

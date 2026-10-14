@@ -3169,3 +3169,27 @@ python_test(
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+
+exports_files(["home_manager_realization_inputs.bzl", "home_manager_realization_input_selection.json"])
+_HM_REALIZATION_INPUT_SOURCES = ["//:nix/home_manager_realization_inputs.py", "//:nix/home_manager_inputs.py",
+    "nar_descriptor.py", "nix_private_store_seed.py", "nix_private_store_qualification.py", "nix_interpreter_closure.py"]
+python_test(name="home_manager_realization_inputs_test", main="//:nix/home_manager_realization_inputs_test.py",
+    srcs=_HM_REALIZATION_INPUT_SOURCES, tags=["manual","no-remote","no-cache"],
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])
+python_test(name="home_manager_linux_realization_inputs_producer", main="//:nix/home_manager_realization_inputs.py",
+    srcs=depset(_HM_REALIZATION_INPUT_SOURCES+_RESIDENT_GUARD_SOURCES).to_list(),
+    data=["@omux_hm_realization_inputs//:selection.json","@omux_hm_realization_inputs//:layout.json",
+          "@omux_private_store_host//:private-store-seed.json",
+          "@omux_hm_realization_inputs//:members", "//:nix/home-manager.nix", "//:nix/consume-bazel-artifact.nix",
+          "//:nix/ownership-witness.nix", "//:nix/service-witness.nix"],
+    args=["--selection","$(location @omux_hm_realization_inputs//:selection.json)",
+          "--locked-seed","$(location @omux_private_store_host//:private-store-seed.json)",
+          "--layout","$(location @omux_hm_realization_inputs//:layout.json)",
+          "--module","home-manager.nix=$(location //:nix/home-manager.nix)",
+          "--module","consume-bazel-artifact.nix=$(location //:nix/consume-bazel-artifact.nix)",
+          "--module","ownership-witness.nix=$(location //:nix/ownership-witness.nix)",
+          "--module","service-witness.nix=$(location //:nix/service-witness.nix)"],
+    env_inherit=["OMUX_HM_ROOT_ENTRY_NS","OMUX_HM_ROOT_DEADLINE_NS","OMUX_HM_RESERVED_PROFILE",
+                 "OMUX_HM_REALIZATION_SOURCE_COMMIT","OMUX_HM_REALIZATION_GRAPH_SHA256"],
+    tags=["manual","no-remote","no-cache"],timeout="long",
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])

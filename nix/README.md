@@ -114,8 +114,28 @@ Home Manager evaluation needs separately declared, NAR-verified pinned Home
 Manager source. Lab's root lock currently selects Home Manager revision
 `65258d5c65a250189fde2e35f490d15e064c4c62` with NAR hash
 `sha256-Sxu1NLTD/Ern6hFGLlZmtKCSct3YQXZI/lls8RE1XeM=`; this observation neither
-adds that input to Omux nor qualifies cached source bytes. Real activation
-links through `home-manager-files` remain unknown under the initial direct-link
-collector contract. Optimized hardlinked witnesses also remain unsupported.
-Qualification must document actual link topology before broadening verification;
-it must not activate services on the host merely to satisfy a fixture.
+adds that input to Omux nor qualifies cached source bytes.
+The Linux collector now implements bounded direct-store and one selected
+`home-manager-files` generation-hop inspection, including same-generation
+service-record/unit/login joins, current named/held witnesses and exact unit
+bytes. It accepts immutable root-owned store files with stable hardlink counts;
+mutable files and symlinks retain their stricter custody rules. These source
+predicates and their fixtures do not prove a genuinely realized or activated
+Home Manager generation. Genuine isolated realization, activation, update and
+removal remain separate gates, as do live service readiness and exact-ID browser
+installation. Do not activate a fleet service merely to satisfy a fixture or
+use the portable installer to replace declaratively owned objects.
+
+A separate experimental input-content gate is declared as
+`//tools:home_manager_linux_realization_inputs_producer`. Its selector starts
+null. It requires the complete reference closure of explicitly selected pinned
+HM/nixpkgs sources, the portable artifact, a proposed generation derivation,
+and the locked Bash/Nix runtime. The gate verifies every declared member and
+NAR, copies the complete closure into an owned disposable private store, and
+compares actual import-registration readback. Existing private-store scaffolding
+supplies this registration ABI; its presence is not proof of a complete HM build.
+The proposed derivation's HM origin and builder semantics remain unqualified.
+No evaluation, generation build, activation, update, removal, service readiness,
+or browser registration occurs in this gate. Genuine generation and lifecycle
+actions remain subsequent declared work; the dummy-store evaluator and managed
+ownership policy are unchanged.

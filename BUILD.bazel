@@ -34,6 +34,7 @@ filegroup(
 )
 
 exports_files([
+    "nix/home_manager_realization_inputs.py", "nix/home_manager_realization_inputs_test.py",
     "src/platform/native_peer_runtime_bridge.c",
     "src/platform/native_peer.c",
     "src/platform/native_peer.h",

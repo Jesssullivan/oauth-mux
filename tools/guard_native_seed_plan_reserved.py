@@ -19,6 +19,7 @@ WORKLOAD_PROFILES = (*PROFILES, "yoga-controller-qualify-reserved", "yoga-contro
 WORKLOAD_PROFILES += ("native-peer-qualification-reserved",)
 WORKLOAD_PROFILES += ("native-siwc-catalog-content-source-reserved",)
 WORKLOAD_PROFILES += ("home-manager-reconstruction-reserved", "home-manager-evaluation-reserved", "home-manager-bundle-models-reserved")
+WORKLOAD_PROFILES += ("home-manager-realization-inputs-reserved",)
 LABEL = "//tools:native_flake_seed_plan_qualification"
 MODELS = ["test", "//tools:guard_native_seed_plan_reserved_test", "//tools:execution_guard_test",
     "//tools:native_flake_seed_plan_carrier_test", "//:docs_check"]
