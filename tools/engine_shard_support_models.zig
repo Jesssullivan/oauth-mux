@@ -1,9 +1,13 @@
 const std = @import("std");
 const support = @import("engine_shard_support.zig");
 const valid: support.Raw = .{
-    .index = "0", .total = "3", .status = "/private/shard-status",
-    .outputs = "/private/outputs", .bazel = "1",
-    .test_target = support.target, .timeout = "300",
+    .index = "0",
+    .total = "3",
+    .status = "/private/shard-status",
+    .outputs = "/private/outputs",
+    .bazel = "1",
+    .test_target = support.target,
+    .timeout = "300",
 };
 const Names = struct {
     allocator: std.mem.Allocator,
@@ -91,8 +95,7 @@ test "engine shard publishes original failure skip log and leak evidence only af
     var session = try support.Session.begin(config, &names.functions);
     try std.testing.expectError(error.IncompleteEngineShard, session.write(io, "0.17.0", 0, 0));
     for (0..support.full_count) |index| if (support.selected(config, index)) {
-        try session.record(index, if (index == 0) .fail else if (index == 3) .skip else .pass,
-            if (index == 6) 1 else 0, if (index == 9) 1 else 0, false, null);
+        try session.record(index, if (index == 0) .fail else if (index == 3) .skip else .pass, if (index == 6) 1 else 0, if (index == 9) 1 else 0, false, null);
     };
     try session.write(io, "0.17.0", 1, 1);
     const encoded = try directory.dir.readFileAlloc(io, support.receipt_name, a, .limited(support.receipt_limit));

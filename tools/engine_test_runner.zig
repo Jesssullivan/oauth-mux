@@ -11,10 +11,10 @@
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all
 // copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -373,7 +373,6 @@ fn mainTerminal(init: std.process.Init.Minimal) void {
     }
 }
 
-
 fn mainTerminalSharded(init: std.process.Init.Minimal, config: ?engine_shard.Config) void {
     @disableInstrumentation();
     if (builtin.fuzz) @panic("fuzz test requires server");
@@ -414,8 +413,7 @@ fn mainTerminalSharded(init: std.process.Init.Minimal, config: ?engine_shard.Con
             testing.io_instance.deinit();
             const allocator_leaks = testing.allocator_instance.deinit();
             if (allocator_leaks != 0) leaks += 1;
-            if (shard) |*session| session.record(i, shard_status, log_err_count - initial_log_errors, allocator_leaks, is_fuzz_test,
-                engine_shard.elapsed(started.?, Io.Clock.awake.now(runner_threaded_io))) catch
+            if (shard) |*session| session.record(i, shard_status, log_err_count - initial_log_errors, allocator_leaks, is_fuzz_test, engine_shard.elapsed(started.?, Io.Clock.awake.now(runner_threaded_io))) catch
                 fatal("engine shard terminal attribution failed", .{});
         }
         testing.log_level = .warn;
