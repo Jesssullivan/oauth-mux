@@ -57,7 +57,11 @@ def _impl(ctx):
         "files": [rows[key] for key in sorted(rows)]}
     output = ctx.actions.declare_file(ctx.label.name + ".json")
     ctx.actions.write(output, json.encode(value) + "\n")
-    return [DefaultInfo(files = depset([output]), runfiles = ctx.runfiles(files = files))]
+    # The exact owned BUILD-only warm vector selects this group explicitly.
+    # Default files stay one declaration for the genuine producer's location
+    # argument; building that JSON alone does not establish compilation warmth.
+    return [DefaultInfo(files = depset([output]), runfiles = ctx.runfiles(files = files)),
+        OutputGroupInfo(toolbar_public_build_inputs = depset(files))]
 
 yoga_public_artifact_declaration = rule(implementation = _impl, attrs = {
     "runner": attr.label(mandatory = True, executable = True, cfg = "target"),

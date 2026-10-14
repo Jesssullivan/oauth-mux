@@ -21,6 +21,7 @@ import sys
 import time
 import uuid
 from guard_cache import CacheLease, stable_fingerprint, graph_digest
+import guard_cache
 from guard_test_evidence import capture as capture_test_evidence
 from system_mask_policy import setting as system_masks, verify_effective as verify_system_masks
 from guard_dependency_profile import selected_profile, validate_coordination, initialize_state, pack_metadata, recovery_source, selected_fresh_inputs
@@ -1645,6 +1646,539 @@ TOOLBAR_PREP_VARIABLE = 'OMUX_YOGA_PUBLIC_PREP_'
 TOOLBAR_RECEIVE_LABEL = '//delivery:yoga_public_artifact_receive_qualification'
 TOOLBAR_RECEIVE_VARIABLE = 'OMUX_YOGA_PUBLIC_RECEIVE_'
 TOOLBAR_PREP_INVENTORY_SHA256 = '1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931'
+TOOLBAR_PUBLIC_BUILD_SCOPE = 'exact-public-toolbar-build-inputs-v1'
+TOOLBAR_PUBLIC_BUILD_LABEL = '//delivery:yoga_public_artifact_inputs'
+
+
+def toolbar_public_build_reuse_selected(args, arguments):
+    """Public build actions only; retain the genuine per-epoch physical tree."""
+    if TOOLBAR_PUBLIC_BUILD_LABEL in arguments:
+        if (args.profile != 'standard' or args.manager != 'system'
+                or arguments != ['build',TOOLBAR_PUBLIC_BUILD_LABEL]
+                or args.reuse_owned_cache is not False or args.source_dirty != 'false'):
+            raise ValueError('toolbar-public-build-exact-warm-singleton-required')
+    elif not toolbar_prepare_selected(args.profile,args.manager,arguments,
+            args.reuse_owned_cache,args.source_dirty):return False
+    allowed = ORDINARY_CHECK_ARGUMENT_FIELDS | {'site_inventory','site_inventory_sha256'}
+    if (args.coordination_dir is None
+            or not toolbar_prepare_inventory_request(args,True)
+            or any(name not in allowed and value is not None and value is not False
+                   for name,value in vars(args).items())):
+        raise ValueError('toolbar-public-build-only-public-selectors-required')
+    return True
+
+
+class ToolbarFdSlot:
+    """A fixed retirement cell, allocated before any public owner acquisition."""
+    __slots__=('name','descriptor')
+    def __init__(self,name):
+        self.name=name
+        self.descriptor=None
+
+
+class ToolbarPublicBuildLease:
+    """One public disk cache; fresh producer products remain in their own epoch.
+
+    Only this new owner implements its locked marker transitions and once-all
+    drainage. Other CacheLease profiles retain their original implementation.
+    Clean marker publication and terminal closure are separate observed states;
+    a late/failed close cannot become producer or physical-history authority.
+    """
+    def __init__(self,state_root,key,run_id,repository,entry_ns,deadline_ns):
+        if (type(key) is not str or re.fullmatch('[0-9a-f]{64}',key) is None
+                or type(run_id) is not str or str(uuid.UUID(run_id)) != run_id):
+            raise ValueError('toolbar-public-build-key-or-uuid-refused')
+        self.state_root=Path(state_root)
+        self.key,self.run_id,self.policy_version=key,run_id,2
+        names=('disk_fd','checkout_fd','state_fd','lock','directory',
+            'marker-read','marker-write','state-probe','receipt-root','receipt-read',
+            'trusted-parent','trusted-child')
+        self._slots={name:ToolbarFdSlot(name) for name in names}
+        self._retirement=tuple(self._slots[name] for name in names)
+        # Iteration allocation happens now, before the first OS acquisition.
+        self._retirement_iterator=iter(self._retirement)
+        checkout=Path(repository).resolve(strict=True)
+        if (type(entry_ns) is not int or type(deadline_ns) is not int
+                or deadline_ns-entry_ns != 1200*10**9):
+            raise ValueError('toolbar-public-build-original-clock-required')
+        self.name='toolbar-public-build-v1-'+hashlib.sha256(str(checkout).encode()).hexdigest()
+        self.disk_cache=self.state_root/self.name/'output-base'
+        self.output_base=self.state_root/run_id/'output-base'
+        self.checkout=checkout
+        self.entry_ns,self.deadline_ns=entry_ns,deadline_ns
+        self.binding=self._binding()
+        self.entered=False
+        self.marker_identity=self.marker_value=None
+        self.release_failures=[]
+        self.close_attempted=False
+        self.diagnostic_loss=False
+        self.critical_active=False
+        self.cancellation_pending=False
+        self.cancellation_error=KeyboardInterrupt('toolbar-public-build-cancelled')
+        self.disposition='not-admitted'
+
+    @property
+    def disk_fd(self):return self._slots['disk_fd'].descriptor
+    @property
+    def checkout_fd(self):return self._slots['checkout_fd'].descriptor
+    @property
+    def state_fd(self):return self._slots['state_fd'].descriptor
+    @property
+    def lock(self):return self._slots['lock'].descriptor
+    @property
+    def directory(self):return self._slots['directory'].descriptor
+
+    def _binding(self):
+        return (self.name,self.key,self.run_id,str(self.state_root),str(self.disk_cache),
+            str(self.output_base),str(self.checkout),self.entry_ns,self.deadline_ns,self.policy_version)
+
+    def budget(self):
+        if self.binding != self._binding() or not self.entry_ns <= time.monotonic_ns() < self.deadline_ns:
+            raise ValueError('toolbar-public-build-original-clock-exhausted')
+
+    @staticmethod
+    def identity(info):
+        return (info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode)
+
+    @staticmethod
+    def file_identity(info):
+        return ToolbarPublicBuildLease.identity(info)+(info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+    def _failure(self,name,error):
+        category=('cancelled' if isinstance(error,KeyboardInterrupt) else
+            'os-refusal' if isinstance(error,OSError) else 'validation-refusal')
+        if len(self.release_failures)<32:self.release_failures.append((name,category))
+
+    def _note_failure(self,name,error):
+        # Diagnostic entry/tuple/append allocation is never drainage authority.
+        try:self._failure(name,error)
+        except BaseException:self.diagnostic_loss=True
+
+    def _register(self,slot,descriptor):
+        slot.descriptor=descriptor
+
+    def _acquire(self,name,operation):
+        # Slot/name and operation are prepared before the OS call. Cancellation
+        # cannot strand a returned FD between the syscall and registration.
+        slot=self._slots[name]
+        if slot.descriptor is not None:raise ValueError('toolbar-public-build-slot-already-owned')
+        descriptor=None
+        previous=self.critical_active
+        self.critical_active=True
+        try:
+            try:
+                descriptor=operation()
+                self._register(slot,descriptor)
+                return descriptor
+            except BaseException:
+                if descriptor is not None:
+                    slot.descriptor=None
+                    try:os.close(descriptor)
+                    except BaseException as error:
+                        try:self._note_failure(name,error)
+                        except BaseException:self.diagnostic_loss=True
+                raise
+        finally:
+            self.critical_active=previous
+            if not previous and self.cancellation_pending and sys.exception() is None:
+                raise self.cancellation_error
+
+    def _transfer(self,source,target):
+        # Resolve both preallocated cells before beginning the scalar transfer.
+        old,new=self._slots[source],self._slots[target]
+        if old.descriptor is None or new.descriptor is not None:
+            raise ValueError('toolbar-public-build-transfer-owner-refused')
+        previous=self.critical_active
+        self.critical_active=True
+        try:
+            new.descriptor=old.descriptor
+            old.descriptor=None
+        finally:
+            self.critical_active=previous
+            if not previous and self.cancellation_pending and sys.exception() is None:
+                raise self.cancellation_error
+
+    def _transient(self,name,descriptor,primary=None):
+        slot=self._slots[name]
+        if slot.descriptor != descriptor:raise ValueError('toolbar-public-build-transient-owner-changed')
+        previous=self.critical_active
+        self.critical_active=True
+        try:
+            slot.descriptor=None
+            try:os.close(descriptor)
+            except BaseException as error:
+                try:self._note_failure(name,error)
+                except BaseException:self.diagnostic_loss=True
+                if primary is None:raise
+        finally:
+            self.critical_active=previous
+            if (not previous and self.cancellation_pending and primary is None
+                    and sys.exception() is None):raise self.cancellation_error
+
+    def _trusted_directory(self,target):
+        # Each child is enrolled before the old parent is detached/closed. An
+        # internal close-after-effect refusal never retries its ambiguous FD
+        # and leaves the child reachable by the final preallocated drain.
+        path=self.state_root
+        if not path.is_absolute() or '..' in path.parts:
+            raise ValueError('absolute trusted state root required')
+        self.budget()
+        self._acquire('trusted-parent',lambda:os.open('/',
+            os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC))
+        for part in path.parts[1:]:
+            self.budget()
+            self._acquire('trusted-child',lambda:os.open(part,
+                os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,
+                dir_fd=self._slots['trusted-parent'].descriptor))
+            self._transient('trusted-parent',self._slots['trusted-parent'].descriptor)
+            self._transfer('trusted-child','trusted-parent')
+            info=os.fstat(self._slots['trusted-parent'].descriptor)
+            if info.st_uid not in (0,os.getuid()) or stat.S_IMODE(info.st_mode)&0o022:
+                raise ValueError('untrusted state ancestor')
+        info=os.fstat(self._slots['trusted-parent'].descriptor)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError('state root must be owned and 0700')
+        self.budget()
+        self._transfer('trusted-parent',target)
+        return self._slots[target].descriptor
+
+    def _read_marker(self):
+        descriptor=self._acquire('marker-read',lambda:os.open('owner.json',
+            os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.directory))
+        primary=None
+        try:
+            before=os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+                    or not 0<before.st_size<=4096):
+                raise ValueError('toolbar-public-build-owned-marker-required')
+            content=os.read(descriptor,4097)
+            after=os.fstat(descriptor)
+            if (len(content) != before.st_size or self.file_identity(before) != self.file_identity(after)
+                    or self.file_identity(os.stat('owner.json',dir_fd=self.directory,follow_symlinks=False))
+                        != self.file_identity(after)):
+                raise ValueError('toolbar-public-build-marker-read-changed')
+            return json.loads(content),self.file_identity(after)
+        except BaseException as error:primary=error;raise
+        finally:
+            try:self._transient('marker-read',descriptor,primary)
+            except BaseException as error:
+                if primary is None:raise
+                try:self._note_failure('marker-read',error)
+                except BaseException:self.diagnostic_loss=True
+
+    def _joint(self,*,inputs=True,marker=True):
+        """Rejoin all held/named roots after the last content/marker IO."""
+        self.budget()
+        parent=self._trusted_directory('state-probe');primary=None
+        try:
+            if self.identity(os.fstat(parent)) != self.state_identity:
+                raise ValueError('toolbar-public-build-state-replaced')
+        except BaseException as error:primary=error;raise
+        finally:
+            try:self._transient('state-probe',parent,primary)
+            except BaseException as error:
+                if primary is None:raise
+                try:self._note_failure('state-probe',error)
+                except BaseException:self.diagnostic_loss=True
+        namespace=os.stat(self.name,dir_fd=self.state_fd,follow_symlinks=False)
+        if (self.identity(self.state_root.lstat()) != self.state_identity
+                or self.state_root.resolve(strict=True) != self.state_root
+                or self.identity(os.fstat(self.state_fd)) != self.state_identity
+                or self.identity(namespace) != self.directory_identity
+                or self.identity(os.fstat(self.directory)) != self.directory_identity):
+            raise ValueError('toolbar-public-build-input-root-replaced')
+        if self.lock is not None:
+            lock=os.stat('cache.lock',dir_fd=self.directory,follow_symlinks=False)
+            if (self.identity(lock) != self.lock_identity
+                    or self.identity(os.fstat(self.lock)) != self.lock_identity or lock.st_nlink != 1):
+                raise ValueError('toolbar-public-build-lock-replaced')
+        if inputs:
+            disk=os.stat('output-base',dir_fd=self.directory,follow_symlinks=False)
+            if (self.disk_fd is None or self.checkout_fd is None
+                    or self.identity(disk) != self.disk_identity
+                    or self.identity(os.fstat(self.disk_fd)) != self.disk_identity
+                    or self.identity(self.checkout.lstat()) != self.checkout_identity
+                    or self.identity(os.fstat(self.checkout_fd)) != self.checkout_identity
+                    or self.checkout.resolve(strict=True) != self.checkout):
+                raise ValueError('toolbar-public-build-input-root-replaced')
+        if marker and self.marker_identity is not None:
+            if self.file_identity(os.stat('owner.json',dir_fd=self.directory,follow_symlinks=False)) != self.marker_identity:
+                raise ValueError('toolbar-public-build-marker-replaced')
+        self.budget()
+
+    def _write_marker(self,value,*,inputs):
+        """Atomic bounded metadata, with named custody before/after publication."""
+        self._joint(inputs=inputs)
+        temporary='.owner-'+str(uuid.uuid4())
+        descriptor=self._acquire('marker-write',lambda:os.open(temporary,
+            os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=self.directory))
+        primary=None
+        try:
+            content=(json.dumps(value,sort_keys=True)+'\n').encode()
+            if len(content)>4096:raise ValueError('toolbar-public-build-marker-bound-refused')
+            position=0
+            while position<len(content):
+                self.budget();written=os.write(descriptor,content[position:])
+                if written<=0:raise OSError('toolbar-public-build-marker-write-refused')
+                position+=written
+            self.budget();os.fsync(descriptor)
+        except BaseException as error:primary=error;raise
+        finally:
+            try:self._transient('marker-write',descriptor,primary)
+            except BaseException as error:
+                if primary is None:raise
+                try:self._note_failure('marker-write',error)
+                except BaseException:self.diagnostic_loss=True
+        self._joint(inputs=inputs)
+        self.budget()
+        os.rename(temporary,'owner.json',src_dir_fd=self.directory,dst_dir_fd=self.directory)
+        # Rename already happened if any subsequent IO/cutoff refuses. Never
+        # claim the old dirty marker survived a late clean publication.
+        self.marker_identity=None
+        if value['clean'] is True and value['last_run'] is not None:
+            self.disposition='clean-committed-unqualified'
+        self.budget();os.fsync(self.directory)
+        self._joint(inputs=inputs,marker=False)
+        actual,witness=self._read_marker()
+        if actual != value:raise ValueError('toolbar-public-build-published-marker-changed')
+        self.marker_value,self.marker_identity=actual,witness
+        self._joint(inputs=inputs)
+
+    def _receipt(self,run_id,expected_digest):
+        if (type(run_id) is not str or str(uuid.UUID(run_id)) != run_id
+                or type(expected_digest) is not str or re.fullmatch('[0-9a-f]{64}',expected_digest) is None):
+            raise ValueError('toolbar-public-build-terminal-binding-required')
+        run=descriptor=None;primary=None
+        try:
+            self.budget()
+            run=self._acquire('receipt-root',lambda:os.open(run_id,
+                os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.state_fd))
+            info=os.fstat(run)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                raise ValueError('toolbar-public-build-owned-receipt-root-required')
+            descriptor=self._acquire('receipt-read',lambda:os.open('receipt.json',
+                os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=run))
+            before=os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1
+                    or stat.S_IMODE(before.st_mode) != 0o600 or not 0<before.st_size<=1024*1024):
+                raise ValueError('toolbar-public-build-owned-receipt-required')
+            content=os.read(descriptor,1024*1024+1)
+            if (len(content) != before.st_size or self.file_identity(before) != self.file_identity(os.fstat(descriptor))
+                    or self.file_identity(os.stat('receipt.json',dir_fd=run,follow_symlinks=False)) != self.file_identity(before)
+                    or self.identity(os.stat(run_id,dir_fd=self.state_fd,follow_symlinks=False)) != self.identity(info)
+                    or hashlib.sha256(content).hexdigest() != expected_digest):
+                raise ValueError('toolbar-public-build-receipt-digest-rejected')
+            receipt=json.loads(content)
+            if receipt.get('id') != run_id or receipt.get('descendants_empty') is not True:
+                raise ValueError('toolbar-public-build-empty-descendants-unproved')
+        except BaseException as error:primary=error;raise
+        finally:
+            # Both cells were enrolled before open; drain independently without
+            # constructing a list/tuple after acquisition. Preserve body cause.
+            failure=None
+            try:
+                if descriptor is not None:self._transient('receipt-read',descriptor,primary)
+            except BaseException as error:failure=error
+            try:
+                if run is not None:self._transient('receipt-root',run,primary or failure)
+            except BaseException as error:
+                if failure is None:failure=error
+            if failure is not None and primary is None:raise failure
+        self.budget()
+
+    def __enter__(self):
+        self.budget()
+        if self.entered:raise ValueError('toolbar-public-build-single-entry-required')
+        self.entered=True
+        try:
+            self._trusted_directory('state_fd')
+            self.state_identity=self.identity(os.fstat(self.state_fd))
+            self.budget();created=False
+            try:os.mkdir(self.name,mode=0o700,dir_fd=self.state_fd);created=True
+            except FileExistsError:pass
+            named=os.stat(self.name,dir_fd=self.state_fd,follow_symlinks=False)
+            self._acquire('directory',lambda:os.open(self.name,
+                os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.state_fd))
+            held=os.fstat(self.directory);self.directory_identity=self.identity(held)
+            if (self.identity(named) != self.directory_identity or held.st_uid != os.getuid()
+                    or stat.S_IMODE(held.st_mode) != 0o700 or held.st_dev != os.fstat(self.state_fd).st_dev):
+                raise ValueError('toolbar-public-build-owned-namespace-required')
+            if created:
+                # Bounded empty check: a mkdir/open replacement must not bring
+                # foreign bytes or an unbound marker into a new namespace.
+                with os.scandir(self.directory) as names:
+                    if next(names,None) is not None:raise ValueError('toolbar-public-build-created-namespace-not-empty')
+                self._joint(inputs=False,marker=False)
+                previous=None
+            else:
+                previous,witness=self._read_marker()
+                self.marker_value,self.marker_identity=previous,witness
+                if (type(previous) is not dict or set(previous) != {'schema','key','clean','last_run','cleanup_receipt_sha256'}
+                        or previous['schema'] != 2 or previous['key'] != self.key or previous['clean'] is not True
+                        or previous['last_run'] is None):
+                    raise ValueError('toolbar-public-build-last-terminal-binding-required')
+            self.budget()
+            self._acquire('lock',lambda:os.open('cache.lock',
+                os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=self.directory))
+            lock=os.fstat(self.lock);self.lock_identity=self.identity(lock)
+            if (not stat.S_ISREG(lock.st_mode) or lock.st_uid != os.getuid()
+                    or stat.S_IMODE(lock.st_mode) != 0o600 or lock.st_nlink != 1):
+                raise ValueError('toolbar-public-build-owned-lock-required')
+            fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            self._joint(inputs=False,marker=not created)
+            if not created:
+                locked,witness=self._read_marker()
+                if locked != previous or witness != self.marker_identity:
+                    raise ValueError('toolbar-public-build-marker-changed-during-acquisition')
+                self._joint(inputs=False)
+                self._receipt(previous['last_run'],previous['cleanup_receipt_sha256'])
+                self._joint(inputs=False)
+            self._write_marker({'schema':2,'key':self.key,'clean':False,
+                'last_run':self.run_id,'cleanup_receipt_sha256':None},inputs=False)
+            self.budget()
+            try:os.mkdir('output-base',mode=0o700,dir_fd=self.directory)
+            except FileExistsError:pass
+            self._acquire('disk_fd',lambda:os.open('output-base',
+                os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.directory))
+            self._acquire('checkout_fd',lambda:os.open(self.checkout,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC))
+            disk=os.fstat(self.disk_fd);checkout=os.fstat(self.checkout_fd)
+            if (disk.st_uid != os.getuid() or stat.S_IMODE(disk.st_mode) != 0o700
+                    or disk.st_dev != held.st_dev or checkout.st_uid != os.getuid() or checkout.st_mode & 0o022):
+                raise ValueError('toolbar-public-build-owned-input-roots-required')
+            self.disk_identity=self.identity(disk);self.checkout_identity=self.identity(checkout)
+            self.disposition='active-dirty'
+            self.fence()
+            return self
+        except BaseException as error:
+            self.close(primary=error);raise
+
+    def fence(self):
+        self.budget()
+        if self.disk_fd is None or self.checkout_fd is None:
+            raise ValueError('toolbar-public-build-active-custody-required')
+        self._joint()
+        marker,witness=self._read_marker()
+        if (marker != {'schema':2,'key':self.key,'clean':False,
+                'last_run':self.run_id,'cleanup_receipt_sha256':None} or witness != self.marker_identity):
+            raise ValueError('toolbar-public-build-dirty-owner-changed')
+        self._joint()
+
+    def facts(self):
+        # Receipt diagnostics do not grant terminal acknowledgement or artifact
+        # authority. The actual full caller EXIT still has to be observed.
+        return {'scope':TOOLBAR_PUBLIC_BUILD_SCOPE,'namespace':self.name,
+            'disk_cache':str(self.disk_cache),'fresh_output_base':str(self.output_base),
+            'test_results_cached':False,'producer_success_inherited':False,
+            'physical_history_native_proof':False,'fresh_artifact_qualification_required':True,
+            'source_and_targets_partition_namespace':False,
+            'fingerprint_change':'refuse; explicit operator invalidation required'}
+
+    def complete(self,descendants_empty,cleanup_receipt_sha256):
+        if descendants_empty is not True:
+            raise ValueError('toolbar-public-build-empty-descendants-unproved')
+        self.fence()
+        self._receipt(self.run_id,cleanup_receipt_sha256)
+        self.fence()
+        self._write_marker({'schema':2,'key':self.key,'clean':True,
+            'last_run':self.run_id,'cleanup_receipt_sha256':cleanup_receipt_sha256},inputs=True)
+        self._joint()
+        self.budget()
+        self.disposition='clean-published'
+
+    def close(self,primary=None):
+        if self.close_attempted:return
+        # Set deferral before the once flag or any clear; pending signal delivery
+        # is recorded by the actual installed handler without escaping this loop.
+        previous=self.critical_active
+        clean_committed=self.disposition in ('clean-published','clean-committed-unqualified')
+        self.critical_active=True
+        try:
+            self.close_attempted=True
+            if primary is None:primary=sys.exception()
+            failure=None
+            # Drain in this already entered frame: a helper-entry allocation fault
+            # cannot strand cells behind a once-only callback flag. Iteration and
+            # every name/cell were constructed before the first OS acquisition.
+            for slot in self._retirement_iterator:
+                descriptor=slot.descriptor
+                if descriptor is None:continue
+                slot.descriptor=None
+                try:os.close(descriptor)
+                except BaseException as error:
+                    if primary is None and failure is None:failure=error
+                    try:self._note_failure(slot.name,error)
+                    except BaseException:self.diagnostic_loss=True
+            if self.cancellation_pending and primary is None and failure is None:
+                failure=self.cancellation_error
+            try:
+                if self.entered:self.budget()
+            except BaseException as error:
+                if primary is None and failure is None:failure=error
+                try:self._note_failure('terminal-cutoff',error)
+                except BaseException:self.diagnostic_loss=True
+            if primary is not None or failure is not None or self.release_failures or self.diagnostic_loss:
+                if self.disposition in ('clean-published','clean-committed-unqualified'):
+                    self.disposition='clean-committed-terminal-unqualified'
+                else:self.disposition='closed-refused'
+                if primary is None and failure is None:
+                    failure=ValueError('toolbar-public-build-terminal-unqualified')
+                try:
+                    os.write(2,('toolbar-public-build-cache-terminal-unqualified state='+self.disposition+
+                        ' secondary_failures='+str(len(self.release_failures))+'\n').encode())
+                except BaseException as error:
+                    try:self._note_failure('terminal-report',error)
+                    except BaseException:self.diagnostic_loss=True
+            else:self.disposition='closed-on-time'
+            if failure is not None:raise failure
+
+        finally:
+            if self.cancellation_pending:
+                self.disposition=('clean-committed-terminal-unqualified' if clean_committed else 'closed-refused')
+            self.critical_active=previous
+            if (not previous and self.cancellation_pending and primary is None
+                    and sys.exception() is None):raise self.cancellation_error
+
+    def __exit__(self,error_type,primary,traceback):
+        self.close(primary=primary)
+        return False
+
+
+def toolbar_public_interrupt_deferred(lease):
+    """Actual signal-handler predicate; only owned FD transitions/drain defer."""
+    if type(lease) is ToolbarPublicBuildLease and lease.critical_active:
+        lease.cancellation_pending=True
+        return True
+    return False
+
+
+def toolbar_public_build_command(command,lease,run,entry_ns,deadline_ns):
+    """Only local build action bytes cross epochs; test/physical roots stay fresh."""
+    warm=command[-1:] == [TOOLBAR_PUBLIC_BUILD_LABEL]
+    verb,label=('build',TOOLBAR_PUBLIC_BUILD_LABEL) if warm else ('test',TOOLBAR_PREP_LABEL)
+    if (type(lease) is not ToolbarPublicBuildLease
+            or (lease.run_id,lease.state_root) != (run.name,run.parent)
+            or (lease.entry_ns,lease.deadline_ns) != (entry_ns,deadline_ns)
+            or lease.output_base != run/'output-base'
+            or command[-1:] != [label] or command.count(verb) != 1
+            or {part for part in command if part.startswith('//')} != {label}
+            or '--batch' not in command
+            or (not warm and '--nocache_test_results' not in command)
+            or '--cache_test_results' in command
+            or any(part.startswith('--output_groups') for part in command)
+            or [part for part in command if part.startswith('--jobs')] != ['--jobs=1']
+            or [part for part in command if part.startswith('--disk_cache=')] != ['--disk_cache=']
+            or [part for part in command if part.startswith('--remote_cache=')] != ['--remote_cache=']
+            or [part for part in command if part.startswith('--remote_executor=')] != ['--remote_executor=']
+            or [part for part in command if part.startswith('--output_base=')] != ['--output_base='+str(run/'output-base')]
+            or [part for part in command if part.startswith('--output_user_root=')] != ['--output_user_root='+str(run/'bazel-user-root')]):
+        raise ValueError('toolbar-public-build-exact-fresh-command-required')
+    lease.fence()
+    result=list(command)
+    result[result.index('--disk_cache=')]='--disk_cache='+str(lease.disk_cache)
+    if warm:
+        result.insert(result.index('build')+1,'--output_groups=default,toolbar_public_build_inputs')
+    return result
 
 
 def toolbar_prepare_selected(profile, manager, arguments, reuse=False, dirty='false'):
@@ -1658,14 +2192,15 @@ def toolbar_prepare_selected(profile, manager, arguments, reuse=False, dirty='fa
 
 
 def toolbar_prepare_action_jobs(profile, arguments, *, source_dirty=None):
-    """Three fixed standard vectors serialize actions; all others stay at two.
+    """Four fixed standard vectors serialize actions; all others stay at two.
 
     Scheduling grants no admission. Existing public-preparer admission stays
     unchanged; the retained ordinary-native pair selects one only with explicit
     clean provenance. All input/ownership checks remain with their callers.
     """
     return 1 if profile == 'standard' and (
-        arguments in (['test', TOOLBAR_PREP_LABEL], ['test', TOOLBAR_RECEIVE_LABEL])
+        arguments in (['test', TOOLBAR_PREP_LABEL], ['test', TOOLBAR_RECEIVE_LABEL],
+            ['build',TOOLBAR_PUBLIC_BUILD_LABEL])
         or source_dirty == 'false' and arguments == ['test',
             '//tools:codex_owner_runtime_input_qualification',
             '//delivery:installed_retained_ordinary_native_tui_test']) else 2
@@ -2940,6 +3475,7 @@ def _main(argv, admission_resources, retirement_resources):
         args.reuse_owned_cache,args.source_dirty)
     toolbar_receiver = toolbar_receive_selected(args,arguments)
     toolbar_prepare_inventory_request(args,toolbar_preparation)
+    toolbar_public_build_reuse=toolbar_public_build_reuse_selected(args,arguments)
     toolbar_inventory_before = None
     toolbar_inventory_after = None
     runtime_seed_selected = '//tools:codex_owner_runtime_input_seed' in arguments
@@ -3312,9 +3848,9 @@ def _main(argv, admission_resources, retirement_resources):
             raise ValueError('site Nixpkgs input requires explicit sibling source')
         args.site_nixpkgs_source = store_directory(args.site_nixpkgs_source)
     if args.site_inventory is not None or args.site_inventory_sha256 is not None:
-        if args.site_inventory is None or (args.site_source is None and not toolbar_preparation):
+        if args.site_inventory is None or (args.site_source is None and not toolbar_public_build_reuse):
             raise ValueError('site inventory requires explicit sibling source and complete selection')
-        if toolbar_preparation:
+        if toolbar_public_build_reuse:
             toolbar_inventory_before = toolbar_prepare_inventory_snapshot(args.site_inventory,
                 args.site_inventory_sha256,args.state_dir,coordination,
                 delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
@@ -3618,7 +4154,7 @@ def _main(argv, admission_resources, retirement_resources):
         def interrupted(signum, frame):
             nonlocal cancellation_requested
             cancellation_requested = True
-            if not retirement_active:
+            if not retirement_active and not toolbar_public_interrupt_deferred(lease):
                 raise KeyboardInterrupt
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, interrupted)
@@ -3675,7 +4211,7 @@ def _main(argv, admission_resources, retirement_resources):
                 yoga.require_unit_absent(control, identifier, args.yoga_deadline_monotonic_ns)
             if site and (graph_sha256, graph_inputs) != site_controller_graph:
                 raise ValueError('site controller source changed before dispatch')
-            if args.reuse_owned_cache or ordinary_check_reuse:
+            if args.reuse_owned_cache or ordinary_check_reuse or toolbar_public_build_reuse:
                 if args.state_dir.resolve().is_relative_to(Path.cwd().resolve()):
                     raise ValueError('owned output cache must remain outside the source repository')
                 cache_inputs = {key: environment[key] for key in
@@ -3730,6 +4266,10 @@ def _main(argv, admission_resources, retirement_resources):
                     # fixed policy. Bazel invalidates declared inputs/actions;
                     # each epoch still captures its own graph and test evidence.
                     cache_profile['ordinary_check_scope'] = ORDINARY_CHECK_SCOPE
+                if toolbar_public_build_reuse:
+                    cache_profile['toolbar_public_build_scope']=TOOLBAR_PUBLIC_BUILD_SCOPE
+                    cache_profile['toolbar_public_inventory_sha256']=TOOLBAR_PREP_INVENTORY_SHA256
+                    cache_profile['execution']['disk_cache']='owned-public-build-actions-only'
                 if args.profile == 'native-siwc-catalog-content-source-reserved':
                     cache_profile['native_content_dependency_scope'] = seed_reserved.DEPENDENCY_SCOPE
                     cache_profile['fixed_cohort'] = seed_reserved.ARGUMENTS
@@ -3750,6 +4290,8 @@ def _main(argv, admission_resources, retirement_resources):
                             graph_sha256=graph_sha256,entry=delivery_entry_monotonic_ns,deadline=delivery_entry_deadline_ns)
                          if args.profile == 'native-siwc-catalog-content-source-reserved' else
                          OrdinaryCheckLease(args.state_dir,cache_key,identifier,Path.cwd()) if ordinary_check_reuse else
+                         ToolbarPublicBuildLease(args.state_dir,cache_key,identifier,Path.cwd(),
+                            delivery_entry_monotonic_ns,delivery_entry_deadline_ns) if toolbar_public_build_reuse else
                          CacheLease(args.state_dir,cache_key,identifier,policy_version=2))
                 if args.profile in ('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved'):
                     _SDK_TERMINAL_LEASE=lease
@@ -3792,11 +4334,14 @@ def _main(argv, admission_resources, retirement_resources):
                                 codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes,
                                 site_coordinator_inputs=args.site_coordinator_inputs,
                                 site_coordinator_inputs_sha256=args.site_coordinator_inputs_sha256)
-            if toolbar_preparation:
+            if toolbar_public_build_reuse:
+                command=toolbar_public_build_command(command,lease,run,
+                    delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
                 if toolbar_prepare_inventory_snapshot(args.site_inventory,args.site_inventory_sha256,
                         args.state_dir,coordination,delivery_entry_monotonic_ns,
                         delivery_entry_deadline_ns) != toolbar_inventory_before:
                     raise ValueError('toolbar-public-inventory-changed-before-dispatch')
+            if toolbar_preparation:
                 command=toolbar_prepare_command(command,run,delivery_entry_monotonic_ns,
                     delivery_entry_deadline_ns,args.source_commit,graph_sha256,Path.cwd().resolve(strict=True))
             if toolbar_receiver:
@@ -4489,7 +5034,7 @@ def _main(argv, admission_resources, retirement_resources):
             if content_delivery_failure:
                 final_status = 125
             toolbar_preparation_verified = None
-            if toolbar_preparation:
+            if toolbar_public_build_reuse:
                 toolbar_preparation_verified = False
                 try:
                     if result == 0 and cleanup is True and evidence_ok and pids_cancellation is None:
@@ -4619,7 +5164,14 @@ def _main(argv, admission_resources, retirement_resources):
                        'supervisor': {'pid': supervisor_pid, 'start_ticks': supervisor_start_ticks},
                        'cache_reuse_requested': args.reuse_owned_cache,
                        'cache_key': cache_key, 'graph_sha256': graph_sha256,
-                       'cache_policy': 2 if args.reuse_owned_cache or ordinary_check_reuse else None,
+                       'cache_policy': 2 if args.reuse_owned_cache or ordinary_check_reuse or toolbar_public_build_reuse else None,
+                       'toolbar_public_build_inputs': {**lease.facts(),
+                           'mode':'public-build-only-warm' if arguments == ['build',TOOLBAR_PUBLIC_BUILD_LABEL]
+                               else 'fresh-public-producer-with-build-action-reuse',
+                           'public_inventory_verified_after_cleanup':toolbar_preparation_verified,
+                           'inventory_binding_before':toolbar_inventory_before,
+                           'inventory_binding_after':toolbar_inventory_after}
+                           if toolbar_public_build_reuse and type(lease) is ToolbarPublicBuildLease else None,
                        'ordinary_check_output': {'scope': ORDINARY_CHECK_SCOPE,
                            'namespace': lease.name, 'mode': 'owned-shared-checkout-output-base',
                            'test_results_cached': False, 'physical_history_native_proof': False,

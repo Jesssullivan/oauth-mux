@@ -3058,6 +3058,22 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         self.assertEqual((self.run/'receipt.json').read_bytes(),before)
         self.assertEqual((self.run/'test-evidence.json').read_bytes(),self.evidence)
 
+    def test_public_build_cache_is_outside_failed_fresh_producer_retirement(self):
+        checkout=self.state/'checkout';checkout.mkdir(mode=0o700)
+        lease=self.guard.ToolbarPublicBuildLease(self.state,'a'*64,self.run.name,checkout,
+            self.entry_ns,self.entry_ns+1200*10**9)
+        lease.disk_cache.mkdir(mode=0o700,parents=True)
+        payload=lease.disk_cache/'declared-public-action';payload.write_bytes(b'public cache bytes')
+        self.receipt.update(exit=125,workload_exit=3,targets=[self.guard.TOOLBAR_PREP_LABEL],
+            toolbar_public_build_inputs=lease.facts())
+        self.save_receipt();before=(self.run/'receipt.json').read_bytes()
+        report=self.retire()
+        self.assertEqual(report['state'],'complete')
+        self.assertFalse(self.output.exists());self.assertFalse((self.run/'bazel-user-root').exists())
+        self.assertEqual(payload.read_bytes(),b'public cache bytes')
+        self.assertEqual((self.run/'receipt.json').read_bytes(),before)
+        self.assertEqual((self.run/'test-evidence.json').read_bytes(),self.evidence)
+
 
 class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
     def test_only_closed_standard_test_subsets_select_ordinary_reuse(self):
@@ -4192,6 +4208,840 @@ class ToolbarReceiverModels(unittest.TestCase):
             self.assertEqual(guard.PROPERTIES['MemoryMax'],'4294967296')
             self.assertEqual(guard.PROPERTIES['TasksMax'],'512')
             self.assertEqual(guard.CGROUP['memory.swap.max'],'0')
+
+
+class ToolbarPublicBuildCacheModels(unittest.TestCase):
+    """Real tiny public-cache/lock/epoch trees; no Bazel or process launch."""
+    @contextlib.contextmanager
+    def state(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();state=root/'state';state.mkdir(mode=0o700)
+            checkout=root/'checkout';checkout.mkdir(mode=0o700)
+            def trusted(path):
+                if Path(path) != state:raise ValueError('test private state selection refused')
+                descriptor=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                info=os.fstat(descriptor)
+                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                    os.close(descriptor);raise ValueError('test private state refused')
+                return descriptor
+            def enrolled_trusted(owner,target):
+                return owner._acquire(target,lambda:trusted(owner.state_root))
+            with (patch('guard_cache.trusted_directory',side_effect=trusted),
+                    patch.object(guard.ToolbarPublicBuildLease,'_trusted_directory',enrolled_trusted)):
+                yield guard,root,state,checkout
+
+    def lease(self,guard,state,checkout,run_id,key='a'*64):
+        entry=time.monotonic_ns()
+        return guard.ToolbarPublicBuildLease(state,key,run_id,checkout,entry,entry+1200*10**9)
+
+    def receipt(self,lease,*,empty=True,result=3,verb='test',targets=None):
+        run=lease.state_root/lease.run_id;run.mkdir(mode=0o700,exist_ok=True)
+        raw=(json.dumps({'id':lease.run_id,'descendants_empty':empty,'profile':'standard',
+            'verb':verb,'targets':targets or ['//delivery:yoga_public_artifact_prepare_producer'],
+            'workload_exit':result,'cache_key':lease.key,'output_base':str(lease.output_base),
+            'toolbar_public_build_inputs':lease.facts()},sort_keys=True)+'\n').encode()
+        path=run/'receipt.json';path.write_bytes(raw);path.chmod(0o600)
+        with path.open('rb') as held:os.fsync(held.fileno())
+        return raw,hashlib.sha256(raw).hexdigest()
+
+    def test_only_exact_public_preparer_with_current_inventory_selects_build_cache(self):
+        import execution_guard as guard
+        fields=('site_source','site_nixpkgs_source','site_phase','site_qualification','site_qualification_sha256',
+            'site_delivery_manifest','site_delivery_manifest_sha256','site_reference_bundle','site_reference_bundle_sha256',
+            'site_coordinator_inputs','site_coordinator_inputs_sha256',
+            'site_development_artifact_selection','site_development_artifact_selection_sha256')
+        args=SimpleNamespace(**{name:None for name in fields},profile='standard',manager='system',
+            source_commit='a'*40,source_dirty='false',reuse_owned_cache=False,
+            coordination_dir=Path('/owned/coordination'),site_inventory=Path('/owned/public/inventory.json'),
+            site_inventory_sha256=guard.TOOLBAR_PREP_INVENTORY_SHA256)
+        vector=['test',guard.TOOLBAR_PREP_LABEL]
+        self.assertTrue(guard.toolbar_public_build_reuse_selected(args,vector))
+        self.assertTrue(guard.toolbar_public_build_reuse_selected(args,['build',guard.TOOLBAR_PUBLIC_BUILD_LABEL]))
+        self.assertFalse(guard.ordinary_check_reuse_selected(args,vector))
+        for values in ({'manager':'user'},{'profile':'codex-sdk'},{'source_dirty':'true'},
+                {'reuse_owned_cache':True},{'coordination_dir':None},{'site_inventory_sha256':'b'*64},
+                {'site_source':Path('/foreign/spa')},{'native_owned_candidate_cache':True},
+                {'toolbar_artifact_selection':Path('/old/tuple.json')},{'future_selector':0}):
+            with self.subTest(values=values),self.assertRaises(ValueError):
+                guard.toolbar_public_build_reuse_selected(SimpleNamespace(**{**vars(args),**values}),vector)
+        for vector in (['build',guard.TOOLBAR_PREP_LABEL],['test',guard.TOOLBAR_PREP_LABEL,'//:docs_check'],
+                ['test',guard.TOOLBAR_PREP_LABEL,guard.TOOLBAR_PREP_LABEL],
+                ['test',guard.TOOLBAR_PREP_LABEL,'--nocache_test_results'],
+                ['test',guard.TOOLBAR_PUBLIC_BUILD_LABEL],['run',guard.TOOLBAR_PUBLIC_BUILD_LABEL],
+                ['build',guard.TOOLBAR_PUBLIC_BUILD_LABEL,'//:omux'],
+                ['build',guard.TOOLBAR_PUBLIC_BUILD_LABEL,'--disk_cache=/foreign']):
+            with self.subTest(vector=vector),self.assertRaises(ValueError):
+                guard.toolbar_public_build_reuse_selected(args,vector)
+        for label in (guard.TOOLBAR_RECEIVE_LABEL,'//delivery:yoga_toolbar_consent_proof',
+                '//tools:codex_native_sdk_carrier_seal_producer','//delivery:yoga_public_artifact_prepare_test'):
+            self.assertFalse(guard.toolbar_public_build_reuse_selected(args,['test',label]))
+
+    def test_build_only_warm_and_fresh_test_share_public_cache_with_distinct_raw_epochs(self):
+        with self.state() as (guard,root,state,checkout):
+            inputs={'bazel':'/nix/store/fixture/bin/bazel'}
+            warm=['build',guard.TOOLBAR_PUBLIC_BUILD_LABEL];fresh=['test',guard.TOOLBAR_PREP_LABEL]
+            policy={'scope':guard.TOOLBAR_PUBLIC_BUILD_SCOPE,'limits':dict(guard.PROPERTIES),
+                'execution':{'jobs':guard.toolbar_prepare_action_jobs('standard',warm,source_dirty='false'),
+                    'cache_test_results':False,'disk_cache':'owned-public-build-actions-only'}}
+            key=guard.stable_fingerprint(checkout,inputs,os.getuid(),os.getgid(),'system',policy)
+            first=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae',key)
+            with first:
+                run=state/first.run_id
+                command=guard.bazel_command('/declared/bazel',run,warm,
+                    source_commit='a'*40,source_dirty='false')
+                actual=guard.toolbar_public_build_command(command,first,run,first.entry_ns,first.deadline_ns)
+                self.assertEqual(actual[-1],guard.TOOLBAR_PUBLIC_BUILD_LABEL)
+                self.assertIn('build',actual);self.assertNotIn('test',actual)
+                self.assertFalse(any(part.startswith('--test_env=') for part in actual))
+                self.assertIn('--disk_cache='+str(first.disk_cache),actual)
+                self.assertIn('--output_groups=default,toolbar_public_build_inputs',actual)
+                self.assertIn('--jobs=1',actual);self.assertIn('--batch',actual)
+                (first.disk_cache/'compile-input').write_bytes(b'fixture public build action bytes')
+                identity=first.disk_cache.stat()
+                first_raw,digest=self.receipt(first,result=0,verb='build',targets=warm[1:])
+                first.complete(True,digest)
+            (checkout/'BUILD.bazel').write_bytes(b'current graph changes; public action input hashes must revalidate')
+            next_policy={**policy,'execution':{**policy['execution'],
+                'jobs':guard.toolbar_prepare_action_jobs('standard',fresh,source_dirty='false')}}
+            next_key=guard.stable_fingerprint(checkout,inputs,os.getuid(),os.getgid(),'system',next_policy)
+            self.assertEqual(next_key,key)
+            with self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457',next_key) as second:
+                self.assertEqual((identity.st_dev,identity.st_ino),
+                    (second.disk_cache.stat().st_dev,second.disk_cache.stat().st_ino))
+                self.assertFalse(second.output_base.exists())
+                run=state/second.run_id
+                command=guard.bazel_command('/declared/bazel',run,fresh,source_commit='b'*40,source_dirty='false')
+                actual=guard.toolbar_public_build_command(command,second,run,second.entry_ns,second.deadline_ns)
+                actual=guard.toolbar_prepare_command(actual,run,second.entry_ns,second.deadline_ns,'b'*40,'c'*64,checkout)
+                self.assertIn('--nocache_test_results',actual)
+                self.assertFalse(any(part.startswith('--output_groups') for part in actual))
+                self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'EPOCH='+str(run),actual)
+                self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'SOURCE_COMMIT='+'b'*40,actual)
+                self.assertEqual((state/first.run_id/'receipt.json').read_bytes(),first_raw)
+                self.assertFalse(second.facts()['producer_success_inherited'])
+                self.assertTrue(second.facts()['fresh_artifact_qualification_required'])
+                _,digest=self.receipt(second);second.complete(True,digest)
+
+    def test_public_build_bytes_reuse_but_original_products_context_and_receipts_stay_per_epoch(self):
+        with self.state() as (guard,root,state,checkout):
+            first=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            with first:
+                (first.disk_cache/'declared-action-bytes').write_bytes(b'public compiled input only')
+                (state/first.run_id).mkdir(mode=0o700)
+                first.output_base.mkdir(mode=0o700)
+                product=first.output_base/'original-product';product.write_bytes(b'failed producer is not authority')
+                identity=first.disk_cache.stat();product_identity=product.stat()
+                first_raw,digest=self.receipt(first,result=3)
+                first.complete(True,digest)
+            # Failed producer status does not poison declared public build
+            # bytes after empty-descendant receipt; it confers no tuple success.
+            (checkout/'BUILD.bazel').write_bytes(b'new declared graph/action source')
+            second=self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457')
+            with second:
+                self.assertEqual(first.disk_cache,second.disk_cache)
+                self.assertEqual((identity.st_dev,identity.st_ino),
+                    (second.disk_cache.stat().st_dev,second.disk_cache.stat().st_ino))
+                self.assertEqual((second.disk_cache/'declared-action-bytes').read_bytes(),b'public compiled input only')
+                self.assertNotEqual(first.output_base,second.output_base)
+                self.assertFalse(second.output_base.exists())
+                for lease,source,graph in ((first,'a'*40,'b'*64),(second,'c'*40,'d'*64)):
+                    if lease is first:continue  # First closed owner grants no new command authority.
+                    run=state/lease.run_id
+                    command=guard.bazel_command('/declared/bazel',run,['test',guard.TOOLBAR_PREP_LABEL],
+                        output_base=lease.output_base,source_commit=source,source_dirty='false')
+                    actual=guard.toolbar_public_build_command(command,lease,run,lease.entry_ns,lease.deadline_ns)
+                    self.assertEqual([part for part in actual if part != '--disk_cache='+str(lease.disk_cache)],
+                                     [part for part in command if part != '--disk_cache='])
+                    actual=guard.toolbar_prepare_command(actual,run,lease.entry_ns,lease.deadline_ns,source,graph,checkout)
+                    self.assertIn('--nocache_test_results',actual);self.assertIn('--jobs=1',actual)
+                    self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'EPOCH='+str(run),actual)
+                    self.assertIn('--test_env='+guard.TOOLBAR_PREP_VARIABLE+'DEADLINE_NS='+str(lease.deadline_ns),actual)
+                    self.assertIn('--output_base='+str(run/'output-base'),actual)
+                    self.assertIn('--output_user_root='+str(run/'bazel-user-root'),actual)
+                    self.assertIn('--remote_cache=',actual);self.assertIn('--remote_executor=',actual)
+                self.assertEqual(product.read_bytes(),b'failed producer is not authority')
+                self.assertEqual((product_identity.st_dev,product_identity.st_ino),
+                                 (product.stat().st_dev,product.stat().st_ino))
+                self.assertEqual((state/first.run_id/'receipt.json').read_bytes(),first_raw)
+                self.assertFalse(second.facts()['producer_success_inherited'])
+                self.assertFalse(second.facts()['physical_history_native_proof'])
+                self.assertTrue(second.facts()['fresh_artifact_qualification_required'])
+                _,digest=self.receipt(second);second.complete(True,digest)
+            self.assertEqual(len([name for name in os.listdir(state) if name.startswith('toolbar-public-build-v1-')]),1)
+
+    def test_changed_tools_or_containment_refuse_fixed_namespace_and_other_checkout_isolates(self):
+        with self.state() as (guard,root,state,checkout):
+            first=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            inputs={'bazel':'/nix/store/fixture/bin/bazel'}
+            policy={'scope':guard.TOOLBAR_PUBLIC_BUILD_SCOPE,'limits':dict(guard.PROPERTIES),
+                    'execution':{'jobs':1,'cache_test_results':False,'disk_cache':'owned-public-build-actions-only'}}
+            key=guard.stable_fingerprint(checkout,inputs,os.getuid(),os.getgid(),'system',policy)
+            first=self.lease(guard,state,checkout,first.run_id,key)
+            with first:
+                _,digest=self.receipt(first);first.complete(True,digest)
+            marker=(first.disk_cache.parent/'owner.json').read_bytes()
+            for changed_inputs,changed_policy in (({'bazel':'/nix/store/different/bin/bazel'},policy),
+                    (inputs,{**policy,'execution':{**policy['execution'],'jobs':2}})):
+                changed_key=guard.stable_fingerprint(checkout,changed_inputs,os.getuid(),os.getgid(),'system',changed_policy)
+                self.assertNotEqual(changed_key,key)
+                with self.assertRaises(ValueError):
+                    self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457',changed_key).__enter__()
+                self.assertEqual((first.disk_cache.parent/'owner.json').read_bytes(),marker)
+            other=root/'other';other.mkdir(mode=0o700)
+            with self.lease(guard,state,other,'62200eb5-2d0e-48a5-a5f0-7f5607f52457') as isolated:
+                self.assertNotEqual(isolated.name,first.name)
+
+    def test_dirty_live_and_unbound_terminal_state_refuse_without_marker_reset(self):
+        for cause in ('live-lock','dirty','missing-receipt','replaced-receipt','nonempty-receipt'):
+            with self.subTest(cause=cause),self.state() as (guard,root,state,checkout):
+                first=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+                first.__enter__()
+                try:
+                    if cause not in ('live-lock','dirty'):
+                        _,digest=self.receipt(first,empty=cause != 'nonempty-receipt')
+                        if cause == 'nonempty-receipt':
+                            with self.assertRaises(ValueError):first.complete(True,digest)
+                        else:first.complete(True,digest)
+                    if cause != 'live-lock':first.close()
+                    if cause == 'missing-receipt':(state/first.run_id/'receipt.json').unlink()
+                    if cause == 'replaced-receipt':(state/first.run_id/'receipt.json').write_bytes(b'{}')
+                    marker=(first.disk_cache.parent/'owner.json').read_bytes()
+                    with self.assertRaises((ValueError,OSError)):
+                        self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457').__enter__()
+                    self.assertEqual((first.disk_cache.parent/'owner.json').read_bytes(),marker)
+                finally:first.close()
+
+    def test_preexisting_unbound_namespace_is_not_adopted_as_empty_or_public(self):
+        with self.state() as (guard,root,state,checkout):
+            import guard_cache
+            lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            lease.disk_cache.parent.mkdir(mode=0o700)
+            lease.disk_cache.mkdir(mode=0o700)
+            payload=lease.disk_cache/'unknown-bytes';payload.write_bytes(b'unqualified existing data')
+            descriptor=os.open(lease.disk_cache.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:
+                guard_cache.write_marker(descriptor,{'schema':2,'key':lease.key,'clean':True,
+                    'last_run':None,'cleanup_receipt_sha256':None})
+            finally:os.close(descriptor)
+            marker=(lease.disk_cache.parent/'owner.json').read_bytes()
+            with self.assertRaises(ValueError):lease.__enter__()
+            self.assertEqual(payload.read_bytes(),b'unqualified existing data')
+            self.assertEqual((lease.disk_cache.parent/'owner.json').read_bytes(),marker)
+
+    def test_named_root_cache_checkout_and_lock_replacements_refuse_held_owner(self):
+        for kind in ('state','namespace','disk','checkout','lock','disk-symlink'):
+            with self.subTest(kind=kind),self.state() as (guard,root,state,checkout):
+                with self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae') as lease:
+                    if kind == 'state':selected=state
+                    elif kind == 'namespace':selected=lease.disk_cache.parent
+                    elif kind in ('disk','disk-symlink'):selected=lease.disk_cache
+                    elif kind == 'checkout':selected=checkout
+                    else:selected=lease.disk_cache.parent/'cache.lock'
+                    saved=selected.with_name(selected.name+'-held');selected.rename(saved)
+                    if kind == 'lock':selected.write_bytes(b'');selected.chmod(0o600)
+                    elif kind == 'disk-symlink':selected.symlink_to(saved,target_is_directory=True)
+                    else:selected.mkdir(mode=0o700)
+                    with self.assertRaises((ValueError,OSError)):lease.fence()
+                    self.assertTrue(saved.exists())
+
+    def test_original_clock_and_command_overrides_refuse_without_product_mutation(self):
+        with self.state() as (guard,root,state,checkout):
+            with self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae') as lease:
+                payload=lease.disk_cache/'payload';payload.write_bytes(b'public')
+                run=state/lease.run_id
+                command=guard.bazel_command('/declared/bazel',run,['test',guard.TOOLBAR_PREP_LABEL],
+                    source_commit='a'*40,source_dirty='false')
+                for change in (('--nocache_test_results','--cache_test_results'),('--disk_cache=','--disk_cache=/foreign'),
+                        ('--remote_cache=','--remote_cache=https://foreign'),('--jobs=1','--jobs=2'),
+                        ('--output_base='+str(run/'output-base'),'--output_base=/old/product')):
+                    altered=[change[1] if part == change[0] else part for part in command]
+                    with self.subTest(change=change),self.assertRaises(ValueError):
+                        guard.toolbar_public_build_command(altered,lease,run,lease.entry_ns,lease.deadline_ns)
+                with patch.object(guard.time,'monotonic_ns',return_value=lease.deadline_ns):
+                    with self.assertRaises(ValueError):lease.fence()
+                    with self.assertRaises(ValueError):
+                        guard.toolbar_public_build_command(command,lease,run,lease.entry_ns,lease.deadline_ns)
+                    # Receipt diagnostics remain possible on a timeout; they
+                    # neither reset the clock nor clean the dirty cache marker.
+                    self.assertFalse(lease.facts()['producer_success_inherited'])
+                self.assertEqual(payload.read_bytes(),b'public')
+                self.assertFalse(json.loads((lease.disk_cache.parent/'owner.json').read_text())['clean'])
+
+    def test_build_cache_does_not_bypass_original_preparer_entry_cutoff(self):
+        with self.state() as (guard,root,state,checkout):
+            with self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae') as lease:
+                run=state/lease.run_id
+                command=guard.bazel_command('/declared/bazel',run,['test',guard.TOOLBAR_PREP_LABEL],
+                    source_commit='a'*40,source_dirty='false')
+                with patch.object(guard.time,'monotonic_ns',return_value=lease.deadline_ns-30*10**9):
+                    actual=guard.toolbar_public_build_command(command,lease,run,lease.entry_ns,lease.deadline_ns)
+                    with self.assertRaises(ValueError):
+                        guard.toolbar_prepare_command(actual,run,lease.entry_ns,lease.deadline_ns,'a'*40,'b'*64,checkout)
+                self.assertFalse(json.loads((lease.disk_cache.parent/'owner.json').read_text())['clean'])
+
+    def test_cancellation_after_actual_dirty_marker_write_preserves_refusal_and_closes_custody(self):
+        with self.state() as (guard,root,state,checkout):
+            import guard_cache
+            lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            actual=lease._write_marker
+            def cancelled(value,**kwargs):
+                actual(value,**kwargs)
+                if value['clean'] is False:raise KeyboardInterrupt
+            with patch.object(lease,'_write_marker',side_effect=cancelled):
+                with self.assertRaises(KeyboardInterrupt):lease.__enter__()
+            self.assertIsNone(lease.state_fd);self.assertIsNone(lease.directory);self.assertIsNone(lease.lock)
+            self.assertIsNone(lease.disk_fd);self.assertIsNone(lease.checkout_fd)
+            marker=json.loads((lease.disk_cache.parent/'owner.json').read_text())
+            self.assertFalse(marker['clean']);self.assertEqual(marker['last_run'],lease.run_id)
+            with self.assertRaises(ValueError):
+                self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457').__enter__()
+
+    def test_namespace_replacement_between_prior_marker_read_and_actual_lock_refuses(self):
+        with self.state() as (guard,root,state,checkout):
+            import guard_cache
+            first=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            with first:
+                _,digest=self.receipt(first);first.complete(True,digest)
+            namespace=first.disk_cache.parent;saved=namespace.with_name(namespace.name+'-original')
+            actual=guard.fcntl.flock;changed=[]
+            def replace_then_lock(descriptor,operation):
+                if not changed:
+                    changed.append(True);namespace.rename(saved);namespace.mkdir(mode=0o700)
+                    (namespace/'output-base').mkdir(mode=0o700)
+                    (namespace/'output-base/unknown').write_bytes(b'unbound replacement bytes')
+                    parent=os.open(namespace,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                    try:guard_cache.write_marker(parent,{'schema':2,'key':first.key,'clean':True,
+                        'last_run':None,'cleanup_receipt_sha256':None})
+                    finally:os.close(parent)
+                return actual(descriptor,operation)
+            replacement_marker=None
+            second=self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457')
+            with patch.object(guard.fcntl,'flock',side_effect=replace_then_lock):
+                with self.assertRaises(ValueError):second.__enter__()
+            replacement_marker=json.loads((namespace/'owner.json').read_text())
+            self.assertIsNone(replacement_marker['last_run']);self.assertTrue(replacement_marker['clean'])
+            self.assertEqual((namespace/'output-base/unknown').read_bytes(),b'unbound replacement bytes')
+            self.assertTrue(json.loads((saved/'owner.json').read_text())['clean'])
+            self.assertEqual(second.disposition,'closed-refused')
+
+    def test_newly_created_namespace_replacement_cannot_adopt_foreign_bytes(self):
+        with self.state() as (guard,root,state,checkout):
+            lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            actual=guard.os.mkdir;changed=[]
+            def mkdir_then_replace(path,*args,**kwargs):
+                result=actual(path,*args,**kwargs)
+                if path == lease.name and not changed:
+                    changed.append(True);namespace=lease.disk_cache.parent
+                    namespace.rename(namespace.with_name(namespace.name+'-created'))
+                    actual(namespace,mode=0o700)
+                    (namespace/'unknown').write_bytes(b'foreign preexisting public data')
+                return result
+            with patch.object(guard.os,'mkdir',side_effect=mkdir_then_replace):
+                with self.assertRaises(ValueError):lease.__enter__()
+            self.assertFalse((lease.disk_cache.parent/'owner.json').exists())
+            self.assertEqual((lease.disk_cache.parent/'unknown').read_bytes(),b'foreign preexisting public data')
+            self.assertIsNone(lease.lock);self.assertIsNone(lease.directory);self.assertIsNone(lease.state_fd)
+
+    def test_prior_marker_replacement_under_same_held_namespace_refuses_before_dirty_rewrite(self):
+        with self.state() as (guard,root,state,checkout):
+            import guard_cache
+            first=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            with first:
+                _,digest=self.receipt(first);first.complete(True,digest)
+            actual=guard.fcntl.flock
+            def marker_then_lock(descriptor,operation):
+                parent=os.open(first.disk_cache.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                try:guard_cache.write_marker(parent,{'schema':2,'key':first.key,'clean':True,
+                    'last_run':None,'cleanup_receipt_sha256':None})
+                finally:os.close(parent)
+                return actual(descriptor,operation)
+            with patch.object(guard.fcntl,'flock',side_effect=marker_then_lock):
+                with self.assertRaises(ValueError):
+                    self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457').__enter__()
+            marker=json.loads((first.disk_cache.parent/'owner.json').read_text())
+            self.assertTrue(marker['clean']);self.assertIsNone(marker['last_run'])
+
+    def test_last_marker_io_rejoins_named_lock_and_namespace_before_dispatch(self):
+        for kind in ('lock','namespace'):
+            with self.subTest(kind=kind),self.state() as (guard,root,state,checkout):
+                with self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae') as lease:
+                    actual=lease._read_marker;changed=[]
+                    def read_then_replace():
+                        result=actual()
+                        if not changed:
+                            changed.append(True)
+                            selected=lease.disk_cache.parent if kind == 'namespace' else lease.disk_cache.parent/'cache.lock'
+                            selected.rename(selected.with_name(selected.name+'-held'))
+                            if kind == 'namespace':selected.mkdir(mode=0o700)
+                            else:selected.write_bytes(b'');selected.chmod(0o600)
+                        return result
+                    with patch.object(lease,'_read_marker',side_effect=read_then_replace):
+                        with self.assertRaises(ValueError):lease.fence()
+                    self.assertEqual(len(changed),1)
+
+    def test_receipt_and_final_clean_publication_rejoin_physical_lock_after_io(self):
+        for phase in ('receipt','publication'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                with self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae') as lease:
+                    _,digest=self.receipt(lease);changed=[]
+                    def replace_lock():
+                        selected=lease.disk_cache.parent/'cache.lock'
+                        selected.rename(selected.with_name('cache.lock-held'))
+                        selected.write_bytes(b'');selected.chmod(0o600);changed.append(True)
+                    if phase == 'receipt':
+                        actual=lease._receipt
+                        def read_then_replace(*args):
+                            result=actual(*args);replace_lock();return result
+                        target='_receipt';replacement=read_then_replace
+                    else:
+                        actual=lease._write_marker
+                        def write_then_replace(value,**kwargs):
+                            result=actual(value,**kwargs)
+                            if value['clean'] is True:replace_lock()
+                            return result
+                        target='_write_marker';replacement=write_then_replace
+                    with patch.object(lease,target,side_effect=replacement):
+                        with self.assertRaises(ValueError):lease.complete(True,digest)
+                    marker=json.loads((lease.disk_cache.parent/'owner.json').read_text())
+                    self.assertEqual(marker['clean'],phase == 'publication')
+                    self.assertEqual(len(changed),1)
+
+    def test_all_five_owned_fds_are_attempted_once_after_each_real_close_fault(self):
+        fields=('disk_fd','checkout_fd','state_fd','lock','directory')
+        for failed in fields:
+            with self.subTest(failed=failed),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+                descriptors={name:getattr(lease,name) for name in fields};attempts=[];actual=guard.os.close
+                refusal=OSError('model-close-effect-return-refused')
+                def effect_then_fail(descriptor):
+                    if descriptor in descriptors.values():attempts.append(descriptor)
+                    actual(descriptor)
+                    if descriptor == descriptors[failed]:raise refusal
+                with patch.object(guard.os,'close',side_effect=effect_then_fail):
+                    with self.assertRaises(OSError) as caught:lease.close()
+                    self.assertIs(caught.exception,refusal)
+                    lease.close()  # Registered callback must not retry an ambiguous number.
+                self.assertEqual(attempts,[descriptors[name] for name in fields])
+                self.assertTrue(all(getattr(lease,name) is None for name in fields))
+                for descriptor in descriptors.values():
+                    with self.assertRaises(OSError):os.fstat(descriptor)
+                self.assertEqual(lease.disposition,'closed-refused')
+
+    def test_body_cancellation_survives_multiple_close_failures_and_all_callbacks_drain_once(self):
+        with self.state() as (guard,root,state,checkout):
+            lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+            fields=('disk_fd','checkout_fd','state_fd','lock','directory')
+            descriptors={name:getattr(lease,name) for name in fields};attempts=[];actual=guard.os.close
+            primary=KeyboardInterrupt('model-primary-cancellation')
+            def close_then_fail(descriptor):
+                attempts.append(descriptor);actual(descriptor)
+                if descriptor in (descriptors['disk_fd'],descriptors['lock']):raise OSError('model-secondary-close')
+            with patch.object(guard.os,'close',side_effect=close_then_fail):
+                with self.assertRaises(KeyboardInterrupt) as caught:
+                    try:raise primary
+                    finally:lease.close()
+                lease.close()
+            self.assertIs(caught.exception,primary)
+            self.assertEqual(attempts,[descriptors[name] for name in fields])
+            self.assertEqual(lease.release_failures,[('disk_fd','os-refusal'),('lock','os-refusal')])
+
+    def test_acquisition_primary_survives_close_fault_after_all_five_real_owners_exist(self):
+        with self.state() as (guard,root,state,checkout):
+            lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            fields=('disk_fd','checkout_fd','state_fd','lock','directory')
+            descriptors={};attempts=[];actual_close=guard.os.close;actual_fence=lease.fence
+            primary=ValueError('model-acquisition-last-fence-refusal')
+            def reject_after_fence():
+                actual_fence();descriptors.update({name:getattr(lease,name) for name in fields});raise primary
+            def close_then_fail(descriptor):
+                if descriptor in descriptors.values():attempts.append(descriptor)
+                actual_close(descriptor)
+                if descriptor == descriptors.get('disk_fd'):raise OSError('model-entry-secondary-close')
+            with patch.object(lease,'fence',side_effect=reject_after_fence),patch.object(guard.os,'close',side_effect=close_then_fail):
+                with self.assertRaises(ValueError) as caught:lease.__enter__()
+                lease.close()
+            self.assertIs(caught.exception,primary)
+            self.assertEqual(attempts,[descriptors[name] for name in fields])
+            self.assertTrue(all(getattr(lease,name) is None for name in fields))
+            self.assertIn(('disk_fd','os-refusal'),lease.release_failures)
+            self.assertEqual(lease.disposition,'closed-refused')
+
+    def test_transient_marker_and_state_probe_close_errors_preserve_body_primary(self):
+        for phase in ('marker-read','state-probe'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+                primary=ValueError('model-custody-primary');actual=lease._transient
+                def refuse_close(name,descriptor,body=None):
+                    if name != phase:return actual(name,descriptor,body)
+                    real=guard.os.close
+                    def close_then_fail(fd):real(fd);raise OSError('model-transient-close-after-effect')
+                    with patch.object(guard.os,'close',side_effect=close_then_fail):return actual(name,descriptor,body)
+                if phase == 'marker-read':
+                    target='execution_guard.json.loads';replacement=patch(target,side_effect=primary)
+                else:
+                    actual_identity=lease.identity;call=[0]
+                    def refuse_identity(info):
+                        call[0]+=1
+                        if call[0]==1:raise primary
+                        return actual_identity(info)
+                    replacement=patch.object(lease,'identity',side_effect=refuse_identity)
+                try:
+                    with patch.object(lease,'_transient',side_effect=refuse_close),replacement:
+                        with self.assertRaises(ValueError) as caught:
+                            lease._read_marker() if phase == 'marker-read' else lease._joint()
+                    self.assertIs(caught.exception,primary)
+                    self.assertIn((phase,'os-refusal'),lease.release_failures)
+                finally:lease.close(primary=primary)
+
+    def test_completion_cutoff_after_receipt_or_clean_publication_is_truthful_and_raw_immutable(self):
+        for phase in ('receipt','publication'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+                raw,digest=self.receipt(lease);now=[lease.entry_ns+10**9]
+                target='_receipt' if phase == 'receipt' else '_write_marker';actual=getattr(lease,target)
+                def io_then_expire(*args,**kwargs):
+                    result=actual(*args,**kwargs);now[0]=lease.deadline_ns;return result
+                with patch.object(guard.time,'monotonic_ns',side_effect=lambda:now[0]),patch.object(lease,target,side_effect=io_then_expire):
+                    with self.assertRaises(ValueError) as caught:lease.complete(True,digest)
+                    lease.close(primary=caught.exception)
+                marker=json.loads((lease.disk_cache.parent/'owner.json').read_text())
+                self.assertEqual(marker['clean'],phase == 'publication')
+                self.assertEqual(lease.disposition,'clean-committed-terminal-unqualified' if phase == 'publication' else 'closed-refused')
+                self.assertEqual((state/lease.run_id/'receipt.json').read_bytes(),raw)
+                lease.close()
+
+    def test_successful_last_close_crossing_cutoff_cannot_acknowledge_terminal_success(self):
+        with self.state() as (guard,root,state,checkout):
+            lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+            raw,digest=self.receipt(lease);lease.complete(True,digest)
+            last=lease.directory;actual=guard.os.close;now=[lease.entry_ns+10**9];attempts=[]
+            def close_then_expire(descriptor):
+                attempts.append(descriptor);actual(descriptor)
+                if descriptor == last:now[0]=lease.deadline_ns
+            with patch.object(guard.time,'monotonic_ns',side_effect=lambda:now[0]),patch.object(guard.os,'close',side_effect=close_then_expire):
+                with self.assertRaises(ValueError):lease.close()
+                lease.close()
+            self.assertEqual(len(attempts),5)
+            self.assertEqual(lease.disposition,'clean-committed-terminal-unqualified')
+            self.assertTrue(json.loads((lease.disk_cache.parent/'owner.json').read_text())['clean'])
+            self.assertEqual((state/lease.run_id/'receipt.json').read_bytes(),raw)
+
+    def test_nonregular_marker_and_prior_or_current_receipts_refuse_without_blocking_open(self):
+        for phase in ('marker','prior-receipt','current-receipt'):
+            for kind in ('fifo','directory'):
+                with self.subTest(phase=phase,kind=kind),self.state() as (guard,root,state,checkout):
+                    first=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+                    if phase == 'marker':
+                        first.disk_cache.parent.mkdir(mode=0o700)
+                        selected=first.disk_cache.parent/'owner.json'
+                        candidate=first
+                    else:
+                        first.__enter__();_,digest=self.receipt(first)
+                        selected=state/first.run_id/'receipt.json'
+                        if phase == 'prior-receipt':
+                            first.complete(True,digest);first.close()
+                            candidate=self.lease(guard,state,checkout,'62200eb5-2d0e-48a5-a5f0-7f5607f52457')
+                        else:candidate=first
+                        selected.unlink()
+                    if kind == 'fifo':os.mkfifo(selected,0o600)
+                    else:selected.mkdir(mode=0o700)
+                    actual=guard.os.open;read_opens=[]
+                    expected='owner.json' if phase == 'marker' else 'receipt.json'
+                    def nonblocking_open(path,flags,*args,**kwargs):
+                        if path == expected:
+                            # Fail before OS open if this invariant regresses;
+                            # the negative FIFO fixture must never wait for a writer.
+                            self.assertTrue(flags & os.O_NONBLOCK)
+                            self.assertTrue(flags & os.O_NOFOLLOW);read_opens.append(flags)
+                        return actual(path,flags,*args,**kwargs)
+                    try:
+                        with patch.object(guard.os,'open',side_effect=nonblocking_open):
+                            with self.assertRaises(ValueError) as caught:
+                                candidate.complete(True,digest) if phase == 'current-receipt' else candidate.__enter__()
+                        self.assertTrue(read_opens)
+                    finally:candidate.close(primary=sys.exception())
+                    self.assertTrue(all(slot.descriptor is None for slot in candidate._retirement))
+                    self.assertTrue(selected.exists())
+
+    def test_registration_fault_before_and_after_insertion_closes_real_fd_once_and_preserves_primary(self):
+        names=('state_fd','directory','lock','disk_fd','checkout_fd','marker-read','marker-write','state-probe',
+               'receipt-root','receipt-read')
+        for name in names:
+            for when in ('before','after'):
+                with self.subTest(name=name,when=when),self.state() as (guard,root,state,checkout):
+                    lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+                    if name.startswith('receipt-'):
+                        lease.__enter__();_,digest=self.receipt(lease)
+                    actual=lease._register;actual_close=guard.os.close;fault=[];attempts=[]
+                    primary=MemoryError('model-registration-bookkeeping')
+                    def register_then_refuse(slot,descriptor):
+                        if slot.name == name and not fault:
+                            fault.append(descriptor)
+                            if when == 'after':actual(slot,descriptor)
+                            raise primary
+                        return actual(slot,descriptor)
+                    def close_after_effect(descriptor):
+                        if fault and descriptor == fault[0]:attempts.append(descriptor)
+                        actual_close(descriptor)
+                        if fault and descriptor == fault[0]:raise OSError('model-registration-fallback-close')
+                    try:
+                        with patch.object(lease,'_register',side_effect=register_then_refuse),patch.object(guard.os,'close',side_effect=close_after_effect):
+                            with self.assertRaises(MemoryError) as caught:
+                                lease.complete(True,digest) if name.startswith('receipt-') else lease.__enter__()
+                            self.assertIs(caught.exception,primary)
+                            lease.close(primary=primary);lease.close()
+                        self.assertEqual(attempts,fault)
+                        self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+                        for descriptor in fault:
+                            with self.assertRaises(OSError):os.fstat(descriptor)
+                    finally:lease.close(primary=primary)
+
+    def test_diagnostic_allocation_failure_cannot_stop_drain_or_replace_first_close_or_body_cause(self):
+        class RefuseAppend(list):
+            def append(self,value):raise MemoryError('model-diagnostic-allocation')
+        for body in (False,True):
+            with self.subTest(body=body),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+                fields=('disk_fd','checkout_fd','state_fd','lock','directory')
+                descriptors=[getattr(lease,name) for name in fields];attempts=[];actual=guard.os.close
+                lease.release_failures=RefuseAppend()
+                close_error=OSError('model-first-close-cause');primary=KeyboardInterrupt('model-body-primary')
+                def real_close_then_refuse(descriptor):
+                    attempts.append(descriptor);actual(descriptor)
+                    if descriptor == descriptors[0]:raise close_error
+                with patch.object(guard.os,'close',side_effect=real_close_then_refuse):
+                    if body:
+                        with self.assertRaises(KeyboardInterrupt) as caught:
+                            try:raise primary
+                            finally:lease.close()
+                        self.assertIs(caught.exception,primary)
+                    else:
+                        with self.assertRaises(OSError) as caught:lease.close()
+                        self.assertIs(caught.exception,close_error)
+                    lease.close()
+                self.assertEqual(attempts,descriptors)
+                self.assertTrue(lease.diagnostic_loss)
+                self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+
+    def test_transient_helper_entry_failure_leaves_preregistered_fd_for_final_drain(self):
+        for phase in ('marker-read','state-probe'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+                actual=lease._transient;primary=MemoryError('model-transient-helper-entry');held=[]
+                def entry_failure(name,descriptor,body=None):
+                    if name == phase:
+                        held.append(descriptor);raise primary
+                    return actual(name,descriptor,body)
+                with patch.object(lease,'_transient',side_effect=entry_failure):
+                    with self.assertRaises(MemoryError) as caught:
+                        lease._read_marker() if phase == 'marker-read' else lease._joint()
+                self.assertIs(caught.exception,primary)
+                self.assertEqual(lease._slots[phase].descriptor,held[0]);os.fstat(held[0])
+                lease.close(primary=primary);lease.close()
+                self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+                with self.assertRaises(OSError):os.fstat(held[0])
+
+    def test_retirement_cell_allocation_failure_occurs_before_any_os_acquisition(self):
+        with self.state() as (guard,root,state,checkout):
+            with (patch.object(guard,'ToolbarFdSlot',side_effect=MemoryError('model-preallocation')),
+                    patch.object(guard.os,'open') as opened):
+                with self.assertRaises(MemoryError):
+                    self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            opened.assert_not_called()
+
+    def test_body_primary_survives_transient_helper_entry_fault_in_all_three_finally_paths(self):
+        for phase in ('marker-read','state-probe','marker-write'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+                primary=ValueError('model-original-body-cause');secondary=MemoryError('model-helper-entry')
+                actual=lease._transient;held=[]
+                def entry_fault(name,descriptor,body=None):
+                    if name == phase:held.append(descriptor);raise secondary
+                    return actual(name,descriptor,body)
+                if phase == 'marker-read':body_fault=patch.object(guard.json,'loads',side_effect=primary)
+                elif phase == 'marker-write':body_fault=patch.object(guard.os,'write',side_effect=primary)
+                else:
+                    actual_identity=lease.identity;seen=[]
+                    def identity_fault(info):
+                        if not seen:seen.append(True);raise primary
+                        return actual_identity(info)
+                    body_fault=patch.object(lease,'identity',side_effect=identity_fault)
+                try:
+                    with patch.object(lease,'_transient',side_effect=entry_fault),body_fault:
+                        with self.assertRaises(ValueError) as caught:
+                            if phase == 'marker-read':lease._read_marker()
+                            elif phase == 'state-probe':lease._joint()
+                            else:lease._write_marker(lease.marker_value,inputs=True)
+                    self.assertIs(caught.exception,primary)
+                    self.assertEqual(lease._slots[phase].descriptor,held[0]);os.fstat(held[0])
+                    lease.close(primary=primary);lease.close()
+                    self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+                    with self.assertRaises(OSError):os.fstat(held[0])
+                finally:lease.close(primary=primary)
+
+    def test_source_called_interrupt_predicate_defers_clear_between_iterations_and_close_effect_until_all_drained(self):
+        for phase in ('clear','between','close-effect'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');lease.__enter__()
+                raw,digest=self.receipt(lease);lease.complete(True,digest)
+                self.assertFalse(guard.toolbar_public_interrupt_deferred(None))
+                self.assertFalse(guard.toolbar_public_interrupt_deferred(lease))
+                self.assertFalse(guard.toolbar_public_interrupt_deferred(SimpleNamespace(critical_active=True)))
+                fields=('disk_fd','checkout_fd','state_fd','lock','directory')
+                descriptors=[getattr(lease,name) for name in fields];actual=guard.os.close;attempts=[];requests=[]
+                def request():
+                    requests.append(True)
+                    # This is the predicate called by _main's installed handler.
+                    if not guard.toolbar_public_interrupt_deferred(lease):raise KeyboardInterrupt('model-escaped-handler')
+                class ClearCell:
+                    def __init__(self,cell):self.cell=cell;self.name=cell.name
+                    @property
+                    def descriptor(self):return self.cell.descriptor
+                    @descriptor.setter
+                    def descriptor(self,value):
+                        self.cell.descriptor=value
+                        if value is None and not requests:request()
+                def iteration():
+                    for slot in lease._retirement:
+                        if phase == 'between' and attempts and not requests:request()
+                        yield ClearCell(slot) if phase == 'clear' and slot.name == 'disk_fd' else slot
+                lease._retirement_iterator=iteration()
+                def close_then_request(descriptor):
+                    attempts.append(descriptor);actual(descriptor)
+                    if phase == 'close-effect' and not requests:request()
+                with patch.object(guard.os,'close',side_effect=close_then_request):
+                    with self.assertRaises(KeyboardInterrupt) as caught:lease.close()
+                    self.assertIs(caught.exception,lease.cancellation_error)
+                    lease.close()
+                self.assertEqual(attempts,descriptors);self.assertEqual(requests,[True])
+                self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+                self.assertFalse(lease.critical_active)
+                self.assertEqual(lease.disposition,'clean-committed-terminal-unqualified')
+                self.assertEqual((state/lease.run_id/'receipt.json').read_bytes(),raw)
+                self.assertTrue(json.loads((lease.disk_cache.parent/'owner.json').read_text())['clean'])
+
+    def test_source_called_cancellation_during_registration_or_transfer_keeps_real_fd_enrolled_until_safe_drain(self):
+        for phase in ('registration-before','registration-after','transfer'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae');actual=lease._register;held=[]
+                def cancel_register(slot,descriptor):
+                    held.append(descriptor)
+                    if phase == 'registration-before':self.assertTrue(guard.toolbar_public_interrupt_deferred(lease))
+                    actual(slot,descriptor)
+                    if phase == 'registration-after':self.assertTrue(guard.toolbar_public_interrupt_deferred(lease))
+                try:
+                    if phase == 'transfer':
+                        descriptor=lease._acquire('trusted-child',lambda:os.open(state,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW));held.append(descriptor)
+                        actual_cell=lease._slots['state_fd']
+                        class TargetCell:
+                            @property
+                            def descriptor(self):return actual_cell.descriptor
+                            @descriptor.setter
+                            def descriptor(self,value):
+                                actual_cell.descriptor=value
+                                self_accepted=guard.toolbar_public_interrupt_deferred(lease)
+                                if not self_accepted:raise AssertionError('transfer handler escaped critical region')
+                        lease._slots['state_fd']=TargetCell()
+                        with self.assertRaises(KeyboardInterrupt) as caught:lease._transfer('trusted-child','state_fd')
+                    else:
+                        with patch.object(lease,'_register',side_effect=cancel_register):
+                            with self.assertRaises(KeyboardInterrupt) as caught:
+                                lease._acquire('state_fd',lambda:os.open(state,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW))
+                    self.assertIs(caught.exception,lease.cancellation_error)
+                    self.assertEqual(lease.state_fd,held[0]);os.fstat(held[0])
+                    lease.close(primary=caught.exception);lease.close()
+                    self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+                    with self.assertRaises(OSError):os.fstat(held[0])
+                finally:lease.close(primary=lease.cancellation_error)
+
+    def test_owned_traversal_internal_parent_close_after_effect_preserves_cause_and_drains_already_enrolled_child(self):
+        import execution_guard as guard
+        walk=guard.ToolbarPublicBuildLease._trusted_directory
+        with self.state() as (guard,root,state,checkout):
+            lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+            virtual=root/'virtual';virtual.mkdir(mode=0o700);cursor=virtual
+            for part in state.parts[1:]:cursor=cursor/part;cursor.mkdir(mode=0o700)
+            actual_open=guard.os.open;actual_close=guard.os.close;opened=[];attempts=[]
+            primary=OSError('model-traversal-parent-close-after-effect')
+            def rooted_open(path,flags,*args,**kwargs):
+                descriptor=actual_open(virtual if path == '/' else path,flags,*args,**kwargs)
+                opened.append(descriptor);return descriptor
+            def parent_close(descriptor):
+                attempts.append(descriptor);actual_close(descriptor)
+                if len(attempts)==1:raise primary
+            with patch.object(guard.os,'open',side_effect=rooted_open),patch.object(guard.os,'close',side_effect=parent_close):
+                with self.assertRaises(OSError) as caught:walk(lease,'state_fd')
+                self.assertIs(caught.exception,primary)
+                self.assertIsNone(lease._slots['trusted-parent'].descriptor)
+                self.assertEqual(lease._slots['trusted-child'].descriptor,opened[1]);os.fstat(opened[1])
+                lease.close(primary=primary);lease.close()
+            self.assertEqual(attempts,opened);self.assertEqual(len(opened),2)
+            self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+            for descriptor in opened:
+                with self.assertRaises(OSError):os.fstat(descriptor)
+
+    def test_owned_traversal_preserves_ancestor_mode_nofollow_and_private_leaf_refusal(self):
+        import execution_guard as guard
+        walk=guard.ToolbarPublicBuildLease._trusted_directory
+        for kind in ('safe','writable-ancestor','symlink-ancestor','public-leaf'):
+            with self.subTest(kind=kind),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+                virtual=root/'virtual';virtual.mkdir(mode=0o700);cursor=virtual;selected=[]
+                for part in state.parts[1:]:cursor=cursor/part;cursor.mkdir(mode=0o700);selected.append(cursor)
+                if kind == 'writable-ancestor':selected[0].chmod(0o777)
+                elif kind == 'public-leaf':selected[-1].chmod(0o755)
+                elif kind == 'symlink-ancestor':
+                    physical=virtual/'physical';selected[0].rename(physical);selected[0].symlink_to(physical,target_is_directory=True)
+                actual=guard.os.open
+                def rooted_open(path,flags,*args,**kwargs):return actual(virtual if path == '/' else path,flags,*args,**kwargs)
+                try:
+                    with patch.object(guard.os,'open',side_effect=rooted_open):
+                        if kind == 'safe':
+                            held=walk(lease,'state_fd')
+                            self.assertEqual(os.fstat(held).st_ino,selected[-1].stat().st_ino)
+                        else:
+                            with self.assertRaises((OSError,ValueError)):walk(lease,'state_fd')
+                finally:lease.close(primary=ValueError('model-refusal-cleanup') if kind != 'safe' else None)
+                self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+
+
+    def test_state_admission_and_probe_actual_walk_faults_never_acknowledge_clean_and_preserve_ancestor_cause_through_close_fault(self):
+        import execution_guard as guard
+        walk=guard.ToolbarPublicBuildLease._trusted_directory
+        for phase in ('admission-parent-close','probe-parent-close','probe-ancestor-and-close'):
+            with self.subTest(phase=phase),self.state() as (guard,root,state,checkout):
+                lease=self.lease(guard,state,checkout,'19b0b8fc-0c2d-4f62-a9f0-bd5b314fa0ae')
+                if phase.startswith('probe'):lease.__enter__()
+                virtual=root/'virtual';virtual.mkdir(mode=0o700);cursor=virtual;chain=[]
+                for part in state.parts[1:]:cursor=cursor/part;cursor.mkdir(mode=0o700);chain.append(cursor)
+                if phase == 'probe-ancestor-and-close':chain[0].chmod(0o777)
+                actual_open=guard.os.open;actual_close=guard.os.close;opened=[];attempts=[]
+                primary=OSError('model-caller-parent-close-after-effect')
+                def rooted_open(path,flags,*args,**kwargs):
+                    descriptor=actual_open(virtual if path == '/' else path,flags,*args,**kwargs)
+                    opened.append(descriptor);return descriptor
+                def close_after_effect(descriptor):
+                    attempts.append(descriptor);actual_close(descriptor)
+                    if phase.endswith('parent-close') and descriptor == opened[0]:raise primary
+                    if phase == 'probe-ancestor-and-close' and len(opened)>1 and descriptor == opened[1]:
+                        raise OSError('model-secondary-ancestor-owner-close')
+                with (patch.object(lease,'_trusted_directory',side_effect=lambda target:walk(lease,target)),
+                        patch.object(guard.os,'open',side_effect=rooted_open),
+                        patch.object(guard.os,'close',side_effect=close_after_effect)):
+                    with self.assertRaises((OSError,ValueError)) as caught:
+                        lease.__enter__() if phase.startswith('admission') else lease.fence()
+                    if phase.endswith('parent-close'):self.assertIs(caught.exception,primary)
+                    else:self.assertEqual(str(caught.exception),'untrusted state ancestor')
+                    lease.close(primary=caught.exception);lease.close()
+                self.assertEqual(len(opened),2)
+                for descriptor in opened:self.assertEqual(attempts.count(descriptor),1)
+                self.assertTrue(all(slot.descriptor is None for slot in lease._retirement))
+                self.assertEqual(lease.disposition,'closed-refused')
+                marker=lease.disk_cache.parent/'owner.json'
+                if phase.startswith('probe'):self.assertFalse(json.loads(marker.read_text())['clean'])
+                else:self.assertFalse(marker.exists())
+
 
 
 if __name__ == '__main__':
