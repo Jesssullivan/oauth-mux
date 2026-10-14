@@ -10,6 +10,7 @@ const enrollment = @import("oauth_enrollment.zig");
 const token = @import("oauth_token.zig");
 
 const pair = @import("siwc_pair.zig");
+const renewal_accounting = @import("owned_renewal_accounting.zig");
 const domain = @import("domain.zig");
 pub const Endpoint = union(enum) { codex_token, omux_oss_token, fixture_token: u16 };
 pub const ProfileView = struct {
@@ -692,9 +693,30 @@ pub fn verifyCurrentOwnedRefresh(a: std.mem.Allocator, store: *storage.Store, ti
 fn exactPairedIssueTransition(a: std.mem.Allocator, before: []const u8, after: []const u8, transaction: [32]u8, refresh_id: []const u8, operation: pair.Renewal) !void {
     var old = try std.json.parseFromSlice(std.json.Value, a, before, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
     defer old.deinit();
-    const next = try std.json.parseFromSlice(std.json.Value, a, after, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+    var next = try std.json.parseFromSlice(std.json.Value, a, after, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
     defer next.deinit();
     if (old.value != .object or next.value != .object) return error.OAuthAuthorityChanged;
+    const prior_accounting = old.value.object.get("owned_renewal_accounting");
+    const next_accounting = next.value.object.get("owned_renewal_accounting");
+    if (operation.accounting_admitted) {
+        if (operation.accounting_capacity_unavailable) return error.OAuthAuthorityChanged;
+        var expected_accounting = original: {
+            if (prior_accounting) |raw| if (raw != .null) break :original try renewal_accounting.read(a, raw);
+            break :original try renewal_accounting.Snapshot.init(operation.admitted_unix);
+        };
+        try expected_accounting.admit();
+        const actual_accounting = try renewal_accounting.read(a, next_accounting orelse return error.OAuthAuthorityChanged);
+        if (!std.meta.eql(expected_accounting, actual_accounting)) return error.OAuthAuthorityChanged;
+    } else {
+        // An active window cannot disappear or silently skip an admission.
+        if (prior_accounting) |raw| if (raw != .null) return error.OAuthAuthorityChanged;
+        if (next_accounting) |raw| if (raw != .null) return error.OAuthAuthorityChanged;
+    }
+    // Compare only after the precise aggregate delta was authenticated above.
+    // Ordered removal keeps all other fields subject to the existing exact
+    // JSON comparison, including source/identity/grant/registry invariants.
+    _ = old.value.object.orderedRemove("owned_renewal_accounting");
+    _ = next.value.object.orderedRemove("owned_renewal_accounting");
     const section = old.value.object.get("owned_siwc_pairs") orelse return error.OAuthAuthorityChanged;
     const rows = if (section == .object) section.object.get("records") orelse return error.OAuthAuthorityChanged else return error.OAuthAuthorityChanged;
     if (rows != .array) return error.OAuthAuthorityChanged;

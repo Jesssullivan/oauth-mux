@@ -79,6 +79,29 @@ and end-to-end timing are unmeasured in this projection. The aggregate successfu
 renewal phase remains unobserved; REL-015/REL-019 coverage and achieved SLO remain
 unproved.
 
+The separate `reliability.lifecycle.owned_pair_renewal_attempts` aggregate counts
+authenticated owned-pair renewal admissions since its actual optional activation
+in this Store. A new issuance and its one terminal transition update the counters
+in the same authenticated SQLite snapshot transaction as the original operation.
+Unique operation IDs and paired generation/state fences prevent recounting;
+pruning older completed operation rows does not remove the aggregate. Fixed
+outcome/cause keys continue beyond any diagnostic sample size. Counter saturation
+is explicit and makes counts inexact; optional activation that cannot prepay the
+whole finite widening promise leaves collection absent and preserves renewal.
+Legacy witnesses are not backfilled, and missing collection is never zero demand.
+Retained last-operation capacity exclusions remain separate diagnostics; they are
+not a complete capacity-loss history or part of the admission denominator.
+
+A verified committed successor, safe refusal before transport accepted work,
+unresolved issuance and unknown accepted/indeterminate completion are separate
+populations. The counters record actual observed stage causes, including explicit
+retirement and stranded restart; a committed successor does not prove a successful
+user journey. Local work, user/provider wait, user end-to-end duration, deployment
+provenance, all renewal opportunities and completion before authority expiry remain
+unknown or unmeasured. This partial source instrumentation does not close the
+full renewal or durable-baseline gate, establish a numerical baseline or achieve
+an SLO/SLA. Original targets and zero-budget invariants remain unchanged.
+
 | ID | Phase and successful user outcome | Denominator and coverage |
 | --- | --- | --- |
 | REL-013 | Install and activate: owned artifacts, service and host registration verified; daemon remains resident after controls close. | All authorized supported installation attempts, including managed-ownership refusal; report installed and activated coverage separately. |

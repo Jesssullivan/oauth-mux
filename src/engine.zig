@@ -55,6 +55,7 @@ const native_owner = @import("native_owner.zig");
 const native_work = @import("native_owner_work.zig");
 const oauth_oidc = @import("oauth_oidc.zig");
 const siwc_pair = @import("siwc_pair.zig");
+const owned_renewal_accounting = @import("owned_renewal_accounting.zig");
 const siwc_catalog = @import("siwc_catalog.zig");
 const siwc_catalog_authority = @import("siwc_catalog_authority.zig");
 const peer = @import("platform/peer.zig");
@@ -265,6 +266,7 @@ const Persisted = struct {
     fresh_oauth_authority: ?oauth_enrollment.Snapshot = null,
     fresh_oauth_host_id: ?[32]u8 = null,
     owned_siwc_pairs: ?siwc_pair.Snapshot = null,
+    owned_renewal_accounting: ?owned_renewal_accounting.Snapshot = null,
     state: domain.Snapshot = .{},
     policy: Policy = .{},
     installed_integrations: []const []const u8 = &.{},
@@ -282,6 +284,22 @@ const Persisted = struct {
     // Optional historical metadata. Absence never selects or activates bytes.
     measured_codex_runtime: ?measured_runtime.Committed = null,
     qualified_native_runtime: ?QualifiedNativeRuntime = null,
+    pub fn jsonStringify(self: Persisted, writer: anytype) !void {
+        try writer.beginObject();
+        inline for (@typeInfo(Persisted).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "owned_renewal_accounting")) {
+                // Absence spends no new legacy envelope bytes or promise.
+                if (self.owned_renewal_accounting) |value| {
+                    try writer.objectField(name);
+                    try writer.write(value);
+                }
+            } else {
+                try writer.objectField(name);
+                try writer.write(@field(self, name));
+            }
+        }
+        try writer.endObject();
+    }
 };
 const Invocation = struct {
     allocator: std.mem.Allocator,
@@ -1241,6 +1259,8 @@ pub const Engine = struct {
     fresh_oauth: ?oauth_enrollment.Ledger = null,
     fresh_oauth_host_id: ?[32]u8 = null,
     owned_siwc_pairs: siwc_pair.Registry = .{},
+    owned_renewal_accounting: ?owned_renewal_accounting.Snapshot = null,
+    renewal_accounting_capacity_unavailable: bool = false,
     catalog_pending: std.ArrayList(CatalogPending) = .empty,
     catalog_cache: std.ArrayList(CatalogCache) = .empty,
     fresh_oauth_verifications: std.ArrayList(*FreshOAuthVerifyTask) = .empty,
@@ -1252,6 +1272,8 @@ pub const Engine = struct {
     owned_renewal_cancel_failure: ?anyerror = null,
     fixture_owned_renewal_routes: std.ArrayList(OwnedRenewalModelRoute) = .empty,
     fixture_owned_renewal_hold_stage: ?storage.CommitStage = null,
+    fixture_owned_renewal_commit_failure: ?storage.CommitStage = null,
+    fixture_owned_renewal_accounting_tamper: bool = false,
     fixture_owned_renewal_hold_kind: enum { issue, successor } = .successor,
     fixture_owned_renewal_hold_window: bool = false,
     fixture_owned_renewal_dispatch_hold: bool = false,
@@ -3205,7 +3227,7 @@ pub const Engine = struct {
         errdefer workers.deinit();
         try self.custodyDeadline();
         if (builtin.is_test and self.fixture_custody_stage_failure == .supervisor_ready) return error.CustodyStageFailure;
-        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "qualified_native_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts", "fresh_oauth", "fresh_oauth_host_id", "owned_siwc_pairs" }) |name| {
+        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "qualified_native_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts", "fresh_oauth", "fresh_oauth_host_id", "owned_siwc_pairs", "owned_renewal_accounting" }) |name| {
             std.mem.swap(@TypeOf(@field(self.*, name)), &@field(self.*, name), &@field(staged, name));
         }
         self.native_workers = workers;
@@ -3289,6 +3311,7 @@ pub const Engine = struct {
         }
         self.fresh_oauth_host_id = parsed.value.fresh_oauth_host_id;
         if (parsed.value.owned_siwc_pairs) |pairs| self.owned_siwc_pairs = try siwc_pair.Registry.fromSnapshot(self.allocator, pairs);
+        self.owned_renewal_accounting = parsed.value.owned_renewal_accounting;
         const restored_state = restored: {
             if (builtin.is_test and self.fixture_custody_stage_failure == .state_allocation) {
                 var failing = std.testing.FailingAllocator.init(self.allocator, .{ .fail_index = 0 });
@@ -3352,7 +3375,7 @@ pub const Engine = struct {
         for (self.owned_siwc_pairs.records.items) |row| {
             if (row.status == .refreshing) {
                 const renewal = row.renewal orelse return error.InvalidSiwcPair;
-                try self.quarantineOwnedRenewalRow(row.transaction_id, renewal.operation_id);
+                try self.quarantineOwnedRenewalRow(row.transaction_id, renewal.operation_id, .completion_unknown, .interrupted_or_stranded);
             }
         }
         // Missing local transport cannot resolve a durable admitted read.
@@ -3713,6 +3736,7 @@ pub const Engine = struct {
             .fresh_oauth_authority = if (self.fresh_oauth) |*enrollments| enrollments.snapshot() else null,
             .fresh_oauth_host_id = self.fresh_oauth_host_id,
             .owned_siwc_pairs = self.owned_siwc_pairs.snapshot(),
+            .owned_renewal_accounting = self.owned_renewal_accounting,
             .state = self.state.snapshot(),
             .policy = self.policy,
             .installed_integrations = self.installed.items,
@@ -3870,6 +3894,7 @@ pub const Engine = struct {
         self.fresh_oauth = restored_enrollments;
         self.owned_siwc_pairs.deinit(self.allocator);
         self.owned_siwc_pairs = restored_pairs;
+        self.owned_renewal_accounting = parsed.value.owned_renewal_accounting;
         self.fresh_oauth_host_id = parsed.value.fresh_oauth_host_id;
         self.state.deinit();
         self.state = replacement;
@@ -4726,7 +4751,51 @@ pub const Engine = struct {
             .refresh = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = renewal.family_generation, .purpose = "renewal", .scope = siwc_pair.resource_uri },
         };
     }
-    fn quarantineOwnedRenewalRow(self: *Engine, transaction: [32]u8, operation: [64]u8) !void {
+    fn prepareOwnedRenewalAccounting(self: *Engine, activated_unix: i64) !bool {
+        if (self.owned_renewal_accounting != null) return true;
+        self.owned_renewal_accounting = try owned_renewal_accounting.Snapshot.init(activated_unix);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = self.snapshotUsage() catch |err| switch (err) {
+            error.SnapshotTooLarge, error.SnapshotCardinalityExceeded => {
+                self.owned_renewal_accounting = null;
+                self.renewal_accounting_capacity_unavailable = true;
+                self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+                _ = try self.snapshotUsage();
+                return false;
+            },
+            else => return err,
+        };
+        self.renewal_accounting_capacity_unavailable = false;
+        return true;
+    }
+    fn ownedRenewalAccountingSummary(self: *Engine) !owned_renewal_accounting.Summary {
+        const authority = !self.poisoned and !self.vault_locked and self.db != null and !self.db.?.poisoned;
+        var result = try owned_renewal_accounting.summarize(self.owned_renewal_accounting, authority, self.renewal_accounting_capacity_unavailable);
+        if (!result.authority_available) return result;
+        for (self.owned_siwc_pairs.records.items) |pair| if (pair.renewal) |renewal| {
+            if (renewal.accounting_capacity_unavailable) result.retained_last_capacity_exclusions += 1;
+        };
+        result.activation_capacity_unavailable = result.activation_capacity_unavailable or result.retained_last_capacity_exclusions != 0;
+        return result;
+    }
+    fn settleOwnedRenewalAccounting(self: *Engine, renewal: *siwc_pair.Renewal, outcome: owned_renewal_accounting.Outcome, cause: owned_renewal_accounting.Cause) !void {
+        // Existing authenticated operation/state is the idempotence fence.
+        // Legacy witnesses are not invented admissions in the new window.
+        if (renewal.state != .issued) return;
+        if (renewal.accounting_admitted) {
+            const aggregate = if (self.owned_renewal_accounting) |*value| value else return error.InvalidRenewalAccounting;
+            try aggregate.terminal(outcome, cause);
+        }
+        renewal.state = if (outcome == .committed_successor) .completed else .unknown;
+    }
+    fn retireOwnedRenewalAccounting(self: *Engine, source_id: ?[]const u8, account_id: ?[]const u8, cause: owned_renewal_accounting.Cause) !void {
+        for (self.owned_siwc_pairs.records.items) |*row| {
+            if (source_id) |id| if (!eql(id, row.source_id)) continue;
+            if (account_id) |id| if (!eql(id, row.account_id)) continue;
+            if (row.renewal) |*renewal| try self.settleOwnedRenewalAccounting(renewal, .completion_unknown, cause);
+        }
+    }
+    fn quarantineOwnedRenewalRow(self: *Engine, transaction: [32]u8, operation: [64]u8, outcome: owned_renewal_accounting.Outcome, cause: owned_renewal_accounting.Cause) !void {
         const row = self.owned_siwc_pairs.find(transaction) orelse return;
         if (row.status != .refreshing or row.renewal == null or !std.meta.eql(row.renewal.?.operation_id, operation)) return;
         // Reduction of authority can run after the issuance deadline. It must
@@ -4736,7 +4805,7 @@ pub const Engine = struct {
             self.poisoned = true;
         };
         row.status = .quarantined;
-        row.renewal.?.state = .unknown;
+        try self.settleOwnedRenewalAccounting(&row.renewal.?, outcome, cause);
         for (self.state.grants.items) |*grant| if (eql(grant.id, row.access_grant_id) or eql(grant.id, row.refresh_grant_id)) {
             grant.status = .quarantined;
         };
@@ -4752,10 +4821,13 @@ pub const Engine = struct {
         self.committed_nonledger_bytes = nonledger;
         self.committed_counts = self.actualCounts();
     }
-    fn unknownOwnedRenewal(self: *Engine, pending: *OwnedRenewalPending) !void {
+    fn resolveOwnedRenewal(self: *Engine, pending: *OwnedRenewalPending, outcome: owned_renewal_accounting.Outcome, cause: owned_renewal_accounting.Cause) !void {
         _ = pending.fence.invalidate();
         self.cancelOwnedRenewals(&pending.binding.source_id, &pending.binding.account_id);
-        try self.quarantineOwnedRenewalRow(pending.binding.registration_transaction, pending.binding.operation.operation_id);
+        try self.quarantineOwnedRenewalRow(pending.binding.registration_transaction, pending.binding.operation.operation_id, outcome, cause);
+    }
+    fn unknownOwnedRenewal(self: *Engine, pending: *OwnedRenewalPending, cause: owned_renewal_accounting.Cause) !void {
+        try self.resolveOwnedRenewal(pending, .completion_unknown, cause);
     }
     fn holdOwnedRenewalFixture(self: *Engine, operation: siwc_pair.Renewal) !void {
         if (!builtin.is_test) return error.TestOnly;
@@ -4838,6 +4910,17 @@ pub const Engine = struct {
         };
         if (!found) return error.RenewalNotOwned;
         self.state.revision += 1;
+        // First reserve the ORIGINAL full issuance/widening promise. Optional
+        // aggregate admission must never consume its remaining effect budget.
+        const accounting_active = try self.prepareOwnedRenewalAccounting(row.renewal.?.admitted_unix);
+        row.renewal.?.accounting_admitted = accounting_active;
+        row.renewal.?.accounting_capacity_unavailable = !accounting_active;
+        if (accounting_active) try self.owned_renewal_accounting.?.admit();
+        if (builtin.is_test and self.fixture_owned_renewal_accounting_tamper) {
+            self.fixture_owned_renewal_accounting_tamper = false;
+            if (!accounting_active) return error.AccountingFixtureUnavailable;
+            try self.owned_renewal_accounting.?.admit();
+        }
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
         _ = try self.snapshotUsage();
         const nonledger = try self.nonledgerBytes();
@@ -4877,7 +4960,10 @@ pub const Engine = struct {
         }
         pending.transport_id = self.network.?.startOAuth(ticket) catch |err| {
             self.owned_renewal_failure = err;
-            try self.unknownOwnedRenewal(&pending);
+            // No ID was transferred into the transport owner's queue. Keep
+            // the original quarantine/cancellation; classify only this known
+            // pre-accept rejection as refusal, never a later lost response.
+            try self.resolveOwnedRenewal(&pending, .safe_refusal, .transport_admission_refused);
             return err;
         };
         const id = pending.transport_id.?;
@@ -4892,7 +4978,7 @@ pub const Engine = struct {
             self.ownedRenewalCurrent(pending) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 self.owned_renewal_failure = err;
-                try self.unknownOwnedRenewal(pending);
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
                 pending.deinit();
                 _ = self.owned_renewal_pending.orderedRemove(index);
                 continue;
@@ -4907,7 +4993,7 @@ pub const Engine = struct {
             for (self.owned_renewal_pending.items) |pending| if (std.meta.eql(pending.binding.operation.operation_id, row.renewal.?.operation_id)) {
                 held = true;
             };
-            if (!held) try self.quarantineOwnedRenewalRow(row.transaction_id, row.renewal.?.operation_id);
+            if (!held) try self.quarantineOwnedRenewalRow(row.transaction_id, row.renewal.?.operation_id, .completion_unknown, .interrupted_or_stranded);
         }
         if (self.stopping or self.network == null or self.native_workers == null or self.owned_renewal_pending.items.len >= max_owned_renewals) return;
         const count = self.owned_siwc_pairs.records.items.len;
@@ -4947,21 +5033,21 @@ pub const Engine = struct {
             self.ownedRenewalCurrent(pending) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 self.owned_renewal_failure = err;
-                try self.unknownOwnedRenewal(pending);
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
                 pending.deinit();
                 _ = self.owned_renewal_pending.orderedRemove(index);
                 return true;
             };
             switch (completion.result) {
                 .failure => {
-                    try self.unknownOwnedRenewal(pending);
+                    try self.unknownOwnedRenewal(pending, .token_transport_failed);
                     pending.deinit();
                     _ = self.owned_renewal_pending.orderedRemove(index);
                 },
                 .response => |response| {
                     response.recheck(pending.ticket) catch |err| {
                         self.owned_renewal_failure = err;
-                        try self.unknownOwnedRenewal(pending);
+                        try self.unknownOwnedRenewal(pending, .authority_check_failed);
                         pending.deinit();
                         _ = self.owned_renewal_pending.orderedRemove(index);
                         return true;
@@ -4971,14 +5057,14 @@ pub const Engine = struct {
                     var evidence = response.evidence(self.allocator) catch |err| {
                         if (err == error.OutOfMemory) return err;
                         self.owned_renewal_failure = err;
-                        try self.unknownOwnedRenewal(pending);
+                        try self.unknownOwnedRenewal(pending, .token_reply_unusable);
                         pending.deinit();
                         _ = self.owned_renewal_pending.orderedRemove(index);
                         return true;
                     };
                     defer evidence.deinit();
                     if (!response.isOwnOss() or response.status() != 200 or evidence.refresh_token == null) {
-                        try self.unknownOwnedRenewal(pending);
+                        try self.unknownOwnedRenewal(pending, .token_reply_unusable);
                         pending.deinit();
                         _ = self.owned_renewal_pending.orderedRemove(index);
                         return true;
@@ -4989,7 +5075,7 @@ pub const Engine = struct {
                     pending.response = response;
                     pending.jwks_id = self.network.?.startJwks(pending.ticket) catch |err| {
                         self.owned_renewal_failure = err;
-                        try self.unknownOwnedRenewal(pending);
+                        try self.unknownOwnedRenewal(pending, .key_transport_failed);
                         pending.deinit();
                         _ = self.owned_renewal_pending.orderedRemove(index);
                         return true;
@@ -5007,20 +5093,20 @@ pub const Engine = struct {
             self.ownedRenewalCurrent(pending) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 self.owned_renewal_failure = err;
-                try self.unknownOwnedRenewal(pending);
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
                 pending.deinit();
                 _ = self.owned_renewal_pending.orderedRemove(index);
                 return true;
             };
             switch (completion.result) {
                 .failure => {
-                    try self.unknownOwnedRenewal(pending);
+                    try self.unknownOwnedRenewal(pending, .key_transport_failed);
                     pending.deinit();
                     _ = self.owned_renewal_pending.orderedRemove(index);
                 },
                 .lease => |keys| self.startOwnedRenewalVerification(pending, keys) catch |err| {
                     self.owned_renewal_failure = err;
-                    try self.unknownOwnedRenewal(pending);
+                    try self.unknownOwnedRenewal(pending, .verification_failed);
                     pending.deinit();
                     _ = self.owned_renewal_pending.orderedRemove(index);
                 },
@@ -5063,19 +5149,19 @@ pub const Engine = struct {
             self.ownedRenewalCurrent(pending) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 self.owned_renewal_failure = err;
-                try self.unknownOwnedRenewal(pending);
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
                 return;
             };
             if (task.failure) |err| {
                 self.owned_renewal_failure = err;
-                try self.unknownOwnedRenewal(pending);
+                try self.unknownOwnedRenewal(pending, .verification_failed);
                 return;
             }
             self.commitOwnedRenewal(pending, task.proof orelse return error.OIDCProofUnavailable, task.response) catch |err| {
                 self.owned_renewal_failure = err;
                 if (self.db.?.poisoned) return err;
                 try self.restoreCommitted();
-                try self.unknownOwnedRenewal(pending);
+                try self.unknownOwnedRenewal(pending, .successor_commit_failed);
             };
             return;
         }
@@ -5091,6 +5177,10 @@ pub const Engine = struct {
             const self: *OwnedRenewalCommitWriter = @ptrCast(@alignCast(raw));
             const current = self.engine;
             current.invalidateCatalogContexts();
+            if (builtin.is_test and current.fixture_owned_renewal_commit_failure == stage) {
+                current.fixture_owned_renewal_commit_failure = null;
+                return error.OwnedRenewalAccountingFixtureFault;
+            }
             const binding = self.pending.binding;
             if (current.stopping or current.poisoned or current.vault_locked or current.db == null) return error.OAuthAuthorityChanged;
             const row = current.owned_siwc_pairs.find(binding.registration_transaction) orelse return error.OAuthAuthorityChanged;
@@ -5170,7 +5260,7 @@ pub const Engine = struct {
         _ = try self.state.addGrant(access);
         _ = try self.state.addGrant(refresh);
         row.status = .ready;
-        row.renewal.?.state = .completed;
+        try self.settleOwnedRenewalAccounting(&row.renewal.?, .committed_successor, .verified_successor_commit);
         row.family_generation = next_generation;
         row.writer_generation = next_generation;
         row.access_generation = next_generation;
@@ -6093,7 +6183,7 @@ pub const Engine = struct {
                 pair.retirement_reason = .withdrawn;
                 pair.status = .retired;
                 if (pair.renewal) |*renewal| if (renewal.state == .issued) {
-                    renewal.state = .unknown;
+                    try self.settleOwnedRenewalAccounting(renewal, .completion_unknown, .consent_withdrawn);
                 };
                 self.cancelOwnedRenewals(pair.source_id, pair.account_id);
                 self.allocator.free(pair.identity_capsule);
@@ -6164,6 +6254,10 @@ pub const Engine = struct {
                 const kind = (try control.optionalString(params, "hold_kind")) orelse "successor";
                 self.fixture_owned_renewal_hold_kind = std.meta.stringToEnum(@FieldType(Engine, "fixture_owned_renewal_hold_kind"), kind) orelse return error.InvalidParams;
             }
+            if (try control.optionalString(params, "fail_stage")) |name| {
+                self.fixture_owned_renewal_commit_failure = std.meta.stringToEnum(storage.CommitStage, name) orelse return error.InvalidParams;
+            }
+            self.fixture_owned_renewal_accounting_tamper = try control.boolean(params, "tamper_accounting", false);
             const servers = try self.allocator.create(OwnedRenewalFixtureServers);
             var retained_servers = false;
             var transferred_servers = false;
@@ -6798,6 +6892,7 @@ pub const Engine = struct {
             return control.success(allocator, request.id, .{
                 .source_disconnect_timing = try lifecycle_source.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
                 .owned_pair_renewal = try siwc_pair.summarizeRenewals(self.owned_siwc_pairs.snapshot(), !self.poisoned and !self.vault_locked and self.db != null),
+                .owned_pair_renewal_attempts = try self.ownedRenewalAccountingSummary(),
                 .native_removal_timing = try native_removal_timing.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
                 .setup_verification = try setup_verification.summarize(allocator, self.mutations.snapshot(), self.now()),
                 .terminal_adapter_setup = try terminal_adapter_setup.summarize(allocator, self.mutations.snapshot()),
@@ -6871,6 +6966,7 @@ pub const Engine = struct {
             defer changes.deinit(allocator);
             for (self.state.grants.items) |grant| if (eql(grant.source_id, id)) try changes.append(allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });
             try self.disconnectImportSource(id);
+            try self.retireOwnedRenewalAccounting(id, null, .source_disconnected);
             self.owned_siwc_pairs.retireFor(self.allocator, id, null);
             self.cancelOwnedRenewals(id, null);
             try self.persist(changes.items);
@@ -6975,6 +7071,7 @@ pub const Engine = struct {
             if (eql(method, "account.pause")) try self.state.pause(id, true) else if (eql(method, "account.resume")) try self.state.pause(id, false) else if (eql(method, "account.drain")) try self.state.drain(id) else if (eql(method, "account.forget")) {
                 if (self.import_forget_epoch == std.math.maxInt(u64)) return error.GenerationConflict;
                 try self.state.forget(id);
+                try self.retireOwnedRenewalAccounting(null, id, .account_forgotten);
                 self.owned_siwc_pairs.retireFor(self.allocator, null, id);
                 self.cancelOwnedRenewals(null, id);
                 try self.retireObservationCredits(null, id, null);
@@ -10138,6 +10235,11 @@ fn maintenanceReservation(saved: Persisted) !usize {
         const actual = try snapshot_admission.countJson(attempts, browser_attempt.maximum_snapshot_bytes);
         reserve = try std.math.add(usize, reserve, browser_attempt.maximum_snapshot_bytes - actual);
     }
+    if (saved.owned_renewal_accounting) |aggregate| {
+        try owned_renewal_accounting.validate(aggregate);
+        const actual = try snapshot_admission.countJson(aggregate, owned_renewal_accounting.maximum_snapshot_bytes);
+        reserve = try std.math.add(usize, reserve, owned_renewal_accounting.maximum_snapshot_bytes - actual);
+    }
     return reserve;
 }
 
@@ -10193,6 +10295,12 @@ fn validatePersistedAdmission(allocator: std.mem.Allocator, json: []const u8, cu
             strict.deinit();
         };
     };
+    if (control.get(raw.value, "owned_renewal_accounting")) |aggregate| if (aggregate != .null) {
+        if (aggregate != .object) return error.InvalidRenewalAccounting;
+        inline for (@typeInfo(owned_renewal_accounting.Snapshot).@"struct".field_names) |name| {
+            if (control.get(aggregate, name) == null) return error.InvalidRenewalAccounting;
+        }
+    };
     const parsed = try std.json.parseFromSlice(Persisted, allocator, json, .{});
     defer parsed.deinit();
     const saved = parsed.value;
@@ -10217,6 +10325,18 @@ fn validatePersistedAdmission(allocator: std.mem.Allocator, json: []const u8, cu
     if (saved.owned_siwc_pairs) |pairs| {
         if (saved.schema_version != 2) return error.InvalidSiwcPair;
         try siwc_pair.validate(pairs);
+    }
+    var accounted_issued: u64 = 0;
+    if (saved.owned_siwc_pairs) |pairs| for (pairs.records) |pair| if (pair.renewal) |renewal| {
+        if (renewal.accounting_admitted and renewal.accounting_capacity_unavailable) return error.InvalidRenewalAccounting;
+        if (!renewal.accounting_admitted) continue;
+        if (saved.owned_renewal_accounting == null) return error.InvalidRenewalAccounting;
+        if (renewal.state == .issued) accounted_issued += 1;
+    };
+    if (saved.owned_renewal_accounting) |aggregate| {
+        if (saved.schema_version != 2) return error.InvalidRenewalAccounting;
+        try owned_renewal_accounting.validate(aggregate);
+        if (aggregate.unresolved != accounted_issued) return error.InvalidRenewalAccounting;
     }
     if (saved.fresh_oauth_authority) |enrollments| {
         if (saved.schema_version != 2) return error.InvalidOAuthEnrollment;
@@ -15101,6 +15221,8 @@ const OwnedRenewalActorModel = struct {
         scheduled: bool = false,
         http_status: u16 = 200,
         hold_stage: ?[]const u8 = null,
+        fail_stage: ?[]const u8 = null,
+        tamper_accounting: bool = false,
         hold_kind: []const u8 = "successor",
         hold_window: bool = false,
         hold_before_dispatch: bool = false,
@@ -15149,6 +15271,14 @@ const OwnedRenewalActorModel = struct {
         defer parsed.deinit();
         return parsed.value;
     }
+    fn accounting(current: *Engine) !owned_renewal_accounting.Summary {
+        const reply = try call(current, "reliability.lifecycle", @as(?u8, null), .control);
+        defer reply.deinit();
+        const value = control.get(try result(&reply), "owned_pair_renewal_attempts") orelse return error.FixtureMeasurementsMissing;
+        const parsed = try std.json.parseFromValue(owned_renewal_accounting.Summary, a, value, .{});
+        defer parsed.deinit();
+        return parsed.value;
+    }
     // Fixed synthetic fixture stages only; this is not user-outcome telemetry.
     fn trace(comptime case: []const u8, index: usize, comptime stage: []const u8, started: std.Io.Timestamp) void {
         const elapsed = started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds();
@@ -15167,7 +15297,7 @@ const OwnedRenewalActorModel = struct {
         return error.FixtureTimeout;
     }
     fn start(current: *Engine, account: []const u8, body: []const u8, keys: []const u8, options: Options) !Json {
-        return fixture(current, "fixture.siwcRenewalStart", .{ .account_id = account, .body = body, .keys = keys, .milliseconds = options.milliseconds, .delay_ms = options.delay_ms, .lost_reply = options.lost_reply, .hold_reply = options.hold_reply, .scheduled = options.scheduled, .http_status = options.http_status, .hold_stage = options.hold_stage, .hold_kind = options.hold_kind, .hold_window = options.hold_window, .hold_before_dispatch = options.hold_before_dispatch, .hold_worker = options.hold_worker });
+        return fixture(current, "fixture.siwcRenewalStart", .{ .account_id = account, .body = body, .keys = keys, .milliseconds = options.milliseconds, .delay_ms = options.delay_ms, .lost_reply = options.lost_reply, .hold_reply = options.hold_reply, .scheduled = options.scheduled, .http_status = options.http_status, .hold_stage = options.hold_stage, .fail_stage = options.fail_stage, .tamper_accounting = options.tamper_accounting, .hold_kind = options.hold_kind, .hold_window = options.hold_window, .hold_before_dispatch = options.hold_before_dispatch, .hold_worker = options.hold_worker });
     }
     fn window(current: *Engine, account: []const u8, bound: []const u8, seconds: i64) !i64 {
         const narrowed = try fixture(current, "fixture.siwcGrantWindow", .{ .account_id = account, .bound = bound, .seconds = seconds });
@@ -16755,4 +16885,320 @@ test "catalog refreshing HTTP cannot publish after atomic successor and complete
     try std.testing.expect(fresh.ticket.?.originalUntil().raw.nanoseconds > successor.renewal.?.until_nanoseconds);
     try std.testing.expectEqual(@as(u32, 1), fresh.requestCount());
     try std.testing.expect(fresh.validWire());
+}
+
+test "paired renewal accounting survives real rotations pruning and observation restart without recount" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |live| live.deinit();
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "aggregate-two" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    try std.testing.expect((try M.accounting(current.?)).admitted == null);
+    var first_operation: [64]u8 = undefined;
+    for (0..2) |index| {
+        const expected: u64 = @intCast(index + 1);
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, "aggregate-two", .{});
+        defer body.deinit();
+        const started = try M.start(current.?, account, body.bytes, keys, .{});
+        defer started.deinit();
+        _ = try M.result(&started);
+        const completed = try M.wait(current.?, account, "ready", expected + 1);
+        defer completed.deinit();
+        const actual = try M.result(&completed);
+        try std.testing.expect(try control.boolean(actual, "wire_valid", false));
+        try std.testing.expect(try control.boolean(actual, "external_retained", false));
+        const counts = try M.accounting(current.?);
+        try std.testing.expectEqual(@as(?u64, expected), counts.admitted);
+        try std.testing.expectEqual(@as(?u64, expected), counts.committed_successors);
+        try std.testing.expectEqual(@as(?u64, 0), counts.safe_refusals);
+        try std.testing.expectEqual(@as(?u64, 0), counts.completion_unknown);
+        try std.testing.expectEqual(@as(?u64, 0), counts.unresolved);
+        for (0..3) |_| try std.testing.expectEqualDeep(counts, try M.accounting(current.?));
+        current.?.deinit();
+        current = null;
+        {
+            const file = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+            defer a.free(file);
+            var store = try storage.Store.openRoot(io, a, file, instance.Selection.default.vaultRoot(), F.key);
+            defer store.close();
+            var saved = try store.readSnapshot();
+            defer saved.deinit();
+            const decoded = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+            defer decoded.deinit();
+            const operation = decoded.value.owned_siwc_pairs.?.records[0].renewal.?.operation_id;
+            if (index == 0) first_operation = operation else try std.testing.expect((try store.readOperation(&first_operation)) == null);
+            try std.testing.expectEqual(storage.RotationStatus.completed, (try store.readOperation(&operation)).?.status);
+            try std.testing.expectEqual(expected, decoded.value.owned_renewal_accounting.?.admitted);
+            try std.testing.expectEqual(expected, decoded.value.owned_renewal_accounting.?.committed_successors);
+            // The actual original ID cannot create a second admission. Once
+            // its completed row is pruned, the old grant-generation fence
+            // still denies it; unchanged counters remain authenticated SQL.
+            const old_pair = decoded.value.owned_siwc_pairs.?.records[0];
+            const original: storage.OwnedPairRotation = .{
+                .operation_id = &first_operation,
+                .access = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = old_pair.account_id, .grant_id = old_pair.access_grant_id, .generation = 1, .purpose = "request", .scope = siwc_pair.resource_uri },
+                .refresh = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = old_pair.account_id, .grant_id = old_pair.refresh_grant_id, .generation = 1, .purpose = "renewal", .scope = siwc_pair.resource_uri },
+            };
+            const Fence = struct {
+                fn check(_: *anyopaque, _: storage.CommitStage) !void {}
+            };
+            var context: u8 = 0;
+            const fence: storage.CommitFence = .{ .context = &context, .check = Fence.check };
+            try std.testing.expectError(if (index == 0) error.PairIssueAlreadyAdmitted else error.PairRotationConflict, store.beginOwnedPairRotation(saved.revision, saved.json, original, &fence));
+            var unchanged = try store.readSnapshot();
+            defer unchanged.deinit();
+            try std.testing.expectEqual(saved.revision, unchanged.revision);
+            try std.testing.expect(std.mem.eql(u8, saved.json, unchanged.json));
+        }
+        current = try Engine.openWithKey(io, a, path, F.key);
+        const restored = try M.accounting(current.?);
+        try std.testing.expectEqualDeep(counts, restored);
+        const observed = try M.observe(current.?, account);
+        defer observed.deinit();
+        const value = try M.result(&observed);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+        try std.testing.expect(!restored.successful_user_journeys_measured and restored.local_elapsed_ns == null and restored.user_end_to_end_elapsed_ns == null);
+    }
+}
+
+test "paired renewal accounting separates known pretransport refusal from accepted restart uncertainty" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for (0..2) |mode| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+        defer if (current) |live| live.deinit();
+        const subject = if (mode == 0) "aggregate-refusal" else "aggregate-restart";
+        const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        if (mode == 0) _ = try M.window(current.?, account, "refresh_provider", 3);
+        const options: M.Options = if (mode == 0) .{ .milliseconds = 8000, .hold_window = true, .hold_before_dispatch = true } else .{ .hold_reply = true };
+        const started = try M.start(current.?, account, body.bytes, keys, options);
+        defer started.deinit();
+        if (mode == 0) {
+            try std.testing.expect(control.get(started.value, "error") != null);
+            const refused = try M.wait(current.?, account, "quarantined", 1);
+            defer refused.deinit();
+            const value = try M.result(&refused);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+            const counts = try M.accounting(current.?);
+            try std.testing.expectEqual(@as(?u64, 1), counts.safe_refusals);
+            try std.testing.expectEqual(@as(?u64, 0), counts.completion_unknown);
+        } else {
+            _ = try M.result(&started);
+            const issued = try M.accounting(current.?);
+            try std.testing.expectEqual(@as(?u64, 1), issued.admitted);
+            try std.testing.expectEqual(@as(?u64, 1), issued.unresolved);
+            try std.testing.expectEqual(@as(?u64, 0), issued.safe_refusals);
+        }
+        current.?.deinit();
+        current = null;
+        for (0..2) |_| {
+            current = try Engine.openWithKey(io, a, path, F.key);
+            const counts = try M.accounting(current.?);
+            try std.testing.expectEqual(@as(?u64, 1), counts.admitted);
+            try std.testing.expectEqual(@as(?u64, 0), counts.unresolved);
+            try std.testing.expectEqual(@as(?u64, 0), counts.committed_successors);
+            try std.testing.expectEqual(@as(?u64, if (mode == 0) 1 else 0), counts.safe_refusals);
+            try std.testing.expectEqual(@as(?u64, if (mode == 0) 0 else 1), counts.completion_unknown);
+            const cause: owned_renewal_accounting.Cause = if (mode == 0) .transport_admission_refused else .interrupted_or_stranded;
+            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@intFromEnum(cause)]);
+            const observed = try M.observe(current.?, account);
+            defer observed.deinit();
+            const value = try M.result(&observed);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+            try std.testing.expect(try control.boolean(value, "external_retained", false));
+            current.?.deinit();
+            current = null;
+        }
+    }
+}
+
+test "paired renewal accounting actual rollback restores issued counts and postreserve poison hides prepared success" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "before_reservation", "before_commit" }, 0..) |stage, index| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = if (index == 0) "aggregate-rollback" else "aggregate-poison";
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        const started = try M.start(current, account, body.bytes, keys, .{ .fail_stage = stage });
+        defer started.deinit();
+        _ = try M.result(&started);
+        if (index == 0) {
+            const refused = try M.wait(current, account, "quarantined", 1);
+            defer refused.deinit();
+            const value = try M.result(&refused);
+            try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
+            try std.testing.expectEqual(@as(i64, 1), control.get(value, "key_count").?.integer);
+            try std.testing.expect(try control.boolean(value, "wire_valid", false));
+            const counts = try M.accounting(current);
+            try std.testing.expectEqual(@as(?u64, 1), counts.admitted);
+            try std.testing.expectEqual(@as(?u64, 0), counts.committed_successors);
+            try std.testing.expectEqual(@as(?u64, 0), counts.safe_refusals);
+            try std.testing.expectEqual(@as(?u64, 1), counts.completion_unknown);
+            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@intFromEnum(owned_renewal_accounting.Cause.successor_commit_failed)]);
+            try std.testing.expectEqualDeep(counts, try M.accounting(current));
+        } else {
+            const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+            var unavailable = false;
+            while (!unavailable and until.durationFromNow(io).raw.toNanoseconds() > 0) {
+                const counts = try M.accounting(current);
+                unavailable = !counts.authority_available;
+                if (unavailable) {
+                    try std.testing.expect(counts.admitted == null and counts.committed_successors == null and counts.causes == null);
+                } else try io.sleep(.fromMilliseconds(5), .awake);
+            }
+            try std.testing.expect(unavailable);
+        }
+    }
+}
+
+test "paired renewal accounting strict raw snapshot prepays growth and legacy null emits no field" {
+    const a = std.testing.allocator;
+    const legacy: Persisted = .{ .schema_version = 2 };
+    const encoded_legacy = try std.json.Stringify.valueAlloc(a, legacy, .{});
+    defer a.free(encoded_legacy);
+    const decoded_legacy = try std.json.parseFromSlice(std.json.Value, a, encoded_legacy, .{});
+    defer decoded_legacy.deinit();
+    try std.testing.expect(control.get(decoded_legacy.value, "owned_renewal_accounting") == null);
+    const legacy_reserve = try maintenanceReservation(legacy);
+    var active = legacy;
+    active.owned_renewal_accounting = try owned_renewal_accounting.Snapshot.init(100);
+    active.maintenance_growth_bytes = try maintenanceReservation(active);
+    const bytes = try snapshot_admission.countJson(active.owned_renewal_accounting.?, owned_renewal_accounting.maximum_snapshot_bytes);
+    try std.testing.expectEqual(owned_renewal_accounting.maximum_snapshot_bytes, bytes + active.maintenance_growth_bytes.? - legacy_reserve);
+    const encoded = try std.json.Stringify.valueAlloc(a, active, .{});
+    defer a.free(encoded);
+    try validatePersistedAdmission(a, encoded, 0);
+    var malformed = try std.json.parseFromSlice(std.json.Value, a, encoded, .{ .allocate = .alloc_always });
+    defer malformed.deinit();
+    const aggregate = malformed.value.object.getPtr("owned_renewal_accounting").?;
+    try std.testing.expect(aggregate.object.swapRemove("causes"));
+    const missing = try std.json.Stringify.valueAlloc(a, malformed.value, .{});
+    defer a.free(missing);
+    try std.testing.expectError(error.InvalidRenewalAccounting, validatePersistedAdmission(a, missing, 0));
+}
+
+test "paired renewal accounting optional reserve preserves a genuine held effect credit at capacity" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var current: Engine = .{
+        .allocator = a,
+        .io = io,
+        .state_dir = "",
+        .state = domain.State.init(a),
+        .observers = observer.Coordinator.init(a),
+        .requests = request_authority.Ledger.init(a, 4096),
+        .mutations = try mutation_authority.Ledger.init(a, 4096),
+        .admission = snapshot_admission.Ledger.init(a),
+        .native_owners = native_owner.Ledger.init(a),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    current.maintenance_growth_bytes = try maintenanceReservation(current.persisted());
+    const key: snapshot_admission.Key = .{ .kind = .rotation, .id = @splat(0x73), .generation = 1 };
+    try current.reserveOutcome(.{ .key = key, .owner_id = "aggregate-capacity-owner", .provider = "fixture", .plan_bytes = 1 });
+    current.maintenance_growth_bytes = try maintenanceReservation(current.persisted());
+    const roomy = try current.snapshotUsage();
+    try std.testing.expect(roomy.remaining_bytes > 4096);
+    const held_bytes = roomy.remaining_bytes + 1 - 512;
+    try current.releaseOutcome(key);
+    try current.reserveOutcome(.{ .key = key, .owner_id = "aggregate-capacity-owner", .provider = "fixture", .plan_bytes = held_bytes });
+    current.maintenance_growth_bytes = try maintenanceReservation(current.persisted());
+    const before_usage = try current.snapshotUsage();
+    try std.testing.expect(before_usage.remaining_bytes < owned_renewal_accounting.maximum_snapshot_bytes);
+    const before = try std.json.Stringify.valueAlloc(a, current.persisted(), .{});
+    defer a.free(before);
+    try std.testing.expect(!(try current.prepareOwnedRenewalAccounting(current.now())));
+    try std.testing.expect(current.owned_renewal_accounting == null and current.renewal_accounting_capacity_unavailable);
+    try std.testing.expectEqualDeep(before_usage, try current.snapshotUsage());
+    const after = try std.json.Stringify.valueAlloc(a, current.persisted(), .{});
+    defer a.free(after);
+    try std.testing.expect(std.mem.eql(u8, before, after));
+    try std.testing.expectEqual(held_bytes, current.outcomeIntent(key).?.plan_bytes);
+}
+
+test "paired renewal accounting constructor rejects unrelated aggregate advance before SQL or provider work" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "aggregate-unauthorized-delta" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "aggregate-unauthorized-delta", .{});
+    defer body.deinit();
+    const before = try M.accounting(current);
+    const rejected = try M.start(current, account, body.bytes, keys, .{ .tamper_accounting = true });
+    defer rejected.deinit();
+    try SiwcActorTest.refusal(&rejected, "OAuthAuthorityChanged");
+    try std.testing.expectEqualDeep(before, try M.accounting(current));
+    const observed = try M.observe(current, account);
+    defer observed.deinit();
+    const value = try M.result(&observed);
+    try M.assertPair(value, "ready", 1, true);
+    try std.testing.expect(control.get(value, "renewal_state").? == .null);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+    try std.testing.expect(try control.boolean(value, "external_retained", false));
 }

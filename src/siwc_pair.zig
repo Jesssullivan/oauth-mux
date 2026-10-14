@@ -72,6 +72,25 @@ pub const Renewal = struct {
     source_expires_at: i64,
     grant_window: GrantWindow = .{},
     state: enum { issued, completed, unknown } = .issued,
+    // Only the authenticated issuance transaction can join this operation to
+    // the optional aggregate. Legacy/uncaptured witnesses never backfill it.
+    accounting_admitted: bool = false,
+    accounting_capacity_unavailable: bool = false,
+    pub fn jsonStringify(self: Renewal, writer: anytype) !void {
+        try writer.beginObject();
+        inline for (@typeInfo(Renewal).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "accounting_admitted") or std.mem.eql(u8, name, "accounting_capacity_unavailable")) {
+                if (@field(self, name)) {
+                    try writer.objectField(name);
+                    try writer.write(true);
+                }
+            } else {
+                try writer.objectField(name);
+                try writer.write(@field(self, name));
+            }
+        }
+        try writer.endObject();
+    }
     pub fn originalUntil(self: Renewal) std.Io.Clock.Timestamp {
         return .{ .clock = .awake, .raw = .{ .nanoseconds = self.until_nanoseconds } };
     }
