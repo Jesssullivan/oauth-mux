@@ -173,9 +173,12 @@ def _portable_python_sources(kwargs):
     """Route the generated module only to consumers declaring portable.py."""
     sources = kwargs.get("srcs", [])
     portable_labels = ["//delivery:portable.py", "@//delivery:portable.py", "@@//delivery:portable.py"]
+    template_labels = ["//delivery:portable_launcher_template", "@//delivery:portable_launcher_template", "@@//delivery:portable_launcher_template"]
     if native.package_name() == "delivery":
         portable_labels += ["portable.py", ":portable.py"]
-    if any([str(source) in portable_labels for source in sources + [kwargs.get("main", "")]]):
+        template_labels += ["portable_launcher_template", ":portable_launcher_template"]
+    declared = sources + [kwargs.get("main", "")]
+    if any([str(source) in portable_labels for source in declared]) and not any([str(source) in template_labels for source in declared]):
         kwargs["srcs"] = sources + ["//delivery:portable_launcher_template"]
     return kwargs
 
