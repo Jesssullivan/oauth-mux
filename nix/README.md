@@ -139,3 +139,25 @@ No evaluation, generation build, activation, update, removal, service readiness,
 or browser registration occurs in this gate. Genuine generation and lifecycle
 actions remain subsequent declared work; the dummy-store evaluator and managed
 ownership policy are unchanged.
+
+The next declared gate is
+`//tools:home_manager_linux_generation_catalogue_producer`, under
+`home-manager-generation-catalogue-reserved`. It reuses the same cold input
+selector and complete isolated registration, requires separately successful
+current paired-source/artifact producer provenance, and forces the actual
+`home.activationPackage.drvPath` from the new generation expression. It derives the first
+proposal itself; the old selected `.drv` remains historical input with no HM
+generation authority. Actual generated public `.drv`/source bytes and registration
+records are retained in the acquisition request, before private-store cleanup. The original dummy evaluator is
+unchanged. Its fixed proof username/home and extension ID are generation
+configuration, not an installed user or browser admission.
+
+The action emits an exact version-bound acquisition request from actual Nix
+2.34.6 recursive derivation JSON and isolated fixed-output bindings. Required
+derivation output roots are explicit: they are not implied by a `.drv` reference
+closure or by `all_tools`. Missing output roots and their full reference/NAR
+closures still need a subsequent declared content acquisition. The request
+never qualifies their bytes, a complete builder closure, a realized generation,
+or activation/update/removal. It performs no builder or activation command.
+Actual source/producer exit, model checks and private-store evaluation remain
+unrun until the coordinator executes their declared gates.

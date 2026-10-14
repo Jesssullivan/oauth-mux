@@ -35,6 +35,8 @@ filegroup(
 
 exports_files([
     "nix/home_manager_realization_inputs.py", "nix/home_manager_realization_inputs_test.py",
+    "nix/home_manager_generation_catalogue.py", "nix/home_manager_generation_catalogue_test.py", "nix/home-manager-generation.nix",
+    "nix/home_manager_generation_module_owner.py",
     "src/platform/native_peer_runtime_bridge.c",
     "src/platform/native_peer.c",
     "src/platform/native_peer.h",

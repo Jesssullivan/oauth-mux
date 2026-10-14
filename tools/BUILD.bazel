@@ -3203,3 +3203,34 @@ retained_sdk_tree_targets(
     source_sources = _NATIVE_CONTENT_SOURCE_SOURCES,
     guard_sources = _RESIDENT_GUARD_SOURCES + _YOGA_GUARD_SOURCES + _CODEX_SDK_SOURCES,
 )
+
+# Actual HM derivation origin and explicit next builder-content acquisition.
+_HM_GENERATION_CATALOGUE_SOURCES = depset(_HM_REALIZATION_INPUT_SOURCES + _CURRENT_HM_CONSUMER_SOURCES +
+    ["//:nix/home_manager_generation_catalogue.py", "//:nix/home_manager_generation_module_owner.py", "//delivery:portable_launcher_template"]).to_list()
+python_test(name="home_manager_generation_catalogue_test", main="//:nix/home_manager_generation_catalogue_test.py",
+    srcs=depset(_HM_GENERATION_CATALOGUE_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
+    tags=["manual","no-remote","no-cache"],
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])
+python_test(name="home_manager_linux_generation_catalogue_producer", main="//:nix/home_manager_generation_catalogue.py",
+    srcs=depset(_HM_GENERATION_CATALOGUE_SOURCES + _RESIDENT_GUARD_SOURCES).to_list(),
+    data=["@omux_hm_realization_inputs//:selection.json","@omux_hm_realization_inputs//:layout.json",
+          "@omux_private_store_host//:private-store-seed.json", "@omux_hm_realization_inputs//:members",
+          "@omux_hm_current//:selection.json","@omux_hm_current//:selected_inputs",
+          "@omux_current_hm_pair_bundle//:selection.json","@omux_current_hm_pair_bundle//:selected_inputs",
+          "@omux_current_hm_pair_bundle//:bundle","@omux_current_hm_pair_bundle//:receipt.json",
+          "//:nix/home-manager.nix","//:nix/consume-bazel-artifact.nix",
+          "//:nix/ownership-witness.nix","//:nix/service-witness.nix","//:nix/home-manager-generation.nix"],
+    args=["--selection","$(location @omux_hm_realization_inputs//:selection.json)",
+          "--layout","$(location @omux_hm_realization_inputs//:layout.json)",
+          "--locked-seed","$(location @omux_private_store_host//:private-store-seed.json)",
+          "--artifact-selection","$(location @omux_hm_current//:selection.json)",
+          "--pair-selection","$(location @omux_current_hm_pair_bundle//:selection.json)",
+          "--module","home-manager.nix=$(location //:nix/home-manager.nix)",
+          "--module","consume-bazel-artifact.nix=$(location //:nix/consume-bazel-artifact.nix)",
+          "--module","ownership-witness.nix=$(location //:nix/ownership-witness.nix)",
+          "--module","service-witness.nix=$(location //:nix/service-witness.nix)",
+          "--module","home-manager-generation.nix=$(location //:nix/home-manager-generation.nix)"],
+    env_inherit=["OMUX_HM_ROOT_ENTRY_NS","OMUX_HM_ROOT_DEADLINE_NS","OMUX_HM_RESERVED_PROFILE",
+                 "OMUX_HM_REALIZATION_SOURCE_COMMIT","OMUX_HM_REALIZATION_GRAPH_SHA256"],
+    tags=["manual","no-remote","no-cache"],timeout="long",
+    target_compatible_with=["@platforms//os:linux","@platforms//cpu:x86_64"])

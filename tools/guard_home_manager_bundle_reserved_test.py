@@ -175,5 +175,26 @@ class HomeManagerReservationModels(unittest.TestCase):
         with self.assertRaises(ValueError): hm.projection(hm.RECONSTRUCTION, 100 * 10**9, 1301 * 10**9, True, {})
 
 
+    def test_generation_catalogue_is_exact_own_singleton_with_original_clock_and_no_cache(self):
+        vector = ["test", "//tools:home_manager_linux_generation_catalogue_producer"]
+        self.assertEqual(hm.COHORTS[hm.GENERATION_CATALOGUE], vector)
+        entry, end = 100*10**9, 1300*10**9
+        with patch.object(kernel.time, "monotonic_ns", return_value=200*10**9), \
+                patch.object(guard, "graph_digest", return_value=("b"*64, 1)):
+            command = hm.command(guard.bazel_command, "bazel", Path("/model/epoch"), vector,
+                hm.GENERATION_CATALOGUE, entry, end, source_commit="a"*40, source_dirty="false")
+        for flag in ("--test_env=OMUX_HM_RESERVED_PROFILE="+hm.GENERATION_CATALOGUE,
+                "--test_env=OMUX_HM_ROOT_ENTRY_NS="+str(entry), "--test_env=OMUX_HM_ROOT_DEADLINE_NS="+str(end),
+                "--test_env=OMUX_HM_REALIZATION_SOURCE_COMMIT="+"a"*40,
+                "--test_env=OMUX_HM_REALIZATION_GRAPH_SHA256="+"b"*64,
+                "--nocache_test_results", "--remote_cache=", "--remote_executor="):
+            self.assertIn(flag, command)
+        for other in (["build",vector[1]], vector+["//:docs_check"], hm.COHORTS[hm.REALIZATION_INPUTS]):
+            with self.assertRaises(ValueError): hm.selected(hm.GENERATION_CATALOGUE, other)
+        result=hm.projection(hm.GENERATION_CATALOGUE, entry, end, True, {})
+        for key in ("activation_qualified","current_artifact_qualified","browser_consent_qualified","continuity_qualified"):
+            self.assertIs(result[key], False)
+
+
 if __name__ == "__main__":
     unittest.main()

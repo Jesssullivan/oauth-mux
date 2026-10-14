@@ -452,7 +452,7 @@ def registration_commands(tools, private_root):
             private.common(tools["nix_store"], private_root) + ["--dump-db"])
 
 
-def qualify(value, base, parent, deadline, *, runner=private.run):
+def qualify(value, base, parent, deadline, *, runner=private.run, _registered=None):
     records = shape(value)
     inputs = Inputs(value, base, deadline)
     records, size = verify(value, inputs.open, deadline)
@@ -482,11 +482,18 @@ def qualify(value, base, parent, deadline, *, runner=private.run):
             dumped = runner(commands[1], private.environment(owned.path), owned.path, deadline, tool_fd=tool.fileno())
         actual = private.readback_records(dumped, value["roots"])
         private.compare_readback(records, actual)
+        # Private next-stage callback operates only on this freshly verified
+        # registered store, under the same cutoff. Default input gate is unchanged.
+        stage = None if _registered is None else _registered(value, owned, private_root, inputs, deadline, runner)
         require(verify_copy(value, directory, deadline, copied)[1] == size)
         require(verify(value, inputs.open, deadline)[1] == size)
         artifact_bytes(value, inputs.open, deadline)
         inputs.check(); owned.recheck()
         require(copy_facts(value, directory, deadline) == copied)
+        if _registered is not None:
+            _registered.check(deadline)
+            inputs.check(); owned.recheck()
+            _registered.fence()
         private.tick(deadline)
         result = {"schemaVersion": 1, "kind": KIND, "scope": "complete-input-content-and-isolated-registration-only",
             "inputSourceCommit": value["sourceCommit"], "inputSourceGraphSha256": value["sourceGraphSha256"],
@@ -494,14 +501,23 @@ def qualify(value, base, parent, deadline, *, runner=private.run):
             "narBytes": size, "registrationReadback": "exact", "historicalPhysicalCustodyInherited": False,
             "homeManagerDerivationQualified": False, "generationRealized": False, "activated": False,
             "updated": False, "removed": False, "serviceReady": False, "browserInstalled": False}
+        if stage is not None:
+            require(type(stage) is dict)
+            result["nextStage"] = stage
     except BaseException as error:
         failure = error
         raise
     finally:
+        cleanup = None
+        if _registered is not None:
+            try: _registered.close(deadline)
+            except BaseException as error: cleanup = error
         try: owned.close(deadline + private.CLEANUP_SECONDS)
-        except BaseException as cleanup:
+        except BaseException as error:
+            if cleanup is None: cleanup = error
+        if cleanup is not None:
             if failure is not None: raise failure from cleanup
-            raise
+            raise cleanup
     require(not os.path.lexists(owned.path)); inputs.check(); private.tick(deadline)
     result["privateRootRemoved"] = True
     return result, inputs

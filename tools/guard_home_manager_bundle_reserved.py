@@ -6,8 +6,10 @@ RECONSTRUCTION = "home-manager-reconstruction-reserved"
 EVALUATION = "home-manager-evaluation-reserved"
 MODELS = "home-manager-bundle-models-reserved"
 REALIZATION_INPUTS = "home-manager-realization-inputs-reserved"
-PROFILES = (RECONSTRUCTION, EVALUATION, MODELS, REALIZATION_INPUTS)
+GENERATION_CATALOGUE = "home-manager-generation-catalogue-reserved"
+PROFILES = (RECONSTRUCTION, EVALUATION, MODELS, REALIZATION_INPUTS, GENERATION_CATALOGUE)
 COHORTS = {
+    GENERATION_CATALOGUE: ["test", "//tools:home_manager_linux_generation_catalogue_producer"],
     REALIZATION_INPUTS: ["test", "//tools:home_manager_linux_realization_inputs_producer"],
     RECONSTRUCTION: ["test", "//tools:home_manager_retained_reconstruction_producer"],
     EVALUATION: ["test", "//tools:home_manager_acquired_evaluation"],
@@ -50,7 +52,7 @@ def command(builder, bazel, run, arguments, profile, entry, deadline, **kwargs):
     options = ["--repository_disable_download", "--repo_contents_cache="]
     if profile != MODELS:
         options += ["--test_env=OMUX_HM_ROOT_ENTRY_NS=" + str(entry), "--test_env=OMUX_HM_ROOT_DEADLINE_NS=" + str(deadline), "--test_env=OMUX_HM_RESERVED_PROFILE=" + profile]
-    if profile == REALIZATION_INPUTS:
+    if profile in (REALIZATION_INPUTS, GENERATION_CATALOGUE):
         from execution_guard import graph_digest
         from pathlib import Path
         options += ["--test_env=OMUX_HM_REALIZATION_SOURCE_COMMIT=" + kwargs["source_commit"],
