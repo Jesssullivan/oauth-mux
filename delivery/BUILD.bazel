@@ -481,6 +481,14 @@ python_test(
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux"],
 )
+python_test(
+    name = "reference_renderer_parity_test",
+    main = "test_reference_renderer_parity.py",
+    data = ["//:omux", "//:reference_renderer", "//:reference_bundle"],
+    args = ["$(location //:omux)", "$(location //:reference_renderer)",
+            "$(location //:reference_bundle)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 python_test(name = "cli_test", main = "test_cli.py", srcs = [],
             data = ["//:omux"], args = ["$(location //:omux)"],
             target_compatible_with = ["@platforms//os:linux"])

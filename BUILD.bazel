@@ -655,9 +655,20 @@ zig_test(
     main = "src/integrations/claude.zig",
 )
 
+# The action renderer imports the same maintained catalog as `omux reference`.
+# Keep its exec transition, without recompiling the complete daemon as a tool.
+zig_binary(
+    name = "reference_renderer",
+    main = "src/reference_main.zig",
+    srcs = ["src/reference.zig", "src/product.zig", "src/catalog.zig", "src/control.zig"],
+    zigopts = ["-O", "ReleaseSafe"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
 reference_bundle(
     name = "reference_bundle",
-    executable = ":omux",
+    executable = ":reference_renderer",
     out = "reference-bundle.json",
 )
 
