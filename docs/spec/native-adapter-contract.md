@@ -661,3 +661,129 @@ It confers no installed, ordinary native launch/resume, accepted-history or live
 same-process handoff proof. All `NAC-001`–`NAC-018`, authorization, permission,
 consent, renewal ownership and no-accepted-replay requirements continue to apply,
 with Omux owning the integration and native session/history authority preserved.
+
+
+### Distinct retained public SDK TreeArtifact input route
+
+The retained-tree route is separate from the transported carrier route above.
+It is an unqualified implementation route until its declared producer, current
+SOURCE consumer and native execution gates have actual evidence. Historical
+carrier, SDK, SOURCE, compilation and native failures remain evidence for their
+exact inputs. A failed producer output cannot be selected or admitted here.
+
+The dependency producer `//tools:codex_native_retained_sdk_tree_producer` owns
+one finite original 1200-second envelope, with 1170 seconds for work and the
+existing cleanup allowance. Its materialization action authenticates the four
+selected carrier leaves and the original five successful seal-proof roles,
+reads the carrier fully at initial and final binding, performs the existing
+durable extraction and registered final fresh proof, then publishes one
+same-filesystem owned tree. It proves the complete published tree again after
+rename. The tree is a declared Bazel Directory input, with separately declared
+recipe, inventory, receipt and creator context files. There is no second SDK
+copy into test outputs or a per-member undeclared host-directory alias.
+
+The recipe commits the complete declared code, tool, proof and four-carrier
+byte inputs and their logical roles. Its input digest is a canonical semantic
+commitment, not a claim to be Bazel's protobuf Action digest. The logical SDK
+inventory and canonical SDK/JDK NAR descriptors come from the authenticated
+original carrier. The qualifier independently rechecks the recipe and provenance,
+then reads every current post-Bazel tree byte and current namespace, validates
+SHA and canonical NAR, and checks original module/registry/recipe semantics.
+Bazel's all-regular-0555 retention mode is an explicit physical policy: canonical
+NAR executable bits use authenticated logical modes, while actual streams and
+FD witnesses require current physical 0555 modes. It is not inferred from a
+previous successful scan. A genuine action/qualifier gate must establish this
+normalization behavior; a fixture's chmod only models it.
+
+Successful metadata is copied under the producer epoch as immutable
+`sdk-tree-created/{receipt,inventory,recipe,creator-context}.json`, with an
+actual source-to-copy hash/size ledger. Selection binds that successful outer
+receipt, collector index, log, aggregate/child XML counters, executed program
+marker and all four metadata copies. Shared test-output paths are not durable
+creator history and cannot substitute for those copies. The repository
+selector remains NULL until actual producer success and physical retention are
+joined. Presence of cached files, a Boolean, PID, schema name or model fixture
+cannot select a creator.
+
+Terminal publication is prepared under an unselectable pending receipt. Initial
+worker/admission/SDK qualification and evidence checks, their mandatory input-FD
+drains, final graph readback and the original publication cutoff must all
+succeed before the fixed canonical receipt rename. The staged receipt file and its directory
+are fsynced before the rename. The canonical rename commits artifact provenance;
+it does not by itself make a creator admissible. This route makes no post-rename
+directory-fsync or power-loss durability claim for that publication.
+
+A failure before a commit attempt refuses acknowledgement. Refused metadata
+with no artifact origin or qualified dependency disposition is published only
+when an intact owned candidate and epoch permit safe publication. Candidate
+construction/fsync failure or lost epoch custody instead yields diagnostic-only
+refusal, without publishing a canonical refusal receipt or writing into a
+substitute or custody-lost path. An exception from the canonical rename is
+commit-unknown, not proof that publication did or did not occur. A canonical
+receipt left by a late finalizer, an unconfirmed result or a crash before
+qualification confirmation remains historical provenance and cannot select a
+producer. A release or reply failure does not fabricate rollback or rewrite a
+committed receipt into an uncommitted result.
+
+Admission also requires the independently held ninth proof role
+`qualification_confirmation`, selected by an exact path/SHA/size row for
+`EPOCH/sdk-tree-qualified.json` and declared as
+`proof/qualification-confirmation.json`. Its bounded record binds the exact
+canonical outer-receipt SHA and byte extent, epoch, profile, source commit,
+graph, original creator context and original entry/deadline clocks. It records
+an actual observed qualification time satisfying original entry <= observed
+qualification < original deadline minus the existing 30-second cleanup
+allowance. After canonical publication, the parent opens a new receipt reader
+through its retained epoch writer FD. It proves current receipt bytes/SHA,
+full-nine FD and held/named joins, then successfully closes that reader. Final
+held/named and graph observations and the original 1170-second qualification
+cutoff follow the reader close; only then is the confirmation formed. Epoch,
+cache and coordinator writer FDs remain held through confirmation delivery.
+Confirmation metadata attests that already-observed timely proof; its later
+delivery does not claim a measured rename timestamp or timeliness for the
+delivery syscall. The original 1200-second outer envelope bounds this later
+small metadata delivery, not renewed SDK or SOURCE work.
+
+Missing, late, unconfirmed or crash-before-confirmation results cannot admit a
+creator, even if a canonical receipt contains exit zero or artifact provenance.
+After confirmation publication, writer-release or reply loss preserves the
+historical proved fact and refuses acknowledgement; it creates no new clock or
+successful acknowledgement. Admission requires both the exact
+`omux-retained-sdk-tree-terminal-publication-v1` publication record and the
+independently acquired confirmation, with their exact receipt/context join.
+Pending or refused records cannot select a producer. These are historical
+publication and qualification facts, not a child claim to a live parent lock.
+The child's complete current physical SDK proof and independent original SOURCE
+clock remain mandatory.
+
+The new fixed SOURCE cohort uses profile
+`native-retained-sdk-tree-source-reserved` and the two declared targets
+`//tools:codex_native_siwc_catalog_tree_source_test` and
+`//tools:codex_native_siwc_catalog_tree_source_producer`. Each consumer keeps its
+own fresh original SOURCE 600-second work cutoff, 840-second action timeout and
+1200-second outer envelope. It admits the declared TreeArtifact, selected
+successful creator evidence and pinned logical expectations, then performs a
+complete current namespace/type/mode/link-text/byte-SHA/NAR/semantic proof with
+bounded FD ownership. Its last full scan precedes the final held/named/root and
+metadata fences and mandatory cleanup; no poll, scan or reuse renews the clock.
+The flat carrier is creator provenance and is not reread or recopied by this
+new consumer. This difference is permitted only by this separately typed proof
+route; all transported-reader and carrier predicates remain unchanged.
+
+The parent coordinator uses a new strictly owned two-cohort dependency/artifact
+lease over one checkout/output base/toolchain/isolation policy. It proves actual
+exclusive cache lock and lifetime separately. The child proves current declared
+public data and compatible creator-origin facts; it does not claim the parent's
+live lock or receive credential ownership through this route. Existing content
+leases and generic disk/remote-cache settings remain unchanged. A warm declared
+action may supply bytes only. Missing, evicted or incompatible data, or an
+expired creator cold replay, refuses and requires a fresh finite dependency
+producer. Failed materialization or qualification never gains authority by
+reuse.
+
+SDK links remain inert public data. Absolute executable references, compilation,
+SOURCE publication, native resume, accepted history and same-process continuity
+need their own exact gates. This local route makes no future RBE portability or
+original-600 timing-fit promise. Future remote execution must use the same
+fully declared directory/metadata/proof graph and qualify tool/link relocation
+and creator-origin compatibility independently.

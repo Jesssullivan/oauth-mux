@@ -25,6 +25,61 @@ from execution_guard import validate_become_metadata, system_identity, selected_
 from execution_guard import await_startup
 
 
+class RetainedSDKTerminalWrapperModels(unittest.TestCase):
+    @contextlib.contextmanager
+    def diagnostic_state(self):
+        import guard_native_sdk_tree_reserved as tree
+        import uuid
+        with tempfile.TemporaryDirectory() as temporary:
+            state=Path(temporary).resolve();state.chmod(0o700)
+            checkout=state/'checkout';checkout.mkdir(mode=0o700)
+            entry=time.monotonic_ns()
+            with patch.object(tree.kernel.resident,'PUBLIC_ROOTS',(state,)):
+                lease=tree.SDKTreeDependencyLease(state,'3'*64,str(uuid.uuid4()),checkout=checkout,
+                    source_commit='4'*40,graph_sha256='5'*64,entry=entry,deadline=entry+1200*10**9,
+                    profile=tree.PRODUCER)
+                # Wrapper-only synthetic terminal stage; no entered lease, receipt,
+                # SDK success, selector, provider or current execution authority.
+                try:yield tree,lease
+                finally:
+                    import execution_guard as guard
+                    guard._SDK_TERMINAL_LEASE=None;lease.close()
+
+    def test_actual_main_maps_unqualified_unknown_and_confirmed_reply_failures(self):
+        import execution_guard as guard
+        for stage,expected in [('committed','committed-unqualified'),('commit-unknown','commit-unknown'),
+                ('qualification-observed','qualified-confirmation-delivery-unknown'),('qualified','committed-reply-failed')]:
+            with self.diagnostic_state() as (tree,lease):
+                primary=OSError('model-reply-after-publication')
+                def body(*args):guard._SDK_TERMINAL_LEASE=lease;lease.terminal_stage=stage;raise primary
+                with patch.object(guard,'_main',side_effect=body):
+                    with self.assertRaises(tree.TerminalPostCommitError) as found:guard.main([])
+                self.assertEqual(found.exception.state,expected)
+                self.assertIs(found.exception.__cause__,primary);self.assertEqual(lease.terminal_stage,stage)
+
+    def test_actual_main_exitstack_close_failure_does_not_acknowledge_confirmed_success(self):
+        import execution_guard as guard
+        with self.diagnostic_state() as (tree,lease):
+            primary=OSError('model-post-confirmation-exitstack-close');closes=[]
+            def close():closes.append(True);raise primary
+            def body(argv,admission,retirement):
+                guard._SDK_TERMINAL_LEASE=lease;lease.terminal_stage='qualified'
+                retirement.callback(close);return 0
+            with patch.object(guard,'_main',side_effect=body):
+                with self.assertRaises(tree.TerminalPostCommitError) as found:guard.main([])
+            self.assertEqual(closes,[True]);self.assertEqual(found.exception.state,'committed-reply-failed')
+            self.assertIs(found.exception.__cause__,primary)
+
+    def test_actual_main_preserves_original_precommit_refusal(self):
+        import execution_guard as guard
+        with self.diagnostic_state() as (tree,lease):
+            primary=ValueError('model-original-precommit-refusal')
+            def body(*args):guard._SDK_TERMINAL_LEASE=lease;raise primary
+            with patch.object(guard,'_main',side_effect=body):
+                with self.assertRaises(ValueError) as found:guard.main([])
+            self.assertIs(found.exception,primary);self.assertIsNone(found.exception.__cause__)
+
+
 class HomeManagerOwnedRequestModels(unittest.TestCase):
     def test_only_exact_existing_system_dependency_vector_has_owned_retention(self):
         import execution_guard as guard

@@ -96,6 +96,7 @@ exports_files(["native-acquisition-ordinary-inputs.json"])
 
 # Separate v2 transport selection remains null until actual guarded production.
 exports_files(["native-sdk-carrier-metadata-inputs.json"])
+exports_files(["native-retained-sdk-tree-inputs.json"])
 
 # Cold independently qualified carrier metadata/SDK/compile route.
 exports_files(["native-carrier-material-inputs.json"])

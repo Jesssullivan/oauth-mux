@@ -297,6 +297,14 @@ native_sdk_carrier_proof(
     selection = "//integrations/codex-upstream:native-sdk-carrier-metadata-inputs.json",
 )
 
+# Optional distinct successful SDK TreeArtifact creator proofs. Null remains
+# cold: no producer path, recipe or positive qualification is manufactured.
+retained_sdk_tree_proofs = use_repo_rule("//tools:codex_retained_sdk_tree_proof_inputs.bzl", "codex_retained_sdk_tree_proof_inputs")
+retained_sdk_tree_proofs(
+    name = "omux_retained_public_sdk_tree_proof_inputs",
+    selection = "//integrations/codex-upstream:native-retained-sdk-tree-inputs.json",
+)
+
 native_acquisition_package_inputs = use_extension("//tools:codex_native_acquisition_package_inputs.bzl", "native_acquisition_package_inputs")
 native_acquisition_package_inputs.configuration(manifest="//integrations/codex-upstream:native-acquisition-package-inputs.json")
 use_repo(native_acquisition_package_inputs, "omux_native_acquisition_package_data")
