@@ -30,7 +30,7 @@ MAX_BYTES = 8 * 1024**3
 MAX_FILE = 512 * 1024**2
 MAX_METADATA = 64 * 1024**2
 MAX_HELD = 128
-RULE_SHA = 'a7947d705d5bb9dc84c00138f07d36843bb9298cd0ab73af868b4d6c4ef73d95'
+RULE_SHA = 'b6d8589518dbff5c1c76eb3f64bd6611d7643f975d2d7c70b80a7b661edaea6a'
 STORE = re.compile(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]{1,211}')
 ROLES = frozenset(('bundle', 'extension', 'chromium', 'node', 'observer', 'dbus_session',
     'dbus_daemon', 'keyring', 'runtime_authority', 'recorder', 'recorder_implementation',
