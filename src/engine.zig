@@ -16139,43 +16139,77 @@ test "original owned grant bounds refuse queued dispatch and late actual respons
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
+    const matrix_started = std.Io.Clock.awake.now(io);
+    M.trace("original-bound", 0, "matrix-start", matrix_started);
     for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, bound_index| {
         for (0..3) |stage| {
+            const case_index = bound_index * 3 + stage;
+            M.trace("original-bound", case_index, "case-start", matrix_started);
+            defer M.trace("original-bound", case_index, "case-cleanup-returned", matrix_started);
             var directory = std.testing.tmpDir(.{});
             defer directory.cleanup();
             try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
             const path = try directory.dir.realPathFileAlloc(io, ".", a);
             defer a.free(path);
+            M.trace("original-bound", case_index, "seed-enter", matrix_started);
             try F.seed(path);
+            M.trace("original-bound", case_index, "seed-returned", matrix_started);
+            M.trace("original-bound", case_index, "actor-open-enter", matrix_started);
             const current = try Engine.openWithKey(io, a, path, F.key);
-            defer current.deinit();
+            defer {
+                M.trace("original-bound", case_index, "actor-close-enter", matrix_started);
+                current.deinit();
+                M.trace("original-bound", case_index, "actor-close-returned", matrix_started);
+            }
+            M.trace("original-bound", case_index, "actor-open-complete", matrix_started);
             const subject = try std.fmt.allocPrint(a, "renew-held-window-{d}-{d}", .{ bound_index, stage });
             defer a.free(subject);
+            M.trace("original-bound", case_index, "paired-admission-enter", matrix_started);
             const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
             defer admitted.deinit();
             const account = try control.string(try M.result(&admitted), "account_id");
+            M.trace("original-bound", case_index, "paired-admission-complete", matrix_started);
+            M.trace("original-bound", case_index, "signer-create-enter", matrix_started);
             var key = try M.signer();
-            defer key.deinit() catch @panic("renewal signing key cleanup failed");
+            defer {
+                M.trace("original-bound", case_index, "signer-cleanup-enter", matrix_started);
+                key.deinit() catch @panic("renewal signing key cleanup failed");
+                M.trace("original-bound", case_index, "signer-cleanup-returned", matrix_started);
+            }
+            M.trace("original-bound", case_index, "signer-create-complete", matrix_started);
             const keys = try key.jwks();
             defer a.free(keys);
             var body = try M.makeBody(&key, subject, .{});
             defer body.deinit();
+            M.trace("original-bound", case_index, "signing-complete", matrix_started);
+            M.trace("original-bound", case_index, "grant-window-enter", matrix_started);
             const expiry = try M.window(current, account, bound, 3);
+            M.trace("original-bound", case_index, "grant-window-complete", matrix_started);
+            M.trace("original-bound", case_index, "held-issuance-enter", matrix_started);
             const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_window = true, .hold_before_dispatch = stage == 0, .hold_reply = stage == 1, .hold_worker = stage == 2 });
             defer started.deinit();
+            M.trace("original-bound", case_index, "held-issuance-returned", matrix_started);
             if (stage == 0) try std.testing.expect(control.get(started.value, "error") != null) else _ = try M.result(&started);
             if (stage == 1) {
+                M.trace("original-bound", case_index, "refreshing-observation-enter", matrix_started);
                 const live = try M.observe(current, account);
                 defer live.deinit();
                 try M.assertPair(try M.result(&live), "refreshing", 1, true);
+                M.trace("original-bound", case_index, "refreshing-observation-complete", matrix_started);
+                M.trace("original-bound", case_index, "original-expiry-wait-enter", matrix_started);
                 while (std.Io.Clock.real.now(io).toSeconds() < expiry) try io.sleep(.fromMilliseconds(5), .awake);
+                M.trace("original-bound", case_index, "original-expiry-wait-returned", matrix_started);
+                M.trace("original-bound", case_index, "reply-release-enter", matrix_started);
                 const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
                 defer released.deinit();
                 _ = try M.result(&released);
+                M.trace("original-bound", case_index, "reply-release-complete", matrix_started);
             }
+            M.trace("original-bound", case_index, "terminal-observation-enter", matrix_started);
             const refused = try M.wait(current, account, "quarantined", 1);
             defer refused.deinit();
             const value = try M.result(&refused);
+            M.trace("original-bound", case_index, "terminal-observation-complete", matrix_started);
             try M.assertPair(value, "quarantined", 1, false);
             try M.assertOriginalWindow(value, bound, expiry);
             try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
@@ -16185,8 +16219,10 @@ test "original owned grant bounds refuse queued dispatch and late actual respons
                 try std.testing.expect(try control.boolean(value, "verified_before_expiry", false));
             }
             try std.testing.expect(try control.boolean(value, "external_retained", false));
+            M.trace("original-bound", case_index, "assertions-complete", matrix_started);
         }
     }
+    M.trace("original-bound", 8, "matrix-complete", matrix_started);
 }
 
 test "paired grant expiry after sealing and before recovery publication rolls back or poisons without successor authority" {
