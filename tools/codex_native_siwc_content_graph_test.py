@@ -167,6 +167,7 @@ class ContentGraphModels(unittest.TestCase):
             def __init__(self, values): self.values = list(dict.fromkeys(values))
             def to_list(self): return self.values
         namespace = {'depset': Depset, 'python_test': lambda **kwargs: calls.append(kwargs),
+            'native': SimpleNamespace(filegroup=lambda **kwargs: calls.append(kwargs)),
             'native_acquisition_source_closure': lambda source, sdk: source + sdk}
         for name in ('codex_native_siwc_catalog_content_source_targets.bzl','codex_native_siwc_catalog_models_targets.bzl'):
             raw = '\n'.join(line for line in (ROOT / name).read_text().splitlines() if not line.startswith('load('))
@@ -182,6 +183,9 @@ class ContentGraphModels(unittest.TestCase):
         self.assertEqual(len(producer['data']), len(set(producer['data'])))
         self.assertIn('original.py', producer['srcs']); self.assertEqual(len(producer['env_inherit']), 6)
         calls.clear(); ns['codex_native_siwc_catalog_models_targets'](['source.py'], ['sdk.py'], ['@forbidden_historical_parent//:inputs'], ['original.py'])
+        self.assertEqual([row for row in calls if row['name'] == 'codex_native_siwc_catalog_model_inputs_analysis_smoke'],
+            [{'name': 'codex_native_siwc_catalog_model_inputs_analysis_smoke',
+              'srcs': ['@omux_native_siwc_catalog_model_inputs//:inputs']}])
         driver = next(row for row in calls if row['name'].endswith('_producer'))
         self.assertEqual({row for row in driver['data'] if row.startswith('@')}, expected | {'@omux_native_siwc_catalog_model_inputs//:inputs'})
         self.assertNotIn('@forbidden_historical_parent//:inputs', driver['data'])
