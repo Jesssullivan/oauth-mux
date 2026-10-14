@@ -807,6 +807,208 @@ class PreparationModels(unittest.TestCase):
             self.assertEqual(owner.rows,{})
         finally:owner.close(ValueError('synthetic original cutoff refusal'))
 
+
+    def compact_inventory_fixture(self):
+        self.prepare()
+        raw=(self.output/'yoga-public-toolbar/runfiles-inventory.json').read_bytes()
+        return model.decode(raw),raw
+
+    def test_compact_inventory_real_prepare_roundtrip_and_literal_relative_link_targets(self):
+        value,wire=self.compact_inventory_fixture()
+        self.assertEqual(json.loads(wire)['schemaVersion'],2)
+        self.assertEqual(json.loads(wire)['scope'],model.INVENTORY_WIRE_SCOPE)
+        self.assertEqual(model.canonical(model.inventory_compact(value)),wire)
+        legacy=model.canonical(value)
+        self.assertEqual(model.decode(legacy),value)
+        self.assertNotEqual(hashlib.sha256(legacy).digest(),hashlib.sha256(wire).digest())
+        value['symlinks'][0]['target']='../../opaque/../relative-target'
+        altered=model.canonical(model.inventory_compact(value))
+        self.assertEqual(model.decode(altered),value)
+        # Declaration schema2 remains an ordinary declaration, not inventory.
+        self.assertEqual(model.decode(model.canonical(self.declared)),self.declared)
+        wrong_scope=json.loads(wire);wrong_scope['scope']='another-json-schema-v2'
+        self.assertEqual(model.decode(model.canonical(wrong_scope)),wrong_scope)
+        with self.assertRaises(ValueError):model.inventory_expand(wrong_scope)
+        duplicate=wire.replace(b'"schemaVersion":2',b'"schemaVersion":2,"schemaVersion":2',1)
+        with self.assertRaises(ValueError):model.decode(duplicate)
+
+    def test_compact_inventory_refuses_duplicate_unknown_unused_and_forward_table_facts(self):
+        value,raw=self.compact_inventory_fixture();wire=json.loads(raw)
+        for change in ('unknown','duplicate-atom','unused-atom','forward','duplicate-path',
+                'negative-ref','bool-ref','float-root','unknown-ref','target-forward','target-negative','target-bool',
+                'duplicate-target','duplicate-file','duplicate-link','bool-version','version',
+                'bad-witness','bad-bytes','missing','traversal','absolute-key','relative-physical'):
+            changed=copy.deepcopy(wire)
+            if change=='unknown':changed['unknown']=True
+            elif change=='duplicate-atom':changed['strings'].append(changed['strings'][0])
+            elif change=='unused-atom':changed['strings'].append('unused unique atom')
+            elif change=='forward':changed['paths'][2][0]=len(changed['paths'])
+            elif change=='duplicate-path':changed['paths'].append(copy.deepcopy(changed['paths'][2]))
+            elif change=='negative-ref':changed['files'][0][0]=-1
+            elif change=='bool-ref':changed['files'][0][0]=True
+            elif change=='float-root':changed['paths'][0][0]=-1.0
+            elif change=='unknown-ref':changed['symlinks'][0][2]=len(changed['targets'])
+            elif change=='bool-version':changed['schemaVersion']=True
+            elif change=='version':changed['schemaVersion']=1
+            elif change=='target-negative':changed['symlinks'][0][2]=-1
+            elif change=='target-bool':changed['symlinks'][0][2]=True
+            elif change=='target-forward':changed['targets'][1][0]=len(changed['targets'])
+            elif change=='duplicate-target':changed['targets'].append(copy.deepcopy(changed['targets'][1]))
+            elif change=='duplicate-file':changed['files'].append(copy.deepcopy(changed['files'][0]))
+            elif change=='duplicate-link':changed['symlinks'].append(copy.deepcopy(changed['symlinks'][0]))
+            elif change=='bad-witness':changed['files'][0][4][0]=True
+            elif change=='bad-bytes':changed['files'][0][3]=-1
+            elif change=='missing':changed.pop('paths')
+            elif change=='traversal':changed['strings'][changed['paths'][2][1]]='..'
+            elif change=='absolute-key':changed['files'][0][0]=changed['files'][0][1]
+            else:changed['files'][0][1]=changed['files'][0][0]
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                model.decode(model.canonical(changed))
+
+    def test_compact_inventory_keeps_original_clock_and_all_size_depth_and_count_limits(self):
+        value,raw=self.compact_inventory_fixture()
+        clock=model.Clock(self.context);self.now=self.deadline-30*10**9
+        with self.assertRaises(ValueError):model.inventory_compact(value,clock)
+        with self.assertRaises(ValueError):model.inventory_expand(json.loads(raw),clock)
+        self.now=self.entry+10**9
+        for change in ('depth','component','expanded','count','wire'):
+            with self.subTest(change=change):
+                changed=copy.deepcopy(value)
+                if change=='depth':changed['files'][0]['physical']='/'+'/'.join('x' for _ in range(257))
+                elif change=='component':changed['symlinks'][0]['target']='x'*4097
+                if change in ('depth','component'):
+                    with self.assertRaises(ValueError):model.inventory_compact(changed,clock)
+                elif change=='expanded':
+                    with patch.object(model,'MAX_INVENTORY_EXPANDED',1):
+                        with self.assertRaises(ValueError):model.inventory_compact(changed,clock)
+                elif change=='count':
+                    with patch.object(model,'MAX_INVENTORY_PATHS',2):
+                        with self.assertRaises(ValueError):model.inventory_compact(changed,clock)
+                else:
+                    with patch.object(model,'MAX_METADATA',len(raw)-1):
+                        with self.assertRaises(ValueError):model.decode(raw)
+
+    def test_compact_inventory_63675_full_shape_is_lossless_deterministic_and_below_original_envelope(self):
+        # BA0720 public declaration census:63675 rows,235-char maximum key,
+        #244-char executionPath,9767 directory prefixes,580 Nix roots. These
+        #synthetic full witnesses/digests/aliases are a size-shape model only;
+        #they are not the failed run's missing inventory or physical authority.
+        count=63675;files=[];links=[]
+        epoch=Path('/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/12345678-1234-4234-8234-123456789abc')
+        base=epoch/'output-base';execroot=base/'execroot/_main'
+        controls=execroot/'bazel-out/k8-fastbuild/bin/delivery/yoga_public_artifact_prepare_producer.sh.runfiles'
+        runner=execroot/'bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh.runfiles'
+        for index in range(count):
+            prefix='+cached_site_repository+omux_cached_site/closure/'+str(index%580).zfill(32)+'-fixture/files'+str(index%9767).zfill(4)+'/'
+            name='file'+str(index).zfill(8)+'-'+'x'*(235-len(prefix)-13)
+            key=prefix+name;self.assertEqual(len(key),235)
+            expected='external/'+key;self.assertEqual(len(expected),244)
+            physical=str(execroot/expected)
+            witness=[2049,10000000+index,1000,1000,0o100555,1,index%4096,
+                1791936000123456789,1791936000123456789]
+            files.append({'key':key,'physical':physical,'sha256':hashlib.sha256(key.encode()).hexdigest(),
+                'bytes':witness[6],'witness':witness})
+            for root in (controls,runner):
+                path=str(root/key);target=physical
+                links.append({'path':path,'target':target,'witness':[2049,20000000+len(links),
+                    1000,1000,0o120777,1,len(target),1791936000123456789,1791936000123456789]})
+        files.sort(key=lambda row:row['key']);links.sort(key=lambda row:row['path'])
+        context=dict(self.context,epoch=str(epoch),sourceRoot='/home/jess/public-source')
+        value={'schemaVersion':1,'scope':'yoga-original-toolbar-runfiles-byte-inventory-v1',
+            'context':context,'originalOutputBase':str(base),'originalRunfilesRoot':str(runner),
+            'originalControlRunfilesRoot':str(controls),'declarationSha256':'a'*64,
+            'files':files,'symlinks':links,'roles':dict(zip(sorted(model.ROLES),[row['key'] for row in files])),
+            'declaredFileCount':count,'boundFileCount':count,'totalBytes':sum(row['bytes'] for row in files)}
+        wire=model.canonical(model.inventory_compact(value))
+        self.assertLess(len(wire),model.MAX_METADATA)
+        self.assertGreater(len(model.canonical(value)),model.MAX_METADATA)
+        restored=model.decode(wire)
+        self.assertEqual(restored,value)
+        self.assertEqual(len(restored['files']),count)
+        self.assertEqual(len(restored['symlinks']),2*count)
+        self.assertEqual(model.canonical(model.inventory_compact(restored)),wire)
+        self.assertEqual(hashlib.sha256(wire).digest(),hashlib.sha256(model.canonical(model.inventory_compact(value))).digest())
+
+
+    def test_compact_encoder_depth_component_boundaries_are_inverse_and_overflow_refuses(self):
+        value,raw=self.compact_inventory_fixture()
+        for domain,boundary in (('key-depth',256),('physical-component',4096),('alias-component',4096)):
+            for extra in (0,1):
+                changed=copy.deepcopy(value)
+                if domain=='key-depth':
+                    old=changed['files'][0]['key'];key='/'.join('k' for _ in range(boundary+extra))
+                    changed['files'][0]['key']=key
+                    changed['roles']={role:key if selected==old else selected
+                        for role,selected in changed['roles'].items()}
+                    changed['files'].sort(key=lambda row:row['key'])
+                elif domain=='physical-component':changed['files'][0]['physical']='/'+'x'*(boundary+extra)
+                else:
+                    changed['symlinks'][0]['path']='/'+'x'*(boundary+extra)
+                    changed['symlinks'].sort(key=lambda row:row['path'])
+                with self.subTest(domain=domain,extra=extra):
+                    if extra:
+                        with self.assertRaises(ValueError):model.inventory_compact(changed)
+                    else:
+                        wire=model.canonical(model.inventory_compact(changed))
+                        self.assertEqual(model.decode(wire),changed)
+                        self.assertEqual(model.canonical(model.inventory_compact(model.decode(wire))),wire)
+
+    def test_compact_encoder_enforces_same_cumulative_prefix_budgets_as_decoder(self):
+        value,raw=self.compact_inventory_fixture()
+        for domain in ('paths','targets'):
+            changed=copy.deepcopy(value)
+            # One long shared first component makes the sum of reconstructed
+            # prefixes exceed scalar-row bytes; no giant fixture is needed.
+            deep='p'*3000+'/'+'/'.join('x' for _ in range(180))
+            if domain=='paths':changed['files'][0]['physical']='/'+deep
+            else:changed['symlinks'][0]['target']=deep
+            wire_object=model.inventory_compact(changed)
+            table=wire_object[domain];atoms=wire_object['strings']
+            names=['','/'] if domain=='paths' else [None]
+            for parent,atom in table[len(names):]:
+                prior=names[parent];part=atoms[atom]
+                if domain=='paths':name=prior.rstrip('/')+'/'+part if prior else part
+                else:name=part if prior is None else prior+'/'+part
+                names.append(name)
+            prefixes=sum(len(os.fsencode(name)) for name in names[2 if domain=='paths' else 1:])
+            scalars=sum(len(model.canonical(row)) for row in changed['files']+changed['symlinks'])
+            self.assertGreater(prefixes,scalars)
+            with self.subTest(domain=domain),patch.object(model,'MAX_INVENTORY_EXPANDED',prefixes):
+                self.assertEqual(model.inventory_expand(model.inventory_compact(changed)),changed)
+            with self.subTest(domain=domain,overflow=True),patch.object(model,'MAX_INVENTORY_EXPANDED',prefixes-1):
+                model.inventory_check(changed)  # Scalar facts still fit; trie sum does not.
+                with self.assertRaises(ValueError):model.inventory_compact(changed)
+                with self.assertRaises(ValueError):model.inventory_expand(wire_object)
+        with patch.object(model,'MAX_METADATA',len(raw)-1):
+            with self.assertRaises(ValueError):model.inventory_compact(value)
+
+    def test_compact_prepare_preserves_actual_pre_epoch_file_mtime_and_full_fd_witness(self):
+        path=self.paths['observer'];before=path.read_bytes()
+        os.utime(path,ns=(-10**9,-10**9))
+        self.assertEqual(path.stat().st_mtime_ns,-10**9)
+        value,raw=self.compact_inventory_fixture()
+        row=next(row for row in value['files'] if row['key']==self.roles['observer'])
+        self.assertEqual(row['witness'][7],-10**9)
+        self.assertEqual(row['witness'],list(model.witness(path.lstat())))
+        self.assertEqual(row['sha256'],hashlib.sha256(before).hexdigest())
+        self.assertEqual(row['bytes'],len(before))
+        self.assertEqual(model.decode(model.canonical(model.inventory_compact(value))),value)
+        self.assertEqual(model.canonical(model.inventory_compact(value)),raw)
+
+    def test_compact_signed_timestamp_bounds_reject_bool_overflow_and_unsigned_negatives(self):
+        value,raw=self.compact_inventory_fixture()
+        for position in (7,8):
+            for number in (-2**127,2**127-1):
+                changed=copy.deepcopy(value);changed['files'][0]['witness'][position]=number
+                with self.subTest(position=position,number=number):
+                    self.assertEqual(model.decode(model.canonical(model.inventory_compact(changed))),changed)
+            for number in (-2**127-1,2**127,True):
+                changed=copy.deepcopy(value);changed['files'][0]['witness'][position]=number
+                with self.subTest(position=position,refusal=number),self.assertRaises(ValueError):
+                    model.inventory_compact(changed)
+        changed=copy.deepcopy(value);changed['files'][0]['witness'][0]=-1
+        with self.assertRaises(ValueError):model.inventory_compact(changed)
+
 if __name__=='__main__':
     ZIP=Path(sys.argv.pop(1)).read_bytes()
     RULE=Path(sys.argv.pop(1)).read_bytes()

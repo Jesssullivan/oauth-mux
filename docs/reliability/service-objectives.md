@@ -70,7 +70,7 @@ SIWC pair. Its retained-attempt denominator is one last issued operation per
 pair, classified as committed successor, unresolved issued or completion unknown;
 pairs without a retained renewal are reported separately. A later issuance
 replaces the prior witness, so this is neither lifetime attempt history nor all
-REL-015 opportunities. A committed successor records the verified atomic grant
+renewal opportunities covered by REL-015. A committed successor records the verified atomic grant
 rotation, including a historical witness on a later retired pair; it does not
 assert present readiness, a successful user journey or completion before authority
 expiry. Poisoned, locked or unavailable custody suppresses its counters and marks

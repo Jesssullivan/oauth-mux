@@ -65,8 +65,12 @@ def decode(raw):
         for key, value in rows:
             require(key not in result); result[key] = value
         return result
-    return json.loads(raw, object_pairs_hook=unique,
+    value = json.loads(raw, object_pairs_hook=unique,
         parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite-json')))
+    if type(value) is dict and value.get('scope') == INVENTORY_WIRE_SCOPE:
+        require(type(raw) is bytes and len(raw) <= MAX_METADATA)
+        return inventory_expand(value)
+    return value
 
 
 def witness(info):
@@ -360,6 +364,201 @@ def tuple_metadata(data, value):
         'runtimeAuthorityScope':browser['scope']}
 
 
+INVENTORY_WIRE_SCOPE = 'yoga-original-toolbar-runfiles-byte-inventory-v2'
+INVENTORY_FIELDS = frozenset(('schemaVersion','scope','context','originalOutputBase',
+    'originalRunfilesRoot','originalControlRunfilesRoot','declarationSha256',
+    'files','symlinks','roles','declaredFileCount','boundFileCount','totalBytes'))
+MAX_INVENTORY_PATHS = MAX_METADATA // 2
+MAX_INVENTORY_EXPANDED = 256 * 1024**2
+
+
+def inventory_check(value, clock=None):
+    """Validate scalar facts only; never grant filesystem or consumer authority."""
+    require(type(value) is dict and set(value) == INVENTORY_FIELDS
+        and type(value['schemaVersion']) is int and value['schemaVersion'] == 1
+        and value['scope'] == 'yoga-original-toolbar-runfiles-byte-inventory-v1'
+        and type(value['files']) is list and 0 < len(value['files']) <= MAX_FILES+1
+        and type(value['symlinks']) is list and len(value['symlinks']) <= MAX_METADATA//8
+        and type(value['roles']) is dict and set(value['roles']) == ROLES)
+    def integer(number): require(type(number) is int and 0 <= number < 2**128)
+    def path(name, absolute):
+        require(type(name) is str and 0 < len(os.fsencode(name)) <= 8192
+            and name.startswith('/') is absolute and not name.startswith('//') and '\x00' not in name
+            and str(PurePosixPath(name)) == name
+            and not {'.','..'}.intersection(name.split('/'))
+            and len(PurePosixPath(name).parts) <= 256
+            and all(len(os.fsencode(part)) <= 4096 for part in PurePosixPath(name).parts))
+    def fact(numbers):
+        require(type(numbers) is list and len(numbers) == 9)
+        for number in numbers[:7]: integer(number)
+        for number in numbers[7:]:
+            require(type(number) is int and -2**127 <= number < 2**127)
+    def tick():
+        if clock is not None:clock.tick()
+    keys=[];total=0;expanded=0
+    for row in value['files']:
+        tick()
+        require(type(row) is dict and set(row) == {'key','physical','sha256','bytes','witness'})
+        relative(row['key']);path(row['key'],False);path(row['physical'],True)
+        fact(row['witness']);integer(row['bytes'])
+        require(type(row['sha256']) is str and re.fullmatch('[0-9a-f]{64}',row['sha256']) is not None
+            and row['bytes'] == row['witness'][6] and stat.S_ISREG(row['witness'][4]))
+        keys.append(row['key']);total+=row['bytes'];expanded+=len(canonical(row))
+        require(expanded <= MAX_INVENTORY_EXPANDED)
+    require(keys == sorted(set(keys)))
+    links=[]
+    for row in value['symlinks']:
+        tick()
+        require(type(row) is dict and set(row) == {'path','witness','target'})
+        path(row['path'],True);fact(row['witness'])
+        require(stat.S_ISLNK(row['witness'][4]))
+        require(type(row['target']) is str and len(os.fsencode(row['target'])) <= 4096
+            and '\n' not in row['target'] and '\r' not in row['target'] and '\x00' not in row['target'])
+        links.append(row['path']);expanded+=len(canonical(row))
+        require(expanded <= MAX_INVENTORY_EXPANDED)
+    require(links == sorted(set(links)))
+    for field in ('originalOutputBase','originalRunfilesRoot','originalControlRunfilesRoot'):
+        path(value[field],True)
+    require(type(value['declarationSha256']) is str
+        and re.fullmatch('[0-9a-f]{64}',value['declarationSha256']) is not None)
+    require(type(value['context']) is dict and set(value['context']) ==
+        {'epoch','entryNs','deadlineNs','sourceCommit','graphSha256','sourceRoot'})
+    for field in ('entryNs','deadlineNs'):integer(value['context'][field])
+    require(value['context']['deadlineNs']-value['context']['entryNs'] == 1200*10**9)
+    for field,length in (('sourceCommit',40),('graphSha256',64)):
+        require(type(value['context'][field]) is str
+            and re.fullmatch('[0-9a-f]{'+str(length)+'}',value['context'][field]) is not None)
+    path(value['context']['epoch'],True);path(value['context']['sourceRoot'],True)
+    require(str(uuid.UUID(Path(value['context']['epoch']).name)) == Path(value['context']['epoch']).name)
+    require(all(type(key) is str for key in value['roles'].values())
+        and len(set(value['roles'].values())) == len(ROLES))
+    for name,key in value['roles'].items():require(type(key) is str and key in keys)
+    for field in ('declaredFileCount','boundFileCount','totalBytes'):integer(value[field])
+    require(16 <= value['declaredFileCount'] <= MAX_FILES
+        and value['boundFileCount'] == len(keys)
+        and value['declaredFileCount'] <= len(keys) <= value['declaredFileCount']+1
+        and value['totalBytes'] == total and total <= MAX_BYTES)
+    tick()
+    return value
+
+
+def inventory_compact(value, clock=None):
+    """Lossless canonical path trie; literal symlink targets are separate atoms."""
+    inventory_check(value,clock)
+    atoms=[];atom_ids={};paths=[[-1,-1],[-1,-2]];path_ids={'':0,'/':1}
+    targets=[[-1,-1]];target_ids={None:0}
+    path_bytes=target_bytes=0
+    def tick():
+        if clock is not None:clock.tick()
+    def atom(text):
+        require(type(text) is str and len(os.fsencode(text)) <= 4096)
+        if text not in atom_ids:
+            require(len(atoms)<MAX_INVENTORY_PATHS)
+            atom_ids[text]=len(atoms);atoms.append(text)
+        return atom_ids[text]
+    def path(text):
+        nonlocal path_bytes
+        current=1 if text.startswith('/') else 0;prefix='/' if current else ''
+        for part in PurePosixPath(text).parts[1 if current else 0:]:
+            tick();prefix=(prefix.rstrip('/')+'/'+part) if prefix else part
+            if prefix not in path_ids:
+                path_bytes+=len(os.fsencode(prefix))
+                require(path_bytes <= MAX_INVENTORY_EXPANDED
+                    and len(paths)<MAX_INVENTORY_PATHS)
+                path_ids[prefix]=len(paths);paths.append([current,atom(part)])
+            current=path_ids[prefix]
+        return current
+    def target(text):
+        nonlocal target_bytes
+        # Literal slash-separated tokens, including empty/dot/dotdot tokens.
+        # Joining reproduces readlink bytes; this is never path normalization.
+        current=0;prefix=None
+        for part in text.split('/'):
+            tick();prefix=part if prefix is None else prefix+'/'+part
+            if prefix not in target_ids:
+                target_bytes+=len(os.fsencode(prefix))
+                require(target_bytes <= MAX_INVENTORY_EXPANDED
+                    and len(targets)<MAX_INVENTORY_PATHS)
+                target_ids[prefix]=len(targets);targets.append([current,atom(part)])
+            current=target_ids[prefix]
+        return current
+    result={name:value[name] for name in INVENTORY_FIELDS-{'schemaVersion','scope','files','symlinks'}}
+    result.update(schemaVersion=2,scope=INVENTORY_WIRE_SCOPE,strings=atoms,paths=paths,
+        targets=targets,files=[],symlinks=[])
+    for row in value['files']:
+        tick();result['files'].append([path(row['key']),path(row['physical']),row['sha256'],row['bytes'],row['witness']])
+    for row in value['symlinks']:
+        tick();result['symlinks'].append([path(row['path']),row['witness'],target(row['target'])])
+    require(len(canonical(result)) <= MAX_METADATA)
+    tick()
+    return result
+
+
+def inventory_expand(value, clock=None):
+    """Decode exact v2 wire to v1 semantic facts; raw wire SHA remains distinct."""
+    require(type(value) is dict and set(value) == INVENTORY_FIELDS|{'strings','paths','targets'}
+        and type(value['schemaVersion']) is int and value['schemaVersion'] == 2
+        and value['scope'] == INVENTORY_WIRE_SCOPE
+        and type(value['strings']) is list and len(value['strings']) <= MAX_INVENTORY_PATHS
+        and type(value['paths']) is list and 2 <= len(value['paths']) <= MAX_INVENTORY_PATHS
+        and value['paths'][:2] == [[-1,-1],[-1,-2]]
+        and all(type(row) is list and len(row) == 2 and all(type(number) is int for number in row)
+            for row in value['paths'][:2])
+        and type(value['targets']) is list and 1 <= len(value['targets']) <= MAX_INVENTORY_PATHS
+        and value['targets'][0] == [-1,-1]
+        and all(type(number) is int for number in value['targets'][0])
+        and type(value['files']) is list and 0 < len(value['files']) <= MAX_FILES+1
+        and type(value['symlinks']) is list and len(value['symlinks']) <= MAX_METADATA//8)
+    def tick():
+        if clock is not None:clock.tick()
+    require(len(canonical(value)) <= MAX_METADATA)
+    atoms=value['strings'];seen=set()
+    for atom in atoms:
+        tick()
+        require(type(atom) is str and len(os.fsencode(atom)) <= 4096 and atom not in seen)
+        seen.add(atom)
+    names=['','/'];depth=[0,0];pairs=set();expanded=0
+    def ref(index,table):
+        require(type(index) is int and 0 <= index < len(table));return table[index]
+    for index,row in enumerate(value['paths'][2:],2):
+        tick()
+        require(type(row) is list and len(row) == 2)
+        parent=ref(row[0],names);part=ref(row[1],atoms)
+        require(type(row[0]) is int and row[0]<index and part not in ('','.','..')
+            and '/' not in part and '\x00' not in part and tuple(row) not in pairs)
+        pairs.add(tuple(row));name=parent.rstrip('/')+'/'+part if parent else part
+        require(len(os.fsencode(name)) <= 8192 and depth[row[0]]<256)
+        expanded+=len(os.fsencode(name));require(expanded <= MAX_INVENTORY_EXPANDED)
+        names.append(name);depth.append(depth[row[0]]+1)
+    literals=[None];literal_depth=[0];literal_pairs=set();literal_bytes=0
+    for index,row in enumerate(value['targets'][1:],1):
+        tick();require(type(row) is list and len(row) == 2)
+        parent=ref(row[0],literals);part=ref(row[1],atoms)
+        require(row[0]<index and '/' not in part and tuple(row) not in literal_pairs)
+        literal_pairs.add(tuple(row));text=part if parent is None else parent+'/'+part
+        require(len(os.fsencode(text)) <= 4096 and literal_depth[row[0]]<4097
+            and '\n' not in text and '\r' not in text)
+        literal_bytes+=len(os.fsencode(text));require(literal_bytes <= MAX_INVENTORY_EXPANDED)
+        literals.append(text);literal_depth.append(literal_depth[row[0]]+1)
+    result={name:value[name] for name in INVENTORY_FIELDS-{'schemaVersion','scope','files','symlinks'}}
+    result.update(schemaVersion=1,scope='yoga-original-toolbar-runfiles-byte-inventory-v1',files=[],symlinks=[])
+    for row in value['files']:
+        tick()
+        require(type(row) is list and len(row) == 5)
+        result['files'].append({'key':ref(row[0],names),'physical':ref(row[1],names),
+            'sha256':row[2],'bytes':row[3],'witness':row[4]})
+    for row in value['symlinks']:
+        tick()
+        require(type(row) is list and len(row) == 3)
+        result['symlinks'].append({'path':ref(row[0],names),'witness':row[1],'target':ref(row[2],literals)})
+    inventory_check(result,clock)
+    # Reject unused table atoms/nodes and all alternative encodings of the same
+    # facts. Strict prior-parent construction also rules out cycles/forward refs.
+    require(inventory_compact(result,clock) == value)
+    tick()
+    return result
+
+
 def publish(product, values, clock):
     """Closed metadata outputs only; failure never becomes producer success."""
     clock.tick(); os.mkdir(product,mode=0o700)
@@ -525,7 +724,8 @@ def prepare(declaration_path, environment):
                 for path,(fact,target) in sorted(inputs.links.items())], 'roles':value['roles'],
             'declaredFileCount':len(files), 'boundFileCount':len(inputs.rows)-1,
             'totalBytes':sum(row['bytes'] for key,row in inputs.rows.items() if key != 'declaration')}
-        encoded = canonical(inventory); require(len(encoded) <= MAX_METADATA)
+        encoded = canonical(inventory_compact(inventory,clock)); require(len(encoded) <= MAX_METADATA)
+        clock.tick()
         descriptor = {'schemaVersion':1, 'scope':SCOPE, 'context':context,
             'retentionMode':'original-output-base-and-declared-runfiles-only',
             'originalOutputBase':str(base), 'originalRunfilesRoot':str(runfiles),
