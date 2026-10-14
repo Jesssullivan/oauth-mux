@@ -33,6 +33,52 @@ class LeaseBoundaries(unittest.TestCase):
                 try: yield state,checkout,lease
                 finally: lease.close()
 
+    def test_actual_boot_role_is_bounded_stable_and_drains_before_return(self):
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
+            path=Path(temporary)/'boot-id';path.write_bytes(b'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n');path.chmod(0o444)
+            entry=time.monotonic_ns();deadline=entry+1200*10**9
+            real_open,real_close=os.open,os.close;opened=[];closed=[]
+            def acquire(*args,**kwargs):
+                fd=real_open(*args,**kwargs);opened.append(fd);return fd
+            def retire(fd):closed.append(fd);real_close(fd)
+            with patch.object(tree,'BOOT_ID_PATH',path), patch.object(tree.os,'open',acquire), patch.object(tree.os,'close',retire):
+                self.assertEqual(tree.current_boot_id(entry,deadline),'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+            self.assertEqual(len(closed),len(set(closed)))
+            self.assertEqual(set(opened),set(closed))
+            for fd in opened:
+                with self.assertRaises(OSError):os.fstat(fd)
+            path.chmod(0o600);path.write_bytes(b'not-a-clock-domain\n');path.chmod(0o444)
+            with patch.object(tree,'BOOT_ID_PATH',path):
+                with self.assertRaises(ValueError):tree.current_boot_id(entry,deadline)
+            with patch.object(tree,'BOOT_ID_PATH',path), patch.object(tree.time,'monotonic_ns',return_value=deadline-30*10**9):
+                with self.assertRaises(ValueError):tree.current_boot_id(entry,deadline)
+
+    def test_actual_command_declares_current_boot_only_for_both_closed_cohorts(self):
+        import guard_resident_enrollment_profile as enrollment
+        for profile in tree.PROFILES:
+            with self.subTest(profile=profile), self.fixture(profile) as (state,checkout,lease):
+                lease.__enter__()
+                run=state/lease.run_id
+                def builder(bazel,run,arguments,**kwargs):
+                    return [str(bazel),'--disk_cache=','--remote_cache=','--remote_executor=',*arguments]
+                # Namespace/configuration seams only; actual lease/fence and
+                # kernel boot capture remain real, and no action executes.
+                with patch.object(tree.Path,'cwd',return_value=checkout), \
+                        patch.object(enrollment,'repository_inputs',return_value=None):
+                    result=tree.command(builder,'declared-bazel',run,tree.COHORTS[profile],profile,
+                        lease.entry,lease.deadline,graph_sha256=lease.graph_sha256,dependency_lease=lease,
+                        source_commit=lease.source_commit,source_dirty='false',output_base=None,
+                        repository_cache='declared-model',nixpkgs_source='declared-model')
+                current='OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID='+lease.boot_id
+                self.assertIn('--action_env='+current,result)
+                self.assertIn('--test_env='+current,result)
+                if profile == tree.PRODUCER:
+                    self.assertIn('--action_env=OMUX_NATIVE_SDK_TREE_BOOT_ID='+lease.boot_id,result)
+                else:
+                    self.assertFalse(any('OMUX_NATIVE_FILE_WRITER_MODELS_BOOT_ID=' in value for value in result))
+                self.assertEqual([value for value in result if value.startswith('--action_env=OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID=')],
+                    ['--action_env='+current])
+
     def failed_receipt(self,state,lease):
         run=state/lease.run_id;run.mkdir(mode=0o700)
         (run/'test-evidence').mkdir(mode=0o700)
@@ -221,7 +267,7 @@ class LeaseBoundaries(unittest.TestCase):
         root.mkdir(parents=True)
         epoch=state/lease.run_id;epoch.mkdir(mode=0o700)
         context={'MODE':tree.PRODUCER,'ENTRY_NS':str(lease.entry),'DEADLINE_NS':str(lease.deadline),
-            'EPOCH':str(epoch),'SOURCE_COMMIT':lease.source_commit,'GRAPH_SHA256':lease.graph_sha256}
+            'EPOCH':str(epoch),'SOURCE_COMMIT':lease.source_commit,'GRAPH_SHA256':lease.graph_sha256,'BOOT_ID':lease.boot_id}
         encode=lambda doc:(json.dumps(doc,sort_keys=True)+'\n').encode()
         recipe=encode({'kind':'test-only-public-metadata-copy-fixture'})
         nars={'sdk':{'test-only':'sdk-commitment'},'jdk':{'test-only':'jdk-commitment'}}

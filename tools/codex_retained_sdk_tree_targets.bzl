@@ -1,9 +1,9 @@
 """Additive complete-tree dependency and SOURCE declarations; defaults intact."""
 load(":rules.bzl", "python_binary", "python_test")
-load(":codex_retained_sdk_tree_rules.bzl", "retained_sdk_tree", "retained_sdk_materializer_closure_test")
+load(":codex_retained_sdk_tree_rules.bzl", "retained_sdk_tree", "retained_sdk_materializer_closure_test", "retained_sdk_clock_domain_analysis_test")
 load(":codex_native_siwc_catalog_content_source_targets.bzl", "catalog_content_controls")
 
-_CREATOR_ENV = ["OMUX_NATIVE_SDK_TREE_" + name for name in ["MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256"]]
+_CREATOR_ENV = ["OMUX_NATIVE_SDK_TREE_" + name for name in ["MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256", "BOOT_ID", "CURRENT_BOOT_ID"]]
 _SOURCE_ENV = ["OMUX_NATIVE_FILE_WRITER_MODELS_" + name for name in ["MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256"]]
 
 def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
@@ -40,6 +40,8 @@ def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
         materializer = ":codex_native_retained_sdk_tree_materializer",
         tags = ["manual", "no-remote"],
     )
+    retained_sdk_clock_domain_analysis_test(name = "codex_retained_sdk_tree_clock_domain_analysis_test",
+        tags = ["manual", "no-remote"])
     retained_sdk_tree(
         name = "codex_native_retained_sdk_tree_materialized",
         materializer = ":codex_native_retained_sdk_tree_materializer",
@@ -52,6 +54,8 @@ def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
         srcs = [":codex_native_retained_sdk_tree_materialized"], output_group = "input_descriptor")
     native.filegroup(name = "codex_native_retained_sdk_tree_layout",
         srcs = [":codex_native_retained_sdk_tree_materialized"], output_group = "layout")
+    native.filegroup(name = "codex_native_retained_sdk_tree_clock_domain",
+        srcs = [":codex_native_retained_sdk_tree_materialized"], output_group = "clock_domain")
     native.filegroup(name = "codex_native_retained_sdk_tree_qualification_inputs",
         srcs = [":codex_native_retained_sdk_tree_materialized"], output_group = "qualification_inputs")
     python_test(
@@ -62,7 +66,8 @@ def retained_sdk_tree_targets(carrier_sources, source_sources, guard_sources):
                 ":codex_native_retained_sdk_tree_qualification_inputs"] + creator_proofs,
         args = ["--phase", "qualify"],
         file_args = {":codex_native_retained_sdk_tree_layout": "--data",
-                     ":codex_native_retained_sdk_tree_input_descriptor": "--input-descriptor"},
+                     ":codex_native_retained_sdk_tree_input_descriptor": "--input-descriptor",
+                     ":codex_native_retained_sdk_tree_clock_domain": "--clock-domain"},
         env_inherit = _CREATOR_ENV,
         tags = ["manual", "no-remote", "no-cache"],
         timeout = "long",

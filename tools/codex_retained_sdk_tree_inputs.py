@@ -49,7 +49,7 @@ def _pin_row(row, maximum):
 
 
 def _context(value):
-    keys = ("MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256")
+    keys = ("MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256", "BOOT_ID")
     need(type(value) is dict and set(value) == set(keys)
          and all(type(item) is str for item in value.values()) and value["MODE"] == PROFILE,
          "creator-context")
@@ -62,8 +62,25 @@ def _context(value):
          value["EPOCH"]) is not None and re.fullmatch(r"[0-9a-f]{40}", value["SOURCE_COMMIT"]) is not None,
          "creator-epoch-source")
     core.digest(value["GRAPH_SHA256"])
+    need(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["BOOT_ID"]) is not None, "creator-boot-domain")
     # Prior creator time is provenance, never a fresh consumer allowance.
     return entry, until
+
+
+def current_creator_domain(raw, creator_context):
+    """Authenticate declared current-domain bytes; never read host state here."""
+    need(type(raw) is bytes and 0 < len(raw) <= 4096, "current-clock-domain-bound")
+    doc = core.decode(raw)
+    need(type(doc) is dict and set(doc) == {"schema_version", "kind", "clock", "boot_id"}
+         and type(doc["schema_version"]) is int and doc["schema_version"] == 1
+         and doc["kind"] == "omux-sdk-tree-current-clock-domain-v1"
+         and doc["clock"] == "linux-CLOCK_MONOTONIC"
+         and type(doc["boot_id"]) is str
+         and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", doc["boot_id"]) is not None,
+         "current-clock-domain-shape")
+    need(doc["boot_id"] == os.environ.get("OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID"), "current-clock-domain-input")
+    need(doc["boot_id"] == creator_context["BOOT_ID"], "creator-clock-domain-changed")
+    return doc
 
 
 def selection(raw):
@@ -635,7 +652,7 @@ def _qualify_creator(selected, held, receipt, inventory, recipe_doc):
          and core.decode(held["selected_creator_context"].raw) == context, "creator-recipe-context-copy")
     need(receipt == core.decode(held["program_receipt"].raw), "declared-receipt-equals-actual-creator")
     program_context = {"mode": PROFILE, "epoch": context["EPOCH"], "source_commit": context["SOURCE_COMMIT"],
-                       "graph_sha256": context["GRAPH_SHA256"], "entry_monotonic_ns": entry,
+                       "graph_sha256": context["GRAPH_SHA256"], "boot_id": context["BOOT_ID"], "entry_monotonic_ns": entry,
                        "deadline_monotonic_ns": until, "work_cutoff_monotonic_ns": entry + 1170 * 10**9}
     need(type(receipt) is dict and set(receipt) == {
         "schema_version", "kind", "producer", "producer_context", "inventory", "tree_root",
@@ -864,6 +881,7 @@ class CreatorCarrierInputs:
         self.clock.tick()
         need(core.encoded({key: os.environ.get("OMUX_NATIVE_SDK_TREE_" + key) for key in self.context}) == self.context_raw,
              "creator-current-environment")
+        current_creator_domain(self.current_domain_raw, core.decode(self.context_raw))
         self.controls.fence()
         self._metadata.recheck_aliases(self.aliases, self.deadline)
         self.proofs.recheck(self.deadline)
@@ -929,11 +947,12 @@ class CreatorCarrierInputs:
     def __reduce_ex__(self, unused): raise ValueError("creator-inputs-not-transferable")
 
 
-def admit_carrier(runfiles, mapping_rows, creator_context):
+def admit_carrier(runfiles, mapping_rows, creator_context, current_domain_raw):
     """Genuine original five-role evidence; creator still proves full bytes."""
     import codex_native_carrier_metadata as metadata
     import codex_native_file_writer_model_source as family
     entry, until = _context(creator_context)
+    current_creator_domain(current_domain_raw, creator_context)
     need(core.encoded(creator_context) == core.encoded({key: os.environ.get("OMUX_NATIVE_SDK_TREE_" + key)
                                                       for key in creator_context}), "actual-creator-environment")
     need(entry <= time.monotonic_ns() < entry + 1170 * 10**9, "actual-creator-original-work")
@@ -942,6 +961,7 @@ def admit_carrier(runfiles, mapping_rows, creator_context):
     owner.clock.until_ns = owner.until_ns = entry + 1170 * 10**9
     owner.deadline = owner.clock.deadline
     owner.context, owner.context_raw = tuple(creator_context), core.encoded(creator_context)
+    owner.current_domain_raw = current_domain_raw
     owner._metadata = metadata
     try:
         owner.scope = metadata.proof_scope(owner.deadline)

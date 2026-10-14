@@ -267,6 +267,76 @@ class RetainedTreeProducerModels(unittest.TestCase):
                     with self.assertRaises(ValueError): owner.final()
                 finally: owner.close()
 
+    def test_actual_declared_domain_refuses_prior_boot_numerical_overlap_before_tree_effects(self):
+        import codex_native_retained_sdk_tree_producer as producer
+        import codex_retained_sdk_tree_inputs as admission
+        from codex_retained_sdk_tree_fixture import TinyCarrier
+        from codex_retained_sdk_tree_admission_fixture import DeclaredTreeFixture
+        other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        for fault in ("cross-boot", "env-disagrees", "missing-domain", "wrong-type", "same-boot-expired"):
+            with self.subTest(fault=fault), TinyCarrier() as tiny, DeclaredTreeFixture(tiny) as fixture:
+                args = fixture.materialize_args()
+                original = dict(fixture.context)
+                raw = fixture.domain_path.read_bytes()
+                before = sorted(path.name for path in fixture.output.iterdir())
+                doc = core.decode(raw)
+                env = {}
+                if fault == "cross-boot":
+                    doc["boot_id"] = other
+                    env["OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID"] = other
+                elif fault == "env-disagrees": env["OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID"] = other
+                elif fault == "missing-domain": fixture.domain_path.unlink()
+                elif fault == "wrong-type": doc["boot_id"] = True
+                if fault in ("cross-boot", "wrong-type"):
+                    fixture.domain_path.chmod(0o600)
+                    fixture.domain_path.write_bytes(core.encoded(doc)); fixture.domain_path.chmod(0o444)
+                overlap = fixture.entry + (1170 if fault == "same-boot-expired" else 100) * 10**9
+                with patch.dict(os.environ, env), patch.object(core.time, "monotonic_ns", return_value=overlap):
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        producer.materialize(args)
+                self.assertEqual(fixture.context, original)
+                self.assertFalse((fixture.output / "tree").exists())
+                self.assertFalse((fixture.output / ".sdk-tree-creation-private").exists())
+                self.assertEqual(sorted(path.name for path in fixture.output.iterdir()),
+                    [name for name in before if fault != "missing-domain" or name != "current-clock-domain.json"])
+
+    def test_actual_materializer_final_namespace_domain_swap_refuses_and_drains(self):
+        import io
+        from contextlib import redirect_stdout
+        import codex_native_retained_sdk_tree_producer as producer
+        from codex_retained_sdk_tree_fixture import TinyCarrier
+        from codex_retained_sdk_tree_admission_fixture import DeclaredTreeFixture
+        with TinyCarrier() as tiny, DeclaredTreeFixture(tiny) as fixture:
+            real_namespace, real_open = core._fresh_namespace, os.open
+            armed, descriptors = [False], []
+            original = fixture.domain_path.stat().st_ino
+            raw = fixture.domain_path.read_bytes()
+            backup = fixture.root / "original-domain-held-name"
+            def acquire(*args, **kwargs):
+                fd = real_open(*args, **kwargs)
+                if os.fspath(args[0]).endswith("current-clock-domain.json"): descriptors.append(fd)
+                return fd
+            def namespace(*args, **kwargs):
+                result = real_namespace(*args, **kwargs)
+                if not armed[0] and (fixture.output / "receipt.json").exists():
+                    armed[0] = True
+                    fixture.domain_path.rename(backup)
+                    fixture.domain_path.write_bytes(raw); fixture.domain_path.chmod(0o444)
+                    self.assertEqual(backup.stat().st_ino, original)
+                    self.assertEqual(backup.stat().st_nlink, 1)
+                    self.assertNotEqual(fixture.domain_path.stat().st_ino, original)
+                    self.assertEqual(fixture.domain_path.read_bytes(), raw)
+                return result
+            with patch.object(core, "_fresh_namespace", namespace), patch.object(producer.os, "open", acquire), \
+                    redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(ValueError, "sdk-tree-public-input-(alias-witness|held-name)"):
+                    producer.materialize(fixture.materialize_args())
+            self.assertTrue(armed[0])
+            self.assertTrue(descriptors)
+            self.assertEqual(output.getvalue(), "")
+            for fd in descriptors:
+                with self.assertRaises(OSError): os.fstat(fd)
+
     def test_actual_public_input_hash_refuses_private_mode_and_preserves_read_cleanup_first_cause(self):
         import codex_native_retained_sdk_tree_producer as producer
         with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:

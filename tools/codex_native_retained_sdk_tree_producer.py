@@ -300,7 +300,7 @@ def _relocate_owned_tree(stage, parent, tree_fd, expected, clock):
 
 
 def materialize(args):
-    fields = ("MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256")
+    fields = ("MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256", "BOOT_ID")
     context = {name: os.environ.get("OMUX_NATIVE_SDK_TREE_" + name) for name in fields}
     entry, until = admission._context(context)
     clock = core.Clock((entry + 1170 * 10**9) / 10**9)
@@ -313,11 +313,16 @@ def materialize(args):
     mapping = _read_small(runfiles / "_repo_mapping", clock, 1024 * 1024)
     rows = [row.split(",") for row in mapping.decode().splitlines()]
     core.need(all(len(row) == 3 for row in rows), "sdk-tree-creator-repository-mapping")
-    creator = parent = stage = carrier = published = None
+    creator = parent = stage = carrier = published = domain = None
     old_roots, new_roots = {"sdk": None, "jdk": None}, {"sdk": None, "jdk": None}
     old_tree_fd = None
     try:
-        creator = admission.admit_carrier(runfiles, rows, context)
+        domain_path = _execution_path(args.clock_domain)
+        core.need(domain_path == context_path.with_name("current-clock-domain.json"), "sdk-tree-fixed-current-clock-domain")
+        domain = PublicInput(domain_path, clock)
+        domain_raw = _capture_public(domain, 4096)
+        admission.current_creator_domain(domain_raw, context)
+        creator = admission.admit_carrier(runfiles, rows, context, domain_raw)
         core.need(type(creator) is admission.CreatorCarrierInputs, "sdk-tree-real-carrier-creator-owner")
         clock = creator.clock
         core.need(clock.until_ns == entry + 1170 * 10**9 and clock.deadline == clock.until_ns / 10**9,
@@ -396,7 +401,8 @@ def materialize(args):
         program = {"schema_version": 1, "kind": tree.REPORT_KIND, "producer": tree.TARGET,
             "producer_context": {"mode": tree.PROFILE, "epoch": context["EPOCH"],
                 "source_commit": context["SOURCE_COMMIT"], "graph_sha256": context["GRAPH_SHA256"],
-                "entry_monotonic_ns": entry, "deadline_monotonic_ns": until, "work_cutoff_monotonic_ns": clock.until_ns},
+                "entry_monotonic_ns": entry, "deadline_monotonic_ns": until, "work_cutoff_monotonic_ns": clock.until_ns,
+                "boot_id": context["BOOT_ID"]},
             "inventory": {"sha256": core.sha(inventory_raw), "bytes": len(inventory_raw)},
             "tree_root": "tree", "extraction_receipt_sha256": core.sha(core.encoded(extraction)),
             "physical_mode_policy": tree.PHYSICAL_POLICY, "created_tree_commitment": core.sha(core.encoded(
@@ -419,19 +425,21 @@ def materialize(args):
         os.rmdir(".sdk-tree-creation-private", dir_fd=parent.fd)
         os.fsync(parent.fd)
         creator.full(); carrier.check()
+        core.need(_capture_public(domain, 4096) == domain_raw, "sdk-tree-current-domain-final")
+        admission.current_creator_domain(domain_raw, context)
         core.need(_read_small(context_path, clock) == context_raw
             and _read_small(descriptor_path, clock, core.MAX_METADATA) == descriptor_raw,
             "sdk-tree-action-controls-final")
         core.need(core._fresh_namespace(new_roots, logical, clock) == before,
                   "sdk-tree-after-publication-all-member-fence")
         _fence_recipe(descriptor, input_witnesses, clock)
-        creator.check(); carrier.check(); published.check(); parent.check(); clock.tick()
+        creator.check(); carrier.check(); published.check(); parent.check(); domain.check(); clock.tick()
     except BaseException as error:
         try:
             if old_tree_fd is not None: os.close(old_tree_fd)
         except BaseException as cleanup: raise error from cleanup
         finally:
-            _drain(tuple(old_roots.values()) + tuple(new_roots.values()) + (published, stage, parent, carrier, creator), error)
+            _drain(tuple(old_roots.values()) + tuple(new_roots.values()) + (published, stage, parent, carrier, creator, domain), error)
         raise
     else:
         first = None
@@ -444,7 +452,7 @@ def materialize(args):
             try: carrier.__exit__(None, None, None)
             except BaseException as error:
                 if first is None: first = error
-        _drain(tuple(new_roots.values()) + (published, parent, creator), first)
+        _drain(tuple(new_roots.values()) + (published, parent, creator, domain), first)
         if first is not None: raise first
         clock.tick()
 
@@ -563,7 +571,7 @@ class _TreeScan:
 
 
 def qualify(args):
-    fields = ("MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256")
+    fields = ("MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256", "BOOT_ID")
     context = {name: os.environ.get("OMUX_NATIVE_SDK_TREE_" + name) for name in fields}
     entry, until = admission._context(context)
     clock = core.Clock((entry + 1170 * 10**9) / 10**9)
@@ -574,14 +582,19 @@ def qualify(args):
     core.need(args.data is not None and _execution_path(args.data) == fixed_data,
               "sdk-tree-qualifier-fixed-layout")
     creator = scan = output = None
-    names = ("data", "context", "descriptor", "recipe", "inventory", "receipt", "extraction")
+    names = ("data", "context", "descriptor", "recipe", "inventory", "receipt", "extraction", "domain")
     owners = {name: None for name in names}
     raws = {}
     try:
         mapping = _read_small(runfiles / "_repo_mapping", clock, 1024 * 1024)
         rows = [row.split(",") for row in mapping.decode().splitlines()]
         core.need(all(len(row) == 3 for row in rows), "sdk-tree-qualifier-mapping")
-        creator = admission.admit_carrier(runfiles, rows, context)
+        domain_path = _execution_path(args.clock_domain)
+        core.need(domain_path == runfiles / admission.BASE / "current-clock-domain.json", "sdk-tree-qualifier-fixed-domain")
+        owners["domain"] = PublicInput(domain_path, clock)
+        raws["domain"] = _capture_public(owners["domain"], 4096)
+        admission.current_creator_domain(raws["domain"], context)
+        creator = admission.admit_carrier(runfiles, rows, context, raws["domain"])
         core.need(type(creator) is admission.CreatorCarrierInputs, "sdk-tree-qualifier-real-provenance")
         clock = creator.clock
         owners["data"] = PublicInput(fixed_data, clock)
@@ -613,7 +626,7 @@ def qualify(args):
         report = core.decode(raws["receipt"])
         expected_context = {"mode": tree.PROFILE, "epoch": context["EPOCH"], "source_commit": context["SOURCE_COMMIT"],
             "graph_sha256": context["GRAPH_SHA256"], "entry_monotonic_ns": entry,
-            "deadline_monotonic_ns": until, "work_cutoff_monotonic_ns": clock.until_ns}
+            "deadline_monotonic_ns": until, "work_cutoff_monotonic_ns": clock.until_ns, "boot_id": context["BOOT_ID"]}
         keys = {"schema_version", "kind", "producer", "producer_context", "inventory", "tree_root",
             "extraction_receipt_sha256", "physical_mode_policy", "created_tree_commitment", "carrier_qualification",
             "materialization", "sdk_execution_qualified", "source_qualified", "compiler_qualified", "runtime_qualified"}
@@ -689,6 +702,7 @@ def main():
     for name in ("tree-output", "inventory-output", "receipt-output", "recipe-output", "creator-context", "input-descriptor"):
         parser.add_argument("--" + name)
     parser.add_argument("--data")
+    parser.add_argument("--clock-domain", required=True)
     args = parser.parse_args()
     if args.phase == "materialize":
         core.need(all(getattr(args, name.replace("-", "_")) for name in

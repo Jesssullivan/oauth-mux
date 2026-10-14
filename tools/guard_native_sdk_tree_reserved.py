@@ -78,6 +78,66 @@ def runtime_seconds(profile,entry,deadline):
     return min(1170 if profile == PRODUCER else 840,int(remaining(entry,deadline)))
 
 
+BOOT_ID_PATH = Path('/proc/sys/kernel/random/boot_id')
+
+
+def current_boot_id(entry,deadline,profile=PRODUCER):
+    """Fixed bounded kernel clock-domain role, projected as a declared input.
+
+    SDK actions do not read this host path. No caller boot value/path or cached
+    receipt can supply the current role. All opened descriptors drain once.
+    """
+    require(profile in PROFILES and type(entry) is int and type(deadline) is int and deadline-entry == 1200*10**9)
+    cutoff=entry+(1170 if profile == PRODUCER else 600)*10**9
+    require(entry <= time.monotonic_ns() < cutoff)
+    parts=BOOT_ID_PATH.parts[1:]
+    slots=[None]*(len(parts)+1)
+    primary=None;raw=None
+    try:
+        slots[0]=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        for index,part in enumerate(parts):
+            require(entry <= time.monotonic_ns() < cutoff)
+            parent=slots[index]
+            final=index == len(parts)-1
+            before=old._witness(os.stat(part,dir_fd=parent,follow_symlinks=False))
+            if not final:before=before[:5]  # kernel directories: stable identity, as core.Root
+            flags=os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK
+            if not final:flags |= os.O_DIRECTORY
+            slot=index+1  # compute the preallocated owner index before acquisition
+            slots[slot]=os.open(part,flags,dir_fd=parent)
+            held=old._witness(os.fstat(slots[slot]))
+            named=old._witness(os.stat(part,dir_fd=parent,follow_symlinks=False))
+            if not final:held,named=held[:5],named[:5]
+            require(before == held == named)
+            require(held[2] in (0,os.getuid()))
+            if final:
+                require(stat.S_ISREG(held[4]) and stat.S_IMODE(held[4]) == 0o444 and held[5] == 1
+                    and 0 <= held[6] <= 128)
+                raw=os.pread(slots[index+1],129,0)
+                require(0 < len(raw) <= 128 and os.pread(slots[index+1],129,0) == raw
+                    and old._witness(os.fstat(slots[index+1])) == held
+                    == old._witness(os.stat(part,dir_fd=parent,follow_symlinks=False)))
+            else:
+                require(stat.S_ISDIR(held[4]) and (not held[4]&0o022 or bool(held[4]&stat.S_ISVTX)))
+        token=raw.decode('ascii')
+        require(re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\n',token) is not None)
+        require(entry <= time.monotonic_ns() < cutoff)
+    except BaseException as error:primary=error
+    cleanup=None
+    for index in range(len(slots)-1,-1,-1):
+        fd,slots[index]=slots[index],None
+        if fd is not None:
+            try:os.close(fd)
+            except BaseException as error:
+                if cleanup is None:cleanup=error
+    if primary is not None:
+        if cleanup is not None:raise primary from cleanup
+        raise primary
+    if cleanup is not None:raise cleanup
+    require(entry <= time.monotonic_ns() < cutoff)
+    return token[:-1]
+
+
 def verify_runtime(value,seconds):
     require(type(seconds) is int and 1 <= seconds <= 1170)
     from yoga_delivery_settings import effective_runtime
@@ -101,6 +161,7 @@ def command(builder,bazel,run,arguments,profile,entry,deadline,*,graph_sha256,de
     context = {'MODE':PRODUCER if profile == PRODUCER else old.INPUT_MODE,
         'ENTRY_NS':str(entry),'DEADLINE_NS':str(deadline),'EPOCH':str(run),
         'SOURCE_COMMIT':kwargs['source_commit'],'GRAPH_SHA256':graph_sha256}
+    if profile == PRODUCER:context['BOOT_ID']=dependency_lease.boot_id
     result=builder(bazel,run,arguments,profile='standard',output_base=dependency_lease.output_base,**kwargs)
     require('--disk_cache=' in result and '--remote_cache=' in result and '--remote_executor=' in result)
     flags=['--experimental_convenience_symlinks=ignore','--repository_disable_download',
@@ -109,6 +170,10 @@ def command(builder,bazel,run,arguments,profile,entry,deadline,*,graph_sha256,de
         for name,value in context.items()]
     if profile == PRODUCER:
         flags += ['--action_env='+prefix+name+'='+value for name,value in context.items()]
+    # Boot-only current role is stable across same-boot epochs and is an
+    # explicit action input for both cohorts; never the selected old value.
+    flags += ['--'+kind+'=OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID='+dependency_lease.boot_id
+        for kind in ('action_env','test_env')]
     index=result.index('test')+1;result[index:index]=flags
     dependency_lease.fence()
     return result
@@ -258,6 +323,7 @@ The new type accepts exactly two cohorts and never supplies a child lock claim.
     def __init__(self,*args,profile,**kwargs):
         require(profile in PROFILES)
         self.profile=profile
+        self.boot_id=current_boot_id(kwargs["entry"],kwargs["deadline"],profile)
         self._lease_self=self
         self.publication_ready=False
         self._pending_terminal=None
@@ -268,7 +334,7 @@ The new type accepts exactly two cohorts and never supplies a child lock claim.
         self.binding=self._binding()
 
     def _binding(self):
-        return (*super()._binding(),self.profile,FAMILY)
+        return (*super()._binding(),self.profile,FAMILY,self.boot_id)
 
     def _clock(self):
         cutoff=self.deadline-30*10**9 if self.capture_ready or self.profile == PRODUCER else self.entry+600*10**9
@@ -850,7 +916,8 @@ def validate_artifact_origin(outer,selected_context,materialization):
         and origin['source_qualified'] is False and origin['runtime_qualified'] is False)
     key=pin(origin['key']);require(origin['namespace'] == 'cache-v2-sdk-tree-'+key)
     require(type(selected_context) is dict and set(selected_context) == {'MODE','ENTRY_NS','DEADLINE_NS',
-        'EPOCH','SOURCE_COMMIT','GRAPH_SHA256'} and all(type(value) is str for value in selected_context.values())
+        'EPOCH','SOURCE_COMMIT','GRAPH_SHA256','BOOT_ID'} and all(type(value) is str for value in selected_context.values())
+        and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',selected_context['BOOT_ID']) is not None
         and selected_context['MODE'] == PRODUCER
         and selected_context['SOURCE_COMMIT'] == outer['source_commit']
         and selected_context['GRAPH_SHA256'] == outer['graph_sha256']
@@ -941,7 +1008,7 @@ qualified. This function does not create that outcome or terminal receipt.
             raws[name]=raw
         context=json.loads(raws['creator-context.json'])
         require(context == {'MODE':PRODUCER,'ENTRY_NS':str(lease.entry),'DEADLINE_NS':str(lease.deadline),
-            'EPOCH':str(epoch),'SOURCE_COMMIT':lease.source_commit,'GRAPH_SHA256':lease.graph_sha256})
+            'EPOCH':str(epoch),'SOURCE_COMMIT':lease.source_commit,'GRAPH_SHA256':lease.graph_sha256,'BOOT_ID':lease.boot_id})
         report=json.loads(raws['receipt.json'])
         require(report['kind'] == 'omux-retained-public-sdk-tree-producer-v1'
             and report['producer'] == TARGET and report['tree_root'] == 'tree'

@@ -7,12 +7,24 @@ load("@omux_retained_public_sdk_tree_proof_inputs//:selection.bzl", "SDK_TREE_CR
 
 RetainedSdkTreeInfo = provider(fields = ["tree", "inventory", "receipt", "recipe", "context", "layout"])
 _TARGET = "codex_native_retained_sdk_tree_materialized"
-_FIELDS = ["MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256"]
+_FIELDS = ["MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256", "BOOT_ID"]
 _PREFIX = "OMUX_NATIVE_SDK_TREE_"
 
 def _need(value, reason):
     if not value:
         fail("retained SDK TreeArtifact declaration refused: " + reason)
+
+def _boot(value):
+    _need(type(value) == "string" and len(value) == 36 and
+        [value[i] for i in [8, 13, 18, 23]] == ["-", "-", "-", "-"] and
+        len(value.replace("-", "")) == 32 and
+        all([c in "0123456789abcdef" for c in value.replace("-", "").elems()]), "boot-domain")
+    return value
+
+def _domain(environment):
+    # Fixed logical path and boot-only bytes: no fresh epoch/ENTRY/source values.
+    return {"schema_version": 1, "kind": "omux-sdk-tree-current-clock-domain-v1",
+        "clock": "linux-CLOCK_MONOTONIC", "boot_id": _boot(environment.get(_PREFIX + "CURRENT_BOOT_ID", ""))}
 
 def _creator(environment, selected):
     present = {name: environment.get(_PREFIX + name, "") for name in _FIELDS}
@@ -25,6 +37,7 @@ def _creator(environment, selected):
     _need(chosen["MODE"] == "native-sdk-tree-producer-reserved", "closed-creator-mode")
     _need(all([type(chosen[name]) == "string" for name in _FIELDS]), "context-string-fields")
     _need(int(chosen["DEADLINE_NS"]) - int(chosen["ENTRY_NS"]) == 1200 * 1000000000, "creator-original1200")
+    _boot(chosen["BOOT_ID"])
     # Runtime independently authenticates every value and current original clock.
     # Both fresh and selected contexts serialize in the same closed order.
     # Dict insertion order is input data, not a cache-identity coincidence.
@@ -48,9 +61,12 @@ def _impl(ctx):
     receipt = ctx.actions.declare_file(base + "receipt.json")
     recipe = ctx.actions.declare_file(base + "recipe.json")
     context = ctx.actions.declare_file(base + "creator-context.json")
+    domain = ctx.actions.declare_file(base + "current-clock-domain.json")
     descriptor = ctx.actions.declare_file(base + "declared-inputs.json")
     layout = ctx.actions.declare_file("retained-sdk-tree-data.json")
     ctx.actions.write(context, json.encode(creator) + "\n")
+    current_domain = _domain(ctx.configuration.default_shell_env)
+    ctx.actions.write(domain, json.encode(current_domain) + "\n")
     code = sorted(ctx.files.code, key = _path)
     carrier_names = ["manifest.json", "origin-receipt.json", "payload.bin", "receipt.json"]
     carrier = sorted([file for file in ctx.files.carrier if file.basename in carrier_names], key = _basename)
@@ -76,14 +92,15 @@ def _impl(ctx):
     argv.add_all(["--phase", "materialize", "--tree-output", tree.path,
         "--inventory-output", inventory.path, "--receipt-output", receipt.path,
         "--recipe-output", recipe.path, "--creator-context", context.path,
-        "--input-descriptor", descriptor.path])
+        "--input-descriptor", descriptor.path, "--clock-domain", domain.path])
     environment = {_PREFIX + name: creator[name] for name in _FIELDS}
+    environment[_PREFIX + "CURRENT_BOOT_ID"] = current_domain["boot_id"]
     environment.update({"PYTHONNOUSERSITE": "1", "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
         "RUNFILES_DIR": ctx.executable.materializer.path + ".runfiles"})
     ctx.actions.run(
         executable = ctx.executable.materializer,
         arguments = [argv],
-        inputs = depset(code + carrier + proofs + tools + [context, descriptor]),
+        inputs = depset(code + carrier + proofs + tools + [context, descriptor, domain]),
         tools = [ctx.attr.materializer[DefaultInfo].files_to_run],
         outputs = [tree, inventory, receipt, recipe],
         mnemonic = "OmuxRetainedSdkTree",
@@ -97,13 +114,13 @@ def _impl(ctx):
         "recipe": _key(recipe), "creator_context": _key(context),
         "artifact": {"root": _key(tree), "receipt": _key(receipt), "inventory": _key(inventory)},
     }) + "\n")
-    outputs = [tree, inventory, receipt, recipe, context, descriptor, layout]
+    outputs = [tree, inventory, receipt, recipe, context, descriptor, layout, domain]
     # SOURCE only receives produced SDK/metadata. The qualifier explicitly
     # requests original recipe inputs through a separate output group below.
     runfiles = ctx.runfiles(files = outputs)
     return [DefaultInfo(files = depset(outputs), runfiles = runfiles),
         OutputGroupInfo(input_descriptor = depset([descriptor]), layout = depset([layout]),
-            qualification_inputs = depset(code + carrier + proofs + tools)),
+            qualification_inputs = depset(code + carrier + proofs + tools), clock_domain = depset([domain])),
         RetainedSdkTreeInfo(tree = tree, inventory = inventory, receipt = receipt,
             recipe = recipe, context = context, layout = layout)]
 
@@ -199,5 +216,29 @@ def _materializer_closure_test_impl(ctx):
 retained_sdk_materializer_closure_test = rule(
     implementation = _materializer_closure_test_impl,
     attrs = {"materializer": attr.label(mandatory = True, executable = True, cfg = "exec")},
+    analysis_test = True,
+)
+
+
+def _clock_domain_analysis_test_impl(ctx):
+    a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    creator = {"MODE": "native-sdk-tree-producer-reserved", "ENTRY_NS": "1",
+        "DEADLINE_NS": "1200000000001", "EPOCH": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/11111111-1111-1111-1111-111111111111",
+        "SOURCE_COMMIT": "1" * 40, "GRAPH_SHA256": "2" * 64, "BOOT_ID": a}
+    env = {_PREFIX + "CURRENT_BOOT_ID": a}
+    fresh = dict(env)
+    fresh.update({_PREFIX + name: creator[name] for name in _FIELDS})
+    next_boot = {_PREFIX + "CURRENT_BOOT_ID": b}
+    valid = _creator(env, creator) == creator and _creator(fresh, None) == creator
+    valid = valid and json.encode(_domain(env)) == json.encode(_domain(fresh))
+    valid = valid and _creator(next_boot, creator) == creator
+    valid = valid and _domain(next_boot) != _domain(env)
+    valid = valid and sorted(_domain(env).keys()) == ["boot_id", "clock", "kind", "schema_version"]
+    return [AnalysisTestResultInfo(success = valid,
+        message = "declared clock-domain stability/selected creator separation failed; no action-cache qualification")]
+
+retained_sdk_clock_domain_analysis_test = rule(
+    implementation = _clock_domain_analysis_test_impl,
     analysis_test = True,
 )

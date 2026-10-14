@@ -181,3 +181,27 @@ or ancestor SDK execution verdict provides an alternative authority.
 Parent is the sole actual executor. Private packet authoring did not run
 project imports, builds, tests, providers, vault activity, services or trackers.
 Historical passing receipts retain their original scope.
+
+
+## Separate creator clock-domain correction (unqualified)
+
+The selected creator's old monotonic interval cannot authorize a cold action
+in a different boot, even when the new counter numerically overlaps it. The
+unshipped successor records a canonical Linux boot UUID in the closed creator
+context and authenticates it throughout program/selection/origin joins. The
+parent guard reads its fixed bounded kernel boot role on the original clock;
+the child reads only the separately declared current-clock-domain artifact,
+never host `/proc`. Current-domain bytes contain only schema/kind, the Linux
+monotonic clock name and boot UUID, with a fixed logical path. They carry no
+fresh epoch, entry, source or graph values that would break same-domain action
+identity. The original selected creator interval is never renewed.
+
+Both producer and SOURCE cohorts declare that current input. A different boot
+changes the action key and the old creator refuses before SDK/output effects;
+a fresh independent producer is required. No cross-boot cache-hit support is
+claimed. Historical immutable content/receipt provenance remains distinct from
+runnable clock authority. Same-domain warm identity, all original resource and
+1170/1200/600 budgets, and the current SOURCE six-field/full physical proof
+remain unchanged. Declared analysis/model cases are not a measured cache hit or
+a genuine creator qualification; ordinary action/reuse/current SOURCE gates
+remain mandatory. Remote execution is still unsupported for this local route.

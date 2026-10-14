@@ -57,6 +57,44 @@ class AdmissionMetadataModels(unittest.TestCase):
                             with self.assertRaises(OSError): os.fstat(fd)
         finally: ancestor.chmod(0o700)
 
+    def test_current_domain_is_closed_and_old_creator_boot_is_provenance_only(self):
+        boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        context = {"BOOT_ID": boot}
+        doc = {"schema_version": 1, "kind": "omux-sdk-tree-current-clock-domain-v1",
+            "clock": "linux-CLOCK_MONOTONIC", "boot_id": boot}
+        with patch.dict(os.environ, {"OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID": boot}):
+            self.assertEqual(inputs.current_creator_domain(core.encoded(doc), context), doc)
+            for field, value in (("schema_version", True), ("clock", "wall-clock"),
+                    ("boot_id", "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"), ("extra", "fresh epoch")):
+                with self.subTest(field=field):
+                    changed = {**doc, field: value}
+                    with self.assertRaises(ValueError): inputs.current_creator_domain(core.encoded(changed), context)
+            with self.assertRaisesRegex(ValueError, "creator-clock-domain-changed"):
+                inputs.current_creator_domain(core.encoded(doc), {"BOOT_ID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"})
+
+    def test_prior_boot_bytes_are_provenance_under_fresh_actual_source_owner(self):
+        from contextlib import redirect_stdout
+        import io
+        import codex_native_retained_sdk_tree_producer as producer
+        import codex_retained_sdk_tree_reader as reader
+        from codex_retained_sdk_tree_fixture import TinyCarrier
+        from codex_retained_sdk_tree_admission_fixture import DeclaredTreeFixture
+        with TinyCarrier() as tiny, DeclaredTreeFixture(tiny) as fixture:
+            producer.materialize(fixture.materialize_args()); tiny.normalize(fixture.output / "tree")
+            with patch.dict(os.environ, {"TEST_UNDECLARED_OUTPUTS_DIR": str(fixture.qualifier_output)}), redirect_stdout(io.StringIO()):
+                producer.qualify(fixture.qualifier_args())
+            fixture.publish_tree()
+            original = dict(fixture.context)
+            with patch.dict(os.environ, {"OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}), fixture.retained_source() as held:
+                with reader.open_declared(fixture.runfiles, fixture.rows, fixture.entry, fixture.until,
+                        fixture.source_context, held) as current:
+                    self.assertEqual(current.record()["creator"]["producer_context"]["boot_id"], original["BOOT_ID"])
+                    self.assertEqual(current.clock.until_ns, fixture.entry + 600 * 10**9)
+                    self.assertFalse(current.record()["sdk_execution_qualified"])
+                    self.assertEqual(current.read_regular("sdk", "receipt.json", core.MAX_METADATA), tiny.model.original)
+                    current.finish()
+            self.assertEqual(fixture.context, original)
+
     def test_unselected_and_caller_success_flags_never_create_authority(self):
         document = {"schema_version": 1, "kind": inputs.SELECTION_KIND, "status": "UNSELECTED", "selection": None}
         with self.assertRaises(ValueError): inputs.selection(core.encoded(document))
@@ -241,7 +279,7 @@ class AdmissionMetadataModels(unittest.TestCase):
         from codex_retained_sdk_tree_admission_fixture import DeclaredTreeFixture
         for fault in ("bytes", "same-byte-inode"):
             with self.subTest(fault=fault), TinyCarrier() as tiny, DeclaredTreeFixture(tiny) as fixture:
-                owner = inputs.admit_carrier(fixture.runfiles, fixture.rows, fixture.context)
+                owner = inputs.admit_carrier(fixture.runfiles, fixture.rows, fixture.context, fixture.domain_raw)
                 path = fixture.original_declaration_path
                 raw = path.read_bytes()
                 try:

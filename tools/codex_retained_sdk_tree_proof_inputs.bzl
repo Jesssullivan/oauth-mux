@@ -6,7 +6,7 @@ The production consumer holds and independently authenticates every role.
 _TARGET = "//tools:codex_native_retained_sdk_tree_producer"
 _PROFILE = "native-sdk-tree-producer-reserved"
 _ROOTS = ["/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/", "/home/jess/.local/state/omux-execution-20261005/"]
-_FIELDS = ["MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256"]
+_FIELDS = ["MODE", "ENTRY_NS", "DEADLINE_NS", "EPOCH", "SOURCE_COMMIT", "GRAPH_SHA256", "BOOT_ID"]
 _ROLES = ["outer_receipt", "test_evidence", "test_log", "test_xml", "program_receipt", "selected_inventory", "selected_recipe", "selected_creator_context", "qualification_confirmation"]
 _ALIASES = ["proof/outer-receipt.json", "proof/test-evidence.json", "proof/test-log.evidence", "proof/test-xml.evidence", "proof/program-receipt.json", "proof/selected-inventory.json", "proof/selected-recipe.json", "proof/selected-creator-context.json", "proof/qualification-confirmation.json"]
 
@@ -42,6 +42,8 @@ def _context(value):
     _need(type(value) == "dict" and sorted(value.keys()) == sorted(_FIELDS) and all([type(value[name]) == "string" for name in _FIELDS]) and value["MODE"] == _PROFILE, "creator-context-fields")
     _need(all([len(value[name]) > 0 and len(value[name]) <= 20 and all([c in "0123456789" for c in value[name].elems()]) for name in ["ENTRY_NS", "DEADLINE_NS"]]), "creator-integers")
     _need(int(value["ENTRY_NS"]) > 0 and int(value["DEADLINE_NS"]) - int(value["ENTRY_NS"]) == 1200 * 1000000000 and _hex(value["SOURCE_COMMIT"], 40) and _hex(value["GRAPH_SHA256"]), "original-creator-envelope")
+    boot = value["BOOT_ID"]
+    _need(len(boot) == 36 and [boot[i] for i in [8, 13, 18, 23]] == ["-", "-", "-", "-"] and _hex(boot.replace("-", ""), 32), "creator-boot-domain")
     epoch = _path(value["EPOCH"])
     prefixes = [prefix for prefix in _ROOTS if epoch.startswith(prefix)]
     _need(len(prefixes) == 1, "creator-state-root")

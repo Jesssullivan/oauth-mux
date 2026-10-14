@@ -63,7 +63,7 @@ class TinyCarrier:
         return {"MODE": "native-sdk-tree-producer-reserved", "ENTRY_NS": str(entry),
             "DEADLINE_NS": str(entry + 1200 * 10**9),
             "EPOCH": str(self.root / "11111111-1111-1111-1111-111111111111"),
-            "SOURCE_COMMIT": "1" * 40, "GRAPH_SHA256": "2" * 64}
+            "SOURCE_COMMIT": "1" * 40, "GRAPH_SHA256": "2" * 64, "BOOT_ID": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}
 
     def close(self):
         patches, self.patches = self.patches, None

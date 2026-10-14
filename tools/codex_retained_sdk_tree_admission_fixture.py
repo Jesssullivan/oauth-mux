@@ -101,8 +101,10 @@ class DeclaredTreeFixture:
         self.commit, self.graph = "a" * 40, "b" * 64
         self.context = {"MODE": admission.PROFILE, "ENTRY_NS": str(self.entry),
             "DEADLINE_NS": str(self.until), "EPOCH": str(self.tree_epoch),
-            "SOURCE_COMMIT": self.commit, "GRAPH_SHA256": self.graph}
-        self.source_context = {**self.context, "MODE": original.MODE, "EPOCH": str(self.source_epoch)}
+            "SOURCE_COMMIT": self.commit, "GRAPH_SHA256": self.graph, "BOOT_ID": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}
+        self.domain_raw = core.encoded({"schema_version": 1, "kind": "omux-sdk-tree-current-clock-domain-v1",
+            "clock": "linux-CLOCK_MONOTONIC", "boot_id": self.context["BOOT_ID"]})
+        self.source_context = {**{key: value for key, value in self.context.items() if key != "BOOT_ID"}, "MODE": original.MODE, "EPOCH": str(self.source_epoch)}
         self.rows = [["_main", metadata.REPOSITORY, metadata.REPOSITORY],
             ["_main", metadata.PROOF_REPOSITORY, metadata.PROOF_REPOSITORY],
             ["_main", admission.PROOF_REPOSITORY, admission.PROOF_REPOSITORY]]
@@ -137,6 +139,7 @@ class DeclaredTreeFixture:
             self.stack.enter_context(patch.object(original, "ORIGIN", self.tiny.model.origin))
             self.stack.enter_context(patch.object(metadata.binding.ninth.parent, "ROOT", self.runfiles / "_main"))
             self.env = {"OMUX_NATIVE_SDK_TREE_" + key: value for key, value in self.context.items()}
+            self.env["OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID"] = self.context["BOOT_ID"]
             self.env.update({"RUNFILES_DIR": str(self.runfiles), "TEST_SRCDIR": str(self.runfiles)})
             self.stack.enter_context(patch.dict(os.environ, self.env))
             self._original_roles()
@@ -214,6 +217,8 @@ class DeclaredTreeFixture:
         self.output.mkdir(parents=True, mode=0o700)
         self.context_path = self.output / "creator-context.json"
         _write(self.context_path, core.encoded(self.context) + b"\n")
+        self.domain_path = self.output / "current-clock-domain.json"
+        _write(self.domain_path, self.domain_raw)
         code, tool = self.root / "public/model_materializer.py", self.root / "public/locked_model_tool"
         _write(code, b"# synthetic public code input\n")
         _write(tool, b"synthetic locked tool closure input\n", 0o555)
@@ -244,19 +249,20 @@ class DeclaredTreeFixture:
         from types import SimpleNamespace
         return SimpleNamespace(tree_output=str(self.output / "tree"), inventory_output=str(self.output / "inventory.json"),
             receipt_output=str(self.output / "receipt.json"), recipe_output=str(self.output / "recipe.json"),
-            creator_context=str(self.context_path), input_descriptor=str(self.descriptor_path))
+            creator_context=str(self.context_path), input_descriptor=str(self.descriptor_path), clock_domain=str(self.domain_path))
 
     def qualifier_args(self):
         from types import SimpleNamespace
         return SimpleNamespace(data=str(self.runfiles / admission.DATA),
-            input_descriptor=str(self.runfiles / admission.BASE / "declared-inputs.json"))
+            input_descriptor=str(self.runfiles / admission.BASE / "declared-inputs.json"),
+            clock_domain=str(self.runfiles / admission.BASE / "current-clock-domain.json"))
 
     def declare_artifact(self):
         layout = {"kind": "omux-retained-public-sdk-tree-declared-data-v1", "recipe": admission.BASE + "/recipe.json",
             "creator_context": admission.BASE + "/creator-context.json", "artifact": {"root": admission.BASE + "/tree",
                 "receipt": admission.BASE + "/receipt.json", "inventory": admission.BASE + "/inventory.json"}}
         _write(self.runfiles / admission.DATA, core.encoded(layout))
-        for name in ("creator-context.json", "inventory.json", "receipt.json", "recipe.json", "tree", "declared-inputs.json"):
+        for name in ("creator-context.json", "inventory.json", "receipt.json", "recipe.json", "tree", "declared-inputs.json", "current-clock-domain.json"):
             _alias(self.runfiles / admission.BASE / name, self.output / name)
 
     def publish_tree(self):
