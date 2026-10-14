@@ -1585,6 +1585,11 @@ ORDINARY_CHECK_LABELS = frozenset({
     '//:oauth_oidc_signed_fixture_test', '//:browser_attempt_transaction_test',
     '//:storage_test', '//:format_test', '//:docs_check', '//tools:execution_guard_test',
     '//:paired_renewal_test', '//delivery:yoga_public_artifact_prepare_test',
+    '//tools:guard_resident_standard_vault_test', '//tools:guard_resident_enrollment_profile_test',
+    '//delivery:resident_standard_vault_models', '//delivery:resident_vault_models',
+    '//tools:guard_resident_owned_update_test', '//tools:home_manager_realization_inputs_test',
+    '//tools:guard_home_manager_bundle_reserved_test', '//tools:guard_native_seed_plan_reserved_test',
+    '//tools:nix_private_store_qualification_test', '//delivery:yoga_public_artifact_receive_test',
 })
 ORDINARY_CHECK_ARGUMENT_FIELDS = frozenset({
     'arguments', 'profile', 'manager', 'source_commit', 'source_dirty', 'state_dir',

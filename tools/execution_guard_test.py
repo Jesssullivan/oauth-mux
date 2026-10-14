@@ -2991,7 +2991,7 @@ class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
         import execution_guard as guard
         args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
                              source_dirty='false',reuse_owned_cache=False,arguments=[])
-        self.assertEqual(len(guard.ORDINARY_CHECK_LABELS),14)
+        self.assertEqual(len(guard.ORDINARY_CHECK_LABELS),24)
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test',*sorted(guard.ORDINARY_CHECK_LABELS)]))
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//tools:execution_guard_test','//:docs_check']))
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//:engine_test','//:unit_tests',
@@ -3038,6 +3038,67 @@ class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
             self.assertFalse(guard.ordinary_check_reuse_selected(changed,['test',*labels]))
         self.assertTrue(guard.toolbar_prepare_selected('standard','system',
             ['test','//delivery:yoga_public_artifact_prepare_producer']))
+
+    def test_current_vault_and_hm_model_vectors_keep_special_effect_selectors_out_of_reuse(self):
+        import execution_guard as guard
+        args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
+                             source_dirty='false',reuse_owned_cache=False)
+        vault=['test','//tools:guard_resident_standard_vault_test','//tools:guard_resident_enrollment_profile_test',
+               '//delivery:resident_standard_vault_models','//delivery:resident_vault_models',
+               '//tools:guard_resident_owned_update_test','//tools:execution_guard_test','//:format_test','//:docs_check']
+        hm=['test','//tools:home_manager_realization_inputs_test','//tools:guard_home_manager_bundle_reserved_test',
+            '//tools:guard_native_seed_plan_reserved_test','//tools:execution_guard_test',
+            '//tools:nix_private_store_qualification_test','//:format_test','//:docs_check']
+        for vector in (vault,hm):
+            self.assertTrue(guard.ordinary_check_reuse_selected(args,vector))
+            self.assertEqual(guard.toolbar_prepare_action_jobs('standard',vector,source_dirty='false'),2)
+            for wrong in (['build',*vector[1:]],['run',vector[1]],vector+[vector[1]],vector+['--test_arg=model']):
+                self.assertFalse(guard.ordinary_check_reuse_selected(args,wrong))
+            for label in ('//tools:home_manager_linux_realization_inputs_producer',
+                    '//tools:home_manager_acquired_evaluation','//tools:home_manager_retained_reconstruction_producer',
+                    '//tools:nix_private_store_build_qualification',
+                    '//delivery:resident_standard_vault_metadata','//delivery:resident_standard_vault_unlock',
+                    '//delivery:resident_codex_live_continuity','//delivery:yoga_public_artifact_prepare_producer',
+                    '//tools:codex_native_sdk_carrier_seal_producer','//tools:future_sdk_fixture_test'):
+                self.assertFalse(guard.ordinary_check_reuse_selected(args,vector+[label]))
+            for values in ({'profile':'resident-continuity'}, {'profile':'resident-enrollment'},
+                    {'profile':'codex-sdk'}, {'profile':'native-siwc-catalog-content-source-reserved'},
+                    {'profile':'home-manager-evaluation-reserved'}, {'profile':'home-manager-bundle-models-reserved'},
+                    {'profile':'home-manager-realization-inputs-reserved'},
+                    {'resident_manifest':Path('/selected/private.json')},
+                    {'site_inventory':Path('/selected/inventory.json')},
+                    {'sdk_source_root':Path('/selected/sdk')},
+                    {'codex_owner_runtime_directory':Path('/selected/runtime')}):
+                changed=SimpleNamespace(**{**vars(args),**values})
+                self.assertFalse(guard.ordinary_check_reuse_selected(changed,vector))
+        self.assertEqual(guard.ORDINARY_CHECK_SCOPE,'closed-standard-test-checkout-output-v1')
+
+    def test_exact_browser_receiver_model_vector_never_admits_genuine_tuple_qualification(self):
+        import execution_guard as guard
+        args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
+                             source_dirty='false',reuse_owned_cache=False)
+        browser=['test','//delivery:yoga_public_artifact_prepare_test',
+            '//delivery:yoga_public_artifact_receive_test','//tools:execution_guard_test','//:format_test','//:docs_check']
+        self.assertTrue(guard.ordinary_check_reuse_selected(args,browser))
+        self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//delivery:yoga_public_artifact_receive_test']))
+        self.assertEqual(guard.toolbar_prepare_action_jobs('standard',browser,source_dirty='false'),2)
+        for label in ('//delivery:yoga_public_artifact_receive_qualification',
+                '//delivery:yoga_public_artifact_prepare_producer', '//delivery:yoga_public_artifact_receive',
+                '//delivery:yoga_toolbar_consent_proof','//tools:codex_native_sdk_carrier_seal_producer'):
+            self.assertFalse(guard.ordinary_check_reuse_selected(args,browser+[label]))
+            self.assertFalse(guard.ordinary_check_reuse_selected(args,['test',label]))
+        for vector in (['build',*browser[1:]],['run',browser[2]],browser+[browser[2]],
+                browser+['--test_env=OMUX_YOGA_PUBLIC_RECEIVE_SELECTION_PATH=/selected']):
+            self.assertFalse(guard.ordinary_check_reuse_selected(args,vector))
+        for values in ({'toolbar_artifact_selection':Path('/selected/toolbar-public-artifact-selection.json')},
+                {'toolbar_artifact_selection_sha256':'b'*64}, {'site_inventory':Path('/selected/inventory.json')},
+                {'profile':'yoga-toolbar-reserved-models'},{'profile':'codex-sdk'},
+                {'resident_manifest':Path('/selected/private.json')}):
+            changed=SimpleNamespace(**{**vars(args),**values})
+            self.assertFalse(guard.ordinary_check_reuse_selected(changed,browser))
+        self.assertEqual(guard.toolbar_prepare_action_jobs('standard',
+            ['test',guard.TOOLBAR_RECEIVE_LABEL],source_dirty='false'),1)
+        self.assertEqual(guard.ORDINARY_CHECK_SCOPE,'closed-standard-test-checkout-output-v1')
 
     def test_source_advance_and_target_subset_do_not_partition_ordinary_policy(self):
         import execution_guard as guard
@@ -3213,6 +3274,57 @@ class OrdinaryCheckLeaseFilesystemModels(unittest.TestCase):
         self.assertEqual(marker['last_run'],self.second_id)
         self.assertEqual(marker['cleanup_receipt_sha256'],second_digest)
         self.assertIs(marker['clean'],True)
+        self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
+
+    def test_current_vault_hm_and_browser_models_reuse_one_base_with_separate_source_graph_receipts(self):
+        inputs={'bazel':'/nix/store/fixture/bin/bazel','java':'/nix/store/fixture-jdk'}
+        profile={'ordinary_check_scope':self.guard.ORDINARY_CHECK_SCOPE,'limits':dict(self.guard.PROPERTIES),
+                 'execution':{'batch':True,'cache_test_results':False,'jobs':2}}
+        key=self.guard.stable_fingerprint(self.repository,inputs,os.getuid(),os.getgid(),'system',profile)
+        epochs=[(self.first_id,'a',['test','//tools:execution_guard_test','//:docs_check']),
+            (self.second_id,'b',['test','//tools:home_manager_realization_inputs_test',
+                '//tools:guard_home_manager_bundle_reserved_test','//tools:guard_native_seed_plan_reserved_test',
+                '//tools:execution_guard_test','//tools:nix_private_store_qualification_test','//:format_test','//:docs_check']),
+            ('9f7c195d-4378-4c8b-8aac-d417252c08ca','c',['test','//tools:guard_resident_standard_vault_test',
+                '//tools:guard_resident_enrollment_profile_test','//delivery:resident_standard_vault_models',
+                '//delivery:resident_vault_models','//tools:guard_resident_owned_update_test',
+                '//tools:execution_guard_test','//:format_test','//:docs_check']),
+            ('65935460-c2fa-4f1b-8f17-5c647e2095be','d',['test','//delivery:yoga_public_artifact_prepare_test',
+                '//delivery:yoga_public_artifact_receive_test','//tools:execution_guard_test','//:format_test','//:docs_check'])]
+        records=[];base_identity=None;selected_base=None
+        for run_id,source,vector in epochs:
+            graph_file=self.repository/'BUILD.bazel';graph_file.write_bytes(('public graph fixture '+source).encode())
+            graph=hashlib.sha256(graph_file.read_bytes()).hexdigest()
+            args=SimpleNamespace(profile='standard',manager='system',source_commit=source*40,
+                                 source_dirty='false',reuse_owned_cache=False)
+            self.assertTrue(self.guard.ordinary_check_reuse_selected(args,vector))
+            self.assertEqual(self.guard.toolbar_prepare_action_jobs('standard',vector,source_dirty='false'),2)
+            current_key=self.guard.stable_fingerprint(self.repository,inputs,os.getuid(),os.getgid(),'system',profile)
+            self.assertEqual(current_key,key)
+            with self.lease(run_id,key=current_key) as current:
+                if selected_base is None:
+                    selected_base=current.output_base;selected_base.mkdir(mode=0o700)
+                    (selected_base/'payload').write_bytes(b'ordinary public build data, not native authority')
+                    info=selected_base.stat();base_identity=(info.st_dev,info.st_ino)
+                self.assertEqual(current.output_base,selected_base)
+                info=current.output_base.stat();self.assertEqual((info.st_dev,info.st_ino),base_identity)
+                self.assertEqual((selected_base/'payload').read_bytes(),b'ordinary public build data, not native authority')
+                run=self.state/run_id
+                command=self.guard.bazel_command('/bazel',run,vector,output_base=current.output_base)
+                self.assertIn('--batch',command);self.assertIn('--nocache_test_results',command)
+                self.assertIn('--jobs=2',command)
+                self.assertEqual([part for part in command if part.startswith('--output_base=')],
+                                 ['--output_base='+str(selected_base)])
+                self.assertIn('--output_user_root='+str(run/'bazel-user-root'),command)
+                raw,digest=self.receipt(run_id,targets=vector[1:],source=source*40,graph=graph)
+                current.complete(True,digest)
+                records.append((run_id,raw,digest))
+        self.assertEqual(len({json.loads(raw)['source_commit'] for _,raw,_ in records}),4)
+        self.assertEqual(len({json.loads(raw)['graph_sha256'] for _,raw,_ in records}),4)
+        for run_id,raw,_ in records:self.assertEqual((self.state/run_id/'receipt.json').read_bytes(),raw)
+        marker=json.loads((selected_base.parent/'owner.json').read_bytes())
+        self.assertEqual(marker['key'],key);self.assertEqual(marker['last_run'],records[-1][0])
+        self.assertEqual(marker['cleanup_receipt_sha256'],records[-1][2]);self.assertIs(marker['clean'],True)
         self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
 
     def test_changed_containment_fingerprint_still_refuses_unchanged_owned_namespace(self):
