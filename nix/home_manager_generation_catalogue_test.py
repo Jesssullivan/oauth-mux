@@ -167,6 +167,8 @@ class GenerationCatalogueTests(unittest.TestCase):
                 with self.assertRaises(OSError): os.fstat(fd)
 
     def test_real_callback_fresh_origin_and_historical_input_split_refuse_unrelated_graph(self):
+        dump = "".join("\n".join([path, "0"*64, "1", "", "0"]) + "\n"
+            for path in sorted(self.records)).encode("ascii")
         for wrong in (False, True, "mutation", "historical"):
             with self.subTest(wrong=wrong), tempfile.TemporaryDirectory(dir=os.environ.get("TEST_TMPDIR")) as temporary:
                 root = Path(temporary); store = root/"private-store"; store.mkdir(mode=0o700)
@@ -199,7 +201,7 @@ class GenerationCatalogueTests(unittest.TestCase):
                         return model.seed.encoded({"drvPath": self.dependency if wrong is True else self.proposal,
                             "outputPath": self.result, "channel": "development", "identity": "ai.xoxd.omux.dev",
                             "scope": "isolated-home-manager-generation-derivation-only"})
-                    if "--dump-db" in argv: return b"public synthetic dump seam\n"
+                    if "--dump-db" in argv: return dump
                     self.assertIn("derivation", argv); self.assertIn("--recursive", argv)
                     if wrong == "mutation":
                         leaf = root/"generation-modules"/model.MODULE
@@ -210,7 +212,6 @@ class GenerationCatalogueTests(unittest.TestCase):
                 try:
                     with patch.object(model.seed, "resolve_member", side_effect=lambda unused, tool: tool), \
                             patch.object(model.inputs, "shape", return_value=self.records), \
-                            patch.object(model, "registration", return_value=self.records), \
                             patch.object(model, "generated_inputs", return_value=({}, {})):
                         if wrong is True or wrong == "mutation":
                             with self.assertRaises(ValueError): generation(value, Owned(), store, Declared(),
