@@ -15136,6 +15136,11 @@ const OwnedRenewalActorModel = struct {
         defer parsed.deinit();
         return parsed.value;
     }
+    // Fixed synthetic fixture stages only; this is not user-outcome telemetry.
+    fn trace(comptime case: []const u8, index: usize, comptime stage: []const u8, started: std.Io.Timestamp) void {
+        const elapsed = started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds();
+        std.debug.print("paired-renewal case={s} index={d} stage={s} elapsed_ns={d}\n", .{ case, index, stage, elapsed });
+    }
     fn wait(current: *Engine, account: []const u8, status: []const u8, generation: u64) !Json {
         const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(12) });
         while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
@@ -15498,20 +15503,29 @@ test "actual owned token replies with missing successor altered identity signatu
     }
 }
 
-test "actual disconnect withdrawal and forget retire held owned renewals without late replacement or independent grant loss" {
+test "actual paired renewal disconnect withdrawal and forget retire held owned renewals without late replacement or independent grant loss" {
     const M = OwnedRenewalActorModel;
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_][]const u8{ "source.disconnect", "oauth.enrollment.withdraw.v1", "account.forget" }, 0..) |method, index| {
+        const case_started = std.Io.Clock.awake.now(io);
+        M.trace("retirement", index, "case-start", case_started);
+        defer M.trace("retirement", index, "case-cleanup-returned", case_started);
         var directory = std.testing.tmpDir(.{});
         defer directory.cleanup();
         try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
         const path = try directory.dir.realPathFileAlloc(io, ".", a);
         defer a.free(path);
         try F.seed(path);
+        M.trace("retirement", index, "actor-open-enter", case_started);
         const current = try Engine.openWithKey(io, a, path, F.key);
-        defer current.deinit();
+        defer {
+            M.trace("retirement", index, "actor-close-enter", case_started);
+            current.deinit();
+            M.trace("retirement", index, "actor-close-returned", case_started);
+        }
+        M.trace("retirement", index, "actor-open-complete", case_started);
         const subject = try std.fmt.allocPrint(a, "renew-retire-{d}", .{index});
         defer a.free(subject);
         const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
@@ -15522,16 +15536,20 @@ test "actual disconnect withdrawal and forget retire held owned renewals without
         const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
         defer handles.deinit();
         const transaction = try control.string(try M.result(&handles), "transaction_id");
+        M.trace("retirement", index, "paired-admission-complete", case_started);
         var key = try M.signer();
         defer key.deinit() catch @panic("renewal signing key cleanup failed");
         const keys = try key.jwks();
         defer a.free(keys);
         var body = try M.makeBody(&key, subject, .{});
         defer body.deinit();
+        M.trace("retirement", index, "held-issuance-enter", case_started);
         const started = try M.start(current, account, body.bytes, keys, .{ .hold_reply = true });
         defer started.deinit();
         _ = try M.result(&started);
+        M.trace("retirement", index, "held-issuance-complete", case_started);
         const revision = try F.revision(current);
+        M.trace("retirement", index, "retirement-enter", case_started);
         const retired = if (index == 0)
             try M.call(current, method, .{ .source_id = source, .operation_id = "renew-source-retire", .expected_revision = revision }, .control)
         else if (index == 1)
@@ -15540,12 +15558,16 @@ test "actual disconnect withdrawal and forget retire held owned renewals without
             try M.call(current, method, .{ .account_id = account, .operation_id = "renew-account-forget", .expected_revision = revision }, .control);
         defer retired.deinit();
         _ = try M.result(&retired);
+        M.trace("retirement", index, "retirement-complete", case_started);
         const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
         defer released.deinit();
         _ = try M.result(&released);
+        M.trace("retirement", index, "reply-release-complete", case_started);
+        M.trace("retirement", index, "retired-observation-enter", case_started);
         const observed = try M.wait(current, account, "retired", 1);
         defer observed.deinit();
         const value = try M.result(&observed);
+        M.trace("retirement", index, "retired-observation-complete", case_started);
         try M.assertPair(value, "retired", 1, false);
         try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
         try std.testing.expect(control.get(value, "access_sql").? == .null and control.get(value, "refresh_sql").? == .null);
@@ -15555,23 +15577,33 @@ test "actual disconnect withdrawal and forget retire held owned renewals without
         const metadata = try M.result(&status);
         try std.testing.expectEqualStrings(if (index == 1) "withdrawn" else "recorded", try control.string(metadata, "consent_status"));
         try std.testing.expect(!(try control.boolean(metadata, "grant_ready", true)));
+        M.trace("retirement", index, "assertions-complete", case_started);
     }
 }
 
-test "actual paired successor original cutoff refuses after sealing before reserve and poisons after reserve" {
+test "actual paired renewal successor original cutoff refuses after sealing before reserve and poisons after reserve" {
     const M = OwnedRenewalActorModel;
     const F = FreshOAuthActorModel;
     const a = std.testing.allocator;
     const io = std.testing.io;
     for ([_][]const u8{ "before_begin", "before_reservation", "before_commit" }, 0..) |stage, index| {
+        const case_started = std.Io.Clock.awake.now(io);
+        M.trace("cutoff", index, "case-start", case_started);
+        defer M.trace("cutoff", index, "case-cleanup-returned", case_started);
         var directory = std.testing.tmpDir(.{});
         defer directory.cleanup();
         try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
         const path = try directory.dir.realPathFileAlloc(io, ".", a);
         defer a.free(path);
         try F.seed(path);
+        M.trace("cutoff", index, "actor-open-enter", case_started);
         const current = try Engine.openWithKey(io, a, path, F.key);
-        defer current.deinit();
+        defer {
+            M.trace("cutoff", index, "actor-close-enter", case_started);
+            current.deinit();
+            M.trace("cutoff", index, "actor-close-returned", case_started);
+        }
+        M.trace("cutoff", index, "actor-open-complete", case_started);
         const subject = try std.fmt.allocPrint(a, "renew-cutoff-{d}", .{index});
         defer a.free(subject);
         const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
@@ -15586,9 +15618,11 @@ test "actual paired successor original cutoff refuses after sealing before reser
         defer a.free(keys);
         var body = try M.makeBody(&key, subject, .{});
         defer body.deinit();
+        M.trace("cutoff", index, "held-issuance-enter", case_started);
         const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 3000, .hold_stage = stage });
         defer started.deinit();
         _ = try M.result(&started);
+        M.trace("cutoff", index, "issued-observation-enter", case_started);
         if (index != 2) {
             const refused = try M.wait(current, account, "quarantined", 1);
             defer refused.deinit();
@@ -15616,6 +15650,7 @@ test "actual paired successor original cutoff refuses after sealing before reser
             try std.testing.expectEqual(@as(u64, 0), unavailable.retained_attempts);
             try std.testing.expectEqual(@as(u64, 0), unavailable.committed_successors);
         }
+        M.trace("cutoff", index, "assertions-complete", case_started);
     }
 }
 
