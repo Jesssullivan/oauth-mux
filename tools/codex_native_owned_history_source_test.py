@@ -84,12 +84,24 @@ class HistorySourceTests(unittest.TestCase):
 
     def test_closed_recipe_default_and_explicit_transform_do_not_create_readiness(self):
         raw=history.previous.declared(history.COMPOSITION,16384)
-        self.assertEqual(history.recipe(raw),'catalog-twelve-v1')
+        actual=history.recipe(raw)
+        self.assertIn(actual,('catalog-twelve-v1','owned-history-thirteen-v3'))
         with patch.object(history.content,'main') as old,patch.object(history,'main') as new:
+            history.content.selected_main()
+            if actual == 'catalog-twelve-v1':
+                old.assert_called_once_with();new.assert_not_called()
+            else:
+                new.assert_called_once_with();old.assert_not_called()
+        # Historical default is explicit fixture data, never an assumption
+        # about the separately adopted current production source recipe.
+        default=b'{\n  "kind": "omux-native-source-composition-v1",\n  "recipe": "catalog-twelve-v1",\n  "schema_version": 1\n}\n'
+        self.assertEqual(history.recipe(default),'catalog-twelve-v1')
+        with patch.object(history.previous,'declared',return_value=default), \
+                patch.object(history.content,'main') as old,patch.object(history,'main') as new:
             history.content.selected_main();old.assert_called_once_with();new.assert_not_called()
         with patch.object(history.previous,'declared',return_value=b'{"schema_version":1,"kind":"omux-native-source-composition-v1","recipe":"owned-history-thirteen-v3"}'), \
-                patch.object(history,'main') as run:
-            history.content.selected_main();run.assert_called_once_with()
+                patch.object(history,'main') as run,patch.object(history.content,'main') as old:
+            history.content.selected_main();run.assert_called_once_with();old.assert_not_called()
         for raw in (b'{"schema_version":1,"kind":"omux-native-source-composition-v1","recipe":"ready"}',
                 b'{"schema_version":true,"kind":"omux-native-source-composition-v1","recipe":"catalog-twelve-v1"}',
                 b'{"schema_version":1,"kind":"omux-native-source-composition-v1","recipe":"catalog-twelve-v1","ready":true}'):
@@ -228,8 +240,12 @@ class HistorySourceTests(unittest.TestCase):
 
 
     def test_selected_producer_cannot_use_default_recipe_or_uncaptured_change(self):
+        # Literal historical default bytes remain an explicit negative input.
+        # Reading the current production file here would stop exercising this
+        # refusal after root intentionally selects the thirteen-delta recipe.
+        default=b'{\n  "kind": "omux-native-source-composition-v1",\n  "recipe": "catalog-twelve-v1",\n  "schema_version": 1\n}\n'
         class Owner:
-            def add(self,path,digest=None,maximum=None):return path.read_bytes()
+            def add(self,path,digest=None,maximum=None):return default
         # No SOURCE IO or qualification is performed by this actual control
         # retainer model. The production owner supplies all held/name fences.
         with patch.object(history,'retain_controls',return_value=('old','controls')):
