@@ -722,6 +722,91 @@ class PreparationModels(unittest.TestCase):
                 with self.assertRaises(OSError):os.fstat(fd)
         finally:owner.close(ValueError('synthetic refusal cleanup'))
 
+
+    def test_live_root_membership_matches_legacy_prefix_rule_and_scales_with_depth(self):
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        class Membership(dict):
+            def __contains__(self,key):
+                self.probes.append(key);return super().__contains__(key)
+        roots={Path('/nix/store/'+str(index).zfill(32)+'-fixture'):None for index in range(4096)}
+        roots.update(owner.roots);selected=Path('/nix/store/'+str(4095).zfill(32)+'-fixture')
+        owner.roots=Membership(roots);owner.roots.probes=[]
+        paths=(selected,selected/'lib/actual-file',Path(str(selected)+'-suffix/file'),
+            Path('/nix/store'),Path('/nix/store/foreign/file'),self.base,self.base/'real/file',
+            Path(str(self.base)+'-suffix/file'),self.source/'file',Path('relative/file'))
+        try:
+            for path in paths:
+                with self.subTest(path=str(path)):
+                    expected=any(path==root or path.is_relative_to(root) for root in roots)
+                    owner.roots.probes=[]
+                    self.assertEqual(owner.allowed(path),expected)
+                    self.assertLessEqual(len(owner.roots.probes),1+len(path.parents))
+            self.assertEqual(len(owner.roots),4098)
+        finally:owner.close()
+
+    def test_root_membership_updates_never_reuse_a_previous_positive_decision(self):
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        target=self.source/'actual-root-member';target.write_bytes(b'actual root member');target.chmod(0o555)
+        alias=self.runner/'root-member';alias.symlink_to(target)
+        try:
+            self.assertEqual(owner.resolve(alias),target)
+            del owner.roots[self.source]
+            self.assertFalse(owner.allowed(target))
+            with self.assertRaises(ValueError):owner.resolve(alias)
+            owner.roots[self.source]=None
+            self.assertEqual(owner.resolve(alias),target)
+            owner.roots.clear()
+            self.assertFalse(owner.allowed(target))
+            with self.assertRaises(ValueError):owner.resolve(alias)
+        finally:owner.close(ValueError('synthetic removed authority'))
+
+    def test_live_membership_does_not_authorize_foreign_alias_or_skip_real_content_checks(self):
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        target=self.source/'actual-authorized-leaf';target.write_bytes(b'root-bound bytes');target.chmod(0o555)
+        alias=self.runner/'authorized-leaf';alias.symlink_to(target)
+        foreign=self.root/'unselected';foreign.mkdir(mode=0o700)
+        replacement=foreign/'same-bytes';replacement.write_bytes(b'root-bound bytes');replacement.chmod(0o555)
+        real=os.read;reads=[]
+        try:
+            self.assertEqual(owner.read('root-bound',alias,target,content=True),b'root-bound bytes')
+            self.assertEqual(owner.rows['root-bound']['sha256'],hashlib.sha256(b'root-bound bytes').hexdigest())
+            alias.unlink();alias.symlink_to(replacement)
+            def read(fd,count):reads.append(fd);return real(fd,count)
+            with patch.object(model.os,'read',side_effect=read):
+                with self.assertRaises(ValueError):owner.read('foreign',alias,target,content=True)
+            self.assertEqual(reads,[])
+        finally:owner.close(ValueError('synthetic foreign alias refusal'))
+
+    def test_root_membership_keeps_actual_directory_mode_and_final_alias_rechecks(self):
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        target=self.source/'actual-mode-leaf';target.write_bytes(b'kept checks');target.chmod(0o555)
+        alias=self.runner/'mode-leaf';alias.symlink_to(target)
+        try:
+            self.assertTrue(owner.allowed(target))
+            self.source.chmod(0o777)
+            with self.assertRaises(ValueError):owner.resolve(alias)
+            self.source.chmod(0o700)
+            self.assertEqual(owner.read('mode-leaf',alias,target,content=True),b'kept checks')
+            replacement=self.source/'same-mode-bytes';replacement.write_bytes(b'kept checks');replacement.chmod(0o555)
+            alias.unlink();alias.symlink_to(replacement)
+            with self.assertRaises(ValueError):owner.recheck()
+        finally:
+            self.source.chmod(0o700)
+            owner.close(ValueError('synthetic final alias refusal'))
+
+    def test_root_membership_preserves_original_cutoff_before_any_file_bytes(self):
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        target=self.paths['observer'];alias=self.runner/self.roles['observer']
+        self.assertTrue(owner.allowed(target));self.now=self.deadline-30*10**9
+        real=os.read;reads=[]
+        def read(fd,count):reads.append(fd);return real(fd,count)
+        try:
+            with patch.object(model.os,'read',side_effect=read):
+                with self.assertRaises(ValueError):owner.read('expired-root',alias,target,content=True)
+            self.assertEqual(reads,[])
+            self.assertEqual(owner.rows,{})
+        finally:owner.close(ValueError('synthetic original cutoff refusal'))
+
 if __name__=='__main__':
     ZIP=Path(sys.argv.pop(1)).read_bytes()
     RULE=Path(sys.argv.pop(1)).read_bytes()

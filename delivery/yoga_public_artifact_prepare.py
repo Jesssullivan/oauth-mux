@@ -146,7 +146,7 @@ class Inputs:
     def __init__(self, clock, output_base, source):
         self.clock = clock
         self.output_base, self.source = Path(output_base), Path(source)
-        self.roots = [self.output_base, self.source]
+        self.roots = {self.output_base:None, self.source:None}
         self.owned = Owned()
         self.rows, self.held, self.links = {}, {}, {}
         self.total = 0
@@ -156,7 +156,10 @@ class Inputs:
         self.root_facts = {str(root):witness(root.lstat())[:5] for root in self.roots}
 
     def allowed(self, path):
-        return any(path == root or path.is_relative_to(root) for root in self.roots)
+        # Probe the live authorized root map by lexical ancestry, never cache a
+        # resolved path or positive decision. Cost depends on path depth rather
+        # than the number of declared Nix roots; component boundaries stay exact.
+        return path in self.roots or any(parent in self.roots for parent in path.parents)
 
     def resolve(self, path):
         path = Path(path)
@@ -191,7 +194,7 @@ class Inputs:
         for value in values:
             require(type(value) is str and STORE.fullmatch(value) is not None)
             if Path(value) not in self.roots:
-                self.roots.append(Path(value))
+                self.roots[Path(value)] = None
                 information = Path(value).lstat()
                 require(information.st_uid == 0 and (stat.S_ISLNK(information.st_mode)
                     or (stat.S_ISDIR(information.st_mode) or stat.S_ISREG(information.st_mode))
