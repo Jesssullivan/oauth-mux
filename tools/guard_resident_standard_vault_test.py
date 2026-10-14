@@ -1,5 +1,9 @@
 """Provider-free models for versioned local standard-service metadata."""
 import copy
+import contextlib
+import json
+import tempfile
+import time
 import os
 from pathlib import Path
 import unittest
@@ -111,6 +115,254 @@ class StandardVaultModels(unittest.TestCase):
         admission.root=Path("/owned/input");admission.sources={admission.root/"bus":Path("/run/user/1000/bus")}
         self.assertEqual(admission.bindings(),["/owned/input:/omux-resident-inputs",
             "/run/user/1000/bus:/omux-resident-inputs/bus:norbind"])
+
+
+class AdmissionOwnershipModels(unittest.TestCase):
+    @contextlib.contextmanager
+    def namespace(self):
+        # Only ancestors/runtime and bus peer are fixture-adapted. Constructor
+        # input, mountpoint, all FD opens/fstats/unlinks/closes are real.
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/"input";root.mkdir(mode=0o700)
+            runtime=Path(temporary)/"runtime";runtime.mkdir(mode=0o700)
+            manifest=root/"input.json"
+            manifest.write_text(json.dumps(selected()),encoding="ascii");manifest.chmod(0o600)
+            opened=[]
+            roles={}
+            actual_open=os.open
+            actual_fstat=os.fstat
+            runtime_name=Path("/run/user")/str(os.getuid())
+            def open_directory(path,private=False):
+                target=runtime if Path(path)==runtime_name else Path(path)
+                return actual_open(target,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            actual_hold=vault.Admission._hold_fd
+            def hold(instance,opener,*arguments,**options):
+                # Observe the returned actual ownership operation, without
+                # mirroring it or treating transient ancestry reads as held.
+                fd=actual_hold(instance,opener,*arguments,**options)
+                opened.append(fd)
+                path=arguments[0]
+                roles[fd]=("runtime" if Path(path)==runtime_name else "directory") if opener is vault.resident.open_directory else (
+                    "file" if str(path)=="input.json" else "placeholder")
+                return fd
+            with patch.object(vault.resident,"open_directory",side_effect=open_directory), \
+                    patch.object(vault.Admission,"_hold_fd",hold), \
+                    patch.object(vault,"socket_witness",return_value=((1,2,3,4,5),101,7)):
+                yield root,manifest,opened,roles,actual_fstat
+
+    def assert_drained(self,instance,opened,actual_fstat):
+        self.assertEqual(instance.held,[])
+        self.assertEqual(instance.created,[])
+        for descriptor in opened:
+            with self.assertRaises(OSError):actual_fstat(descriptor)
+
+    def test_actual_constructor_preregistration_append_allocation_interrupt_failures_open_no_untracked_fd(self):
+        sites=[("held",index) for index in range(1,5)]+[("parents",1),("created",1)]
+        for field,index in sites:
+            for after in (False,True):
+                for error_type in (MemoryError,KeyboardInterrupt):
+                    with self.subTest(field=field,index=index,after=after,error=error_type),self.namespace() as (root,manifest,opened,_,actual_fstat):
+                        primary=error_type("private allocation seam")
+                        reached=[]
+                        class Slots(list):
+                            def append(self,value):
+                                reached.append(None)
+                                if len(reached)==index and not after:raise primary
+                                super().append(value)
+                                if len(reached)==index and after:raise primary
+                        class Failing(vault.Admission):
+                            def __setattr__(self,name,value):
+                                if name==field:value=Slots(value)
+                                object.__setattr__(self,name,value)
+                        instance=Failing.__new__(Failing)
+                        with self.assertRaises(error_type) as refused:
+                            instance.__init__(manifest,root,time.monotonic_ns()+120*10**9,label=vault.STANDARD_LABEL)
+                        self.assertIs(refused.exception,primary)
+                        self.assertEqual(len(reached),index)
+                        if field=="held":self.assertEqual(len(opened),index-1)
+                        elif field=="parents":self.assertEqual(len(opened),3)
+                        else:self.assertEqual(len(opened),3)
+                        self.assert_drained(instance,opened,actual_fstat)
+                        self.assertEqual(list(root.iterdir()),[manifest])
+
+    def test_actual_constructor_returned_fd_field_transfer_refusal_is_owned_before_assignment(self):
+        for field in ("directory","file","facts"):
+            for after in (False,True):
+                for error_type in (MemoryError,KeyboardInterrupt):
+                    with self.subTest(field=field,after=after,error=error_type),self.namespace() as (root,manifest,opened,_,actual_fstat):
+                        primary=error_type("private field transfer")
+                        class Failing(vault.Admission):
+                            def __setattr__(self,name,value):
+                                if name==field and not after:raise primary
+                                object.__setattr__(self,name,value)
+                                if name==field and after:raise primary
+                        instance=Failing.__new__(Failing)
+                        with self.assertRaises(error_type) as refused:
+                            instance.__init__(manifest,root,time.monotonic_ns()+120*10**9,label=vault.STANDARD_LABEL)
+                        self.assertIs(refused.exception,primary)
+                        self.assertEqual(len(opened),{"directory":1,"file":2,"facts":4}[field])
+                        self.assert_drained(instance,opened,actual_fstat)
+                        self.assertEqual(list(root.iterdir()),[manifest])
+
+    def test_actual_input_runtime_placeholder_fstat_and_fchmod_failures_drain_original_fds(self):
+        for role,occurrence in (("file",1),("runtime",1),("placeholder",1),("placeholder",2),("chmod",1)):
+            with self.subTest(role=role,occurrence=occurrence),self.namespace() as (root,manifest,opened,roles,actual_fstat):
+                primary=MemoryError("private metadata record")
+                reached=[]
+                def fstat(descriptor):
+                    if roles.get(descriptor)==role:
+                        reached.append(descriptor)
+                        if len(reached)==occurrence:raise primary
+                    return actual_fstat(descriptor)
+                actual_chmod=os.fchmod
+                def chmod(descriptor,mode):
+                    reached.append(descriptor)
+                    actual_chmod(descriptor,mode)
+                    raise primary
+                instance=vault.Admission.__new__(vault.Admission)
+                with patch.object(vault.os,"fstat",side_effect=fstat), \
+                        patch.object(vault.os,"fchmod",side_effect=chmod if role=="chmod" else actual_chmod):
+                    with self.assertRaises(MemoryError) as refused:
+                        instance.__init__(manifest,root,time.monotonic_ns()+120*10**9,label=vault.STANDARD_LABEL)
+                self.assertIs(refused.exception,primary)
+                self.assertEqual(len(reached),occurrence)
+                self.assert_drained(instance,opened,actual_fstat)
+                if role=="placeholder" and occurrence==1:
+                    # No first fstat creator witness: refuse/close, without
+                    # guessing that a basename is ours or claiming cleanup.
+                    self.assertTrue((root/"bus").is_file())
+                else:self.assertEqual(list(root.iterdir()),[manifest])
+
+    def test_actual_close_first_middle_unlink_faults_attempt_all_once_and_preserve_foreign(self):
+        for seam in ("first-close","middle-close","unlink","foreign"):
+            with self.subTest(seam=seam),self.namespace() as (root,manifest,opened,_,actual_fstat):
+                instance=vault.Admission(manifest,root,time.monotonic_ns()+120*10**9,label=vault.STANDARD_LABEL)
+                self.assertEqual(len(opened),4)
+                self.assertEqual(instance.facts["purpose"],"observe-standard-vault")
+                self.assertFalse(instance.facts["factor_contents_read_by_guard"])
+                actual_close=os.close
+                actual_unlink=Path.unlink
+                primary=OSError("private close/remove fault")
+                attempts=[]
+                if seam=="foreign":
+                    (root/"bus").rename(root/"original-bus")
+                    (root/"bus").write_bytes(b"public foreign");(root/"bus").chmod(0o600)
+                def close(descriptor):
+                    attempts.append(descriptor)
+                    actual_close(descriptor)
+                    if seam=="first-close" and len(attempts)==1:raise primary
+                    if seam=="middle-close" and len(attempts)==2:raise primary
+                def unlink(path,*arguments,**options):
+                    if seam=="unlink" and path==root/"bus":raise primary
+                    return actual_unlink(path,*arguments,**options)
+                with patch.object(vault.os,"close",side_effect=close),patch.object(Path,"unlink",unlink):
+                    if seam=="foreign":instance.close()
+                    else:
+                        with self.assertRaises(OSError) as refused:instance.close()
+                        self.assertIs(refused.exception,primary)
+                    self.assertEqual(attempts,list(reversed(opened)))
+                    instance.close()
+                    self.assertEqual(attempts,list(reversed(opened)))
+                self.assert_drained(instance,opened,actual_fstat)
+                if seam=="foreign":self.assertEqual((root/"bus").read_bytes(),b"public foreign")
+                elif seam=="unlink":self.assertTrue((root/"bus").is_file())
+                else:self.assertEqual(list(root.iterdir()),[manifest])
+
+    def test_actual_constructor_primary_bus_refusal_survives_cleanup_fault_and_all_fds_drain(self):
+        with self.namespace() as (root,manifest,opened,_,actual_fstat):
+            primary=KeyboardInterrupt("private bus refusal")
+            secondary=OSError("private close refusal")
+            reached=[]
+            actual_close=os.close
+            def close(descriptor):
+                reached.append(descriptor)
+                actual_close(descriptor)
+                raise secondary
+            instance=vault.Admission.__new__(vault.Admission)
+            with patch.object(vault,"socket_witness",side_effect=primary), \
+                    patch.object(vault.os,"close",side_effect=close):
+                with self.assertRaises(KeyboardInterrupt) as refused:
+                    instance.__init__(manifest,root,time.monotonic_ns()+120*10**9,label=vault.STANDARD_LABEL)
+            self.assertIs(refused.exception,primary)
+            self.assertEqual(len(opened),3)
+            self.assertEqual(reached,list(reversed(opened)))
+            self.assert_drained(instance,opened,actual_fstat)
+            self.assertEqual(list(root.iterdir()),[manifest])
+
+
+    def test_shared_nofollow_opener_old_parent_close_fault_drains_acquired_child_without_retry(self):
+        for old_index in (0,1):
+            for child_close_fault in (False,True):
+                with self.subTest(old_index=old_index,child_close_fault=child_close_fault),tempfile.TemporaryDirectory() as temporary:
+                    base=Path(temporary);(base/"parent").mkdir(mode=0o700);(base/"parent/child").mkdir(mode=0o700)
+                    actual_open=os.open
+                    actual_close=os.close
+                    actual_fstat=os.fstat
+                    opened=[]
+                    attempts=[]
+                    primary=OSError("private old-parent close")
+                    def opening(path,flags,*arguments,**options):
+                        descriptor=actual_open(base if path=="/" else path,flags,*arguments,**options)
+                        opened.append(descriptor)
+                        return descriptor
+                    def closing(descriptor):
+                        attempts.append(descriptor)
+                        actual_close(descriptor)
+                        if descriptor==opened[old_index]:raise primary
+                        if child_close_fault and descriptor==opened[-1]:raise MemoryError("private child close")
+                    with patch.object(vault.resident.os,"open",side_effect=opening), \
+                            patch.object(vault.resident.os,"close",side_effect=closing):
+                        with self.assertRaises(OSError) as refused:
+                            vault.resident.open_directory(Path("/parent/child"),private=True)
+                    self.assertIs(refused.exception,primary)
+                    self.assertEqual(len(opened),old_index+2)
+                    self.assertEqual(attempts,opened)
+                    for descriptor in opened:
+                        with self.assertRaises(OSError):actual_fstat(descriptor)
+
+    def test_shared_nofollow_opener_fstat_mode_symlink_refusals_and_successful_integer_abi(self):
+        for seam in ("fstat","mode","symlink","success"):
+            with self.subTest(seam=seam),tempfile.TemporaryDirectory() as temporary:
+                base=Path(temporary);(base/"parent").mkdir(mode=0o700);(base/"parent/child").mkdir(mode=0o700)
+                if seam=="mode":(base/"parent/child").chmod(0o777)
+                if seam=="symlink":
+                    (base/"parent/child").rename(base/"target")
+                    (base/"parent/child").symlink_to(base/"target",target_is_directory=True)
+                actual_open=os.open
+                actual_close=os.close
+                actual_fstat=os.fstat
+                opened=[]
+                attempts=[]
+                reached=[]
+                primary=KeyboardInterrupt("private child metadata")
+                def opening(path,flags,*arguments,**options):
+                    descriptor=actual_open(base if path=="/" else path,flags,*arguments,**options)
+                    opened.append(descriptor)
+                    return descriptor
+                def closing(descriptor):
+                    attempts.append(descriptor);actual_close(descriptor)
+                def fstat(descriptor):
+                    reached.append(descriptor)
+                    if seam=="fstat":raise primary
+                    return actual_fstat(descriptor)
+                with patch.object(vault.resident.os,"open",side_effect=opening), \
+                        patch.object(vault.resident.os,"close",side_effect=closing), \
+                        patch.object(vault.resident.os,"fstat",side_effect=fstat):
+                    if seam=="success":
+                        descriptor=vault.resident.open_directory(Path("/parent/child"),private=True)
+                        self.assertIs(type(descriptor),int)
+                        self.assertEqual(descriptor,opened[-1])
+                        self.assertEqual(actual_fstat(descriptor).st_ino,(base/"parent/child").stat().st_ino)
+                        self.assertEqual(attempts,opened[:-1])
+                        os.close(descriptor)
+                    else:
+                        with self.assertRaises((OSError,ValueError,KeyboardInterrupt)) as refused:
+                            vault.resident.open_directory(Path("/parent/child"),private=True)
+                        if seam=="fstat":self.assertIs(refused.exception,primary)
+                    self.assertEqual(attempts,opened)
+                    for descriptor in opened:
+                        with self.assertRaises(OSError):actual_fstat(descriptor)
+                if seam=="fstat":self.assertTrue(reached)
 
 if __name__=="__main__":
     unittest.main()

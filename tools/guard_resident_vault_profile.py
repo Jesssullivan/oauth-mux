@@ -620,10 +620,10 @@ class Admission:
         self.manifest=resident.canonical(str(manifest));self.root=self.manifest.parent
         require(self.manifest.name=="input.json")
         try:
-            self.directory=resident.open_directory(self.root,private=True);self.held.append(self.directory)
+            self.directory=self._hold_fd(resident.open_directory,self.root,private=True)
             require(os.listdir(self.directory)==["input.json"])
-            self.file=os.open("input.json",os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.directory)
-            self.held.append(self.file);info=os.fstat(self.file)
+            self.file=self._hold_fd(os.open,"input.json",os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.directory)
+            info=os.fstat(self.file)
             require(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid()
                 and stat.S_IMODE(info.st_mode) in (0o400,0o600) and info.st_nlink==1 and 0<info.st_size<=16384)
             self.file_identity=identity(info);self.raw=os.pread(self.file,16385,0)
@@ -633,7 +633,7 @@ class Admission:
                 "observe-standard-vault":STANDARD_LABEL,"unlock-standard-vault":STANDARD_UNLOCK_LABEL}[self.selected["purpose"]]))
             self.root_identity=resident.stable(os.fstat(self.directory))
             runtime=Path("/run/user")/str(os.getuid())
-            runtime_fd=resident.open_directory(runtime,private=True);self.held.append(runtime_fd)
+            runtime_fd=self._hold_fd(resident.open_directory,runtime,private=True)
             self.parents.append((runtime,runtime_fd,resident.stable(os.fstat(runtime_fd))))
             self.sources={self.root/"bus":runtime/"bus"}
             self.socket_identities={runtime/"bus":socket_witness(runtime/"bus",self.deadline_ns)}
@@ -648,7 +648,7 @@ class Admission:
                 for name in ("broker","manager","secret_service"):
                     require(process(expected[name]["pid"])=={key:value for key,value in expected[name].items() if key!="owner"})
                 control=runtime/"keyring"/"control"
-                keyring=resident.open_directory(control.parent,private=True);self.held.append(keyring)
+                keyring=self._hold_fd(resident.open_directory,control.parent,private=True)
                 self.parents.append((control.parent,keyring,resident.stable(os.fstat(keyring))))
                 witness=socket_witness(control,self.deadline_ns)
                 require(witness[1]==expected["secret_service"]["pid"] and witness[2]==expected["secret_service"]["start_ticks"])
@@ -656,7 +656,7 @@ class Admission:
                 # Mapping and independently selected public provider witness have passed.
                 # Hold only metadata here. The declared carrier preflights current alias/Locked before content IO.
                 sops_parent=Path(home)/".config/sops-nix"
-                sops_fd=resident.open_directory(sops_parent);self.held.append(sops_fd)
+                sops_fd=self._hold_fd(resident.open_directory,sops_parent)
                 self.parents.append((sops_parent,sops_fd,resident.stable(os.fstat(sops_fd))))
                 projected=os.stat("secrets",dir_fd=sops_fd,follow_symlinks=False)
                 require(projected.st_uid==os.getuid())
@@ -671,23 +671,54 @@ class Admission:
                 # One owned generation projection. The held0700 runtime ancestor
                 # protects the physical generation from other users.
                 for parent in (secret_root.parent,secret_root,secret_root/"become"):
-                    parent_fd=resident.open_directory(parent);self.held.append(parent_fd)
+                    parent_fd=self._hold_fd(resident.open_directory,parent)
                     require(os.fstat(parent_fd).st_uid==os.getuid())
                     self.parents.append((parent,parent_fd,resident.stable(os.fstat(parent_fd))))
                 leaf=secret_root/"become/password";self.factor_path=leaf
                 factor_parent=parent_fd
-                self.leaf=os.open(leaf.name,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=factor_parent)
-                self.held.append(self.leaf);factor=os.fstat(self.leaf)
+                self.leaf=self._hold_fd(os.open,leaf.name,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=factor_parent)
+                factor=os.fstat(self.leaf)
                 require(stat.S_ISREG(factor.st_mode) and factor.st_uid==os.getuid()
                     and stat.S_IMODE(factor.st_mode) in (0o400,0o600) and factor.st_nlink==1 and 1<=factor.st_size<=4096)
                 self.factor_identity=identity(factor)
                 self.sources[self.root/"factor"]=Path("/proc")/str(os.getpid())/"fd"/str(self.leaf)
             for path in self.sources:
-                placeholder=resident.regular_mountpoint(path)
-                self.created.append((placeholder,path,resident.stable(os.fstat(placeholder.fileno()))))
+                self._placeholder(path)
             self.facts=self.recheck()
         except BaseException:
-            self.close();raise
+            try:self.close()
+            except BaseException:pass  # Drain once without replacing admission refusal.
+            raise
+
+    def _hold_fd(self,opener,*arguments,**options):
+        # Register an empty ownership slot BEFORE any external acquisition.
+        slot=[None]
+        self.held.append(slot)
+        descriptor=None
+        try:
+            descriptor=opener(*arguments,**options)
+            slot[0]=descriptor
+            return descriptor
+        except BaseException:
+            # Local custody covers an interrupted existing-slot transfer.
+            slot[0]=None
+            if descriptor is not None:
+                try:os.close(descriptor)
+                except BaseException:pass
+            raise
+
+    def _placeholder(self,path):
+        # The raw creator FD is owned before fchmod/fstat/record allocation;
+        # no returned fdopen wrapper can fall outside the inventory.
+        record=[None,path,None]
+        self.created.append(record)
+        descriptor=self._hold_fd(os.open,path,
+            os.O_RDONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+        record[0]=descriptor
+        record[2]=resident.stable(os.fstat(descriptor))
+        os.fchmod(descriptor,0o600)
+        record[2]=resident.stable(os.fstat(descriptor))
+
     def recheck(self):
         require(time.monotonic_ns()<self.deadline_ns and resident.stable(os.fstat(self.directory))==self.root_identity
             ==resident.stable(self.root.stat(follow_symlinks=False)))
@@ -703,8 +734,8 @@ class Admission:
                 and os.readlink("secrets",dir_fd=parent)==target)
         for path,witness in self.socket_identities.items():
             require(socket_witness(path,self.deadline_ns)==witness)
-        for placeholder,path,witness in self.created:
-            require(resident.regular_mountpoint_witness(path,placeholder.fileno())==witness)
+        for descriptor,path,witness in self.created:
+            require(resident.regular_mountpoint_witness(path,descriptor)==witness)
         if self.selected["purpose"]=="unlock-standard-vault":
             expected_processes(self.selected["expected"])
         if self.leaf is not None:
@@ -740,9 +771,25 @@ class Admission:
         remaining=(self.deadline_ns-time.monotonic_ns())//10**9-30
         require(0<remaining<=1200);return int(remaining)
     def close(self):
-        for placeholder,path,witness in reversed(self.created):
-            placeholder.close()
-            if path.exists() and resident.stable(path.stat(follow_symlinks=False))==witness: path.unlink()
-        self.created=[]
-        for fd in reversed(self.held):os.close(fd)
-        self.held=[]
+        failure=None
+        while self.created:
+            record=self.created.pop()  # Detach before any fallible cleanup.
+            descriptor,path,witness=record
+            record[0]=None
+            try:
+                if descriptor is not None and witness is not None:
+                    named=path.stat(follow_symlinks=False)
+                    # Cleanup authority is only this creator inode; no foreign
+                    # replacement is removed and no readiness witness is minted.
+                    if resident.stable(named)==witness: path.unlink()
+            except FileNotFoundError:pass
+            except BaseException as error:
+                if failure is None:failure=error
+        while self.held:
+            slot=self.held.pop()
+            descriptor,slot[0]=slot[0],None
+            if descriptor is not None:
+                try:os.close(descriptor)
+                except BaseException as error:
+                    if failure is None:failure=error
+        if failure is not None:raise failure

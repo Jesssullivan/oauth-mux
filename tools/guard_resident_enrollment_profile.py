@@ -301,19 +301,34 @@ def stable(info):
 
 def open_directory(path,private=False):
     path = canonical(str(path))
-    descriptor = os.open("/",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    descriptor = None
+    child = None
     try:
+        descriptor = os.open("/",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
         for name in path.parts[1:]:
             child = os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
+            closing,descriptor = descriptor,None  # Detach before the old-parent close.
+            os.close(closing)
+            descriptor,child = child,None
             info = os.fstat(descriptor)
             require(info.st_uid in (0,os.getuid()) and not info.st_mode & 0o022)
         info = os.fstat(descriptor)
         require(not private or info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700)
         return descriptor
     except BaseException:
-        os.close(descriptor)
+        # A local transfer can briefly alias both slots. Retire that alias
+        # before attempting either FD; never retry an ambiguous close.
+        if child is not None and child==descriptor:child=None
+        # Drain both outstanding owners even after a preceding close failed,
+        # preserving the first refusal.
+        closing,child = child,None
+        if closing is not None:
+            try:os.close(closing)
+            except BaseException:pass
+        closing,descriptor = descriptor,None
+        if closing is not None:
+            try:os.close(closing)
+            except BaseException:pass
         raise
 
 def socket_witness(path,connect=True):
