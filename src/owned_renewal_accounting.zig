@@ -83,7 +83,7 @@ pub const Snapshot = struct {
             .safe_refusal => self.increment(&self.safe_refusals),
             .completion_unknown => self.increment(&self.completion_unknown),
         }
-        self.increment(&self.causes[@intFromEnum(cause)]);
+        self.increment(&self.causes[@backingInt(cause)]);
     }
 };
 
@@ -95,8 +95,8 @@ pub fn validate(saved: Snapshot) !void {
         if (@as(u128, saved.admitted) != resolved + saved.unresolved) return error.InvalidRenewalAccounting;
         var cause_total: u128 = 0;
         for (saved.causes) |count| cause_total += count;
-        if (cause_total != resolved or saved.causes[@intFromEnum(Cause.verified_successor_commit)] != saved.committed_successors or
-            saved.causes[@intFromEnum(Cause.transport_admission_refused)] != saved.safe_refusals) return error.InvalidRenewalAccounting;
+        if (cause_total != resolved or saved.causes[@backingInt(Cause.verified_successor_commit)] != saved.committed_successors or
+            saved.causes[@backingInt(Cause.transport_admission_refused)] != saved.safe_refusals) return error.InvalidRenewalAccounting;
     }
     _ = try admission.countJson(saved, maximum_snapshot_bytes);
 }
@@ -163,7 +163,7 @@ pub fn summarize(saved: ?Snapshot, authority: bool, activation_capacity_unavaila
 }
 
 test "paired renewal aggregate continues beyond sixty four and partitions admitted outcomes without user success" {
-    for (cause_labels, 0..) |cause, index| try std.testing.expectEqual(index, @intFromEnum(cause));
+    for (cause_labels, 0..) |cause, index| try std.testing.expectEqual(index, @backingInt(cause));
     var value = try Snapshot.init(100);
     for (0..300) |index| {
         try value.admit();
@@ -211,7 +211,7 @@ test "paired renewal aggregate numeric saturation preserves transitions and repo
     var value = try Snapshot.init(100);
     value.admitted = std.math.maxInt(u64);
     value.committed_successors = std.math.maxInt(u64);
-    value.causes[@intFromEnum(Cause.verified_successor_commit)] = std.math.maxInt(u64);
+    value.causes[@backingInt(Cause.verified_successor_commit)] = std.math.maxInt(u64);
     try validate(value);
     try value.admit();
     try value.terminal(.committed_successor, .verified_successor_commit);

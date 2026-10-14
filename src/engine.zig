@@ -17032,7 +17032,7 @@ test "paired renewal accounting separates known pretransport refusal from accept
             try std.testing.expectEqual(@as(?u64, if (mode == 0) 1 else 0), counts.safe_refusals);
             try std.testing.expectEqual(@as(?u64, if (mode == 0) 0 else 1), counts.completion_unknown);
             const cause: owned_renewal_accounting.Cause = if (mode == 0) .transport_admission_refused else .interrupted_or_stranded;
-            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@intFromEnum(cause)]);
+            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@backingInt(cause)]);
             const observed = try M.observe(current.?, account);
             defer observed.deinit();
             const value = try M.result(&observed);
@@ -17084,7 +17084,7 @@ test "paired renewal accounting actual rollback restores issued counts and postr
             try std.testing.expectEqual(@as(?u64, 0), counts.committed_successors);
             try std.testing.expectEqual(@as(?u64, 0), counts.safe_refusals);
             try std.testing.expectEqual(@as(?u64, 1), counts.completion_unknown);
-            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@intFromEnum(owned_renewal_accounting.Cause.successor_commit_failed)]);
+            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@backingInt(owned_renewal_accounting.Cause.successor_commit_failed)]);
             try std.testing.expectEqualDeep(counts, try M.accounting(current));
         } else {
             const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(10) });
