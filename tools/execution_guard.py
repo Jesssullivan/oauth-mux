@@ -1580,6 +1580,7 @@ ORDINARY_CHECK_LABELS = frozenset({
     '//:oauth_oidc_crypto_test', '//:oauth_oidc_profile_test',
     '//:oauth_oidc_signed_fixture_test', '//:browser_attempt_transaction_test',
     '//:storage_test', '//:format_test', '//:docs_check', '//tools:execution_guard_test',
+    '//:paired_renewal_test', '//delivery:yoga_public_artifact_prepare_test',
 })
 ORDINARY_CHECK_ARGUMENT_FIELDS = frozenset({
     'arguments', 'profile', 'manager', 'source_commit', 'source_dirty', 'state_dir',

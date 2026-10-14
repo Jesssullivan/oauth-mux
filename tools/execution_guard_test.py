@@ -2936,7 +2936,7 @@ class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
         import execution_guard as guard
         args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
                              source_dirty='false',reuse_owned_cache=False,arguments=[])
-        self.assertEqual(len(guard.ORDINARY_CHECK_LABELS),12)
+        self.assertEqual(len(guard.ORDINARY_CHECK_LABELS),14)
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test',*sorted(guard.ORDINARY_CHECK_LABELS)]))
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//tools:execution_guard_test','//:docs_check']))
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//:engine_test','//:unit_tests',
@@ -2956,6 +2956,33 @@ class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
                 ('resident_epoch','an-epoch')):
             changed=SimpleNamespace(**{**vars(args),name:value})
             self.assertFalse(guard.ordinary_check_reuse_selected(changed,['test','//:engine_test']))
+
+    def test_exact_renewal_and_artifact_models_join_only_closed_ordinary_test_scope(self):
+        import execution_guard as guard
+        args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
+                             source_dirty='false',reuse_owned_cache=False)
+        labels=['//:paired_renewal_test','//delivery:yoga_public_artifact_prepare_test']
+        self.assertEqual(guard.ORDINARY_CHECK_SCOPE,'closed-standard-test-checkout-output-v1')
+        for vector in (['test',labels[0]],['test',labels[1]],['test',*labels],
+                ['test','//tools:execution_guard_test',*labels,'//:format_test','//:docs_check']):
+            self.assertTrue(guard.ordinary_check_reuse_selected(args,vector))
+        for vector in (['build',*labels],['run',labels[1]],['test',labels[0],labels[0]],
+                ['test',labels[1],'--nocache_test_results'],
+                ['test','//delivery:yoga_public_artifact_prepare_producer'],
+                ['test',*labels,'//delivery:yoga_public_artifact_prepare_producer'],
+                ['test','//:paired_renewal'],['test','//delivery:yoga_public_artifact_prepare'],
+                ['test','//:queued_ingress_test'],
+                ['test',labels[1],'//delivery:yoga_toolbar_consent_proof'],
+                ['test',labels[0],'//tools:codex_native_sdk_carrier_seal_producer']):
+            self.assertFalse(guard.ordinary_check_reuse_selected(args,vector))
+        for values in ({'profile':'resident-continuity'}, {'profile':'native-sdk-carrier-seal-reserved'},
+                {'profile':'site'}, {'site_inventory':Path('/selected/inventory.json')},
+                {'codex_owner_runtime_directory':Path('/selected/runtime')},
+                {'native_owned_candidate_cache':True}):
+            changed=SimpleNamespace(**{**vars(args),**values})
+            self.assertFalse(guard.ordinary_check_reuse_selected(changed,['test',*labels]))
+        self.assertTrue(guard.toolbar_prepare_selected('standard','system',
+            ['test','//delivery:yoga_public_artifact_prepare_producer']))
 
     def test_source_advance_and_target_subset_do_not_partition_ordinary_policy(self):
         import execution_guard as guard
@@ -2978,12 +3005,15 @@ class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
         import execution_guard as guard
         run=Path('/owned/2a2d7631-f74f-49e4-af5e-23c01b430dc3')
         shared=Path('/owned/ordinary-check-v1-checkout/output-base')
-        command=guard.bazel_command('/bazel',run,['test','//:engine_test','//:docs_check'],output_base=shared)
-        self.assertIn('--batch',command)
-        self.assertIn('--nocache_test_results',command)
-        self.assertEqual([item for item in command if item.startswith('--output_base=')],['--output_base='+str(shared)])
-        self.assertEqual([item for item in command if item.startswith('--output_user_root=')],
-                         ['--output_user_root='+str(run/'bazel-user-root')])
+        for vector in (['test','//:engine_test','//:docs_check'],
+                ['test','//:paired_renewal_test','//:format_test','//:docs_check'],
+                ['test','//delivery:yoga_public_artifact_prepare_test','//tools:execution_guard_test']):
+            command=guard.bazel_command('/bazel',run,vector,output_base=shared)
+            self.assertIn('--batch',command)
+            self.assertIn('--nocache_test_results',command)
+            self.assertEqual([item for item in command if item.startswith('--output_base=')],['--output_base='+str(shared)])
+            self.assertEqual([item for item in command if item.startswith('--output_user_root=')],
+                             ['--output_user_root='+str(run/'bazel-user-root')])
         fresh=guard.bazel_command('/bazel',run,['test','//tools:codex_owner_status_source_producer'])
         self.assertIn('--output_base='+str(run/'output-base'),fresh)
 
@@ -3020,11 +3050,11 @@ class OrdinaryCheckLeaseFilesystemModels(unittest.TestCase):
         return self.guard.OrdinaryCheckLease(self.state,key or self.key,run_id or self.first_id,
                                             repository or self.repository)
 
-    def receipt(self,run_id,*,empty=True,targets=None,source='a'*40):
+    def receipt(self,run_id,*,empty=True,targets=None,source='a'*40,graph=None):
         run=self.state/run_id;run.mkdir(mode=0o700,exist_ok=True)
         raw=(json.dumps({'id':run_id,'descendants_empty':empty,'verb':'test','profile':'standard',
             'targets':targets or ['//tools:execution_guard_test'], 'source_commit':source,
-            'graph_sha256':source[:32]*2},sort_keys=True)+'\n').encode()
+            'graph_sha256':graph or source[:32]*2},sort_keys=True)+'\n').encode()
         path=run/'receipt.json';path.write_bytes(raw);path.chmod(0o600)
         with path.open('rb') as held:os.fsync(held.fileno())
         return raw,hashlib.sha256(raw).hexdigest()
@@ -3067,6 +3097,92 @@ class OrdinaryCheckLeaseFilesystemModels(unittest.TestCase):
         self.assertEqual(changed.name,first.name)
         with self.assertRaises(ValueError):changed.__enter__()
         self.assertEqual((first.output_base.parent/'owner.json').read_bytes(),marker)
+        self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
+
+    def test_new_test_only_vectors_reuse_same_physical_base_with_distinct_epoch_receipts(self):
+        inputs={'bazel':'/nix/store/fixture/bin/bazel','java':'/nix/store/fixture-jdk'}
+        old_vector=['test','//:docs_check']
+        new_vector=['test','//:paired_renewal_test','//delivery:yoga_public_artifact_prepare_test',
+                    '//tools:execution_guard_test','//:format_test','//:docs_check']
+        args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
+                             source_dirty='false',reuse_owned_cache=False)
+        self.assertTrue(self.guard.ordinary_check_reuse_selected(args,old_vector))
+        self.assertTrue(self.guard.ordinary_check_reuse_selected(args,new_vector))
+        previous={'ordinary_check_scope':'closed-standard-test-checkout-output-v1',
+                  'limits':dict(self.guard.PROPERTIES),
+                  'execution':{'batch':True,'cache_test_results':False,
+                      'jobs':self.guard.toolbar_prepare_action_jobs('standard',old_vector,source_dirty='false')}}
+        current={**previous,'ordinary_check_scope':self.guard.ORDINARY_CHECK_SCOPE,
+                 'execution':{**previous['execution'],
+                     'jobs':self.guard.toolbar_prepare_action_jobs('standard',new_vector,source_dirty='false')}}
+        graph_file=self.repository/'BUILD.bazel'
+        graph_file.write_bytes(b'first declared graph fixture')
+        first_graph=hashlib.sha256(graph_file.read_bytes()).hexdigest()
+        old_key=self.guard.stable_fingerprint(self.repository,inputs,os.getuid(),os.getgid(),'system',previous)
+        with self.lease(key=old_key) as first:
+            first.output_base.mkdir(mode=0o700)
+            payload=first.output_base/'payload';payload.write_bytes(b'ordinary cached public build data')
+            first_raw,first_digest=self.receipt(self.first_id,targets=old_vector[1:],source='a'*40,graph=first_graph)
+            first.complete(True,first_digest)
+        identity=first.output_base.stat()
+        graph_file.write_bytes(b'distinct declared graph fixture; Bazel invalidates action inputs')
+        second_graph=hashlib.sha256(graph_file.read_bytes()).hexdigest()
+        args.source_commit='b'*40
+        new_key=self.guard.stable_fingerprint(self.repository,inputs,os.getuid(),os.getgid(),'system',current)
+        self.assertEqual(old_key,new_key)
+        with self.lease(self.second_id,key=new_key) as second:
+            self.assertEqual(second.name,first.name)
+            self.assertEqual(second.output_base,first.output_base)
+            self.assertEqual((identity.st_dev,identity.st_ino),
+                             (second.output_base.stat().st_dev,second.output_base.stat().st_ino))
+            self.assertEqual(payload.read_bytes(),b'ordinary cached public build data')
+            for run_id,vector in ((self.first_id,old_vector),(self.second_id,new_vector)):
+                run=self.state/run_id
+                command=self.guard.bazel_command('/bazel',run,vector,output_base=second.output_base)
+                self.assertIn('--batch',command)
+                self.assertIn('--nocache_test_results',command)
+                self.assertIn('--jobs=2',command)
+                self.assertEqual([item for item in command if item.startswith('--output_base=')],
+                                 ['--output_base='+str(first.output_base)])
+                self.assertIn('--output_user_root='+str(run/'bazel-user-root'),command)
+            second_raw,second_digest=self.receipt(self.second_id,targets=new_vector[1:],
+                                                  source=args.source_commit,graph=second_graph)
+            second.complete(True,second_digest)
+        self.assertNotEqual(first_raw,second_raw)
+        first_receipt=json.loads(first_raw);second_receipt=json.loads(second_raw)
+        self.assertNotEqual(first_receipt['source_commit'],second_receipt['source_commit'])
+        self.assertNotEqual(first_receipt['graph_sha256'],second_receipt['graph_sha256'])
+        self.assertEqual((self.state/self.first_id/'receipt.json').read_bytes(),first_raw)
+        marker=json.loads((first.output_base.parent/'owner.json').read_bytes())
+        self.assertEqual(marker['key'],old_key)
+        self.assertEqual(marker['last_run'],self.second_id)
+        self.assertEqual(marker['cleanup_receipt_sha256'],second_digest)
+        self.assertIs(marker['clean'],True)
+        self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
+
+    def test_changed_containment_fingerprint_still_refuses_unchanged_owned_namespace(self):
+        inputs={'bazel':'/nix/store/fixture/bin/bazel','java':'/nix/store/fixture-jdk'}
+        profile={'ordinary_check_scope':self.guard.ORDINARY_CHECK_SCOPE,
+                 'limits':dict(self.guard.PROPERTIES),'execution':{'batch':True,'cache_test_results':False}}
+        old_key=self.guard.stable_fingerprint(self.repository,inputs,os.getuid(),os.getgid(),'system',profile)
+        changed_profile={**profile,'limits':{**profile['limits'],'MemoryMax':'3221225472'}}
+        changed_key=self.guard.stable_fingerprint(self.repository,inputs,os.getuid(),os.getgid(),'system',changed_profile)
+        self.assertNotEqual(old_key,changed_key)
+        with self.lease(key=old_key) as first:
+            first.output_base.mkdir(mode=0o700)
+            payload=first.output_base/'payload';payload.write_bytes(b'original contained output')
+            raw,digest=self.receipt(self.first_id)
+            first.complete(True,digest)
+        marker=first.output_base.parent/'owner.json';before=marker.read_bytes()
+        identity=first.output_base.stat()
+        changed=self.lease(self.second_id,key=changed_key)
+        self.assertEqual(changed.name,first.name)
+        with self.assertRaises(ValueError):changed.__enter__()
+        self.assertEqual(marker.read_bytes(),before)
+        self.assertEqual(payload.read_bytes(),b'original contained output')
+        self.assertEqual((self.state/self.first_id/'receipt.json').read_bytes(),raw)
+        self.assertEqual((identity.st_dev,identity.st_ino),
+                         (first.output_base.stat().st_dev,first.output_base.stat().st_ino))
         self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
 
     def test_live_exclusive_lock_and_dirty_exit_refuse_reuse(self):
