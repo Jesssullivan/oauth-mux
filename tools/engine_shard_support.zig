@@ -122,10 +122,10 @@ pub const Session = struct {
         hash.final(&value.inventory);
         return value;
     }
-    pub fn record(self: *Session, index: usize, status: Status, log_errors: usize, allocator_leaks: usize, fuzz: bool, elapsed: ?u64) !void {
+    pub fn record(self: *Session, index: usize, status: Status, log_errors: usize, allocator_leaks: usize, fuzz: bool, elapsed_ns_value: ?u64) !void {
         if (index >= full_count or !selected(self.config, index) or self.results[index].status != .pending or
             (status != .pass and status != .fail and status != .skip)) return error.InvalidEngineShardTransition;
-        self.results[index] = .{ .index = index, .status = status, .log_errors = log_errors, .allocator_leaks = allocator_leaks, .fuzz = fuzz, .elapsed_ns = elapsed };
+        self.results[index] = .{ .index = index, .status = status, .log_errors = log_errors, .allocator_leaks = allocator_leaks, .fuzz = fuzz, .elapsed_ns = elapsed_ns_value };
     }
     pub fn validateCompleted(self: Session) !void {
         for (self.results, 0..) |result, index| {

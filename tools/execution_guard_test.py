@@ -1191,6 +1191,45 @@ class GuardTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bazel_command('/store/bazel', Path('/owned/run'), base, profile=profile)
 
+    def test_engine_shard_tools_formatter_keeps_exact_standard_command_bounds(self):
+        arguments = ['run', '//:format', '--', 'tools/engine_test_runner.zig',
+                     'tools/engine_shard_support.zig', 'tools/engine_shard_support_models.zig']
+        existing = ['run', '//:format', '--', 'src']
+        selected = bazel_command('/store/bazel', Path('/owned/run'), arguments,
+                                 source_commit='a' * 40, source_dirty='false')
+        original = bazel_command('/store/bazel', Path('/owned/run'), existing,
+                                 source_commit='a' * 40, source_dirty='false')
+        self.assertEqual(selected[-len(arguments[1:]):], arguments[1:])
+        self.assertEqual(selected[:-len(arguments[1:])], original[:-len(existing[1:])])
+        self.assertIn('--sandbox_default_allow_network=false', selected)
+        self.assertIn('--remote_executor=', selected)
+        self.assertIn('--remote_cache=', selected)
+        self.assertIn('--disk_cache=', selected)
+        self.assertIn('--lockfile_mode=error', selected)
+        self.assertIn('--define=OMUX_SOURCE_COMMIT=' + 'a' * 40, selected)
+        self.assertIn('--define=OMUX_SOURCE_DIRTY=false', selected)
+
+    def test_engine_shard_tools_formatter_refuses_every_nonexact_selection(self):
+        arguments = ['run', '//:format', '--', 'tools/engine_test_runner.zig',
+                     'tools/engine_shard_support.zig', 'tools/engine_shard_support_models.zig']
+        rejected = (arguments[:-1], arguments[:3] + arguments[4:],
+                    arguments + [arguments[-1]], arguments[:3] + list(reversed(arguments[3:])),
+                    arguments + ['src/engine.zig'], arguments + ['tools/toolchain_test.zig'],
+                    arguments + ['--check'], ['run', '//:format', '--', 'tools'],
+                    arguments[:3] + ['/absolute/engine_test_runner.zig'] + arguments[4:],
+                    arguments[:3] + ['tools/../tools/engine_test_runner.zig'] + arguments[4:],
+                    ['run', '//tools:format'] + arguments[2:],
+                    ['run', '//:arbitrary'] + arguments[2:],
+                    ['--jobs=1'] + arguments, ['run', '--jobs=1'] + arguments[1:],
+                    ['run', '//:format', '--check'] + arguments[2:])
+        for changed in rejected:
+            with self.subTest(arguments=changed), self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/owned/run'), changed)
+        for profile in ('installed-browser', 'dependency-prefetch', 'codex-sdk', 'site',
+                        'native-retained-sdk-tree-models-reserved'):
+            with self.subTest(profile=profile), self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/owned/run'), arguments, profile=profile)
+
     def test_portable_launcher_formatter_is_one_exact_standard_selection(self):
         arguments = ['run', '//delivery:linux_launcher_format', '--', 'delivery/linux_launcher.zig']
         selected = bazel_command('/store/bazel', Path('/owned/run'), arguments)
@@ -3080,7 +3119,7 @@ class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
         import execution_guard as guard
         args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
                              source_dirty='false',reuse_owned_cache=False,arguments=[])
-        self.assertEqual(len(guard.ORDINARY_CHECK_LABELS),24)
+        self.assertEqual(len(guard.ORDINARY_CHECK_LABELS),27)
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test',*sorted(guard.ORDINARY_CHECK_LABELS)]))
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//tools:execution_guard_test','//:docs_check']))
         self.assertTrue(guard.ordinary_check_reuse_selected(args,['test','//:engine_test','//:unit_tests',
@@ -3100,6 +3139,36 @@ class OrdinaryCheckReuseSelectionModels(unittest.TestCase):
                 ('resident_epoch','an-epoch')):
             changed=SimpleNamespace(**{**vars(args),name:value})
             self.assertFalse(guard.ordinary_check_reuse_selected(changed,['test','//:engine_test']))
+
+    def test_exact_engine_support_model_vector_joins_only_closed_ordinary_reuse(self):
+        import execution_guard as guard
+        args=SimpleNamespace(profile='standard',manager='system',source_commit='a'*40,
+                             source_dirty='false',reuse_owned_cache=False)
+        labels=['//:engine_shard_support_test','//tools:guard_test_evidence_test']
+        self.assertEqual(set(labels) & guard.ORDINARY_CHECK_LABELS,set(labels))
+        vector=['test',*labels,'//tools:execution_guard_test','//:format_test','//:docs_check']
+        self.assertEqual(guard.ORDINARY_CHECK_SCOPE,'closed-standard-test-checkout-output-v1')
+        for selected in (['test',labels[0]],['test',labels[1]],vector):
+            self.assertTrue(guard.ordinary_check_reuse_selected(args,selected))
+        for changed in (['build',*labels],['run',labels[0]],vector+[labels[0]],
+                vector+['--test_arg=selected'],vector+['//tools:future_engine_support_test'],
+                vector+['//tools:codex_native_retained_sdk_tree_producer'],
+                vector+['//tools:codex_native_owned_history_cli_test'],
+                vector+['//delivery:yoga_public_artifact_receive_qualification']):
+            self.assertFalse(guard.ordinary_check_reuse_selected(args,changed))
+        for values in ({'profile':'native-sdk-tree-producer-reserved'},
+                {'profile':'resident-continuity'},{'profile':'codex-sdk'},
+                {'new_future_selector':0},{'sdk_source_root':Path('/selected/sdk')},
+                {'native_owned_candidate_cache':True}):
+            changed=SimpleNamespace(**{**vars(args),**values})
+            self.assertFalse(guard.ordinary_check_reuse_selected(changed,vector))
+        command=guard.bazel_command('/bazel',Path('/owned/run'),vector,
+                                   output_base=Path('/owned/ordinary-check-v1-checkout/output-base'))
+        self.assertIn('--batch',command)
+        self.assertIn('--nocache_test_results',command)
+        self.assertIn('--output_base=/owned/ordinary-check-v1-checkout/output-base',command)
+        self.assertIn('--output_user_root=/owned/run/bazel-user-root',command)
+        self.assertEqual(command[-len(vector[1:]):],vector[1:])
 
     def test_exact_renewal_and_artifact_models_join_only_closed_ordinary_test_scope(self):
         import execution_guard as guard
@@ -3285,6 +3354,25 @@ class OrdinaryCheckLeaseFilesystemModels(unittest.TestCase):
             self.assertEqual((self.state/self.first_id/'receipt.json').read_bytes(),raw)
             _,digest=self.receipt(self.second_id,targets=['//:docs_check'],source='b'*40)
             second.complete(True,digest)
+        self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
+
+    def test_existing_ordinary_base_accepts_exact_engine_support_models_without_namespace_reset(self):
+        first,raw=self.completed()
+        identity=first.output_base.stat()
+        args=SimpleNamespace(profile='standard',manager='system',source_commit='b'*40,
+                             source_dirty='false',reuse_owned_cache=False)
+        vector=['test','//:engine_shard_support_test','//tools:guard_test_evidence_test',
+                '//tools:execution_guard_test','//:format_test','//:docs_check']
+        self.assertTrue(self.guard.ordinary_check_reuse_selected(args,vector))
+        with self.lease(self.second_id) as second:
+            self.assertEqual(first.name,second.name)
+            self.assertEqual(first.output_base,second.output_base)
+            current=second.output_base.stat()
+            self.assertEqual((identity.st_dev,identity.st_ino),(current.st_dev,current.st_ino))
+            self.assertEqual((second.output_base/'payload').read_bytes(),b'current routine output')
+            _,digest=self.receipt(self.second_id,targets=vector[1:],source='b'*40,graph='c'*64)
+            second.complete(True,digest)
+        self.assertEqual((self.state/self.first_id/'receipt.json').read_bytes(),raw)
         self.assertEqual(len([name for name in os.listdir(self.state) if name.startswith('ordinary-check-v1-')]),1)
 
     def test_different_canonical_checkout_isolates_namespace(self):

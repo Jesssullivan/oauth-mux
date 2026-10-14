@@ -1133,6 +1133,10 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
     formatter = profile == 'standard' and (arguments == format_base or
                                            arguments == format_base + ['src/engine.zig'] or
                                            arguments == ['run', '//:format', '--', 'src'] or
+                                           arguments == ['run', '//:format', '--',
+                                                         'tools/engine_test_runner.zig',
+                                                         'tools/engine_shard_support.zig',
+                                                         'tools/engine_shard_support_models.zig'] or
                                            arguments == ['run', '//delivery:linux_launcher_format', '--',
                                                          'delivery/linux_launcher.zig'])
     if not arguments or (arguments[0] not in ('build', 'test') and not formatter and not sdk_export_run):
@@ -1594,6 +1598,7 @@ def record_resident_lifecycle(receipt,admission,*,clock=time.monotonic_ns):
 ORDINARY_CHECK_SCOPE = 'closed-standard-test-checkout-output-v1'
 ORDINARY_CHECK_LABELS = frozenset({
     '//:engine_test', '//:engine_sharded_test', '//:unit_tests', '//:transport_test', '//:observer_test',
+    '//:engine_shard_support_test', '//tools:guard_test_evidence_test',
     '//:oauth_oidc_crypto_test', '//:oauth_oidc_profile_test',
     '//:oauth_oidc_signed_fixture_test', '//:browser_attempt_transaction_test',
     '//:storage_test', '//:format_test', '//:docs_check', '//tools:execution_guard_test',
