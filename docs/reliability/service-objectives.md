@@ -64,6 +64,21 @@ and scheduled durable baselines remain unmeasured. REL-001 through REL-008 and
 their zero-budget invariants remain unchanged. Do not invent numerical success
 targets for new phases before obtaining a version-bound baseline.
 
+The separate `reliability.lifecycle.owned_pair_renewal` projection partitions
+the existing SQLite-coupled last-operation witness for each retained daemon-owned
+SIWC pair. Its retained-attempt denominator is one last issued operation per
+pair, classified as committed successor, unresolved issued or completion unknown;
+pairs without a retained renewal are reported separately. A later issuance
+replaces the prior witness, so this is neither lifetime attempt history nor all
+REL-015 opportunities. A committed successor records the verified atomic grant
+rotation, including a historical witness on a later retired pair; it does not
+assert present readiness, a successful user journey or completion before authority
+expiry. Poisoned, locked or unavailable custody suppresses its counters and marks
+authority unavailable. Refusals, typed causes, durations, deployment provenance
+and end-to-end timing are unmeasured in this projection. The aggregate successful
+renewal phase remains unobserved; REL-015/REL-019 coverage and achieved SLO remain
+unproved.
+
 | ID | Phase and successful user outcome | Denominator and coverage |
 | --- | --- | --- |
 | REL-013 | Install and activate: owned artifacts, service and host registration verified; daemon remains resident after controls close. | All authorized supported installation attempts, including managed-ownership refusal; report installed and activated coverage separately. |

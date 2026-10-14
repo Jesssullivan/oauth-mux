@@ -109,6 +109,52 @@ pub const Record = struct {
     renewal: ?Renewal = null,
 };
 pub const Snapshot = struct { version: u32 = 1, records: []const Record = &.{} };
+/// Read-only partition of the existing snapshot-coupled last-operation witnesses.
+/// A new attempt replaces a pair's prior witness; absence is not lifetime zero.
+/// Completed means an atomic verified successor commit, not current readiness,
+/// before-expiry timing, a successful user journey or all renewal opportunities.
+pub const RenewalMeasurements = struct {
+    schema_version: u32 = 1,
+    scope: enum { last_retained_owned_siwc_renewal_per_pair } = .last_retained_owned_siwc_renewal_per_pair,
+    window: enum { all_retained_no_time_window } = .all_retained_no_time_window,
+    retention: enum { one_last_operation_per_pair } = .one_last_operation_per_pair,
+    authority_available: bool = false,
+    retained_pairs: u64 = 0,
+    pairs_without_retained_renewal: u64 = 0,
+    retained_attempts: u64 = 0,
+    committed_successors: u64 = 0,
+    unresolved_issued: u64 = 0,
+    completion_unknown: u64 = 0,
+    safe_refusals_measured: bool = false,
+    typed_causes_measured: bool = false,
+    lifetime_attempt_history_measured: bool = false,
+    complete_renewal_opportunity_denominator: bool = false,
+    duration_measured: bool = false,
+    before_authority_expiry_measured: bool = false,
+    deployment_provenance_measured: bool = false,
+    successful_user_journey_measured: bool = false,
+    user_end_to_end_elapsed_measured: bool = false,
+    achieved_slo: bool = false,
+};
+pub fn summarizeRenewals(saved: Snapshot, authority_available: bool) !RenewalMeasurements {
+    // A failed Store commit can leave prepared facts in memory. Suppress those
+    // facts before inspecting them; zero counters with unavailable authority
+    // never assert an empty durable population.
+    if (!authority_available) return .{};
+    try validate(saved);
+    var result: RenewalMeasurements = .{ .authority_available = true, .retained_pairs = @intCast(saved.records.len) };
+    for (saved.records) |row| {
+        if (row.renewal) |renewal| {
+            result.retained_attempts += 1;
+            switch (renewal.state) {
+                .completed => result.committed_successors += 1,
+                .issued => result.unresolved_issued += 1,
+                .unknown => result.completion_unknown += 1,
+            }
+        } else result.pairs_without_retained_renewal += 1;
+    }
+    return result;
+}
 pub const Registry = struct {
     records: std.ArrayList(Record) = .empty,
     pub fn deinit(self: *Registry, a: std.mem.Allocator) void {

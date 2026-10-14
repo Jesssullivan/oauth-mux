@@ -6784,6 +6784,7 @@ pub const Engine = struct {
                 reliability.lifecycleExport(self.lifecycle_measurements, self.now());
             return control.success(allocator, request.id, .{
                 .source_disconnect_timing = try lifecycle_source.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
+                .owned_pair_renewal = try siwc_pair.summarizeRenewals(self.owned_siwc_pairs.snapshot(), !self.poisoned and !self.vault_locked and self.db != null),
                 .native_removal_timing = try native_removal_timing.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
                 .setup_verification = try setup_verification.summarize(allocator, self.mutations.snapshot(), self.now()),
                 .terminal_adapter_setup = try terminal_adapter_setup.summarize(allocator, self.mutations.snapshot()),
@@ -15127,6 +15128,14 @@ const OwnedRenewalActorModel = struct {
     fn observe(current: *Engine, account: []const u8) !Json {
         return fixture(current, "fixture.siwcRenewalObserve", .{ .account_id = account });
     }
+    fn measurements(current: *Engine) !siwc_pair.RenewalMeasurements {
+        const reply = try call(current, "reliability.lifecycle", @as(?u8, null), .control);
+        defer reply.deinit();
+        const value = control.get(try result(&reply), "owned_pair_renewal") orelse return error.FixtureMeasurementsMissing;
+        const parsed = try std.json.parseFromValue(siwc_pair.RenewalMeasurements, a, value, .{});
+        defer parsed.deinit();
+        return parsed.value;
+    }
     fn wait(current: *Engine, account: []const u8, status: []const u8, generation: u64) !Json {
         const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(12) });
         while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
@@ -15214,6 +15223,11 @@ test "owned paired renewal preserves usable current access and accepted native w
     const current = actor.engine.?;
     diagnostic_stage = "admit-signed-pair";
     const pair = try SiwcActorTest.admit(producer, current, "renew-concurrent");
+    const initial_measurements = try M.measurements(current);
+    try std.testing.expect(initial_measurements.authority_available);
+    try std.testing.expectEqual(@as(u64, 1), initial_measurements.retained_pairs);
+    try std.testing.expectEqual(@as(u64, 1), initial_measurements.pairs_without_retained_renewal);
+    try std.testing.expectEqual(@as(u64, 0), initial_measurements.retained_attempts);
     diagnostic_stage = "native-registration";
     const reference = try producer.register(current, "synthetic-siwc-thread");
     diagnostic_stage = "initial-native-acquire";
@@ -15243,10 +15257,17 @@ test "owned paired renewal preserves usable current access and accepted native w
     try M.assertPair(live_value, "refreshing", 1, true);
     try std.testing.expectEqualStrings("ready", try control.string(control.get(live_value, "access_sql").?, "state"));
     try std.testing.expectEqualStrings("refreshing", try control.string(control.get(live_value, "refresh_sql").?, "state"));
+    const issued_measurements = try M.measurements(current);
+    try std.testing.expectEqual(@as(u64, 1), issued_measurements.retained_attempts);
+    try std.testing.expectEqual(@as(u64, 1), issued_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), issued_measurements.committed_successors);
+    try std.testing.expectEqual(@as(u64, 0), issued_measurements.completion_unknown);
     diagnostic_stage = "second-writer-refusal";
     const second_writer = try M.start(current, &pair.account_id, body.bytes, keys, .{});
     defer second_writer.deinit();
     try SiwcActorTest.refusal(&second_writer, "RenewalNotOwned");
+    // A duplicate writer refusal is not another owned issued attempt or success.
+    try std.testing.expectEqualDeep(issued_measurements, try M.measurements(current));
     diagnostic_stage = "same-generation-independent-request";
     // A sticky unchanged route legitimately admits independent work; it is
     // neither an accepted-work replay nor an in-flight generation switch.
@@ -15282,6 +15303,21 @@ test "owned paired renewal preserves usable current access and accepted native w
     try std.testing.expectEqual(@as(i64, 1), control.get(renewed_value, "key_count").?.integer);
     diagnostic_stage = "successor-wire-valid";
     try std.testing.expect(try control.boolean(renewed_value, "wire_valid", false));
+    const committed_measurements = try M.measurements(current);
+    try std.testing.expectEqual(@as(u64, 1), committed_measurements.retained_attempts);
+    try std.testing.expectEqual(@as(u64, 1), committed_measurements.committed_successors);
+    try std.testing.expectEqual(@as(u64, 0), committed_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), committed_measurements.completion_unknown);
+    try std.testing.expect(!committed_measurements.safe_refusals_measured);
+    try std.testing.expect(!committed_measurements.duration_measured);
+    try std.testing.expect(!committed_measurements.complete_renewal_opportunity_denominator);
+    try std.testing.expect(!committed_measurements.before_authority_expiry_measured);
+    const observation_revision = current.revision;
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(current));
+    try std.testing.expectEqual(observation_revision, current.revision);
+    const observed_again = try M.observe(current, &pair.account_id);
+    defer observed_again.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&observed_again), "token_count").?.integer);
     diagnostic_stage = "new-generation-switch-refusal";
     // The accepted original still holds generation1. Generation2 is now ready,
     // so this NEW work would rebind the live route and must remain refused.
@@ -15314,6 +15350,27 @@ test "owned paired renewal preserves usable current access and accepted native w
     var finished = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
     defer SiwcActorTest.dispose(&finished);
     _ = try SiwcActorTest.result(&finished);
+    diagnostic_stage = "retained-successor-sqlite-restart";
+    try actor.restart();
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(actor.engine.?));
+    const restarted = try M.observe(actor.engine.?, &pair.account_id);
+    defer restarted.deinit();
+    try M.assertPair(try M.result(&restarted), "ready", 2, true);
+    try std.testing.expectEqual(@as(i64, 0), control.get(try M.result(&restarted), "token_count").?.integer);
+    // Actual second issuance replaces the one retained witness. The counter is
+    // not two lifetime successes, and observations must not repeat either POST.
+    diagnostic_stage = "replace-last-retained-renewal";
+    const replacement = try M.start(actor.engine.?, &pair.account_id, body.bytes, keys, .{});
+    defer replacement.deinit();
+    _ = try M.result(&replacement);
+    const replaced = try M.wait(actor.engine.?, &pair.account_id, "ready", 3);
+    defer replaced.deinit();
+    try M.assertPair(try M.result(&replaced), "ready", 3, true);
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(actor.engine.?));
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(actor.engine.?));
+    const replacement_observed = try M.observe(actor.engine.?, &pair.account_id);
+    defer replacement_observed.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&replacement_observed), "token_count").?.integer);
 }
 
 test "periodic owned renewal repairs expired access without user reconsent while new requests use a ready alternative" {
@@ -15554,6 +15611,10 @@ test "actual paired successor original cutoff refuses after sealing before reser
                 } else try io.sleep(.fromMilliseconds(5), .awake);
             }
             try std.testing.expect(poisoned);
+            const unavailable = try M.measurements(current);
+            try std.testing.expect(!unavailable.authority_available);
+            try std.testing.expectEqual(@as(u64, 0), unavailable.retained_attempts);
+            try std.testing.expectEqual(@as(u64, 0), unavailable.committed_successors);
         }
     }
 }
@@ -15588,6 +15649,9 @@ test "actual issued paired renewal restart quarantines retained tuple without re
     defer started.deinit();
     _ = try M.result(&started);
     diagnostic_stage = "close-issued-actor";
+    const issued_measurements = try M.measurements(current.?);
+    try std.testing.expectEqual(@as(u64, 1), issued_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), issued_measurements.committed_successors);
     current.?.deinit();
     current = null;
     diagnostic_stage = "reopen-before-any-provider-work";
@@ -15604,10 +15668,19 @@ test "actual issued paired renewal restart quarantines retained tuple without re
     try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
     try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
     try std.testing.expect(try control.boolean(value, "external_retained", false));
+    const unknown_measurements = try M.measurements(current.?);
+    try std.testing.expectEqual(@as(u64, 1), unknown_measurements.retained_attempts);
+    try std.testing.expectEqual(@as(u64, 1), unknown_measurements.completion_unknown);
+    try std.testing.expectEqual(@as(u64, 0), unknown_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), unknown_measurements.committed_successors);
     diagnostic_stage = "spent-refresh-replay-refusal";
     const replay = try M.start(current.?, account, body.bytes, keys, .{});
     defer replay.deinit();
     try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
+    const observation_revision = current.?.revision;
+    try std.testing.expectEqualDeep(unknown_measurements, try M.measurements(current.?));
+    try std.testing.expectEqualDeep(unknown_measurements, try M.measurements(current.?));
+    try std.testing.expectEqual(observation_revision, current.?.revision);
 }
 
 test "unrelated account forget before issued paired renewal restart does not prevent quarantine or rewrite the original epoch" {
