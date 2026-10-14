@@ -31,7 +31,7 @@ def _retained(ctx, config):
     outer_path = _physical(ctx, producer["receipt"])
     epoch = str(outer_path.dirname)
     identifier = outer_path.dirname.basename
-    _need(outer_path.basename == "receipt.json" and len(identifier) == 36 and [identifier[i] for i in [8, 13, 18, 23]] == ["-", "-", "-", "-"] and all([c in "0123456789abcdef" for c in identifier.replace("-", "").elems()]) and str(outer_path.dirname.dirname) in ["/home/jess/.local/state/omux-execution-20261005", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005"]))
+    _need(outer_path.basename == "receipt.json" and len(identifier) == 36 and [identifier[i] for i in [8, 13, 18, 23]] == ["-", "-", "-", "-"] and all([c in "0123456789abcdef" for c in identifier.replace("-", "").elems()]) and str(outer_path.dirname.dirname) in ["/home/jess/.local/state/omux-execution-20261005", "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005"])
     _need(selected["root"] == epoch + "/native-content-retained/native-siwc-catalog-content-source")
     for name in ["transport_receipt", "source_phase_receipt"]:
         pin = selected[name]
