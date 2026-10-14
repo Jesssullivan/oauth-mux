@@ -60,6 +60,8 @@ class LeaseBoundaries(unittest.TestCase):
                 lease.__enter__()
                 run=state/lease.run_id
                 def builder(bazel,run,arguments,**kwargs):
+                    self.assertEqual(kwargs['output_base'],lease.output_base)
+                    self.assertEqual(kwargs['profile'],'standard')
                     return [str(bazel),'--disk_cache=','--remote_cache=','--remote_executor=',*arguments]
                 # Namespace/configuration seams only; actual lease/fence and
                 # kernel boot capture remain real, and no action executes.
@@ -67,7 +69,7 @@ class LeaseBoundaries(unittest.TestCase):
                         patch.object(enrollment,'repository_inputs',return_value=None):
                     result=tree.command(builder,'declared-bazel',run,tree.COHORTS[profile],profile,
                         lease.entry,lease.deadline,graph_sha256=lease.graph_sha256,dependency_lease=lease,
-                        source_commit=lease.source_commit,source_dirty='false',output_base=None,
+                        source_commit=lease.source_commit,source_dirty='false',
                         repository_cache='declared-model',nixpkgs_source='declared-model')
                 current='OMUX_NATIVE_SDK_TREE_CURRENT_BOOT_ID='+lease.boot_id
                 self.assertIn('--action_env='+current,result)
