@@ -121,7 +121,7 @@ class ContentSourceTests(regression.CatalogSourceTests):
             error.__cause__ = ValueError(canary); error.__context__ = OSError(canary)
             def fail(): raise error
             stderr, stdout = io.StringIO(), io.StringIO()
-            with patch.object(content, 'main', fail), patch('sys.stderr', stderr), patch('sys.stdout', stdout):
+            with patch.object(content, 'selected_main', fail), patch('sys.stderr', stderr), patch('sys.stdout', stdout):
                 with self.assertRaises(SystemExit) as caught: content.entrypoint()
             self.assertEqual(caught.exception.code, 1)
             diagnostic = stderr.getvalue()
@@ -171,7 +171,7 @@ class ContentSourceTests(regression.CatalogSourceTests):
                 self.assertIs(error.__cause__,cleanup)
                 raise
         stderr, stdout = io.StringIO(), io.StringIO()
-        with patch.object(content,"main",fail), patch.object(content,"refusal_diagnostic",guarded_diagnostic), patch("sys.stderr",stderr), patch("sys.stdout",stdout):
+        with patch.object(content,"selected_main",fail), patch.object(content,"refusal_diagnostic",guarded_diagnostic), patch("sys.stderr",stderr), patch("sys.stdout",stdout):
             with self.assertRaises(SystemExit) as caught: content.entrypoint()
         self.assertEqual(caught.exception.code,1);self.assertEqual(observed,[first]);self.assertEqual(attempts,[True])
         self.assertEqual(redactor_calls,[first,first]);self.assertFalse(first._redactor_active)
@@ -258,12 +258,12 @@ class ContentSourceTests(regression.CatalogSourceTests):
     def test_diagnostic_io_refusal_keeps_original_exit_and_unhandled_failures_propagate(self):
         class RefusingWriter:
             def write(self, unused): raise OSError('TEST-ONLY-diagnostic-write-canary')
-        with patch.object(content, 'main', side_effect=ValueError('TEST-ONLY-original-canary')), \
+        with patch.object(content, 'selected_main', side_effect=ValueError('TEST-ONLY-original-canary')), \
                 patch('sys.stderr', RefusingWriter()):
             with self.assertRaises(SystemExit) as caught: content.entrypoint()
         self.assertEqual(caught.exception.code, 1)
         failure = RuntimeError('TEST-ONLY-unhandled-canary')
-        with patch.object(content, 'main', side_effect=failure), patch('sys.stderr', io.StringIO()) as stderr:
+        with patch.object(content, 'selected_main', side_effect=failure), patch('sys.stderr', io.StringIO()) as stderr:
             with self.assertRaises(RuntimeError) as caught: content.entrypoint()
         self.assertIs(caught.exception, failure); self.assertEqual(stderr.getvalue(), '')
 
