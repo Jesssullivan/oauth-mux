@@ -489,6 +489,15 @@ python_test(
             "$(location //:reference_bundle)"],
     target_compatible_with = ["@platforms//os:linux"],
 )
+python_test(
+    name = "runtime_image_copy_test",
+    main = "test_runtime_image_copy.py",
+    srcs = ["pack.py", "portable.py"],
+    data = ["//:omux", "//:omuxd", ":development_instance_archive"],
+    args = ["$(location //:omux)", "$(location //:omuxd)",
+            "$(location :development_instance_archive)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 python_test(name = "cli_test", main = "test_cli.py", srcs = [],
             data = ["//:omux"], args = ["$(location //:omux)"],
             target_compatible_with = ["@platforms//os:linux"])

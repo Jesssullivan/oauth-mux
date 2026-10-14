@@ -5,6 +5,7 @@ load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("//tools:rules.bzl", "python_test", "source_archive")
 load("//tools:reference_bundle.bzl", "reference_bundle")
 load("//tools:runtime_zig.bzl", "zig_binary", "zig_test")
+load("//tools:runtime_image_copy.bzl", "runtime_image_copy")
 load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
 load("//tools:oauth_oidc_targets.bzl", "oauth_oidc_targets")
 # Genuine Bazel load/parser prerequisite; no evaluator/producer instantiation.
@@ -596,14 +597,11 @@ zig_binary(
     data = ZIG_RUNTIME_DATA,
 )
 
-zig_binary(
+runtime_image_copy(
     name = "omuxd",
-    main = "src/main.zig",
-    srcs = ZIG_SOURCES,
-    zigopts = ["-O", "ReleaseSafe"],
-    deps = [":native_api"],
-    linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    # The same root selects daemon behavior through its invocation basename.
+    # Keep a distinct regular executable File rather than an alias or symlink.
+    binary = ":omux",
 )
 
 zig_test(
