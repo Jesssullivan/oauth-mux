@@ -44,7 +44,7 @@ def _retained(ctx, config):
     report = json.decode(raw)
     inventory = report.get("source_inventory")
     if history:
-        _need(report.get('kind') == 'omux-native-siwc-catalog-owned-history-source-v3' and report.get('status') == 'verified-siwc-catalog-owned-history-source-uncompiled' and report.get('inventory_sha256') == selected['inventory_sha256'] and report.get('native_controls_sha256') == report.get('native_owned_history_controls_sha256') == config['catalog_controls_sha256'] and report.get('native_owned_history_manifest_sha256') == 'd1b7bfc9bc81ccbc8672165e301f3000bc42b56a848758ab348f4e97d810b588' and type(inventory) == 'dict' and len(inventory) == 8557 and len(report.get('patch_sha256', [])) == 13 and report['patch_sha256'][-1] == '030630425f378832d182333d46d95f8ba183f2de3a04ea34195fb2e9b4c98eb1')
+        _need(report.get('kind') == 'omux-native-siwc-catalog-owned-history-source-v3' and report.get('status') == 'verified-siwc-catalog-owned-history-source-uncompiled' and report.get('inventory_sha256') == selected['inventory_sha256'] and report.get('native_controls_sha256') == report.get('native_owned_history_controls_sha256') and report.get('native_owned_history_controls_sha256') == config['catalog_controls_sha256'] and report.get('native_owned_history_manifest_sha256') == 'd1b7bfc9bc81ccbc8672165e301f3000bc42b56a848758ab348f4e97d810b588' and type(inventory) == 'dict' and len(inventory) == 8557 and len(report.get('patch_sha256', [])) == 13 and report['patch_sha256'][-1] == '030630425f378832d182333d46d95f8ba183f2de3a04ea34195fb2e9b4c98eb1')
     else:
         _need(report.get("kind") == "omux-native-siwc-catalog-content-source-v1" and report.get("status") == "verified-siwc-catalog-content-source-uncompiled" and report.get("inventory_sha256") == selected["inventory_sha256"] and report.get("native_controls_sha256") == config["catalog_controls_sha256"] and type(inventory) == "dict" and len(inventory) == 8557 and len(report.get("patch_sha256", [])) == 12)
     outer_raw = ctx.read(outer_path)
@@ -110,11 +110,94 @@ def _retained(ctx, config):
     aliases.append("source-inputs.json")
     ctx.file("BUILD.bazel", "\n".join(["package(default_visibility = [\"//visibility:public\"])", "exports_files({})".format(repr(aliases)), "filegroup(name = \"inputs\", srcs = {})".format(repr(aliases)), ""]), executable = False)
 
+def _tree(ctx, config):
+    _need(config['schema_version'] == 1 and config['kind'] == 'omux-native-siwc-catalog-tree-owned-history-selection-v1' and config['status'] == 'qualified-retained-tree-owned-history-source-hub-uncompiled' and config['catalog_controls_sha256'] == '9ae90d61ffab78afe467fcc1e9def2c0ada704ab1b458322e4257a1d0b2f9fbd')
+    selected = config['source']
+    _need(type(selected) == 'dict' and sorted(selected.keys()) == ['inventory_sha256', 'producer', 'receipt_bytes', 'receipt_sha256', 'root', 'source_terminal_confirmation'] and _sha(selected['receipt_sha256']) and _sha(selected['inventory_sha256']) and type(selected['receipt_bytes']) == 'int' and 0 < selected['receipt_bytes'] and selected['receipt_bytes'] <= 8 * 1024 * 1024)
+    producer = selected['producer']
+    _need(type(producer) == 'dict' and sorted(producer.keys()) == ['graph_sha256', 'receipt', 'sha256', 'source_commit'] and _sha(producer['sha256']) and _sha(producer['graph_sha256']) and type(producer['source_commit']) == 'string' and len(producer['source_commit']) == 40 and all([c in '0123456789abcdef' for c in producer['source_commit'].elems()]))
+    outer_path = _physical(ctx, producer['receipt'])
+    epoch = str(outer_path.dirname)
+    _need(outer_path.basename == 'receipt.json')
+    outer_raw = ctx.read(outer_path)
+    _need(0 < len(outer_raw) and len(outer_raw) <= 1024 * 1024)
+    outer = json.decode(outer_raw)
+    targets = ['//tools:codex_native_siwc_catalog_tree_source_test', '//tools:codex_native_siwc_catalog_tree_source_producer']
+    _need(outer.get('profile') == 'native-retained-sdk-tree-source-reserved' and outer.get('targets') == targets and outer.get('exit') == 0 and outer.get('workload_exit') == 0 and outer.get('source_commit') == producer['source_commit'] and outer.get('graph_sha256') == producer['graph_sha256'])
+    lease = outer.get('native_sdk_tree_dependency_lease')
+    _need(type(lease) == 'dict' and lease.get('kind') == 'omux-retained-sdk-tree-dependency-lease-v1' and lease.get('family') == 'fixed-retained-sdk-tree-dependency-state-v1' and _sha(lease.get('key')) and lease.get('namespace') == 'cache-v2-sdk-tree-' + lease['key'] and lease.get('profile') == outer['profile'] and lease.get('run_id') == outer_path.dirname.basename and lease.get('output_base') == str(outer_path.dirname.dirname) + '/' + lease['namespace'] + '/output-base' and outer.get('output_base') == lease['output_base'])
+    prefix = lease['output_base'] + '/execroot/_main/bazel-out/'
+    suffix = '/testlogs/tools/codex_native_siwc_catalog_tree_source_producer/test.outputs/native-siwc-catalog-tree-source'
+    _need(type(selected['root']) == 'string' and selected['root'].startswith(prefix) and selected['root'].endswith(suffix))
+    configuration = selected['root'][len(prefix):-len(suffix)]
+    _need(0 < len(configuration) and len(configuration) <= 128 and all([c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-' for c in configuration.elems()]))
+    receipt_path = _physical(ctx, selected['root'] + '/source-receipt.json')
+    report_raw = ctx.read(receipt_path)
+    _need(len(report_raw) == selected['receipt_bytes'])
+    report = json.decode(report_raw)
+    inventory = report.get('source_inventory')
+    _need(report.get('kind') == 'omux-native-siwc-catalog-owned-history-source-v3' and report.get('status') == 'verified-siwc-catalog-owned-history-source-uncompiled' and report.get('native_controls_sha256') == config['catalog_controls_sha256'] and report.get('inventory_sha256') == selected['inventory_sha256'] and type(inventory) == 'dict' and len(inventory) == 8557 and len(report.get('patch_sha256', [])) == 13 and report['patch_sha256'][-1] == '030630425f378832d182333d46d95f8ba183f2de3a04ea34195fb2e9b4c98eb1' and report.get('transported_sdk', {}).get('kind') == 'omux-retained-current-sdk-tree-content-v1')
+    confirmation_pin = selected['source_terminal_confirmation']
+    _need(type(confirmation_pin) == 'dict' and sorted(confirmation_pin.keys()) == ['bytes', 'sha256'] and _sha(confirmation_pin['sha256']) and type(confirmation_pin['bytes']) == 'int' and 0 < confirmation_pin['bytes'] and confirmation_pin['bytes'] <= 1024 * 1024)
+    confirmation_path = _physical(ctx, epoch + '/sdk-tree-qualified.json')
+    confirmation_raw = ctx.read(confirmation_path)
+    _need(len(confirmation_raw) == confirmation_pin['bytes'])
+    confirmation = json.decode(confirmation_raw)
+    _need(confirmation.get('kind') == 'omux-retained-sdk-tree-qualification-confirmation-v1' and confirmation.get('receipt') == {'sha256': producer['sha256'], 'bytes': len(outer_raw)} and confirmation.get('epoch') == epoch and confirmation.get('profile') == outer['profile'])
+    evidence_path = _physical(ctx, epoch + '/test-evidence.json')
+    evidence_raw = ctx.read(evidence_path)
+    _need(0 < len(evidence_raw) and len(evidence_raw) <= 1024 * 1024)
+    evidence = json.decode(evidence_raw)
+    _need(evidence.get('targets') == targets and type(evidence.get('results')) == 'list' and [result.get('target') for result in evidence['results']] == targets)
+    paths = [str(receipt_path), str(outer_path), str(confirmation_path), str(evidence_path)]
+    for result in evidence['results']:
+        _need(result.get('state') == 'observed' and result.get('configuration') == configuration and type(result.get('files')) == 'list')
+        for member in result['files']:
+            if member.get('state') in ['missing', 'stale']:
+                _need(sorted(member.keys()) == ['bytes', 'source', 'state'] and member.get('source') in ['test.outputs_manifest/MANIFEST', 'test.outputs_manifest/ANNOTATIONS'] and type(member.get('bytes')) == 'int' and member['bytes'] == 0)
+                continue
+            _need(member.get('state') == 'copied' and member.get('source') in ['test.log', 'test.xml', 'test.outputs_manifest/MANIFEST', 'test.outputs_manifest/ANNOTATIONS'] and type(member.get('file')) == 'string' and len(member['file']) == 73 and member['file'].endswith('.evidence') and _sha(member['file'][:-9]) and _sha(member.get('sha256')))
+            paths.append(str(_physical(ctx, epoch + '/test-evidence/' + member['file'])))
+    for name, pin in sorted(inventory.items()):
+        _name(name)
+        _need(type(pin) == 'dict' and sorted(pin.keys()) == ['mode', 'sha256'] and pin['mode'] in ['100644', '100755', '120000'] and _sha(pin['sha256']))
+        file = ctx.path(selected['root'] + '/source/' + name)
+        _need(file.exists and not file.is_dir)
+        if pin['mode'] == '120000':
+            prefix = selected['root'] + '/source/'
+            target = str(file.realpath)
+            _need(target.startswith(prefix) and target[len(prefix):] in inventory and inventory[target[len(prefix):]]['mode'] in ['100644', '100755'])
+        else:
+            _physical(ctx, str(file))
+        paths.append(str(file))
+    hub = report.get('generated_hub')
+    _need(type(hub) == 'dict' and 0 < len(hub) and len(hub) <= 16 and all([name in hub for name in ['BUILD.bazel', 'defs.bzl', 'data.bzl']]))
+    for name, pin in sorted(hub.items()):
+        _name(name)
+        _need('/' not in name and type(pin) == 'dict' and sorted(pin.keys()) == ['bytes', 'sha256'] and _sha(pin['sha256']) and type(pin['bytes']) == 'int' and 0 < pin['bytes'] and pin['bytes'] <= 8 * 1024 * 1024)
+        paths.append(str(_physical(ctx, selected['root'] + '/hub/source/' + name)))
+    _need(8557 + 8 + len(hub) <= len(paths) and len(paths) <= 8557 + 12 + len(hub) and len({path: True for path in paths}) == len(paths))
+    aliases = []
+    rows = []
+    for index, path in enumerate(paths):
+        alias = 'input/' + str(index)
+        ctx.watch(ctx.path(path))
+        ctx.symlink(ctx.path(path), alias)
+        rows.append({'path': path, 'alias': alias})
+        aliases.append(alias)
+    ctx.file('source-inputs.json', json.encode({'kind': 'omux-native-siwc-catalog-tree-owned-history-input-v1', 'selection': selected, 'inputs': rows}) + '\n', executable = False)
+    aliases.append('source-inputs.json')
+    ctx.file('BUILD.bazel', '\n'.join(['package(default_visibility = ["//visibility:public"])', 'exports_files({})'.format(repr(aliases)), 'filegroup(name = "inputs", srcs = {})'.format(repr(aliases)), '']), executable = False)
+
 def _implementation(ctx):
     raw = ctx.read(ctx.path(ctx.attr.selection))
     _need(len(raw) <= 16384)
     config = json.decode(raw)
     _need(type(config) == "dict" and sorted(config.keys()) == ["catalog_controls_sha256", "kind", "schema_version", "source", "status"])
+    if config['kind'] == 'omux-native-siwc-catalog-tree-owned-history-selection-v1':
+        ctx.watch(ctx.path(ctx.attr.selection))
+        _tree(ctx, config)
+        return
     if config["kind"] in ("omux-native-siwc-catalog-retained-delivery-selection-v1", "omux-native-siwc-catalog-owned-history-retained-selection-v3"):
         ctx.watch(ctx.path(ctx.attr.selection))
         _retained(ctx, config)

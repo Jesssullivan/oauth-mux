@@ -403,10 +403,12 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
                 "sealed original native process attribution changed")
 
 
-def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_reader=None):
+def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_reader=None, ordinary_first=False):
     global PHASE
     require(os.environ.get("OMUX_ISOLATED_VAULT_PROOF") == "private-bus-private-xdg",
             "disposable genuine vault context required")
+    require(type(ordinary_first) is bool and (not ordinary_first or live is None),
+            "ordinary-first cannot fabricate live history")
     PHASE = "runtime-verification"
     require(runtime_reader is None or (live is None and callable(runtime_reader)),
             "ordinary runtime reader conflicts with live fixture")
@@ -526,7 +528,18 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         # the rollout. The real export command hydrates history and falls back
         # to thread/read(includeTurns=true), which persists the original thread.
         # Do not seed a SessionMeta or treat empty-export Markdown as success.
-        if live is None:
+        if ordinary_first:
+            # The V3 persistence barrier must materialize genuine native SQL
+            # AND complete empty rollout before any export input is submitted.
+            PHASE = "native-rename"
+            terminal.send("/rename " + FIXTURE_NAME + "\r")
+            before = wait_metadata(codex_home, thread, terminal)
+            require(before[0][4] == "paginated", "ordinary-first history mode differs")
+            terminal.send("/export omux-native-resume-fixture.md\r")
+            exported = wait_metadata(codex_home, thread, terminal)
+            require(exported == before and process_witness(first_pid) == first_witness,
+                    "ordinary-first export submission changed original history or process")
+        elif live is None:
             terminal.send("/export omux-native-resume-fixture.md\r")
             wait_metadata(codex_home, thread, terminal, expected_name=None)
         else:
@@ -535,7 +548,9 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         require(terminal.process.pid == first_pid and status(endpoint, thread) == first,
                 "native history materialization changed process or attachment authority")
         PHASE = "native-rename"
-        if live is None:
+        if ordinary_first:
+            require(metadata(codex_home, thread) == before, "ordinary-first metadata changed")
+        elif live is None:
             terminal.send("/rename " + FIXTURE_NAME + "\r")
             before = wait_metadata(codex_home, thread, terminal)
         else:
@@ -667,7 +682,7 @@ def private_child_environment(root, child_environment=None):
         environment.update(child_environment)
     return environment
 
-def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=(), original_deadline=None, child_environment=None):
+def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=(), original_deadline=None, child_environment=None, ordinary_first=False):
     if len(sys.argv) >= 5 and sys.argv[1] == "--pty-exec":
         binary, cwd = (Path(value).resolve(strict=True) for value in sys.argv[2:4])
         # The PTY needs a separate controlling-terminal session. Bind its
@@ -702,7 +717,7 @@ def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=(), original_d
         command.extend(["--no-alt-screen", "--strict-config"])
         os.execve(str(binary), command, os.environ)
     if len(sys.argv) == 7 and sys.argv[1] == "--inside":
-        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]), runtime_reader=runtime_reader)
+        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]), runtime_reader=runtime_reader, ordinary_first=ordinary_first)
         return 0
     require(len(sys.argv) == 7, "declared Omux/native archives, receipt and vault tools required")
     bundle, candidate, receipt, session, bus, keyring = (Path(value).resolve(strict=True) for value in sys.argv[1:])
@@ -744,3 +759,4 @@ if __name__ == "__main__":
     except Exception:
         print("installed native terminal proof failed at " + PHASE, file=sys.stderr)
         sys.exit(1)
+

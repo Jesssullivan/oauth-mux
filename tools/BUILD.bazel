@@ -1,8 +1,9 @@
+load(":codex_owned_history_cli_targets.bzl", "codex_owned_history_cli_targets")
 load(":codex_native_siwc_catalog_content_source_targets.bzl", "codex_native_siwc_catalog_content_source_targets", "catalog_content_sources")
 load(":codex_retained_sdk_tree_rules.bzl", "retained_sdk_tree")
 load(":codex_retained_sdk_tree_targets.bzl", "retained_sdk_tree_targets")
 load(":codex_native_n10_content_inputs.bzl", "codex_native_n10_content_inputs")
-load(":codex_native_siwc_catalog_models_targets.bzl", "codex_native_siwc_catalog_models_targets")
+load(":codex_native_siwc_catalog_models_targets.bzl", "codex_native_siwc_catalog_models_targets", "catalog_tree_model_sources", "catalog_tree_model_data")
 load(":codex_native_siwc_catalog_source_targets.bzl", "codex_native_siwc_catalog_source_targets")
 load(":codex_native_acquisition_runtime_targets.bzl", "native_acquisition_runtime_targets")
 load(":codex_native_acquisition_targets.bzl", "native_acquisition_input_targets", "native_acquisition_source_closure")
@@ -1245,7 +1246,7 @@ _CODEX_DEVICE_COMPONENT_GUARD_SOURCES = ["guard_codex_device_component_profile.p
     "//delivery:codex_device_acquisition_component.py"]
 exports_files(["guard_codex_live_profile.py","guard_owner_runtime_input.py","codex_owner_runtime_input.py"])
 
-_RESIDENT_GUARD_SOURCES = ['guard_native_sdk_tree_reserved.py','codex_owner_runtime_seed.py','guard_native_siwc_content_delivery.py','guard_native_siwc_catalog_content_source_reserved.py','guard_native_siwc_catalog_models_reserved.py','guard_native_siwc_catalog_source_reserved.py','guard_native_file_writer_models_reserved.py','guard_native_file_writer_source_reserved.py','guard_current_home_manager_artifact_reserved.py','guard_home_manager_bundle_reserved.py','guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
+_RESIDENT_GUARD_SOURCES = ['guard_native_owned_history_reserved.py','guard_native_owned_history_cli_reserved.py','guard_native_owned_history_ordinary_reserved.py','guard_native_sdk_tree_reserved.py','codex_owner_runtime_seed.py','guard_native_siwc_content_delivery.py','guard_native_siwc_catalog_content_source_reserved.py','guard_native_siwc_catalog_models_reserved.py','guard_native_siwc_catalog_source_reserved.py','guard_native_file_writer_models_reserved.py','guard_native_file_writer_source_reserved.py','guard_current_home_manager_artifact_reserved.py','guard_home_manager_bundle_reserved.py','guard_native_acquisition_inputs_reserved.py','guard_native_peer_qualification_reserved.py','guard_resident_native_source_acquisition_source_reserved.py','guard_resident_native_source_context_refresh_source_reserved.py','guard_resident_native_source_context_metadata_reserved.py','guard_resident_native_source_context_source_reserved.py','guard_native_metadata_sdk_reserved.py','guard_resident_custody_runtime_reserved.py','guard_resident_owner_status_persistence_binding_reserved.py','guard_resident_owner_status_persistence_source_reserved.py','guard_resident_owner_status_binding_reserved.py','guard_resident_owner_status_source_reserved.py','guard_resident_models_reserved.py','guard_query_registration_reserved.py','guard_default_archive_reserved.py','guard_native_seed_plan_reserved.py','guard_resident_setup_dispatch.py','guard_resident_enrollment_profile.py','guard_resident_owned_prepare.py',
     'guard_resident_vault_profile.py',':resident_owned_update_sources','guard_resident_observation.py','guard_resident_continuity_profile.py',
     'guard_resident_namespace_profile.py','guard_resident_sources_profile.py','guard_resident_dispatch.py','guard_codex_live_profile.py',
     'guard_codex_fresh_live_profile.py',':codex_fresh_live_support','//delivery:pack.py','//delivery:portable.py'] + _NATIVE_ACQUISITION_GUARD_SOURCES + _CODEX_DEVICE_COMPONENT_GUARD_SOURCES
@@ -3201,6 +3202,16 @@ python_test(name="home_manager_linux_realization_inputs_producer", main="//:nix/
 retained_sdk_tree_targets(
     carrier_sources = _NATIVE_SDK_CARRIER_SOURCES,
     source_sources = _NATIVE_CONTENT_SOURCE_SOURCES,
+    guard_sources = _RESIDENT_GUARD_SOURCES + _YOGA_GUARD_SOURCES + _CODEX_SDK_SOURCES,
+)
+
+exports_files(["BUILD.bazel"])
+codex_owned_history_cli_targets(
+    model_sources = catalog_tree_model_sources(
+        _NATIVE_SOURCE_ACQUISITION_SOURCES,
+        _OWNER_STATUS_PERSISTENCE_METADATA_SOURCES + _CODEX_SDK_SOURCES + _CODEX_PROTOCOL_HISTORY_SOURCES + ["codex_native_carrier_metadata.py", "codex_native_sdk_carrier.py"],
+        ["codex_original_sdk_inputs.py"]),
+    model_data = catalog_tree_model_data(),
     guard_sources = _RESIDENT_GUARD_SOURCES + _YOGA_GUARD_SOURCES + _CODEX_SDK_SOURCES,
 )
 

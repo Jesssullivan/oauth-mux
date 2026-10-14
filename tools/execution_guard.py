@@ -334,7 +334,7 @@ class PidsObservation:
 def workload_pids_observation(settings, profile):
     if profile in ('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved'):
         return PidsObservation(480)
-    if profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved'):
+    if profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved','native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved'):
         return PidsObservation(480)
     if profile in ('home-manager-reconstruction-reserved','home-manager-evaluation-reserved','home-manager-bundle-models-reserved','home-manager-realization-inputs-reserved','home-manager-generation-catalogue-reserved'):
         return PidsObservation(480)
@@ -933,6 +933,12 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         import guard_native_siwc_catalog_content_source_reserved as seed_reserved
     elif profile == 'native-siwc-catalog-models-reserved':
         import guard_native_siwc_catalog_models_reserved as seed_reserved
+    elif profile == 'native-retained-sdk-tree-models-reserved':
+        import guard_native_owned_history_reserved as seed_reserved
+    elif profile == 'native-owned-history-cli-reserved':
+        import guard_native_owned_history_cli_reserved as seed_reserved
+    elif profile == 'native-owned-history-ordinary-reserved':
+        import guard_native_owned_history_ordinary_reserved as seed_reserved
     elif profile in ('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved'):
         import guard_native_sdk_tree_reserved as seed_reserved
     elif profile in ('native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-sdk-carrier-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-sdk-carrier-seal-reserved','native-sdk-carrier-metadata-reserved','native-sdk-carrier-sdk-export-reserved','native-sdk-carrier-plan-reserved','native-sdk-carrier-query-reserved','native-sdk-carrier-compilation-reserved','native-sdk-carrier-package-reserved','native-sdk-carrier-route-models-reserved','native-acquisition-package-models-reserved'):
@@ -970,7 +976,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         expected = staging.proof_properties(PROPERTIES)
     if seed_proof:
         expected = seed_reserved.properties(PROPERTIES)
-        if profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved'):
+        if profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved','native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved'):
             seed_reserved.verify_runtime(actual.get('RuntimeMaxUSec'),runtime_seconds)
     for key, value in {**expected, **(isolation or SANDBOX)}.items():
         if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'yoga-install-inputs','yoga-sealed-workspace-stage', 'codex-native') or
@@ -980,7 +986,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
                 staging.effective_runtime(actual.get(key),runtime_seconds)
             elif profile in ('yoga-toolbar-reserved','yoga-toolbar-reserved-models','yoga-sealed-workspace-models-reserved','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved'):
                 seed_reserved.verify_runtime(actual.get(key),runtime_seconds)
-            elif profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved'):
+            elif profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved','native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved'):
                 seed_reserved.verify_runtime(actual.get(key),runtime_seconds)
             elif profile == 'codex-native' and native_phase2 is True:
                 from codex_native_profile import phase2_effective_runtime
@@ -1970,6 +1976,27 @@ RETAINED_OUTPUT_VECTORS[('test', '//tools:codex_native_siwc_catalog_models_test'
     '//tools:codex_native_siwc_catalog_models_producer')] = (
     '//tools:codex_native_siwc_catalog_models_producer',)
 
+# Distinct complete tree-SOURCE contract; retention is not authentication.
+RETAINED_OUTPUT_PRODUCTS['//tools:codex_native_siwc_catalog_tree_source_producer'] = (
+    'native-siwc-catalog-tree-source/source-receipt.json',)
+RETAINED_OUTPUT_VECTORS[('test', '//tools:codex_native_siwc_catalog_tree_source_test',
+    '//tools:codex_native_siwc_catalog_tree_source_producer')] = (
+    '//tools:codex_native_siwc_catalog_tree_source_producer',)
+RETAINED_OUTPUT_PRODUCTS['//tools:codex_native_siwc_catalog_tree_models_producer'] = (
+    'native-siwc-catalog-tree-source/source-receipt.json',
+    'native-siwc-catalog-models/models-receipt.json')
+RETAINED_OUTPUT_VECTORS[('test', '//tools:codex_native_siwc_catalog_tree_models_test',
+    '//tools:codex_native_siwc_catalog_tree_models_producer')] = (
+    '//tools:codex_native_siwc_catalog_tree_models_producer',)
+RETAINED_OUTPUT_PRODUCTS['//tools:codex_native_owned_history_cli_producer'] = (
+    'native-owned-history-cli/codex-original',
+    'native-owned-history-cli/runtime.tar.gz',
+    'native-owned-history-cli/runtime-manifest.json',
+    'native-owned-history-cli/runtime-receipt.json')
+RETAINED_OUTPUT_VECTORS[('test', '//tools:codex_native_owned_history_cli_test',
+    '//tools:codex_native_owned_history_cli_producer')] = (
+    '//tools:codex_native_owned_history_cli_producer',)
+
 RETAINED_OUTPUT_VECTORS.update({
     ('test', '//tools:guard_resident_owner_status_source_reserved_test',
      '//tools:codex_owner_status_source_test', '//tools:codex_owner_status_source_producer'):
@@ -2735,7 +2762,7 @@ def _main(argv, admission_resources, retirement_resources):
     parser.add_argument('--coordination-dir', type=Path)
     parser.add_argument('--toolbar-artifact-selection', type=Path)
     parser.add_argument('--toolbar-artifact-selection-sha256')
-    parser.add_argument('--profile', choices=('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved','native-siwc-catalog-models-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-source-reserved','native-file-writer-models-reserved','native-file-writer-source-reserved','home-manager-reconstruction-reserved','home-manager-evaluation-reserved','home-manager-bundle-models-reserved','home-manager-realization-inputs-reserved','home-manager-generation-catalogue-reserved','standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved','yoga-sealed-workspace-stage','yoga-sealed-workspace-models-reserved', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved', 'resident-owner-status-source-reserved', 'resident-owner-status-binding-reserved', 'resident-owner-status-persistence-source-reserved','resident-native-source-context-source-reserved','resident-native-source-context-refresh-source-reserved','resident-native-source-acquisition-source-reserved','native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-sdk-carrier-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-sdk-carrier-seal-reserved','native-sdk-carrier-metadata-reserved','native-sdk-carrier-sdk-export-reserved','native-sdk-carrier-plan-reserved','native-sdk-carrier-query-reserved','native-sdk-carrier-compilation-reserved','native-sdk-carrier-package-reserved','native-sdk-carrier-route-models-reserved','native-acquisition-package-models-reserved','resident-native-source-context-metadata-reserved','current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved', 'current-home-manager-pair-reconstruction-reserved','native-peer-qualification-reserved', 'resident-owner-status-persistence-binding-reserved','native-metadata-sdk-models-reserved','native-query-descriptor-reserved','native-persistence-metadata-reserved','native-persistence-sdk-reserved','native-persistence-package-models-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved', 'yoga-installed-selection-reserved', 'yoga-installed-workspace-reserved', 'yoga-installed-models-reserved', 'yoga-toolbar-reserved', 'yoga-toolbar-reserved-models'), default='standard')
+    parser.add_argument('--profile', choices=('native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved','native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved','native-siwc-catalog-models-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-source-reserved','native-file-writer-models-reserved','native-file-writer-source-reserved','home-manager-reconstruction-reserved','home-manager-evaluation-reserved','home-manager-bundle-models-reserved','home-manager-realization-inputs-reserved','home-manager-generation-catalogue-reserved','standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved','yoga-sealed-workspace-stage','yoga-sealed-workspace-models-reserved', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved', 'resident-owner-status-source-reserved', 'resident-owner-status-binding-reserved', 'resident-owner-status-persistence-source-reserved','resident-native-source-context-source-reserved','resident-native-source-context-refresh-source-reserved','resident-native-source-acquisition-source-reserved','native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-sdk-carrier-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-sdk-carrier-seal-reserved','native-sdk-carrier-metadata-reserved','native-sdk-carrier-sdk-export-reserved','native-sdk-carrier-plan-reserved','native-sdk-carrier-query-reserved','native-sdk-carrier-compilation-reserved','native-sdk-carrier-package-reserved','native-sdk-carrier-route-models-reserved','native-acquisition-package-models-reserved','resident-native-source-context-metadata-reserved','current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved', 'current-home-manager-pair-reconstruction-reserved','native-peer-qualification-reserved', 'resident-owner-status-persistence-binding-reserved','native-metadata-sdk-models-reserved','native-query-descriptor-reserved','native-persistence-metadata-reserved','native-persistence-sdk-reserved','native-persistence-package-models-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved', 'yoga-installed-selection-reserved', 'yoga-installed-workspace-reserved', 'yoga-installed-models-reserved', 'yoga-toolbar-reserved', 'yoga-toolbar-reserved-models'), default='standard')
     parser.add_argument('--yoga-installed-producer-selection-sha256')
     parser.add_argument('--native-mode')
     parser.add_argument('--native-source-root', type=Path)
@@ -2856,6 +2883,12 @@ def _main(argv, admission_resources, retirement_resources):
         import guard_native_siwc_catalog_content_source_reserved as seed_reserved
     elif args.profile == 'native-siwc-catalog-models-reserved':
         import guard_native_siwc_catalog_models_reserved as seed_reserved
+    elif args.profile == 'native-retained-sdk-tree-models-reserved':
+        import guard_native_owned_history_reserved as seed_reserved
+    elif args.profile == 'native-owned-history-cli-reserved':
+        import guard_native_owned_history_cli_reserved as seed_reserved
+    elif args.profile == 'native-owned-history-ordinary-reserved':
+        import guard_native_owned_history_ordinary_reserved as seed_reserved
     elif args.profile in ('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved'):
         import guard_native_sdk_tree_reserved as seed_reserved
     elif args.profile in ('native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-sdk-carrier-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-sdk-carrier-seal-reserved','native-sdk-carrier-metadata-reserved','native-sdk-carrier-sdk-export-reserved','native-sdk-carrier-plan-reserved','native-sdk-carrier-query-reserved','native-sdk-carrier-compilation-reserved','native-sdk-carrier-package-reserved','native-sdk-carrier-route-models-reserved','native-acquisition-package-models-reserved'):
@@ -3386,7 +3419,7 @@ def _main(argv, admission_resources, retirement_resources):
             command = resident_dispatch.command(bazel_command,bazel,run,arguments,resident_input,
                 source_commit=args.source_commit,source_dirty=args.source_dirty,
                 repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
-        elif args.profile in ('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved'):
+        elif args.profile in ('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved','native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved'):
             # This profile binds the actual graph captured inside owned cleanup.
             command = []
         elif seed_selected:
@@ -3597,7 +3630,7 @@ def _main(argv, admission_resources, retirement_resources):
                 command = resident_enrollment_command(bazel,run,arguments,resident_input.inner,
                     source_commit=args.source_commit,source_dirty=args.source_dirty,
                     repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source)
-            if args.profile in ('native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved'):
+            if args.profile in ('native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved','native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved'):
                 command = seed_reserved.command(bazel_command,bazel,run,arguments,args.profile,
                     delivery_entry_monotonic_ns,delivery_entry_deadline_ns,graph_sha256=graph_sha256,
                     repository_cache=args.repository_cache,nixpkgs_source=args.nixpkgs_source,
@@ -3842,7 +3875,7 @@ def _main(argv, admission_resources, retirement_resources):
                     if args.profile in ('native-sdk-tree-producer-reserved','native-retained-sdk-tree-source-reserved') else
                     yoga_support.reserved_runtime if yoga_toolbar_reserved else
                     reservation_helper.runtime_seconds(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)
-                    if args.profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved') else
+                    if args.profile in ('native-file-writer-source-reserved','native-file-writer-models-reserved','native-siwc-catalog-source-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-models-reserved','native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved') else
                     int(reservation_helper.remaining(delivery_entry_monotonic_ns,delivery_entry_deadline_ns)))
                 if delivery_runtime_seconds < 1: raise ValueError('native-seed-reservation-expired')
                 settings.update(MemoryMax=str(reservation_helper.MEMORY),TasksMax=str(reservation_helper.TASKS),
@@ -4710,6 +4743,12 @@ def _main(argv, admission_resources, retirement_resources):
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
                 elif args.profile == 'native-siwc-catalog-models-reserved':
                     receipt['native_siwc_catalog_models_reservation'] = seed_reserved.projection(
+                        delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
+                elif args.profile in ('native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved','native-owned-history-ordinary-reserved'):
+                    key=('native_retained_sdk_tree_models_reservation' if args.profile == 'native-retained-sdk-tree-models-reserved' else
+                        'native_owned_history_cli_reservation' if args.profile == 'native-owned-history-cli-reserved' else
+                        'native_owned_history_ordinary_reservation')
+                    receipt[key] = seed_reserved.projection(
                         delivery_entry_monotonic_ns,delivery_entry_deadline_ns,seed_verified_after,seed_after)
                 elif args.profile in ('native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-sdk-carrier-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-sdk-carrier-seal-reserved','native-sdk-carrier-metadata-reserved','native-sdk-carrier-sdk-export-reserved','native-sdk-carrier-plan-reserved','native-sdk-carrier-query-reserved','native-sdk-carrier-compilation-reserved','native-sdk-carrier-package-reserved','native-sdk-carrier-route-models-reserved','native-acquisition-package-models-reserved'):
                     receipt['native_acquisition_inputs_reservation'] = seed_reserved.projection(

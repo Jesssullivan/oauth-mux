@@ -2777,6 +2777,76 @@ class RunRetirementFilesystemModels(unittest.TestCase):
         self.assertEqual(report['retained_output_contract'],[])
         self.assertFalse(self.output.exists())
 
+
+    def test_exact_tree_source_pair_retains_original_output_but_bare_or_failed_refuses(self):
+        label='//tools:codex_native_siwc_catalog_tree_source_producer'
+        self.producer(label)
+        self.receipt['targets']=['//tools:codex_native_siwc_catalog_tree_source_test',label];self.save_receipt()
+        report=self.retire()
+        self.assertEqual(report['retained_output_contract'],[label]);self.assertTrue(self.output.exists())
+        self.assertNotIn(('test',label),self.guard.RETAINED_OUTPUT_VECTORS)
+
+    def test_tree_models_retains_only_one_source_family_and_complete_models_receipt(self):
+        label='//tools:codex_native_siwc_catalog_tree_models_producer'
+        self.producer(label)
+        self.receipt.update(profile='native-retained-sdk-tree-models-reserved',targets=[
+            '//tools:codex_native_siwc_catalog_tree_models_test',label]);self.save_receipt()
+        report=self.retire();self.assertEqual(report['retained_output_contract'],[label])
+        self.assertTrue(self.output.exists())
+
+    def test_cli_exact_pair_keeps_all_four_nonempty_products_and_never_singleton_retention(self):
+        label='//tools:codex_native_owned_history_cli_producer'
+        self.producer(label)
+        self.receipt.update(profile='native-owned-history-cli-reserved',targets=[
+            '//tools:codex_native_owned_history_cli_test',label]);self.save_receipt()
+        report=self.retire();self.assertEqual(report['retained_output_contract'],[label])
+        self.assertTrue(self.output.exists());self.assertNotIn(('test',label),self.guard.RETAINED_OUTPUT_VECTORS)
+
+    def test_cli_partial_products_retire_instead_of_promoting_metadata(self):
+        label='//tools:codex_native_owned_history_cli_producer'
+        directory=self.producer(label)
+        self.receipt.update(profile='native-owned-history-cli-reserved',targets=[
+            '//tools:codex_native_owned_history_cli_test',label]);self.save_receipt()
+        (directory/'native-owned-history-cli/runtime.tar.gz').unlink()
+        report=self.retire();self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+
+    def test_new_models_cli_profiles_have_fixed_480_pid_observation(self):
+        for profile in ('native-retained-sdk-tree-models-reserved','native-owned-history-cli-reserved'):
+            observation=self.guard.workload_pids_observation({},profile)
+            self.assertEqual(observation.expected_limit,480)
+
+    def test_bare_tree_source_has_no_successful_retention_contract(self):
+        label='//tools:codex_native_siwc_catalog_tree_source_producer';self.producer(label)
+        report=self.retire();self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_failed_tree_source_pair_does_not_keep_apparent_source_receipt(self):
+        label='//tools:codex_native_siwc_catalog_tree_source_producer';self.producer(label)
+        self.receipt.update(targets=['//tools:codex_native_siwc_catalog_tree_source_test',label],exit=3,workload_exit=3);self.save_receipt()
+        report=self.retire();self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+    def test_tree_models_mixed_or_incomplete_source_family_refuses_retention(self):
+        label='//tools:codex_native_siwc_catalog_models_producer';directory=self.producer(label)
+        extra=directory/'native-siwc-catalog-tree-source/source-receipt.json'
+        extra.parent.mkdir();extra.write_bytes(b'public mixed source receipt')
+        self.receipt.update(targets=['//tools:codex_native_siwc_catalog_models_test',label]);self.save_receipt()
+        report=self.retire();self.assertEqual(report['retained_output_contract'],[])
+        self.assertFalse(self.output.exists())
+
+
+    def test_cli_silent_streams_stay_in_retained_tree_without_fake_padding(self):
+        label='//tools:codex_native_owned_history_cli_producer';directory=self.producer(label)
+        for name in ('cli-stdout.log','cli-stderr.log'):
+            (directory/'native-owned-history-cli'/name).write_bytes(b'')
+        self.receipt.update(profile='native-owned-history-cli-reserved',targets=[
+            '//tools:codex_native_owned_history_cli_test',label]);self.save_receipt()
+        report=self.retire();self.assertEqual(report['retained_output_contract'],[label])
+        for name in ('cli-stdout.log','cli-stderr.log'):
+            self.assertEqual((directory/'native-owned-history-cli'/name).read_bytes(),b'')
+
     def test_depth_bound_refuses_before_any_tree_removal(self):
         directory=self.output
         for _ in range(self.guard.RETIREMENT_DEPTH):

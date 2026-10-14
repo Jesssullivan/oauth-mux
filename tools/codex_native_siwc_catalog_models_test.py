@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest.mock import Mock,patch
 import codex_native_siwc_catalog_models as model
+from codex_native_siwc_catalog_tree_model_inputs_test import TreeModelInputsTests
 
 
 class CatalogDriverTests(unittest.TestCase):

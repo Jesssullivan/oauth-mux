@@ -387,3 +387,11 @@ native_n10_content(name = "omux_native_n10_content_inputs",
 # Distinct cold complete Linux HM input-content/registration family; no realization.
 hm_realization_inputs = use_repo_rule("//tools:home_manager_realization_inputs.bzl", "home_manager_realization_inputs_repository")
 hm_realization_inputs(name = "omux_hm_realization_inputs")
+
+# Distinct history13 package route; no provisional artifact in the cold selector.
+owned_history_runtime_inputs = use_repo_rule("//tools:codex_owned_history_runtime_inputs.bzl", "owned_history_runtime_inputs")
+owned_history_runtime_inputs(
+    name = "omux_owned_history_ordinary_runtime",
+    selection = "//integrations/codex-upstream/native-owned-history:runtime-selection.json",
+    selection_sha256 = "d2fa3e9d220b7a499114f5035dec27747dc4d39faa4fbbdfd764d822c3835290",
+)

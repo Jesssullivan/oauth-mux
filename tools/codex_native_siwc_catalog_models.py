@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import codex_native_siwc_catalog_source as catalog
 import codex_native_siwc_catalog_content_source as content_catalog
 import codex_native_owned_history_source as history
+import codex_native_siwc_catalog_tree_model_inputs as tree_source
 import codex_native_siwc_content_delivery_inputs as delivery
 import codex_native_file_writer_models as shared
 import codex_native_profile as native
@@ -27,8 +28,11 @@ TARGETS = ('//codex-rs/core:core-unit-tests', '//codex-rs/tui:tui-unit-tests',
 ROLES = ('core', 'tui', 'app-server', 'models-manager')
 EVIDENCE_NAMES = tuple(role + '-test.' + extension for role in ROLES for extension in ('log','xml')) + ('native-stdout.log','native-stderr.log')
 DELIVERY_STATUSES = (delivery.STATUS, delivery.HISTORY_STATUS)
-CONTENT_FAMILIES = (content_catalog, history)
+CONTENT_FAMILIES = (content_catalog, history, tree_source)
+HISTORY_FAMILIES = (history, tree_source)
 SOURCE_ROUTES = {
+    tree_source.SELECTED_STATUS: (tree_source, tree_source.guard,
+        'codex_native_siwc_catalog_tree_source_producer', 'native-siwc-catalog-tree-source'),
     delivery.HISTORY_STATUS: (history, content_source_guard,
         'codex_native_siwc_catalog_content_source_producer', 'native-siwc-catalog-content-source'),
     'qualified-catalog-source-hub-uncompiled': (catalog, source_guard,
@@ -47,6 +51,8 @@ SEMANTIC_FIELDS = ('kind','status','commit','qualified_parent','native_controls_
 
 def selection(raw):
     value = family.decode(raw)
+    if type(value) is dict and value.get('kind') == tree_source.SELECTION_KIND:
+        return tree_source.selection(value)
     if type(value) is dict and value.get('kind') == delivery.HISTORY_SELECTION_KIND:
         return delivery.history_selection(value)
     if type(value) is dict and value.get('kind') == delivery.SELECTION_KIND:
@@ -127,6 +133,21 @@ class SelectedSource(family.binding.SealedSource):
         if first is not None: raise first
 
 
+class AfterModelsOwner:
+    """Private maintained-source extension; no argv/JSON/caller proof surface.
+
+    The CLI author subclasses this empty owner, opens no descriptors before
+    registration, and supplies prepare/full/short/close plus actual image work.
+    Only actual current model success invokes that work. Nothing returned by
+    this hook changes the model report's false compiler/image flags.
+    """
+    def prepare(self,entry,until,cutoff):raise NotImplementedError
+    def full(self):raise NotImplementedError
+    def short(self):raise NotImplementedError
+    def close(self):raise NotImplementedError
+    def __call__(self,*owned):raise NotImplementedError
+
+
 class ExtraOwners:
     """Selected public proof and evidence stay owned through final SDK/SOURCE IO."""
     def __init__(self):
@@ -137,6 +158,27 @@ class ExtraOwners:
         self.output_parent = self.output_anchor = self.streams = None
         self.stream_bytes = None
         self.source_outer = None
+        self.after_models = None
+
+    def register_after_models(self,owner,entry,until,cutoff):
+        source.require(self.after_models is None and isinstance(owner,AfterModelsOwner) and callable(owner))
+        # Store the empty owner BEFORE context validation or prepare can fail.
+        self.after_models = owner
+        source.require((entry,until,cutoff) == family.reuse_admission(
+            (entry,until,cutoff,source.encoded(family.producer_context()))))
+        owner.prepare(entry,until,cutoff)
+
+    def after_actual_models(self,published,sdk,report,retained,inputs,entry,until,cutoff,model_pin):
+        if self.after_models is None:return
+        source.require(self.source_family is tree_source and type(sdk) is tree_source.reader.HeldRetainedSdkTree
+            and family.producer_context() == report['producer_context'])
+        tree_source.admit_sdk(sdk,report)
+        inputs.check_all();retained.full();self.full();published.fence();sdk.fence();published.terminal()
+        source.require(source.DEADLINE == cutoff and family.query.DEADLINE == cutoff)
+        source.tick()
+        self.after_models(self,published,sdk,report,retained,inputs,entry,until,cutoff,model_pin)
+        # Original source/SDK qualification remains live after image work.
+        inputs.check_all();retained.fence();self.short();sdk.fence();published.fence();source.tick()
 
     def retain(self, owner):
         original = self.source_family.retain_controls(owner)
@@ -159,7 +201,9 @@ class ExtraOwners:
         # The main owner already bounded/held this exact repo mapping.
         rows = [row.split(',') for row in self.mapping_raw.decode().splitlines()]
         source.require(all(len(row) == 3 for row in rows))
-        if self.selected['status'] in DELIVERY_STATUSES:
+        if self.source_family is tree_source:
+            self.inputs = self.stack.enter_context(tree_source.Inputs(runfiles,rows))
+        elif self.selected['status'] in DELIVERY_STATUSES:
             self.inputs = self.stack.enter_context((delivery.HistoryRetainedInputs if self.source_family is history else delivery.RetainedInputs)(runfiles,rows))
         elif self.source_family in CONTENT_FAMILIES:
             self.inputs = self.stack.enter_context(content_catalog.intake.ModelProofInputs(runfiles, rows))
@@ -168,21 +212,25 @@ class ExtraOwners:
         else:
             self.inputs = self.stack.enter_context(family.Inputs(runfiles,rows,_repository=REPOSITORY,_kind=INPUT_KIND))
         source.require(self.inputs.selection == self.row)
-        self.source_outer, required = (delivery.guardian(self.row,self.inputs) if self.selected['status'] in DELIVERY_STATUSES
+        self.source_outer, required = (tree_source.guardian(self.row,self.inputs) if self.source_family is tree_source else delivery.guardian(self.row,self.inputs) if self.selected['status'] in DELIVERY_STATUSES
             else family.guardian(self.row,self.inputs,_guard=self.source_guard))
         old_report = self.inputs.read_json(Path(self.row['root'])/'source-receipt.json',self.row['receipt_sha256'],source.DEADLINE)
         expected_status = ('verified-siwc-catalog-source-uncompiled' if self.source_family is catalog
             else self.source_family.STATUS)
         source.require(old_report['kind'] == self.source_family.KIND and old_report['status'] == expected_status
             and old_report['inventory_sha256'] == self.row['inventory_sha256']
-            and len(old_report['patch_sha256']) == (13 if self.source_family is history else 12)
+            and len(old_report['patch_sha256']) == (13 if self.source_family in HISTORY_FAMILIES else 12)
             and all(old_report[name] is False for name in catalog.previous.FALSE_FLAGS)
             and all(old_report[field] == report[field] for field in SEMANTIC_FIELDS))
-        if self.source_family is history:
+        if self.source_family in HISTORY_FAMILIES:
             source.require(all(old_report[field] == report[field] for field in (
                 'native_catalog_controls_sha256','native_owned_history_controls_sha256',
                 'native_owned_history_manifest_sha256','native_owned_history_preimages',
                 'native_owned_history_afterimages','native_owned_history_test_contract')))
+        if self.source_family is tree_source:
+            tree_source.same_sdk_recipe(old_report,report)
+        elif self.source_family in CONTENT_FAMILIES:
+            source.require(old_report['transported_sdk']['kind'] == content_catalog.transported.KIND)
         if self.source_family in CONTENT_FAMILIES:
             self.source_family.validate_report_method(old_report)
             self.source_family.validate_report_method(report)
@@ -215,14 +263,16 @@ class ExtraOwners:
         source.require(self.captured is not None and self.inputs is not None)
         self.captured.recheck()
         source.verify_written(self.captured.root/'hub/source',self.hub)
-        source.require((delivery.guardian(self.row,self.inputs) if self.selected['status'] in DELIVERY_STATUSES
+        source.require((tree_source.guardian(self.row,self.inputs) if self.source_family is tree_source else delivery.guardian(self.row,self.inputs) if self.selected['status'] in DELIVERY_STATUSES
             else family.guardian(self.row,self.inputs,_guard=self.source_guard))[0] == self.source_outer)
         self.inputs.check_all(); self.evidence.full()
+        if self.after_models is not None:self.after_models.full()
 
     def evidence_full(self):
         self.evidence.full()
         source.require(self.streams is not None and self.stream_bytes is not None)
         for name,raw in self.stream_bytes.items(): source.require(self.streams.bytes(name) == raw)
+        if self.after_models is not None:self.after_models.full()
         self.fence()
 
     def fence(self):
@@ -239,19 +289,33 @@ class ExtraOwners:
             named = source.directory(self.output_path)
             try: source.require(family.tenth.witness(os.fstat(named)) == self.output_anchor)
             finally: os.close(named)
+        if self.after_models is not None:self.after_models.short()
 
     def close(self):
         first = None
+        image,self.after_models = self.after_models,None
         for cleanup in ((self.streams.close if self.streams is not None else (lambda:None)),self.evidence.close,self.stack.close,
                 (lambda:os.close(self.output_parent)) if self.output_parent is not None else (lambda:None)):
             try: cleanup()
             except BaseException as error:
                 if first is None: first = error
         self.output_parent = None
+        if image is not None:
+            try:image.close()
+            except BaseException as error:
+                if first is None:first=error
         if first is not None: raise first
 
     def __enter__(self): return self
-    def __exit__(self,*unused): self.close()
+    def __exit__(self,kind,error,trace):
+        image_owned=self.after_models is not None
+        try:self.close()
+        except BaseException as cleanup:
+            if image_owned and error is not None:
+                prior=BaseException.__cause__.__get__(error)
+                raise BaseException.with_traceback(error,trace) from (cleanup if prior is None else prior)
+            raise
+        return False
 
 
 def native_plan(published,sdk,report,work,cutoff):
@@ -261,8 +325,12 @@ def native_plan(published,sdk,report,work,cutoff):
     if report['kind'] in (content_catalog.KIND, history.KIND):
         # Admit the concrete owner before SDK/publication/query IO or scratch
         # effects. The later full record/root join remains mandatory unchanged.
-        source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK)
-        (history if report['kind'] == history.KIND else content_catalog).validate_report_method(report)
+        if report.get('transported_sdk',{}).get('kind') == tree_source.reader.KIND:
+            source.require(report['kind'] == history.KIND)
+            tree_source.admit_sdk(sdk,report)
+        else:
+            source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK)
+            (history if report['kind'] == history.KIND else content_catalog).validate_report_method(report)
     sdk.check(); published.full()
     mapping = sdk.mapping()
     tools = family.query_tools.verify_repository(family.query.QUERY_REPOSITORY,cutoff)
@@ -271,7 +339,7 @@ def native_plan(published,sdk,report,work,cutoff):
     candidate = SimpleNamespace(source=published.path/'source',root=work,lease=SimpleNamespace(output_base=work/'output-base'))
     export_root = family.query.EXPORT_ROOT
     if report['kind'] in (content_catalog.KIND, history.KIND):
-        source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK
+        source.require(type(sdk) in (content_catalog.transported.HeldTransportedSDK,tree_source.reader.HeldRetainedSdkTree)
             and 'original_sdk' not in report and report['transported_sdk'] == sdk.record())
         export_root = sdk.sdk_root
     args = SimpleNamespace(native_export_root=export_root,native_mode='siwc-catalog-models')
@@ -311,6 +379,11 @@ def actual_directories(output_base):
 
 def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
     source.require(cutoff == source.DEADLINE and time.monotonic_ns()<entry+600*10**9)
+    if extra.source_family is tree_source:
+        tree_source.admit_sdk(sdk,report)
+    else:
+        source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK
+            if extra.source_family in CONTENT_FAMILIES else True)
     extra.admit(published,report)
     extra.hub = {name:('100644',raw) for name,raw in published.hub.items()}
     temporary = Path(os.environ['TEST_TMPDIR']).resolve(strict=True)
@@ -361,6 +434,10 @@ def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
             'producer_context':report['producer_context'],'original_entry_monotonic_ns':entry,
             'original_outer_deadline_monotonic_ns':until,'original_proof_deadline_monotonic_ns':entry+600*10**9,
             'selected_catalog_source':extra.row,'selected_source_outer_sha256':extra.row['producer']['sha256'],
+            **({'selected_tree_source':{'kind':tree_source.SELECTION_KIND,
+                'source_terminal_confirmation':extra.row['source_terminal_confirmation'],
+                'authority':'fresh-current-source-hub-plus-historical-source-terminal-facts',
+                'sdk_physical_authority_inherited':False}} if extra.source_family is tree_source else {}),
             **({'selected_source_delivery':{'kind':delivery.PUBLICATION_KIND,
                 'transport_receipt':extra.row['transport_receipt'],'source_phase_receipt':extra.row['source_phase_receipt'],
                 'authority':'current-retained-content-and-historical-source-phase-only',
@@ -388,7 +465,7 @@ def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
         pass
 
 
-def main():
+def main(*,_after_models=None):
     source.require(sys.argv == [sys.argv[0]])
     entry, until, cutoff = family.admission()
     source.DEADLINE = family.query.DEADLINE = cutoff
@@ -399,11 +476,16 @@ def main():
         with ExtraOwners() as extra:
             extra.selected = initial
             extra.source_family, extra.source_guard, unused_target, unused_leaf = SOURCE_ROUTES[initial['status']]
+            if _after_models is not None:
+                source.require(extra.source_family is tree_source)
+                extra.register_after_models(_after_models,entry,until,cutoff)
             def execute(*arguments):
                 source.require((arguments[5], arguments[6]) == (entry, until)
                     and family.producer_context() == context)
                 envelope.append((arguments[5],arguments[6]))
-                results.append(native_child(extra,*arguments))
+                result=native_child(extra,*arguments)
+                results.append(result)
+                if _after_models is not None:extra.after_actual_models(*arguments,result)
             source.require(family.producer_context() == context)
             extra.source_family.main(_child=execute,_extra=extra,_retainer=extra.retain,
                 _admitted=(entry, until, cutoff, source.encoded(context)))

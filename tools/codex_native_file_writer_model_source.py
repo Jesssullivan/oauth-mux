@@ -160,7 +160,8 @@ class Inputs:
             ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-model-input-v1'),
             ('omux_native_n10_content_inputs', 'omux-native-n10-content-input-v1'),
             ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-retained-delivery-input-v1'),
-            ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-owned-history-retained-input-v3')))
+            ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-owned-history-retained-input-v3'),
+            ('omux_native_siwc_catalog_model_inputs', 'omux-native-siwc-catalog-tree-owned-history-input-v1')))
         names = [row[2] for row in rows if len(row) == 3 and row[0] in ('', '_main') and row[1] == _repository]
         source.require(len(names) == 1 and re.fullmatch(r'[A-Za-z0-9_+.-]{1,256}', names[0]) is not None)
         self.stack, self.held = ExitStack(), {}

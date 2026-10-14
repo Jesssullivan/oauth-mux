@@ -238,7 +238,7 @@ def _lease(value, context):
     family.protocol.path(value['checkout']); family.protocol.path(value['output_base'])
 
 
-def _command(value, context, *, delivery=False, timeout=None, request_pin=None):
+def _command(value, context, *, delivery=False, timeout=None, request_pin=None, _source_targets=None):
     source.require(type(value) is list and 0 < len(value) <= 256
         and all(type(part) is str and 0 < len(part) <= 16384 and '\x00' not in part for part in value))
     # Only interpreted option families are constrained; unrelated canonical
@@ -253,7 +253,10 @@ def _command(value, context, *, delivery=False, timeout=None, request_pin=None):
     source.require([part for part in value if part.startswith(('--nocache_test_results',
         '--cache_test_results'))] == ['--nocache_test_results'])
     source.require([part for part in value if part.startswith('--repo_contents_cache')] == ['--repo_contents_cache='])
-    targets = [DELIVERY_TARGET] if delivery else guard.ARGUMENTS[1:]
+    source.require(_source_targets is None or (not delivery and type(_source_targets) is tuple
+        and _source_targets == ('//tools:codex_native_siwc_catalog_tree_source_test',
+            '//tools:codex_native_siwc_catalog_tree_source_producer')))
+    targets = list(_source_targets) if _source_targets is not None else ([DELIVERY_TARGET] if delivery else guard.ARGUMENTS[1:])
     source.require(value[-len(targets):] == targets and value.count('test') == 1
         and '--repository_disable_download' in value and '--repo_contents_cache=' in value
         and not any(part.startswith(('--test_filter','--test_arg')) for part in value))

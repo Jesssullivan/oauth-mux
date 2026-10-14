@@ -1,3 +1,4 @@
+load(":owned_history_ordinary_targets.bzl", "owned_history_ordinary_targets")
 load("//tools:rules.bzl", "python_binary", "python_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load(":rules.bzl", "channel_archives", "native_resolution", "portable_launcher_template", "release_archive")
@@ -1725,3 +1726,5 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+
+owned_history_ordinary_targets()
