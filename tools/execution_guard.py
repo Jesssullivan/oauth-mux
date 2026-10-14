@@ -1627,6 +1627,8 @@ class OrdinaryCheckLease(CacheLease):
 # declare its exact producer vector and leaves here before producing its inputs.
 TOOLBAR_PREP_LABEL = '//delivery:yoga_public_artifact_prepare_producer'
 TOOLBAR_PREP_VARIABLE = 'OMUX_YOGA_PUBLIC_PREP_'
+TOOLBAR_RECEIVE_LABEL = '//delivery:yoga_public_artifact_receive_qualification'
+TOOLBAR_RECEIVE_VARIABLE = 'OMUX_YOGA_PUBLIC_RECEIVE_'
 TOOLBAR_PREP_INVENTORY_SHA256 = '1c1d555f3124479d30972c05ce025f6d0f008dffb25698e085524421e16ac931'
 
 
@@ -1641,14 +1643,14 @@ def toolbar_prepare_selected(profile, manager, arguments, reuse=False, dirty='fa
 
 
 def toolbar_prepare_action_jobs(profile, arguments, *, source_dirty=None):
-    """Two fixed standard vectors serialize actions; all others stay at two.
+    """Three fixed standard vectors serialize actions; all others stay at two.
 
     Scheduling grants no admission. Existing public-preparer admission stays
     unchanged; the retained ordinary-native pair selects one only with explicit
     clean provenance. All input/ownership checks remain with their callers.
     """
     return 1 if profile == 'standard' and (
-        arguments == ['test', TOOLBAR_PREP_LABEL]
+        arguments in (['test', TOOLBAR_PREP_LABEL], ['test', TOOLBAR_RECEIVE_LABEL])
         or source_dirty == 'false' and arguments == ['test',
             '//tools:codex_owner_runtime_input_qualification',
             '//delivery:installed_retained_ordinary_native_tui_test']) else 2
@@ -1667,6 +1669,7 @@ def toolbar_prepare_command(command, run, entry_ns, deadline_ns, source, graph, 
             or command[-1:] != [TOOLBAR_PREP_LABEL] or command.count('test') != 1
             or {part for part in command if part.startswith('//')} != {TOOLBAR_PREP_LABEL}
             or [part for part in command if part.startswith('--jobs')] != ['--jobs=1']
+            or '--jobs=1' not in command
             or not command.index('test') < command.index('--jobs=1') < len(command)-1
             or any(TOOLBAR_PREP_VARIABLE in part for part in command)):
         raise ValueError('toolbar-preparation-context-refused')
@@ -1691,6 +1694,65 @@ def toolbar_prepare_inventory_request(args, selected):
                 args.site_development_artifact_selection,args.site_development_artifact_selection_sha256))):
         raise ValueError('toolbar-preparation-requires-only-exact-public-inventory')
     return True
+
+
+def toolbar_receive_selected(args, arguments):
+    selected = TOOLBAR_RECEIVE_LABEL in arguments
+    path, digest = args.toolbar_artifact_selection, args.toolbar_artifact_selection_sha256
+    if not selected:
+        if path is not None or digest is not None:
+            raise ValueError('toolbar-receiver-selection-without-exact-target')
+        return False
+    if (args.profile != 'standard' or args.manager != 'system'
+            or arguments != ['test',TOOLBAR_RECEIVE_LABEL] or args.reuse_owned_cache is not False
+            or args.source_dirty != 'false' or args.coordination_dir is None
+            or not isinstance(path,Path) or not path.is_absolute()
+            or path.parent != args.coordination_dir or path.name != 'toolbar-public-artifact-selection.json'
+            or str(path) != os.path.normpath(str(path))
+            or type(digest) is not str or re.fullmatch('[0-9a-f]{64}',digest) is None
+            or any(value is not None for value in (args.site_source,args.site_inventory,
+                args.site_inventory_sha256,args.site_nixpkgs_source,args.site_phase,
+                args.site_qualification,args.site_qualification_sha256,args.site_delivery_manifest,
+                args.site_delivery_manifest_sha256,args.site_reference_bundle,args.site_reference_bundle_sha256,
+                args.site_coordinator_inputs,args.site_coordinator_inputs_sha256,
+                args.site_development_artifact_selection,args.site_development_artifact_selection_sha256))):
+        raise ValueError('toolbar-receiver-exact-fresh-selection-required')
+    parent=path.parent.lstat();leaf=path.lstat()
+    if (path.parent.resolve(strict=True) != path.parent or not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) != 0o700
+            or not stat.S_ISREG(leaf.st_mode) or leaf.st_uid != os.getuid()
+            or stat.S_IMODE(leaf.st_mode) != 0o600 or leaf.st_nlink != 1 or not 0<leaf.st_size<=32768):
+        raise ValueError('toolbar-receiver-owned-selection-required')
+    # The action freshly holds/hash-checks this exact selection and all producer
+    # bytes. This syntactic role admission never claims its content is qualified.
+    return True
+
+
+def toolbar_receive_command(command, run, entry_ns, deadline_ns, source, graph, source_root, path, digest):
+    if (type(entry_ns) is not int or type(deadline_ns) is not int
+            or deadline_ns-entry_ns != 1200*10**9
+            or not entry_ns <= time.monotonic_ns() < deadline_ns-30*10**9
+            or type(source) is not str or re.fullmatch('[0-9a-f]{40}',source) is None
+            or type(graph) is not str or re.fullmatch('[0-9a-f]{64}',graph) is None
+            or not isinstance(run,Path) or not run.is_absolute()
+            or str(uuid.UUID(run.name)) != run.name
+            or not isinstance(source_root,Path) or source_root.resolve(strict=True) != source_root
+            or not isinstance(path,Path) or not path.is_absolute()
+            or type(digest) is not str or re.fullmatch('[0-9a-f]{64}',digest) is None
+            or command[-1:] != [TOOLBAR_RECEIVE_LABEL] or command.count('test') != 1
+            or '--jobs=1' not in command
+            or not command.index('test') < command.index('--jobs=1') < len(command)-1
+            or {part for part in command if part.startswith('//')} != {TOOLBAR_RECEIVE_LABEL}
+            or [part for part in command if part.startswith('--jobs')] != ['--jobs=1']
+            or any(TOOLBAR_RECEIVE_VARIABLE in part or TOOLBAR_PREP_VARIABLE in part for part in command)):
+        raise ValueError('toolbar-receiver-original-context-refused')
+    values={'EPOCH':str(run),'ENTRY_NS':str(entry_ns),'DEADLINE_NS':str(deadline_ns),
+        'SOURCE_COMMIT':source,'GRAPH_SHA256':graph,'SOURCE_ROOT':str(source_root),
+        'SELECTION_PATH':str(path),'SELECTION_SHA256':digest}
+    result=list(command)
+    result[result.index('test')+1:result.index('test')+1]=[
+        '--test_env='+TOOLBAR_RECEIVE_VARIABLE+key+'='+value for key,value in sorted(values.items())]
+    return result
 
 
 class ToolbarInventoryFdSlot:
@@ -2642,6 +2704,8 @@ def _main(argv, admission_resources, retirement_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
+    parser.add_argument('--toolbar-artifact-selection', type=Path)
+    parser.add_argument('--toolbar-artifact-selection-sha256')
     parser.add_argument('--profile', choices=('native-siwc-catalog-models-reserved','native-siwc-catalog-content-source-reserved','native-siwc-catalog-source-reserved','native-file-writer-models-reserved','native-file-writer-source-reserved','home-manager-reconstruction-reserved','home-manager-evaluation-reserved','home-manager-bundle-models-reserved','home-manager-realization-inputs-reserved','standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'yoga-install-inputs','yoga-controller-qualify-reserved','yoga-controller-inspect-reserved','yoga-controller-verify-reserved','yoga-wrapper-companion-reserved','yoga-sealed-workspace-stage','yoga-sealed-workspace-models-reserved', 'codex-live', 'resident-continuity', 'resident-namespace', 'resident-sources', 'resident-enrollment', 'native-login-ui', 'codex-login', 'codex-device-component', 'codex-device-component-reserved', 'native-seed-plan-reserved', 'native-seed-plan-reserved-models', 'default-archive-reserved', 'query-registration-reserved', 'resident-models-reserved', 'resident-owner-status-source-reserved', 'resident-owner-status-binding-reserved', 'resident-owner-status-persistence-source-reserved','resident-native-source-context-source-reserved','resident-native-source-context-refresh-source-reserved','resident-native-source-acquisition-source-reserved','native-acquisition-inputs-models-reserved','native-acquisition-binding-reserved','native-acquisition-metadata-reserved','native-acquisition-sdk-reserved','native-acquisition-plan-reserved','native-acquisition-query-reserved','native-acquisition-compilation-reserved','native-acquisition-runtime-qualification-reserved','native-acquisition-package-reserved','native-acquisition-bridge-material-reserved','native-acquisition-bridge-models-reserved','native-acquisition-ordinary-tui-reserved','native-sdk-carrier-ordinary-tui-reserved','native-acquisition-ordinary-models-reserved','native-sdk-carrier-seal-reserved','native-sdk-carrier-metadata-reserved','native-sdk-carrier-sdk-export-reserved','native-sdk-carrier-plan-reserved','native-sdk-carrier-query-reserved','native-sdk-carrier-compilation-reserved','native-sdk-carrier-package-reserved','native-sdk-carrier-route-models-reserved','native-acquisition-package-models-reserved','resident-native-source-context-metadata-reserved','current-home-manager-artifact-reserved','current-home-manager-artifact-models-reserved','current-home-manager-evaluation-reserved', 'current-home-manager-pair-reconstruction-reserved','native-peer-qualification-reserved', 'resident-owner-status-persistence-binding-reserved','native-metadata-sdk-models-reserved','native-query-descriptor-reserved','native-persistence-metadata-reserved','native-persistence-sdk-reserved','native-persistence-package-models-reserved','resident-custody-runtime-models-reserved','resident-custody-runtime-reserved','resident-custody-runtime-linux-reserved','resident-custody-runtime-format-reserved','resident-installed-custody-models-reserved','resident-default-source-models-reserved','resident-native-acquisition-units-reserved','resident-native-deployment-wiring-units-reserved','resident-lifecycle-accounting-models-reserved', 'yoga-installed-selection-reserved', 'yoga-installed-workspace-reserved', 'yoga-installed-models-reserved', 'yoga-toolbar-reserved', 'yoga-toolbar-reserved-models'), default='standard')
     parser.add_argument('--yoga-installed-producer-selection-sha256')
     parser.add_argument('--native-mode')
@@ -2810,6 +2874,7 @@ def _main(argv, admission_resources, retirement_resources):
     # coordinator selection must not reinterpret it before worker ownership.
     toolbar_preparation = toolbar_prepare_selected(args.profile,args.manager,arguments,
         args.reuse_owned_cache,args.source_dirty)
+    toolbar_receiver = toolbar_receive_selected(args,arguments)
     toolbar_prepare_inventory_request(args,toolbar_preparation)
     toolbar_inventory_before = None
     toolbar_inventory_after = None
@@ -3654,6 +3719,10 @@ def _main(argv, admission_resources, retirement_resources):
                     raise ValueError('toolbar-public-inventory-changed-before-dispatch')
                 command=toolbar_prepare_command(command,run,delivery_entry_monotonic_ns,
                     delivery_entry_deadline_ns,args.source_commit,graph_sha256,Path.cwd().resolve(strict=True))
+            if toolbar_receiver:
+                command=toolbar_receive_command(command,run,delivery_entry_monotonic_ns,
+                    delivery_entry_deadline_ns,args.source_commit,graph_sha256,Path.cwd().resolve(strict=True),
+                    args.toolbar_artifact_selection,args.toolbar_artifact_selection_sha256)
             if site and args.site_phase == 'lock':
                 site_lock_evidence['before'] = site.retain_lockfile(args.site_source, run,
                     site_snapshot['MODULE.bazel.lock'], 'before')

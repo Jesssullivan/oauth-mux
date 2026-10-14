@@ -1704,3 +1704,24 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+
+# Fresh qualification of an ORIGINAL public tuple; never execute its runner.
+python_test(
+    name = "yoga_public_artifact_receive_qualification",
+    main = "yoga_public_artifact_receive.py",
+    srcs = ["yoga_public_artifact_prepare.py", "pack.py", "portable.py", "browser_runtime_authority.py"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "yoga_public_artifact_receive_test",
+    main = "test_yoga_public_artifact_receive.py",
+    srcs = ["yoga_public_artifact_receive.py", "yoga_public_artifact_prepare.py", "pack.py", "portable.py",
+        "install.py", "browser_runtime_authority.py", "test_browser_runtime_authority.py",
+        "test_yoga_public_artifact_prepare.py", "test_delivery.py", "test_portable.py"],
+    data = ["//tools:rules.bzl", "//extensions:chromium_dev_package"],
+    args = ["$(location //extensions:chromium_dev_package)", "$(location //tools:rules.bzl)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)

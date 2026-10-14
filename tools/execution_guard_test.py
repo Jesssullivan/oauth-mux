@@ -3895,5 +3895,64 @@ class MetadataWorkerTerminalModels(unittest.TestCase):
                 self.assertEqual(shlex.quote(key+"="+value),key+"="+value)
 
 
+
+class ToolbarReceiverModels(unittest.TestCase):
+    def receiver_args(self,root):
+        return SimpleNamespace(profile='standard',manager='system',reuse_owned_cache=False,
+            source_dirty='false',coordination_dir=root,
+            toolbar_artifact_selection=root/'toolbar-public-artifact-selection.json',
+            toolbar_artifact_selection_sha256='a'*64,site_source=None,site_inventory=None,
+            site_inventory_sha256=None,site_nixpkgs_source=None,site_phase=None,
+            site_qualification=None,site_qualification_sha256=None,site_delivery_manifest=None,
+            site_delivery_manifest_sha256=None,site_reference_bundle=None,site_reference_bundle_sha256=None,
+            site_coordinator_inputs=None,site_coordinator_inputs_sha256=None,
+            site_development_artifact_selection=None,site_development_artifact_selection_sha256=None)
+
+    def test_only_exact_fresh_receiver_and_owned_selection_role_are_admitted(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();root.chmod(0o700);args=self.receiver_args(root)
+            path=args.toolbar_artifact_selection;path.write_bytes(b'public selector role, content not yet qualified');path.chmod(0o600)
+            self.assertTrue(guard.toolbar_receive_selected(args,['test',guard.TOOLBAR_RECEIVE_LABEL]))
+            for field,value in [('profile','yoga-toolbar'),('manager','user'),('reuse_owned_cache',True),
+                    ('source_dirty','true'),('toolbar_artifact_selection_sha256','bad'),
+                    ('site_inventory',root/'unrelated'),('site_development_artifact_selection',root/'other')]:
+                original=getattr(args,field);setattr(args,field,value)
+                with self.subTest(field=field),self.assertRaises(ValueError):
+                    guard.toolbar_receive_selected(args,['test',guard.TOOLBAR_RECEIVE_LABEL])
+                setattr(args,field,original)
+            for vector in (['build',guard.TOOLBAR_RECEIVE_LABEL],['test',guard.TOOLBAR_RECEIVE_LABEL,'//:docs_check']):
+                with self.subTest(vector=vector),self.assertRaises(ValueError):guard.toolbar_receive_selected(args,vector)
+            path.chmod(0o644)
+            with self.assertRaises(ValueError):guard.toolbar_receive_selected(args,['test',guard.TOOLBAR_RECEIVE_LABEL])
+            path.chmod(0o600)
+            with self.assertRaises(ValueError):guard.toolbar_receive_selected(args,['test','//:docs_check'])
+            args.toolbar_artifact_selection=args.toolbar_artifact_selection_sha256=None
+            self.assertFalse(guard.toolbar_receive_selected(args,['test','//:docs_check']))
+
+    def test_actual_receiver_builder_has_jobs1_and_exact_original_context_without_override(self):
+        import execution_guard as guard
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory).resolve();run=source/'12345678-1234-4234-8234-123456789abc'
+            path=source/'toolbar-public-artifact-selection.json';entry=1000*10**9;deadline=entry+1200*10**9
+            command=guard.bazel_command('/declared/bazel',run,['test',guard.TOOLBAR_RECEIVE_LABEL],
+                source_commit='a'*40,source_dirty='false')
+            self.assertEqual([part for part in command if part.startswith('--jobs')],['--jobs=1'])
+            with patch.object(guard.time,'monotonic_ns',return_value=entry+10**9):
+                actual=guard.toolbar_receive_command(command,run,entry,deadline,'a'*40,'b'*64,source,path,'c'*64)
+                injected=[part for part in actual if part.startswith('--test_env='+guard.TOOLBAR_RECEIVE_VARIABLE)]
+                self.assertEqual(len(injected),8)
+                self.assertIn('--test_env='+guard.TOOLBAR_RECEIVE_VARIABLE+'ENTRY_NS='+str(entry),actual)
+                self.assertIn('--test_env='+guard.TOOLBAR_RECEIVE_VARIABLE+'DEADLINE_NS='+str(deadline),actual)
+                self.assertEqual([part for part in actual if part not in injected],command)
+                with self.assertRaises(ValueError):guard.toolbar_receive_command(actual,run,entry,deadline,'a'*40,'b'*64,source,path,'c'*64)
+                with self.assertRaises(ValueError):guard.toolbar_receive_command(command[:-1]+['//:docs_check'],run,entry,deadline,'a'*40,'b'*64,source,path,'c'*64)
+            with patch.object(guard.time,'monotonic_ns',return_value=deadline-30*10**9):
+                with self.assertRaises(ValueError):guard.toolbar_receive_command(command,run,entry,deadline,'a'*40,'b'*64,source,path,'c'*64)
+            self.assertEqual(guard.PROPERTIES['MemoryMax'],'4294967296')
+            self.assertEqual(guard.PROPERTIES['TasksMax'],'512')
+            self.assertEqual(guard.CGROUP['memory.swap.max'],'0')
+
+
 if __name__ == '__main__':
     unittest.main()

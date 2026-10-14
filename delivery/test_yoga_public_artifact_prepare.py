@@ -1009,6 +1009,59 @@ class PreparationModels(unittest.TestCase):
         changed=copy.deepcopy(value);changed['files'][0]['witness'][0]=-1
         with self.assertRaises(ValueError):model.inventory_compact(changed)
 
+
+    def test_public_descriptor_commits_original_held_named_directory_witnesses(self):
+        result=self.prepare()
+        self.assertEqual(result['schemaVersion'],2)
+        expected=sorted((self.base,self.source,self.controls,self.runner),key=str)
+        self.assertEqual(result['directoryWitnesses'],[
+            {'path':str(path),'witness':list(model.witness(path.lstat()))} for path in expected])
+        self.assertTrue(all(result[flag] is False for flag in model.FALSE))
+
+    def test_original_directory_same_content_replacement_during_publication_refuses(self):
+        real=model.publish;changed=False
+        def publish(*args,**kwargs):
+            nonlocal changed
+            value=real(*args,**kwargs)
+            self.source.rename(self.source.with_name('prior-source-directory'))
+            self.source.mkdir(mode=0o700);changed=True
+            return value
+        with patch.object(model,'publish',side_effect=publish):
+            with self.assertRaises(ValueError):self.prepare()
+        self.assertTrue(changed)
+        # Provisional files are not producer success after terminal refusal.
+        self.assertTrue((self.output/'yoga-public-toolbar/artifact.json').exists())
+
+    def test_directory_acquisition_boundary_mode_change_refuses_and_drains_registered_fds(self):
+        real_open=os.open;real_close=os.close;opened=[];closed=[];changed=False
+        def opening(path,*args,**kwargs):
+            nonlocal changed
+            if Path(path)==self.source and not changed:
+                self.source.chmod(0o777);changed=True
+            fd=real_open(path,*args,**kwargs);opened.append(fd);return fd
+        def closing(fd):closed.append(fd);return real_close(fd)
+        try:
+            with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing):
+                with self.assertRaises(ValueError):self.prepare()
+            self.assertTrue(changed);self.assertEqual(closed,list(reversed(opened)))
+            for fd in opened:
+                with self.assertRaises(OSError):os.fstat(fd)
+        finally:self.source.chmod(0o700)
+
+    def test_empty_fd_slot_registration_faults_precede_acquisition(self):
+        real=model.Owned.append
+        for phase in ('entry','before','after'):
+            opened=[];real_open=os.open
+            def opening(*args,**kwargs):
+                fd=real_open(*args,**kwargs);opened.append(fd);return fd
+            def append(owner,slot):
+                if phase=='before':raise MemoryError('synthetic pre-insertion')
+                real(owner,slot);raise MemoryError('synthetic post-insertion')
+            seam=patch.object(model.Owned,'empty_directory',side_effect=MemoryError('synthetic entry')) if phase=='entry' else patch.object(model.Owned,'append',new=append)
+            with self.subTest(phase=phase),seam,patch.object(model.os,'open',side_effect=opening):
+                with self.assertRaises(MemoryError):self.prepare()
+            self.assertEqual(opened,[])
+
 if __name__=='__main__':
     ZIP=Path(sys.argv.pop(1)).read_bytes()
     RULE=Path(sys.argv.pop(1)).read_bytes()

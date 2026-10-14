@@ -23,7 +23,7 @@ import pack
 
 LABEL = '//delivery:yoga_public_artifact_prepare_producer'
 RUNNER = '//delivery:yoga_toolbar_consent_proof'
-SCOPE = 'yoga-current-public-toolbar-retained-v1'
+SCOPE = 'yoga-current-public-toolbar-retained-v2'
 VARIABLE = 'OMUX_YOGA_PUBLIC_PREP_'
 MAX_FILES = 200000
 MAX_BYTES = 8 * 1024**3
@@ -59,14 +59,18 @@ def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode('ascii')
 
 
-def decode(raw):
+def json_decode(raw):
     def unique(rows):
         result = {}
         for key, value in rows:
             require(key not in result); result[key] = value
         return result
-    value = json.loads(raw, object_pairs_hook=unique,
+    return json.loads(raw, object_pairs_hook=unique,
         parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite-json')))
+
+
+def decode(raw):
+    value = json_decode(raw)
     if type(value) is dict and value.get('scope') == INVENTORY_WIRE_SCOPE:
         require(type(raw) is bytes and len(raw) <= MAX_METADATA)
         return inventory_expand(value)
@@ -108,6 +112,11 @@ class Clock:
         require(self.context['entryNs'] <= self.now() < self.context['deadlineNs'] - 30 * 10**9)
 
 
+class InputFdSlot:
+    __slots__ = ('fd',)
+    def __init__(self): self.fd = None
+
+
 class Owned(list):
     def enroll(self, fd):
         try: self.append(fd)
@@ -118,20 +127,31 @@ class Owned(list):
             raise
         return fd
 
+    def empty_directory(self):
+        # Registration and its possible allocation failure happen BEFORE open.
+        slot = InputFdSlot(); self.append(slot)
+        return slot
+
     def adopt(self, fd, prior):
         # Until insertion succeeds the prior registry remains the owner. A
         # post-insertion exception transfers that one owner, never closes it
         # in two different finally paths.
-        try: self.append(fd)
+        selected = next(item for item in prior if
+            (item.fd if type(item) is InputFdSlot else item) == fd)
+        try: self.append(selected)
         except BaseException:
-            if fd in self: prior.remove(fd)
+            if selected in self: prior.remove(selected)
             raise
-        prior.remove(fd)
+        prior.remove(selected)
 
     def drain(self, primary=None):
         failure = None
         while self:
-            fd = self.pop()
+            selected = self.pop()
+            if type(selected) is InputFdSlot:
+                fd, selected.fd = selected.fd, None
+                if fd is None: continue
+            else: fd = selected
             try: os.close(fd)
             except BaseException as error:
                 if failure is None: failure = error
@@ -153,11 +173,43 @@ class Inputs:
         self.roots = {self.output_base:None, self.source:None}
         self.owned = Owned()
         self.rows, self.held, self.links = {}, {}, {}
+        self.directory_slots = {}
         self.total = 0
         require(self.output_base.is_absolute() and self.source.is_absolute())
-        for root in self.roots:
-            require(root.resolve(strict=True) == root and stat.S_ISDIR(root.lstat().st_mode))
-        self.root_facts = {str(root):witness(root.lstat())[:5] for root in self.roots}
+        try:
+            for root in self.roots:
+                require(root.resolve(strict=True) == root and stat.S_ISDIR(root.lstat().st_mode))
+            self.root_facts = {str(root):witness(root.lstat())[:5] for root in self.roots}
+            for root in self.roots: self.hold_directory(root)
+        except BaseException as error:
+            self.owned.drain(error)
+            raise
+
+    def hold_directory(self, path):
+        path = Path(path); self.clock.tick()
+        require(path.resolve(strict=True) == path and str(path) not in self.directory_slots
+            and len(self.directory_slots) < 4)
+        slot = self.owned.empty_directory()
+        slot.fd = os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        current = os.fstat(slot.fd)
+        require(stat.S_ISDIR(current.st_mode) and directory_custody(path,current)
+            and witness(current) == witness(path.lstat()))
+        self.directory_slots[str(path)] = slot
+        previous = self.root_facts.get(str(path))
+        require(previous is None or witness(current)[:len(previous)] == previous)
+        self.root_facts[str(path)] = witness(current)[:5]
+        self.clock.tick()
+
+    def directory_commitments(self):
+        self.recheck()
+        result = []
+        for path,slot in sorted(self.directory_slots.items()):
+            self.clock.tick(); current = witness(os.fstat(slot.fd))
+            require(current == witness(Path(path).lstat()))
+            self.root_facts[path] = current
+            result.append({'path':path,'witness':list(current)})
+        self.recheck()
+        return result
 
     def allowed(self, path):
         # Probe the live authorized root map by lexical ancestry, never cache a
@@ -221,10 +273,14 @@ class Inputs:
         require(parent.resolve(strict=True) == parent)
         owners = Owned(); primary = None
         try:
-            directory = owners.enroll(os.open(parent, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC))
+            directory_slot = owners.empty_directory()
+            directory_slot.fd = os.open(parent, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            directory = directory_slot.fd
             parent_fact = witness(os.fstat(directory))
             require(parent_fact == witness(parent.lstat()))
-            fd = owners.enroll(os.open(physical.name, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC, dir_fd=directory))
+            file_slot = owners.empty_directory()
+            file_slot.fd = os.open(physical.name, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC, dir_fd=directory)
+            fd = file_slot.fd
             before = witness(os.fstat(fd))
             require(stat.S_ISREG(before[4]) and before[2] in (0, os.getuid())
                 and not before[4] & 0o022 and before[5] >= 1 and 0 <= before[6] <= maximum
@@ -261,6 +317,8 @@ class Inputs:
         for root, fact in self.root_facts.items():
             current = witness(Path(root).lstat())
             require(current[:len(fact)] == fact)
+            if held and root in self.directory_slots:
+                require(witness(os.fstat(self.directory_slots[root].fd))[:len(fact)] == fact)
             if not str(root).startswith('/nix/store/'):
                 require(Path(root).resolve(strict=True) == Path(root))
         for path, (fact, target) in self.links.items():
@@ -564,10 +622,14 @@ def publish(product, values, clock):
     clock.tick(); os.mkdir(product,mode=0o700)
     owners=Owned(); primary=None; rows=[]
     try:
-        parent=owners.enroll(os.open(product,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC))
+        parent_slot=owners.empty_directory()
+        parent_slot.fd=os.open(product,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        parent=parent_slot.fd
         for name, raw in values:
             clock.tick(); require(name in ('artifact.json','runfiles-inventory.json') and len(raw)<=MAX_METADATA)
-            fd=owners.enroll(os.open(name,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent))
+            leaf_slot=owners.empty_directory()
+            leaf_slot.fd=os.open(name,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
+            fd=leaf_slot.fd
             position=0
             while position<len(raw):
                 clock.tick(); written=os.write(fd,raw[position:]);require(written>0);position+=written
@@ -660,6 +722,7 @@ def prepare(declaration_path, environment):
         and stat.S_ISDIR(outputs.lstat().st_mode) and outputs.lstat().st_uid == os.getuid())
     inputs = Inputs(clock, base, context['sourceRoot']); primary = None
     try:
+        inputs.hold_directory(controls)
         path = Path(declaration_path)
         require(path.is_relative_to(action_controls))
         raw = inputs.read('declaration', path, controls/path.relative_to(action_controls), content=True, maximum=MAX_METADATA)
@@ -681,7 +744,7 @@ def prepare(declaration_path, environment):
         runfiles = manifest_path.with_name('yoga_toolbar_consent_proof.sh.runfiles')
         require(runfiles.is_relative_to(base) and runfiles.resolve(strict=True) == runfiles
             and stat.S_ISDIR(runfiles.lstat().st_mode))
-        inputs.root_facts[str(runfiles)] = witness(runfiles.lstat())
+        inputs.hold_directory(runfiles)
         manifest = runfiles_manifest(data['runner_manifest'],clock)
         expected_keys = {key for key,row in files.items() if row['inRunner']}
         require(set(manifest) - {'_repo_mapping'} == expected_keys)
@@ -726,7 +789,9 @@ def prepare(declaration_path, environment):
             'totalBytes':sum(row['bytes'] for key,row in inputs.rows.items() if key != 'declaration')}
         encoded = canonical(inventory_compact(inventory,clock)); require(len(encoded) <= MAX_METADATA)
         clock.tick()
-        descriptor = {'schemaVersion':1, 'scope':SCOPE, 'context':context,
+        directories = inputs.directory_commitments()
+        descriptor = {'schemaVersion':2, 'scope':SCOPE, 'context':context,
+            'directoryWitnesses':directories,
             'retentionMode':'original-output-base-and-declared-runfiles-only',
             'originalOutputBase':str(base), 'originalRunfilesRoot':str(runfiles),
             'originalControlRunfilesRoot':str(controls),
