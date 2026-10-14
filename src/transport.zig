@@ -1866,7 +1866,17 @@ test "bounded queues retain FIFO and reject additional entries" {
 /// Socket fixtures are private loopback servers with no external dependency and
 /// no enrolled secrets. They exercise the real linked multi engine under Bazel.
 const Fixture = struct {
+    const AcceptPhase = enum(u8) { waiting, active, stopped, finished };
     descriptor: c_int,
+    stop_read: c_int = -1,
+    stop_write: c_int = -1,
+    accept_phase: std.atomic.Value(AcceptPhase) = .init(.finished),
+    accept_poll_entered: std.atomic.Value(bool) = .init(false),
+    accept_ready: std.atomic.Value(bool) = .init(false),
+    stop_prevented_accept: std.atomic.Value(bool) = .init(false),
+    draining_accepted: std.atomic.Value(bool) = .init(false),
+    // Test-only pre-accept race; its wait spends the original accept deadline.
+    hold_accept_model: bool = false,
     port: u16,
     mode: enum { json, redirect, oversized, delayed, stream, oauth_form, oauth_oss, oauth_redirect, oauth_large, oauth_hold, jwks, jwks_redirect, jwks_large, jwks_delayed },
     jwks_body: []const u8 = "{\"keys\":[]}",
@@ -1908,17 +1918,84 @@ const Fixture = struct {
     }
 
     fn start(self: *Fixture) !void {
+        if (self.descriptor < 0 or self.thread != null) return error.TestServerStarted;
+        // Allocate only when this Fixture owns a worker. CatalogServer borrows
+        // only listen()'s raw listener and must not inherit hidden pipe owners.
+        var wake: [2]c_int = undefined;
+        if (@hasDecl(c, "pipe2") and @hasDecl(c, "O_CLOEXEC")) {
+            if (c.pipe2(&wake, c.O_CLOEXEC) != 0) return error.FixtureWake;
+        } else {
+            if (c.pipe(&wake) != 0) return error.FixtureWake;
+        }
+        self.stop_read = wake[0];
+        self.stop_write = wake[1];
+        errdefer {
+            _ = c.close(self.stop_read);
+            _ = c.close(self.stop_write);
+            self.stop_read = -1;
+            self.stop_write = -1;
+        }
+        for (wake) |fd| {
+            const flags = c.fcntl(fd, c.F_GETFD);
+            if (flags < 0 or c.fcntl(fd, c.F_SETFD, flags | c.FD_CLOEXEC) != 0) return error.FixtureWake;
+        }
+        self.accept_phase.store(.waiting, .release);
+        errdefer self.accept_phase.store(.finished, .release);
         self.thread = try std.Thread.spawn(.{}, serve, .{self});
     }
 
     fn deinit(self: *Fixture) void {
-        if (self.thread) |thread| thread.join();
-        _ = c.close(self.descriptor);
+        if (self.thread) |thread| {
+            // One owner arbitrates only NEW acceptance. Accepted work keeps all
+            // original header/body/wire/reply checks and is joined unchanged.
+            if (self.accept_phase.cmpxchgStrong(.waiting, .stopped, .acq_rel, .acquire)) |prior| {
+                if (prior == .active) self.draining_accepted.store(true, .release);
+            } else {
+                const byte: u8 = 1;
+                while (true) {
+                    const written = c.write(self.stop_write, &byte, 1);
+                    if (written < 0 and std.c.errno(written) == .INTR) continue;
+                    // The private read end stays owned until after join. Exactly
+                    // one byte is written once, so this pipe cannot fill.
+                    if (written != 1) @panic("fixture stop wake failed");
+                    break;
+                }
+            }
+            thread.join();
+            self.thread = null;
+        }
+        // Worker/accepted peer are gone before any descriptor can be reused.
+        for ([_]*c_int{ &self.descriptor, &self.stop_read, &self.stop_write }) |fd| {
+            if (fd.* >= 0) {
+                _ = c.close(fd.*);
+                fd.* = -1;
+            }
+        }
     }
 
     fn serve(self: *Fixture) void {
-        var pollfd: c.struct_pollfd = .{ .fd = self.descriptor, .events = c.POLLIN, .revents = 0 };
-        if (c.poll(&pollfd, 1, self.accept_timeout_ms) <= 0) return;
+        defer self.accept_phase.store(.finished, .release);
+        const accept_until = monotonicMilliseconds() + @as(u64, @intCast(self.accept_timeout_ms));
+        var pollfds = [_]c.struct_pollfd{
+            .{ .fd = self.descriptor, .events = c.POLLIN, .revents = 0 },
+            .{ .fd = self.stop_read, .events = c.POLLIN, .revents = 0 },
+        };
+        self.accept_poll_entered.store(true, .release);
+        if (c.poll(&pollfds, pollfds.len, self.accept_timeout_ms) <= 0) return;
+        if (pollfds[1].revents != 0) {
+            self.stop_prevented_accept.store(true, .release);
+            return;
+        }
+        if (pollfds[0].revents & c.POLLIN == 0) return;
+        self.accept_ready.store(true, .release);
+        while (self.hold_accept_model and self.accept_phase.load(.acquire) == .waiting) {
+            if (monotonicMilliseconds() >= accept_until) return;
+            sleepMilliseconds(2);
+        }
+        if (self.accept_phase.cmpxchgStrong(.waiting, .active, .acq_rel, .acquire) != null) {
+            self.stop_prevented_accept.store(true, .release);
+            return;
+        }
         const peer = c.accept(self.descriptor, null, null);
         if (peer < 0) return;
         defer _ = c.close(peer);
@@ -2268,6 +2345,7 @@ pub const testing = struct {
         allocator: std.mem.Allocator,
         fixture: Fixture,
         body: ?envelope.Secret = null,
+        deinitialized: bool = false,
 
         pub fn listenToken(a: std.mem.Allocator) !Server {
             if (!builtin.is_test) return error.UndeclaredEndpoint;
@@ -2361,12 +2439,14 @@ pub const testing = struct {
             };
         }
         pub fn deinit(self: *Server) void {
+            if (self.deinitialized) return;
             self.fixture.deinit();
             if (self.fixture.expected_refresh_ticket) |ticket| @constCast(ticket).deinit();
             if (self.body) |*body| body.deinit();
             std.crypto.secureZero(u8, &self.fixture.expected_client);
             std.crypto.secureZero(u8, &self.fixture.expected_redirect);
             self.* = undefined;
+            self.deinitialized = true;
         }
     };
 
@@ -2400,6 +2480,169 @@ fn awaitResult(client: *Client) !Completion {
         sleepMilliseconds(5);
     }
     return error.FixtureTimeout;
+}
+
+const FixtureShutdownModel = struct {
+    fn wait(flag: *const std.atomic.Value(bool)) !void {
+        const until = monotonicMilliseconds() + 3000;
+        while (!flag.load(.acquire)) {
+            if (monotonicMilliseconds() >= until) return error.FixtureTimeout;
+            sleepMilliseconds(2);
+        }
+    }
+    fn connect(port: u16) !c_int {
+        const peer = c.socket(c.AF_INET, c.SOCK_STREAM, 0);
+        if (peer < 0) return error.FixtureSocket;
+        errdefer _ = c.close(peer);
+        var address = std.mem.zeroes(c.struct_sockaddr_in);
+        address.sin_family = c.AF_INET;
+        address.sin_addr.s_addr = c.htonl(0x7f000001);
+        address.sin_port = c.htons(port);
+        if (@hasField(c.struct_sockaddr_in, "sin_len")) address.sin_len = @sizeOf(c.struct_sockaddr_in);
+        if (c.connect(peer, @ptrCast(&address), @sizeOf(c.struct_sockaddr_in)) != 0) return error.FixtureConnect;
+        return peer;
+    }
+    fn expectClosed(fds: []const c_int) !void {
+        for (fds) |fd| {
+            const observed = c.fcntl(fd, c.F_GETFD);
+            try std.testing.expect(observed == -1 and std.c.errno(observed) == .BADF);
+        }
+    }
+    fn receive(peer: c_int, out: []u8) ![]const u8 {
+        const until = monotonicMilliseconds() + 3000;
+        var length: usize = 0;
+        while (length < out.len) {
+            const now = monotonicMilliseconds();
+            if (now >= until) return error.FixtureTimeout;
+            var readable: c.struct_pollfd = .{ .fd = peer, .events = c.POLLIN, .revents = 0 };
+            if (c.poll(&readable, 1, @intCast(until - now)) <= 0) return error.FixtureTimeout;
+            const count = c.recv(peer, out[length..].ptr, out.len - length, 0);
+            if (count < 0 and std.c.errno(count) == .INTR) continue;
+            if (count < 0) return error.FixtureRead;
+            if (count == 0) return out[0..length];
+            length += @intCast(count);
+        }
+        return error.FixtureResponseBound;
+    }
+    const Stopper = struct {
+        fixture: *Fixture,
+        returned: std.atomic.Value(bool) = .init(false),
+        fn run(self: *Stopper) void {
+            self.fixture.deinit();
+            self.returned.store(true, .release);
+        }
+    };
+};
+
+test "fixture cleanup owns unstarted payload and repeated destruction never closes a reused descriptor" {
+    const M = FixtureShutdownModel;
+    var server = try testing.Server.listenJwks(std.testing.allocator);
+    defer server.deinit();
+    try server.setBody("{\"keys\":[]}");
+    const listener = server.fixture.descriptor;
+    try std.testing.expectEqual(@as(c_int, -1), server.fixture.stop_read);
+    try std.testing.expectEqual(@as(c_int, -1), server.fixture.stop_write);
+    server.deinit();
+    try M.expectClosed(&.{listener});
+    const unrelated = c.socket(c.AF_INET, c.SOCK_STREAM, 0);
+    try std.testing.expect(unrelated >= 0);
+    defer _ = c.close(unrelated);
+    try std.testing.expectEqual(listener, unrelated);
+    server.deinit();
+    try std.testing.expect(c.fcntl(unrelated, c.F_GETFD) >= 0);
+}
+
+test "unused fixture listener cleanup wakes original poll joins worker and closes every owned fd" {
+    const M = FixtureShutdownModel;
+    var server = try Fixture.listen(.jwks);
+    defer server.deinit();
+    try server.start();
+    const fds = [_]c_int{ server.descriptor, server.stop_read, server.stop_write };
+    for (fds[1..]) |fd| try std.testing.expect(c.fcntl(fd, c.F_GETFD) & c.FD_CLOEXEC != 0);
+    try M.wait(&server.accept_poll_entered);
+    server.deinit();
+    try std.testing.expect(server.thread == null);
+    try std.testing.expectEqual(Fixture.AcceptPhase.finished, server.accept_phase.load(.acquire));
+    try std.testing.expect(server.stop_prevented_accept.load(.acquire));
+    try std.testing.expect(!server.draining_accepted.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), server.request_count.load(.acquire));
+    try std.testing.expect(!server.request_seen.load(.acquire));
+    try M.expectClosed(&fds);
+    server.deinit();
+    try std.testing.expectEqual(@as(u32, 0), server.request_count.load(.acquire));
+}
+
+test "fixture stop wins ready connection admission without parsing or replying to late work" {
+    const M = FixtureShutdownModel;
+    var server = try Fixture.listen(.json);
+    defer server.deinit();
+    server.hold_accept_model = true;
+    const peer = try M.connect(server.port);
+    defer _ = c.close(peer);
+    Fixture.sendAll(peer, "GET /identity HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    try server.start();
+    const fds = [_]c_int{ server.descriptor, server.stop_read, server.stop_write };
+    try M.wait(&server.accept_ready);
+    server.deinit();
+    try std.testing.expect(server.stop_prevented_accept.load(.acquire));
+    try std.testing.expect(!server.draining_accepted.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), server.request_count.load(.acquire));
+    try std.testing.expect(!server.request_seen.load(.acquire));
+    try std.testing.expect(server.thread == null);
+    try M.expectClosed(&fds);
+    var readable: c.struct_pollfd = .{ .fd = peer, .events = c.POLLIN, .revents = 0 };
+    try std.testing.expect(c.poll(&readable, 1, 0) > 0);
+    var byte: [1]u8 = undefined;
+    try std.testing.expect(c.recv(peer, &byte, byte.len, 0) <= 0);
+}
+
+test "fixture accepted request wins stop and drains original full body and wire checks before fd removal" {
+    const M = FixtureShutdownModel;
+    var server = try Fixture.listen(.oauth_form);
+    defer server.deinit();
+    try server.start();
+    const fds = [_]c_int{ server.descriptor, server.stop_read, server.stop_write };
+    const peer = try M.connect(server.port);
+    defer _ = c.close(peer);
+    const verifier: [86]u8 = @splat('a');
+    var body_buffer: [512]u8 = undefined;
+    defer std.crypto.secureZero(u8, &body_buffer);
+    const body = try std.fmt.bufPrint(&body_buffer, "grant_type=authorization_code&client_id=omux-fixture-client&code=synthetic-callback-code&redirect_uri=http%3A%2F%2F127.0.0.1%2Fauth%2Fcallback&code_verifier={s}", .{&verifier});
+    var header_buffer: [256]u8 = undefined;
+    const header = try std.fmt.bufPrint(&header_buffer, "POST /oauth/token HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+    Fixture.sendAll(peer, header);
+    Fixture.sendAll(peer, body[0..32]);
+    try M.wait(&server.accept_ready);
+    // Observe active admission before starting owner teardown.
+    const until = monotonicMilliseconds() + 3000;
+    while (server.accept_phase.load(.acquire) != .active) {
+        if (monotonicMilliseconds() >= until) return error.FixtureTimeout;
+        sleepMilliseconds(2);
+    }
+    var stopper: M.Stopper = .{ .fixture = &server };
+    const thread = try std.Thread.spawn(.{}, M.Stopper.run, .{&stopper});
+    defer {
+        // On an assertion/error, EOF still lets the original body reader drain.
+        _ = c.shutdown(peer, c.SHUT_RDWR);
+        thread.join();
+    }
+    try M.wait(&server.draining_accepted);
+    try std.testing.expect(!stopper.returned.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), server.request_count.load(.acquire));
+    for (fds) |fd| try std.testing.expect(c.fcntl(fd, c.F_GETFD) >= 0);
+    Fixture.sendAll(peer, body[32..]);
+    var response_buffer: [2048]u8 = undefined;
+    defer std.crypto.secureZero(u8, &response_buffer);
+    const response = try M.receive(peer, &response_buffer);
+    try std.testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
+    try M.wait(&stopper.returned);
+    try std.testing.expectEqual(@as(u32, 1), server.request_count.load(.acquire));
+    try std.testing.expect(server.oauth_wire_valid.load(.acquire));
+    try std.testing.expect(server.oauth_no_ambient_headers.load(.acquire));
+    try std.testing.expect(server.request_seen.load(.acquire));
+    try std.testing.expect(!server.stop_prevented_accept.load(.acquire));
+    try std.testing.expect(server.thread == null);
+    try M.expectClosed(&fds);
 }
 
 test "real curl multi fetch returns owned JSON and never follows authenticated redirects" {
