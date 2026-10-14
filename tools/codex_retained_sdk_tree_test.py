@@ -582,6 +582,14 @@ class RetainedTreeProducerModels(unittest.TestCase):
                 self.assertTrue(raw.startswith("sdk-tree-metadata-observation role=public-alias-parent "))
                 self.assertIn(" mode=" + str(0o770) + " ", raw)
                 self.assertIn(" uid=" + str(os.getuid()) + " ", raw)
+                self.assertIn(" process_uid=" + str(os.getuid()) + " ", raw)
+                self.assertIn(" process_gid=" + str(os.getgid()) + " ", raw)
+                fields = dict(part.split("=", 1) for part in raw.strip().split()[1:])
+                self.assertEqual(set(fields), {"role", "depth", "uid", "gid", "process_uid", "process_gid",
+                    "mode", "device", "filesystem", "mount_flags", "readonly", "held_named"})
+                self.assertEqual(fields["role"], "public-alias-parent")
+                for name in set(fields) - {"role"}:
+                    self.assertEqual(fields[name], str(int(fields[name])))
                 self.assertLessEqual(len(raw.encode("ascii")), 1025)
                 self.assertNotIn(str(ancestor), raw); self.assertNotIn("canary", raw)
                 with self.assertRaisesRegex(ValueError, "metadata-ancestor-custody"):
@@ -603,6 +611,8 @@ class RetainedTreeProducerModels(unittest.TestCase):
             self.assertEqual(observed["held_named"], 0)
             self.assertEqual(observed["depth"], len(child.parts) - 1)
             self.assertEqual(observed["mode"], 0o700)
+            self.assertEqual(observed["process_uid"], os.getuid())
+            self.assertEqual(observed["process_gid"], os.getgid())
             self.assertEqual(len(replaced), 1)
             with self.assertRaises(OSError): os.fstat(replaced[0])
 
@@ -634,13 +644,16 @@ class RetainedTreeProducerModels(unittest.TestCase):
             def __repr__(self): raise AssertionError("secret exception representation")
         primary = Sensitive("account/token-canary")
         with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
-            clock = core.Clock(time.monotonic() - 1)
-            with patch.object(producer.admission, "_Directory", side_effect=primary), \
+            deadline = time.monotonic() + 60
+            clock = core.Clock(deadline)
+            with patch.object(core.time, "monotonic", return_value=deadline), \
+                    patch.object(producer.admission, "_Directory", side_effect=primary), \
                     patch.object(producer.os, "open") as opened, redirect_stderr(io.StringIO()) as output:
                 with self.assertRaises(Sensitive) as found:
                     producer._public_directory(Path(temporary), clock, "public-alias-parent")
             self.assertIs(found.exception, primary); opened.assert_not_called()
             self.assertEqual(output.getvalue(), "")
+            self.assertEqual(clock.deadline, deadline)
 
 
 if __name__ == "__main__": unittest.main()

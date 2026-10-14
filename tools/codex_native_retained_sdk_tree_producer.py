@@ -43,6 +43,7 @@ def _metadata_observation(path, clock, role):
             named = os.stat(name, dir_fd=current, follow_symlinks=False)
             filesystem = os.fstatvfs(pending)
             record = {"role": role, "depth": depth, "uid": held.st_uid, "gid": held.st_gid,
+                "process_uid": os.getuid(), "process_gid": os.getgid(),
                 "mode": stat.S_IMODE(held.st_mode), "device": held.st_dev,
                 "filesystem": filesystem.f_fsid, "mount_flags": filesystem.f_flag,
                 "readonly": int(bool(filesystem.f_flag & os.ST_RDONLY)),
@@ -87,7 +88,7 @@ def _public_directory(path, clock, role):
             if observed is not None:
                 raw = "sdk-tree-metadata-observation " + " ".join(
                     name + "=" + str(observed[name]) for name in (
-                        "role", "depth", "uid", "gid", "mode", "device", "filesystem",
+                        "role", "depth", "uid", "gid", "process_uid", "process_gid", "mode", "device", "filesystem",
                         "mount_flags", "readonly", "held_named"))
                 core.need(len(raw.encode("ascii")) <= 1024, "sdk-tree-observation-output-bound")
                 clock.tick()
