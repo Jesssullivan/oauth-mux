@@ -5044,5 +5044,52 @@ class ToolbarPublicBuildCacheModels(unittest.TestCase):
 
 
 
+
+class EngineShardCommandTests(unittest.TestCase):
+    def test_actual_builder_preserves_caps_and_reference_vector(self):
+        import execution_guard as guard
+        run = Path('/owned/12345678-1234-4234-8234-123456789abc')
+        vector = ['test', '//:engine_sharded_test', '//:format_test', '//:docs_check']
+        selected = guard.bazel_command('/declared/bazel', run, vector,
+            source_commit='a' * 40, source_dirty='false')
+        reference = guard.bazel_command('/declared/bazel', run,
+            ['test', '//:engine_test', '//:format_test', '//:docs_check'],
+            source_commit='a' * 40, source_dirty='false')
+        self.assertEqual([part for part in selected if part.startswith('--local_test_jobs=')],
+                         ['--local_test_jobs=2'])
+        self.assertFalse(any(part.startswith('--local_test_jobs=') for part in reference))
+        self.assertEqual([part.replace('//:engine_sharded_test', '//:engine_test')
+                          for part in selected if part != '--local_test_jobs=2'], reference)
+        self.assertEqual(selected[-3:], vector[-3:])
+        for forbidden in ('--test_filter=', '--test_timeout=', '--runs_per_test=', '--flaky_test_attempts='):
+            self.assertFalse(any(part.startswith(forbidden) for part in selected))
+        for flag in ('--jobs=2', '--nocache_test_results', '--nozip_undeclared_test_outputs',
+                     '--strategy=TestRunner=processwrapper-sandbox', '--remote_executor=',
+                     '--remote_cache=', '--disk_cache=', '--sandbox_default_allow_network=false'):
+            self.assertIn(flag, selected)
+        self.assertEqual(guard.PROPERTIES['MemoryMax'], '4294967296')
+        self.assertEqual(guard.PROPERTIES['TasksMax'], '512')
+        self.assertEqual(guard.PROPERTIES['CPUQuotaPerSecUSec'], '2s')
+        self.assertEqual(guard.PROPERTIES['RuntimeMaxUSec'], '20min')
+
+    def test_dirty_nonstandard_mixed_reference_duplicate_and_caller_flags_are_refused(self):
+        import execution_guard as guard
+        run = Path('/owned/12345678-1234-4234-8234-123456789abc')
+        label = '//:engine_sharded_test'
+        for profile, dirty, vector in (
+                ('standard', 'true', ['test', label]),
+                ('standard', None, ['test', label]),
+                ('installed-browser', 'false', ['test', label]),
+                ('standard', 'false', ['build', label]),
+                ('standard', 'false', ['test', label, '//:engine_test']),
+                ('standard', 'false', ['test', label, '//:paired_renewal_test']),
+                ('standard', 'false', ['test', label, label]),
+                ('standard', 'false', ['test', label, '--test_timeout=900']),
+                ('standard', 'false', ['test', label, '--test_sharding_strategy=disabled'])):
+            with self.subTest(profile=profile, dirty=dirty, vector=vector), self.assertRaises(ValueError):
+                guard.bazel_command('/declared/bazel', run, vector, profile=profile,
+                    source_commit='a' * 40 if dirty is not None else None, source_dirty=dirty)
+
+
 if __name__ == '__main__':
     unittest.main()

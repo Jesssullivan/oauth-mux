@@ -1200,6 +1200,12 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
                       '--repo_env=OMUX_SITE_INVENTORY_SHA256=' + site_inventory_sha256]
     test_args = ['--keep_going', '--test_output=errors', '--test_summary=detailed', '--test_env=TZ=UTC', '--nocache_test_results', '--nozip_undeclared_test_outputs',
                  '--strategy=TestRunner=processwrapper-sandbox'] if arguments[0] == 'test' else []
+    if '//:engine_sharded_test' in arguments:
+        if (profile != 'standard' or source_dirty != 'false' or arguments[0] != 'test'
+                or len(set(arguments[1:])) != len(arguments)-1
+                or any(label not in {'//:engine_sharded_test', '//:format_test', '//:docs_check'} for label in arguments[1:])):
+            raise ValueError('exact-clean-engine-shard-vector-required')
+        test_args += ['--local_test_jobs=2']
     if arguments == ['test', '//tools:execution_probe_output']:
         test_args += ['--experimental_ui_max_stdouterr_bytes=10485760']
     if profile == 'installed-browser':
@@ -1587,7 +1593,7 @@ def record_resident_lifecycle(receipt,admission,*,clock=time.monotonic_ns):
 
 ORDINARY_CHECK_SCOPE = 'closed-standard-test-checkout-output-v1'
 ORDINARY_CHECK_LABELS = frozenset({
-    '//:engine_test', '//:unit_tests', '//:transport_test', '//:observer_test',
+    '//:engine_test', '//:engine_sharded_test', '//:unit_tests', '//:transport_test', '//:observer_test',
     '//:oauth_oidc_crypto_test', '//:oauth_oidc_profile_test',
     '//:oauth_oidc_signed_fixture_test', '//:browser_attempt_transaction_test',
     '//:storage_test', '//:format_test', '//:docs_check', '//tools:execution_guard_test',
@@ -4888,10 +4894,14 @@ def _main(argv, admission_resources, retirement_resources):
                     evidence_ok = not any(row.get('state') in refused or
                                           any(entry.get('state') in refused for entry in row['files'])
                                           for row in manifest['results'])
+                    if '//:engine_sharded_test' in arguments:
+                        evidence_ok = evidence_ok and manifest.get('engine_shards', {}).get('state') == 'complete'
                     evidence = {'state': 'preserved' if evidence_ok else 'preservation-incomplete',
                                 'manifest': 'test-evidence.json',
                                 'sha256': hashlib.sha256((run / 'test-evidence.json').read_bytes()).hexdigest(),
                                 'bytes': manifest['bytes'], 'files': manifest['copied_files']}
+                    if '//:engine_sharded_test' in arguments:
+                        evidence['engine_shards'] = manifest.get('engine_shards', {'state': 'unqualified'})
                 except (OSError, ValueError):
                     evidence_ok = False
                     evidence = {'state': 'preservation-failed'}

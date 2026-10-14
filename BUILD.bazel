@@ -685,7 +685,7 @@ zig_format(
 
 zig_format_test(
     name = "format_test",
-    srcs = ZIG_SOURCES + ["//tools:toolchain_test.zig"],
+    srcs = ZIG_SOURCES + ["//tools:toolchain_test.zig", "//tools:engine_test_runner.zig", "//tools:engine_shard_support.zig", "//tools:engine_shard_support_models.zig"],
 )
 
 zig_test(
@@ -724,6 +724,32 @@ zig_test(
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+)
+
+# The existing unsharded engine_test remains the unchanged reference. This
+# new target does not close that gate or select a compiler --test-filter.
+zig_test(
+    name = "engine_sharded_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES + ["//tools:engine_shard_support.zig"],
+    test_runner = "//tools:engine_test_runner.zig",
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    shard_count = 3,
+    timeout = "moderate",
+    tags = ["manual", "no-remote"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+zig_test(
+    name = "engine_shard_support_test",
+    main = "//tools:engine_shard_support_models.zig",
+    srcs = ["//tools:engine_shard_support_models.zig", "//tools:engine_shard_support.zig"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 
 # Focus the existing rotation/restart cases during renewal diagnosis.
