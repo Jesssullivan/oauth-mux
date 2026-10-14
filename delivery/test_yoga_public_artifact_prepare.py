@@ -5,6 +5,8 @@ is not modeled as a success: one explicit roots-only seam avoids store access.
 Archive verification, complete manifest/alias reads and byte inventories are real.
 """
 import copy
+from contextlib import contextmanager
+import errno
 import hashlib
 import io
 import json
@@ -130,6 +132,80 @@ class PreparationModels(unittest.TestCase):
         try:path.write_bytes(raw)
         finally:path.chmod(0o555)
         self.assertEqual(stat.S_IMODE(path.lstat().st_mode),0o555)
+
+    @contextmanager
+    def descriptor_lifetimes(self):
+        # Track real acquisitions, not globally unique integer FD values. Slots
+        # are registered by the actual owner before open; real adopt transfers
+        # that lifetime, and each actual drain must retire its reverse stack.
+        real_empty=model.Owned.empty_directory;real_adopt=model.Owned.adopt
+        real_drain=model.Owned.drain;real_open=os.open;real_close=os.close
+        pending=[];lifetimes=[];active={};retired=[];drains=[];phases=[];events=[]
+        def empty(owner):
+            slot=real_empty(owner)
+            self.assertIs(owner[-1],slot);self.assertIsNone(slot.fd)
+            pending.append((owner,slot));return slot
+        def opening(*args,**kwargs):
+            self.assertEqual(len(pending),1)
+            owner,slot=pending.pop();self.assertIn(slot,owner)
+            fd=real_open(*args,**kwargs)
+            self.assertNotIn(fd,active)
+            row={'ordinal':len(lifetimes),'fd':fd,'slot':slot,'owner':owner,
+                'identity':model.witness(os.fstat(fd))[:2],'opened':len(events),'owners':[owner]}
+            lifetimes.append(row);active[fd]=row;events.append(('open',row['ordinal']))
+            return fd
+        def adopt(owner,fd,prior):
+            row=active[fd];self.assertIs(row['owner'],prior)
+            self.assertIn(row['slot'],prior)
+            self.assertEqual(model.witness(os.fstat(fd))[:2],row['identity'])
+            real_adopt(owner,fd,prior)
+            self.assertNotIn(row['slot'],prior);self.assertIn(row['slot'],owner)
+            row['owner']=owner;row['owners'].append(owner)
+        def drain(owner,primary=None):
+            expected=[]
+            for slot in reversed(owner):
+                self.assertIs(type(slot),model.InputFdSlot)
+                if slot.fd is not None:
+                    row=active[slot.fd]
+                    self.assertIs(row['slot'],slot);self.assertIs(row['owner'],owner)
+                    expected.append(row)
+            phase={'ordinal':len(phases),'owner':owner,'expected':expected,'closed':[]}
+            phases.append(phase);drains.append(phase)
+            try:return real_drain(owner,primary)
+            finally:
+                self.assertEqual(phase['closed'],expected)
+                self.assertEqual(owner,[]);self.assertIs(drains.pop(),phase)
+        def closing(fd):
+            self.assertTrue(drains)
+            phase=drains[-1];row=active[fd]
+            self.assertIs(row['owner'],phase['owner'])
+            self.assertIs(row,phase['expected'][len(phase['closed'])])
+            self.assertEqual(model.witness(os.fstat(fd))[:2],row['identity'])
+            self.assertIsNone(row['slot'].fd)
+            real_close(fd)
+            with self.assertRaises(OSError) as retired_error:os.fstat(fd)
+            self.assertEqual(retired_error.exception.errno,errno.EBADF)
+            row['retirementPhase']=phase['ordinal']
+            del active[fd];phase['closed'].append(row);retired.append(row['ordinal'])
+            events.append(('close',row['ordinal']))
+        with patch.object(model.Owned,'empty_directory',new=empty),\
+                patch.object(model.Owned,'adopt',new=adopt),\
+                patch.object(model.Owned,'drain',new=drain),\
+                patch.object(model.os,'open',side_effect=opening),\
+                patch.object(model.os,'close',side_effect=closing):
+            yield lifetimes
+        self.assertEqual(active,{})
+        self.assertEqual(pending,[]);self.assertEqual(drains,[])
+        self.assertEqual(len(retired),len(lifetimes))
+        self.assertEqual(set(retired),set(range(len(lifetimes))))
+        # This is a real multi-phase preparation: at least one later open
+        # follows an actual retirement; FD integer reuse is allowed only then.
+        self.assertTrue(any(kind=='close' and any(later=='open' for later,_ in events[index+1:])
+            for index,(kind,_) in enumerate(events)))
+        for row in lifetimes:
+            self.assertIs(phases[row['retirementPhase']]['owner'],row['owners'][-1])
+            with self.assertRaises(OSError) as retired_error:os.fstat(row['fd'])
+            self.assertEqual(retired_error.exception.errno,errno.EBADF)
 
     def test_actual_complete_artifact_and_original_runfiles_retained_without_execution(self):
         result=self.prepare()
@@ -455,23 +531,17 @@ class PreparationModels(unittest.TestCase):
             self.assertFalse((self.output/'yoga-public-toolbar').exists())
 
     def test_actual_manifest_decode_keeps_original_cutoff_and_drains_all_held_input_descriptors(self):
-        self.actual_public_space_fixture();actual_decode=model.manifest_unescape;actual_open=os.open;actual_close=os.close
-        decoded=False;opened=[];closed=[]
+        self.actual_public_space_fixture();actual_decode=model.manifest_unescape
+        decoded=False
         def decode(value,*,key):
             nonlocal decoded
             result=actual_decode(value,key=key)
             if key and not decoded:self.now=self.deadline-30*10**9;decoded=True
             return result
-        def open_fd(*args,**kwargs):
-            fd=actual_open(*args,**kwargs);opened.append(fd);return fd
-        def close_fd(fd):closed.append(fd);actual_close(fd)
-        with patch.object(model,'manifest_unescape',side_effect=decode),patch.object(model.os,'open',side_effect=open_fd),\
-                patch.object(model.os,'close',side_effect=close_fd):
+        with self.descriptor_lifetimes() as lifetimes,\
+                patch.object(model,'manifest_unescape',side_effect=decode):
             with self.assertRaises(ValueError):self.prepare()
-        self.assertTrue(decoded);self.assertGreater(len(opened),3)
-        self.assertEqual(closed,list(reversed(opened)));self.assertEqual(len(closed),len(set(closed)))
-        for fd in opened:
-            with self.assertRaises(OSError):os.fstat(fd)
+        self.assertTrue(decoded);self.assertGreater(len(lifetimes),3)
         self.assertFalse((self.output/'yoga-public-toolbar').exists())
 
 
@@ -574,25 +644,17 @@ class PreparationModels(unittest.TestCase):
 
     def test_actual_mapping_read_uses_original_cutoff_and_drains_all_descriptors(self):
         key,target,raw=self.repo_mapping_fixture()
-        real_open=os.open;real_close=os.close;real_read=os.read;opened=[];closed=[];changed=False
+        real_read=os.read;changed=False
         inode=target.stat().st_ino
-        def opening(*args,**kwargs):
-            fd=real_open(*args,**kwargs);opened.append(fd);return fd
-        def closing(fd):
-            closed.append(fd);return real_close(fd)
         def read(fd,count):
             nonlocal changed
             block=real_read(fd,count)
             if block and os.fstat(fd).st_ino==inode:
                 self.now=self.deadline-30*10**9;changed=True
             return block
-        with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
-                patch.object(model.os,'read',side_effect=read):
+        with self.descriptor_lifetimes(),patch.object(model.os,'read',side_effect=read):
             with self.assertRaises(ValueError):self.prepare()
         self.assertTrue(changed)
-        self.assertEqual(closed,list(reversed(opened)))
-        for fd in opened:
-            with self.assertRaises(OSError):os.fstat(fd)
         self.assertFalse((self.output/'yoga-public-toolbar').exists())
 
     def test_mapping_alias_change_during_final_fd_retirement_refuses_provisional_product(self):
@@ -1066,6 +1128,60 @@ class PreparationModels(unittest.TestCase):
             with self.subTest(phase=phase),seam,patch.object(model.os,'open',side_effect=opening):
                 with self.assertRaises(MemoryError):self.prepare()
             self.assertEqual(opened,[])
+
+
+    def test_action_declaration_owner_proves_equal_bytes_then_retained_facts_survive_alias_retirement(self):
+        action=self.base/'sandbox/declaration-acquisition/input.json';action.parent.mkdir(parents=True)
+        action.symlink_to(self.declaration)
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        try:
+            raw=model.acquire_declaration(owner,action,self.declaration)
+            self.assertEqual(raw,self.declaration.read_bytes())
+            self.assertNotIn(str(action),owner.links)
+            self.assertEqual(owner.rows['declaration']['sha256'],hashlib.sha256(raw).hexdigest())
+            self.assertEqual(owner.rows['declaration']['witness'],list(model.witness(self.declaration.lstat())))
+            action.unlink();action.parent.rmdir()
+            owner.recheck()
+        finally:owner.close()
+
+    def test_action_declaration_same_bytes_alias_substitution_refuses_original_close_proof(self):
+        action=self.base/'sandbox/declaration-change/input.json';action.parent.mkdir(parents=True)
+        action.symlink_to(self.declaration)
+        other=self.base/'replacement-declaration.json';other.write_bytes(self.declaration.read_bytes());other.chmod(0o555)
+        inode=self.declaration.stat().st_ino;real_read=os.read;changed=False
+        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        def read(fd,count):
+            nonlocal changed
+            raw=real_read(fd,count)
+            if raw and not changed and os.fstat(fd).st_ino==inode:
+                action.unlink();action.symlink_to(other);changed=True
+            return raw
+        try:
+            with patch.object(model.os,'read',side_effect=read):
+                with self.assertRaises(ValueError):model.acquire_declaration(owner,action,self.declaration)
+            self.assertTrue(changed)
+        finally:owner.close(ValueError('synthetic action alias refusal'))
+
+    def test_action_declaration_close_keeps_original_cutoff_and_retires_all_actual_descriptors(self):
+        action=self.base/'sandbox/declaration-close/input.json';action.parent.mkdir(parents=True)
+        action.symlink_to(self.declaration)
+        real_open=os.open;real_close=os.close;opened=[];closed=[];expired=False;owner=None
+        def opening(*args,**kwargs):
+            fd=real_open(*args,**kwargs);opened.append(fd);return fd
+        def closing(fd):
+            nonlocal expired
+            closed.append(fd);value=real_close(fd)
+            if not expired:self.now=self.deadline-30*10**9;expired=True
+            return value
+        with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing):
+            try:
+                owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+                with self.assertRaises(ValueError):model.acquire_declaration(owner,action,self.declaration)
+            finally:
+                if owner is not None:owner.close(ValueError('synthetic acquisition close cutoff'))
+        self.assertTrue(expired);self.assertEqual(sorted(opened),sorted(closed))
+        for fd in set(opened):
+            with self.assertRaises(OSError):os.fstat(fd)
 
 if __name__=='__main__':
     ZIP=Path(sys.argv.pop(1)).read_bytes()

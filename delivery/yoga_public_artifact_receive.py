@@ -17,6 +17,9 @@ import yoga_public_artifact_prepare as prepared
 LABEL = '//delivery:yoga_public_artifact_receive_qualification'
 VARIABLE = 'OMUX_YOGA_PUBLIC_RECEIVE_'
 SCOPE = 'yoga-public-toolbar-fresh-physical-qualification-v1'
+SEALED_PUBLIC_ROLES = {'artifact-descriptor':'artifact.json', 'compact-inventory':'runfiles-inventory.json'}
+SEALED_PUBLIC_PARENT_SUFFIX = ('output-base','execroot','_main','bazel-out','k8-fastbuild',
+    'testlogs','delivery','yoga_public_artifact_prepare_producer','test.outputs','yoga-public-toolbar')
 FIELDS = frozenset(('EPOCH','ENTRY_NS','DEADLINE_NS','SOURCE_COMMIT','GRAPH_SHA256',
     'SOURCE_ROOT','SELECTION_PATH','SELECTION_SHA256'))
 DESCRIPTOR_FIELDS = frozenset(('schemaVersion','scope','context','retentionMode',
@@ -43,12 +46,19 @@ def sha(value):require(type(value) is str and re.fullmatch('[0-9a-f]{64}',value)
 class Metadata:
     """Preregister every empty FD owner before acquisition, hold through last IO."""
     def __init__(self,clock):self.clock=clock;self.owners=prepared.Owned();self.chains=[];self.files=[]
-    def open(self,path,maximum,*,expected=None,private_parent=False):
+    def open(self,path,maximum,*,expected=None,private_parent=False,sealed_public_role=None):
         if expected is not None:
             require(type(expected) is dict and set(expected)=={'sha256','bytes'}
                 and type(expected['bytes']) is int and 0<expected['bytes']<=maximum)
             sha(expected['sha256'])
         path=absolute(str(path));chain=[];selected=Path('/')
+        mode=0o600
+        if sealed_public_role is not None:
+            require(type(sealed_public_role) is str and sealed_public_role in SEALED_PUBLIC_ROLES
+                and expected is not None and private_parent is False and maximum<=prepared.MAX_METADATA
+                and path.name==SEALED_PUBLIC_ROLES[sealed_public_role]
+                and tuple(path.parent.parts[-len(SEALED_PUBLIC_PARENT_SUFFIX):])==SEALED_PUBLIC_PARENT_SUFFIX)
+            mode=0o555
         slot=self.owners.empty_directory()
         slot.fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
         chain.append((selected,slot,prepared.witness(os.fstat(slot.fd))[:5]))
@@ -72,7 +82,7 @@ class Metadata:
         self.chains.append(chain)
         named=os.stat(path.name,dir_fd=slot.fd,follow_symlinks=False)
         require(stat.S_ISREG(named.st_mode) and named.st_uid==os.getuid()
-            and stat.S_IMODE(named.st_mode)==0o600 and named.st_nlink==1
+            and stat.S_IMODE(named.st_mode)==mode and named.st_nlink==1
             and 0<named.st_size<=maximum)
         leaf=self.owners.empty_directory()
         leaf.fd=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=slot.fd)
@@ -177,7 +187,8 @@ def qualify(selection_path,selection_sha256,current):
             and base.lstat().st_dev==physical['device'] and base.lstat().st_ino==physical['inode'])
         inputs=prepared.Inputs(clock,base,creator['sourceRoot'])
         product=base/'execroot/_main/bazel-out/k8-fastbuild/testlogs/delivery/yoga_public_artifact_prepare_producer/test.outputs/yoga-public-toolbar'
-        artifact_raw=metadata.open(product/'artifact.json',prepared.MAX_METADATA,expected=selected['artifact'])
+        artifact_raw=metadata.open(product/'artifact.json',prepared.MAX_METADATA,
+            expected=selected['artifact'],sealed_public_role='artifact-descriptor')
         artifact=prepared.decode(artifact_raw)
         require(type(artifact) is dict and set(artifact)==DESCRIPTOR_FIELDS
             and type(artifact['schemaVersion']) is int and artifact['schemaVersion']==2
@@ -188,7 +199,8 @@ def qualify(selection_path,selection_sha256,current):
             and artifact['freshConsumerQualificationRequired'] is True
             and all(artifact[flag] is False for flag in prepared.FALSE))
         inventory_raw=metadata.open(product/'runfiles-inventory.json',prepared.MAX_METADATA,
-            expected={'sha256':artifact['inventorySha256'],'bytes':artifact['inventoryBytes']})
+            expected={'sha256':artifact['inventorySha256'],'bytes':artifact['inventoryBytes']},
+            sealed_public_role='compact-inventory')
         clock.tick();wire=prepared.json_decode(inventory_raw)
         inventory=prepared.inventory_expand(wire,clock)
         require(inventory['context']==creator and inventory['originalOutputBase']==str(base)

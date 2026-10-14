@@ -338,6 +338,27 @@ class Inputs:
         if primary is None: self.recheck(held=False)
 
 
+def acquire_declaration(inputs, action_path, retained_path):
+    # Action aliases belong to this acquisition only. Keep their actual byte,
+    # symlink and full-nine proof under the SAME original clock through close;
+    # a separate retained read owns every fact published for future consumers.
+    acquisition=Inputs(inputs.clock,inputs.output_base,inputs.source);primary=None
+    try:
+        action_raw=acquisition.read('action-declaration',action_path,retained_path,
+            content=True,maximum=MAX_METADATA)
+        retained_raw=inputs.read('declaration',retained_path,retained_path,
+            content=True,maximum=MAX_METADATA)
+        action_fact=acquisition.rows['action-declaration'];retained_fact=inputs.rows['declaration']
+        require(action_raw==retained_raw and all(action_fact[field]==retained_fact[field]
+            for field in ('physical','sha256','bytes','witness')))
+        acquisition.recheck();inputs.recheck();inputs.clock.tick()
+        return retained_raw
+    except BaseException as error:primary=error;raise
+    finally:
+        acquisition.close(primary)
+        if primary is None:inputs.recheck();inputs.clock.tick()
+
+
 def declaration(raw, context):
     value = decode(raw)
     require(type(value) is dict and set(value) == {'schemaVersion','scope','runnerLabel',
@@ -725,7 +746,7 @@ def prepare(declaration_path, environment):
         inputs.hold_directory(controls)
         path = Path(declaration_path)
         require(path.is_relative_to(action_controls))
-        raw = inputs.read('declaration', path, controls/path.relative_to(action_controls), content=True, maximum=MAX_METADATA)
+        raw = acquire_declaration(inputs,path,controls/path.relative_to(action_controls))
         value, files = declaration(raw, context); data = {}
         # Bootstrap metadata must be generated under this original output base;
         # no Nix or foreign target is followed until its closed roots are known.

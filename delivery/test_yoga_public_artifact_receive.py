@@ -30,6 +30,9 @@ class ReceiverModels(unittest.TestCase):
         self.f.declaration.symlink_to(generated)
         self.artifact=self.f.prepare();self.creator=copy.deepcopy(self.f.context)
         self.product=self.f.output/'yoga-public-toolbar'
+        # Model actual Bazel TestRunner normalization of these PUBLIC outputs.
+        # Private selection/receipt/retirement remain owned0600 below.
+        for name in ('artifact.json','runfiles-inventory.json'):(self.product/name).chmod(0o555)
         self.receipt={'id':self.f.epoch.name,'verb':'test','targets':[prepared.LABEL],
             'exit':0,'workload_exit':0,'source_commit':self.creator['sourceCommit'],'source_dirty':'false',
             'graph_sha256':self.creator['graphSha256'],'output_base':str(self.f.base),
@@ -55,7 +58,9 @@ class ReceiverModels(unittest.TestCase):
     def write(self,path,value):
         path=Path(path)
         if path.exists():path.chmod(0o600)
-        raw=prepared.canonical(value);path.write_bytes(raw);path.chmod(0o600)
+        raw=prepared.canonical(value);path.write_bytes(raw)
+        path.chmod(0o555 if path.parent==self.product and path.name in
+            ('artifact.json','runfiles-inventory.json') else 0o600)
         return {'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw)}
 
     def seal(self):
@@ -324,6 +329,99 @@ class ReceiverModels(unittest.TestCase):
             for fd in set(opened):
                 with self.assertRaises(OSError):actual_fstat(fd)
         finally:parent.chmod(0o700)
+
+
+    def test_both_fixed_public_metadata_roles_accept_actual_sealed_outputs_without_private_mode_changes(self):
+        result=self.qualify();self.assertTrue(result['freshPhysicalReadback'])
+        for name in ('artifact.json','runfiles-inventory.json'):
+            self.assertEqual((self.product/name).lstat().st_mode&0o777,0o555)
+        for path in (self.selection_path,self.f.epoch/'receipt.json',self.f.epoch/'test-evidence-retirement.json'):
+            self.assertEqual(path.lstat().st_mode&0o777,0o600)
+        self.assertTrue(all(result[name] is False for name in prepared.FALSE))
+
+    def test_public_metadata_modes_other_than_exact_555_refuse_even_with_original_hash_and_extent(self):
+        for name in ('artifact.json','runfiles-inventory.json'):
+            path=self.product/name
+            for mode in (0o600,0o444,0o644,0o755,0o777):
+                path.chmod(mode)
+                try:
+                    with self.subTest(name=name,mode=mode),self.assertRaises(ValueError):self.qualify()
+                finally:path.chmod(0o555)
+
+    def test_private_metadata_never_borrows_the_sealed_public_mode(self):
+        for path in (self.selection_path,self.f.epoch/'receipt.json',self.f.epoch/'test-evidence-retirement.json'):
+            path.chmod(0o555)
+            try:
+                with self.subTest(name=path.name),self.assertRaises(ValueError):self.qualify()
+            finally:path.chmod(0o600)
+
+    def test_sealed_public_role_requires_fixed_original_product_and_digest_extent_before_any_read(self):
+        raw=(self.product/'artifact.json').read_bytes()
+        correct={'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw)}
+        cases=[(self.product/'artifact.json','artifact-descriptor',None),
+            (self.product/'artifact.json','unknown',correct),
+            (self.product/'artifact.json','compact-inventory',correct),
+            (self.f.epoch/'receipt.json','artifact-descriptor',correct),
+            (self.selection_path,'artifact-descriptor',correct),
+            (self.product/'artifact.json','artifact-descriptor',{'sha256':'bad','bytes':len(raw)}),
+            (self.product/'artifact.json','artifact-descriptor',{'sha256':correct['sha256'],'bytes':True})]
+        for path,role,expected in cases:
+            owner=receiver.Metadata(prepared.Clock(self.current));failure=None
+            try:
+                with self.subTest(name=path.name,role=role),patch.object(prepared.os,'read',wraps=os.read) as reads:
+                    with self.assertRaises(ValueError):
+                        owner.open(path,prepared.MAX_METADATA,expected=expected,sealed_public_role=role)
+                    reads.assert_not_called()
+            except BaseException as error:failure=error;raise
+            finally:owner.close(failure or ValueError('synthetic refused public role'))
+
+    def test_sealed_public_digest_and_extent_mismatch_refuse_after_actual_byte_read(self):
+        path=self.product/'artifact.json';raw=path.read_bytes()
+        for expected in ({'sha256':'0'*64,'bytes':len(raw)},
+                {'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw)+1}):
+            owner=receiver.Metadata(prepared.Clock(self.current))
+            try:
+                with patch.object(prepared.os,'read',wraps=os.read) as reads:
+                    with self.assertRaises(ValueError):
+                        owner.open(path,prepared.MAX_METADATA,expected=expected,sealed_public_role='artifact-descriptor')
+                    self.assertGreater(reads.call_count,0)
+            finally:owner.close(ValueError('synthetic refused public byte join'))
+
+
+    def action_tuple_and_retirement(self,*,legacy):
+        # One actual sandbox runfiles alias, matching the real producer layout.
+        sandbox=self.f.base/'sandbox/processwrapper-sandbox/fixture'
+        controls=sandbox/'execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_public_artifact_prepare_producer.sh.runfiles'
+        action=controls/'_main/delivery/yoga_public_artifact_inputs.json'
+        action.parent.mkdir(parents=True);action.symlink_to(self.f.physical/'yoga_public_artifact_inputs.json')
+        environment=dict(self.f.env,TEST_SRCDIR=str(controls));self.f.now=self.f.entry+10**9
+        shutil.rmtree(self.product)
+        def old_acquisition(inputs,action_path,retained_path):
+            # Exact historical one-owner read behavior, using REAL Inputs IO.
+            return inputs.read('declaration',action_path,retained_path,content=True,maximum=prepared.MAX_METADATA)
+        if legacy:
+            with patch.object(prepared,'acquire_declaration',side_effect=old_acquisition):
+                self.artifact=prepared.prepare(action,environment)
+        else:self.artifact=prepared.prepare(action,environment)
+        inventory=prepared.decode((self.product/'runfiles-inventory.json').read_bytes())
+        self.assertEqual(any(row['path']==str(action) for row in inventory['symlinks']),legacy)
+        for name in ('artifact.json','runfiles-inventory.json'):(self.product/name).chmod(0o555)
+        shutil.rmtree(sandbox)  # Actual action namespace lifetime ends.
+        self.assertFalse(action.exists())
+        self.f.now=self.current['entryNs']+10**9;self.seal()
+        return inventory
+
+    def test_legacy_action_alias_inventory_refuses_after_actual_sandbox_retirement(self):
+        self.action_tuple_and_retirement(legacy=True)
+        with self.assertRaises(FileNotFoundError):self.qualify()
+
+    def test_new_retained_only_inventory_qualifies_after_actual_action_namespace_retirement(self):
+        inventory=self.action_tuple_and_retirement(legacy=False)
+        result=self.qualify()
+        self.assertEqual(result['verifiedSymlinkCount'],len(inventory['symlinks']))
+        self.assertTrue(result['fullBytesRehashed'] and result['originalDirectoryIdentityMatched'])
+        self.assertFalse(result['candidateRunnerExecuted'])
+        self.assertTrue(all(result[name] is False for name in prepared.FALSE))
 
 
 if __name__=='__main__':
